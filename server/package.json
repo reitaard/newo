@@ -5,6 +5,7 @@
   "type": "module",
   "description": "VPS cloud bridge for Newo devices, Telegram, and future AI services",
   "scripts": {
+    "check": "node --check src/index.js",
     "start": "node src/index.js",
     "dev": "node --watch src/index.js"
   },
