@@ -9,7 +9,7 @@ The firmware is split into small modules so later audio, display, AI, cloud, Tel
 ## Firmware layers
 
 ```text
-Newo.ino
+Newo/Newo.ino
   |
   +-- newo_storage   persistent device settings / NVS
   +-- newo_wifi      station mode, multiple saved APs, reconnect, mDNS
