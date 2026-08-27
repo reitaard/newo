@@ -5,6 +5,23 @@
 
 #include "newo_config.h"
 
+namespace {
+
+const char* wifiStatusName(uint8_t status) {
+  switch (status) {
+    case WL_IDLE_STATUS: return "IDLE";
+    case WL_NO_SSID_AVAIL: return "NO_SSID_AVAIL";
+    case WL_SCAN_COMPLETED: return "SCAN_COMPLETED";
+    case WL_CONNECTED: return "CONNECTED";
+    case WL_CONNECT_FAILED: return "CONNECT_FAILED";
+    case WL_CONNECTION_LOST: return "CONNECTION_LOST";
+    case WL_DISCONNECTED: return "DISCONNECTED";
+    default: return "UNKNOWN";
+  }
+}
+
+}  // namespace
+
 NewoWiFi::NewoWiFi(NewoStorage& storage) : storage_(storage) {}
 
 void NewoWiFi::reloadSavedNetworks() {
@@ -22,6 +39,19 @@ void NewoWiFi::reloadSavedNetworks() {
 }
 
 void NewoWiFi::begin() {
+  WiFi.onEvent(
+      [](WiFiEvent_t event, WiFiEventInfo_t info) {
+        if (event != ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+          return;
+        }
+
+        const auto reason = static_cast<wifi_err_reason_t>(info.wifi_sta_disconnected.reason);
+        Serial.printf("[wifi] STA disconnect reason: %u (%s)\n",
+                      static_cast<unsigned>(reason),
+                      WiFi.STA.disconnectReasonName(reason));
+      },
+      ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+
   WiFi.setAutoReconnect(true);
   reloadSavedNetworks();
 
@@ -49,6 +79,8 @@ bool NewoWiFi::tryConnect(uint32_t timeoutMs) {
   lastReconnectAttemptMs_ = millis();
 
   if (status != WL_CONNECTED) {
+    Serial.printf("[wifi] Connection attempt failed: %u (%s)\n",
+                  static_cast<unsigned>(status), wifiStatusName(status));
     stopMdns();
     return false;
   }
