@@ -6,7 +6,7 @@ namespace NewoConfig {
 
 constexpr char DEVICE_NAME[] = "Newo";
 constexpr char MDNS_HOST[] = "newo";
-constexpr char SETUP_AP_SSID[] = "Newo-Setup";
+constexpr char SETUP_AP_SSID[] = "newo.link";
 
 constexpr uint8_t RGB_LED_PIN = 48;
 constexpr size_t MAX_SAVED_NETWORKS = 8;
