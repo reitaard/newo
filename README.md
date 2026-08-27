@@ -45,6 +45,18 @@ The Newo cloud service is hosted at:
 
 The public endpoint is reverse-proxied by Caddy to the Newo Node service bound only to `127.0.0.1:8788` on the VPS.
 
+The ESP32 firmware now contains a `newo_cloud` module that:
+
+- opens an outbound WSS connection only after Wi-Fi is available;
+- authenticates with `X-Newo-Device-Id` plus a bearer device secret;
+- validates the server certificate with an explicitly supplied trusted CA;
+- never falls back to insecure TLS;
+- sends `hello` and periodic `status` messages;
+- answers cloud `ping` requests with `pong`;
+- uses WebSocket heartbeat and automatic reconnect behavior.
+
+The real local file `Newo/newo_secrets.h` is ignored by Git. Copy `Newo/newo_secrets.example.h` locally and provision the same device secret used by the VPS plus the trusted public CA certificate(s). If the local secrets file or CA is missing, the cloud module stays disabled rather than connecting insecurely.
+
 ## Telegram direction
 
 Newo will connect to the user's Telegram bot through the VPS/cloud layer rather than storing the Telegram bot token on the ESP32.
@@ -100,4 +112,4 @@ If Arduino IDE offers to move `Newo.ino` into a `Newo/` directory, use the repos
 
 ## Repository rule
 
-Do not commit real Wi-Fi passwords, Telegram bot tokens, webhook secrets, API keys, certificates, or VPS credentials. Network passwords are entered through Newo's setup portal and stored on-device in NVS. Telegram secrets stay on the VPS.
+Do not commit real Wi-Fi passwords, Telegram bot tokens, webhook secrets, API keys, private keys, device secrets, or VPS credentials. Network passwords are entered through Newo's setup portal and stored on-device in NVS. Telegram secrets stay on the VPS. Public CA certificates are trust material rather than private credentials, but the local `newo_secrets.h` file is still ignored because it also contains the device secret.
