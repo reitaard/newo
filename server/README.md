@@ -28,6 +28,14 @@ The Node service binds to loopback by default. Port 8788 should not be exposed p
 - `WS /device` authenticated Newo device connection
 - `POST /telegram/webhook` enabled only when Telegram environment variables are configured
 
+Telegram commands are allowlist-protected:
+
+- `/start` — identify Newo and show the command guide
+- `/status` — request fresh device telemetry, with clearly labelled cached fallback
+- `/ping` — wait for the matching ESP32 pong and report round-trip latency
+- `/setup` — temporarily start the ESP32 Wi-Fi setup AP and return its one-time details
+- `/help` — show the compact command guide
+
 ## Environment
 
 Copy `.env.example` to `.env` on the VPS and fill secrets there. Never commit `.env`.
@@ -101,3 +109,9 @@ TELEGRAM_ALLOWED_CHAT_IDS=
 ```
 
 When a bot token is configured, a webhook secret is required. The webhook handler uses grammY's secret-token verification. Commands are rejected unless their user or chat ID appears in the configured allowlists.
+
+Device requests use unique in-memory request IDs and a five-second timeout. Responses are accepted only from the authenticated device connection and only when their request type and request ID match. Pending requests are cleared on timeout, disconnect, or shutdown.
+
+`/setup` reuses the ESP32 captive portal. The ESP32 generates the temporary AP password, keeps saved Wi-Fi networks untouched, and expires the temporary AP after five minutes. The server does not store or log that password; it is returned only in the authorized command reply.
+
+Connectivity notifications are sent asynchronously to configured allowed chat IDs after a 12-second offline grace period. Initial state and server shutdown are suppressed so PM2 restarts do not create misleading notifications.

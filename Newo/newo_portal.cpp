@@ -31,6 +31,12 @@ void NewoPortal::syncDnsState() {
       Serial.println("[portal] Captive DNS failed to start");
     }
   }
+
+  if (!wifi_.setupApActive() && dnsRunning_) {
+    dnsServer_.stop();
+    dnsRunning_ = false;
+    Serial.println("[portal] Captive DNS stopped");
+  }
 }
 
 void NewoPortal::loop() {

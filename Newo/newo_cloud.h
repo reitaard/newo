@@ -19,6 +19,7 @@ class NewoCloud {
   void handleTextMessage(const uint8_t* payload, size_t length);
   void sendHello();
   void sendStatus(const char* requestId = nullptr, bool pong = false);
+  void sendSetupWifiResult(const char* requestId);
 
   NewoWiFi& wifi_;
   WebSocketsClient webSocket_;

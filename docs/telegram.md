@@ -96,17 +96,35 @@ The ESP32 receives a separate per-device identity/credential. It does **not** re
 
 ## Initial command surface
 
-Bring-up commands should be deliberately small:
+Bring-up commands should be deliberately small and remain behind the VPS allowlist:
 
-- `/start` — identify the bot and Newo connection state
-- `/status` — online/offline, Wi-Fi RSSI, uptime, firmware/device information
-- `/ping` — round-trip test from Telegram to VPS to Newo and back
+- `/start` — identify Newo and show the command guide
+- `/status` — request fresh online/offline, Wi-Fi RSSI, uptime, firmware, chip, heap, PSRAM, connection-time, and last-seen information
+- `/ping` — wait for the matching ESP32 `pong` and report the measured round-trip latency
+- `/setup` — temporarily start the existing ESP32 Wi-Fi setup AP and return its generated password only to the authorized requester
+- `/help` — show the compact command guide
 
-Commands that change device state, reboot firmware, capture camera/audio, or trigger OTA should be added only after authorization and cloud transport are tested.
+The server correlates device requests by unique `request_id` values. Each pending request records its type and start time, expires after five seconds, and is removed on response, timeout, device disconnect, or shutdown. A response from another socket or with a mismatched type cannot resolve it.
+
+`/status` uses a fresh `status_request` whenever the device is online. If the live request times out, a cached telemetry snapshot may be returned with an explicit cached label. If the device is offline, the command returns immediately.
+
+`/setup` sends `setup_wifi`; the ESP32 reuses its existing captive portal, keeps station Wi-Fi and saved networks intact, generates the temporary AP password locally, and expires that AP after five minutes. The VPS never stores or logs the password.
+
+Commands that change device state beyond Wi-Fi setup, reboot firmware, capture camera/audio, or trigger OTA should be added only after authorization and cloud transport are tested.
+
+The Telegram command menu is registered with these entries:
+
+- `start` — Start Newo
+- `status` — Live Newo status
+- `ping` — Test Newo latency
+- `setup` — Start Wi-Fi setup mode
+- `help` — Show commands
 
 ## Authorization
 
 Receiving a valid Telegram webhook is not enough to authorize a device command. The VPS must also check the sending Telegram user/chat against an allowlist before forwarding anything to Newo.
+
+The VPS sends connectivity notifications only to configured allowed chat IDs. A disconnect must remain outside a 12-second grace period before `Newo went offline.` is sent; a reconnect within that grace cancels it. A later reconnect after an announced outage sends a back-online message with the offline duration. Initial connection and graceful server shutdown do not generate notifications.
 
 Suggested order for every update:
 

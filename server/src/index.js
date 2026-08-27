@@ -65,6 +65,11 @@ const wss = new WebSocketServer({
 });
 
 const devices = new Map();
+const pendingRequests = new Map();
+const DEVICE_REQUEST_TIMEOUT_MS = 5_000;
+const OFFLINE_GRACE_MS = 12_000;
+let bot = null;
+let shuttingDown = false;
 
 const DeviceMessageSchema = z.discriminatedUnion("type", [
   z
@@ -93,6 +98,17 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
       free_psram: z.number().nonnegative().optional(),
     })
     .passthrough(),
+  z
+    .object({
+      type: z.literal("setup_wifi_result"),
+      request_id: z.string().optional(),
+      active: z.boolean(),
+      ssid: z.string().optional(),
+      password: z.string().optional(),
+      url: z.string().url().optional(),
+      timeout_s: z.number().int().positive().optional(),
+    })
+    .passthrough(),
 ]);
 
 function safeEqual(left, right) {
@@ -111,29 +127,211 @@ function rejectUpgrade(socket, statusCode, statusText) {
 
 function getDeviceSnapshot() {
   const device = devices.get(env.NEWO_DEVICE_ID);
-  if (!device || device.ws.readyState !== WebSocket.OPEN) {
-    return {
-      connected: false,
-      id: env.NEWO_DEVICE_ID,
-      last_seen: device?.lastSeen ?? null,
-      status: device?.status ?? null,
-    };
-  }
+  const connected = device?.ws?.readyState === WebSocket.OPEN;
 
   return {
-    connected: true,
+    connected,
     id: env.NEWO_DEVICE_ID,
-    connected_at: device.connectedAt,
-    last_seen: device.lastSeen,
-    status: device.status ?? null,
+    connected_at: device?.connectedAt ?? null,
+    last_seen: device?.lastSeen ?? null,
+    hello: device?.hello ?? null,
+    status: device?.status ?? null,
   };
 }
 
-function sendToDevice(message) {
+function getConnectedDeviceState() {
   const device = devices.get(env.NEWO_DEVICE_ID);
-  if (!device || device.ws.readyState !== WebSocket.OPEN) return false;
-  device.ws.send(JSON.stringify(message));
+  return device?.ws?.readyState === WebSocket.OPEN ? device : null;
+}
+
+function settlePendingRequest(requestId, result) {
+  const pending = pendingRequests.get(requestId);
+  if (!pending) return false;
+
+  pendingRequests.delete(requestId);
+  clearTimeout(pending.timer);
+  pending.resolve(result);
   return true;
+}
+
+function createRequestId() {
+  let requestId;
+  do {
+    requestId = randomUUID();
+  } while (pendingRequests.has(requestId));
+  return requestId;
+}
+
+function sendDeviceRequest(requestType, responseType) {
+  const device = getConnectedDeviceState();
+  if (!device) return { kind: "offline" };
+
+  const requestId = createRequestId();
+  const startedAt = Date.now();
+  let timer;
+  let resolveRequest;
+  const promise = new Promise((resolve) => {
+    resolveRequest = resolve;
+  });
+
+  timer = setTimeout(() => {
+    settlePendingRequest(requestId, { kind: "timeout" });
+  }, DEVICE_REQUEST_TIMEOUT_MS);
+  timer.unref();
+  pendingRequests.set(requestId, {
+    deviceId: env.NEWO_DEVICE_ID,
+    ws: device.ws,
+    requestType,
+    responseType,
+    startedAt,
+    timer,
+    resolve: resolveRequest,
+  });
+
+  try {
+    device.ws.send(
+      JSON.stringify({
+        type: requestType,
+        request_id: requestId,
+      }),
+      (error) => {
+        if (error) {
+          settlePendingRequest(requestId, { kind: "send_error" });
+        }
+      },
+    );
+  } catch {
+    settlePendingRequest(requestId, { kind: "send_error" });
+  }
+
+  return { kind: "sent", requestId, promise };
+}
+
+function resolvePendingResponse(deviceId, ws, message) {
+  if (!message.request_id) return false;
+
+  const pending = pendingRequests.get(message.request_id);
+  if (
+    !pending ||
+    pending.deviceId !== deviceId ||
+    pending.ws !== ws ||
+    pending.responseType !== message.type
+  ) {
+    return false;
+  }
+
+  return settlePendingRequest(message.request_id, {
+    kind: "response",
+    message,
+    elapsedMs: Math.max(0, Date.now() - pending.startedAt),
+  });
+}
+
+function failPendingRequestsForDevice(deviceId, ws, kind = "disconnected") {
+  for (const [requestId, pending] of pendingRequests) {
+    if (pending.deviceId === deviceId && pending.ws === ws) {
+      settlePendingRequest(requestId, { kind });
+    }
+  }
+}
+
+function formatDuration(milliseconds) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "unknown";
+
+  let seconds = Math.floor(milliseconds / 1_000);
+  if (seconds < 1) return `${Math.floor(milliseconds)} ms`;
+
+  const days = Math.floor(seconds / 86_400);
+  seconds %= 86_400;
+  const hours = Math.floor(seconds / 3_600);
+  seconds %= 3_600;
+  const minutes = Math.floor(seconds / 60);
+  seconds %= 60;
+
+  const parts = [];
+  if (days) parts.push(`${days}d`);
+  if (hours) parts.push(`${hours}h`);
+  if (minutes) parts.push(`${minutes}m`);
+  if (seconds || parts.length === 0) parts.push(`${seconds}s`);
+  return parts.join(" ");
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return "unknown";
+
+  const units = ["B", "KiB", "MiB", "GiB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1_024 && unitIndex < units.length - 1) {
+    value /= 1_024;
+    unitIndex += 1;
+  }
+
+  const digits = unitIndex === 0 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function formatDeviceStatus(snapshot, source = "live") {
+  const status = snapshot.status ?? {};
+  const hello = snapshot.hello ?? {};
+  const heading =
+    source === "cached" ? "Cached Newo status (live request timed out)" : "Newo status";
+
+  return [
+    `${heading}: ${snapshot.connected ? "online" : "offline"}`,
+    `Device ID: ${snapshot.id}`,
+    `Firmware: ${hello.firmware ?? "unknown"}`,
+    `Chip: ${hello.chip ?? "unknown"}`,
+    `Uptime: ${formatDuration(status.uptime_ms)}`,
+    `RSSI: ${typeof status.rssi === "number" ? `${status.rssi} dBm` : "unknown"}`,
+    `Free heap: ${formatBytes(status.free_heap)}`,
+    `Free PSRAM: ${formatBytes(status.free_psram)}`,
+    `Connection time: ${snapshot.connected_at ?? "unknown"}`,
+    `Last seen: ${snapshot.last_seen ?? "unknown"}`,
+  ].join("\n");
+}
+
+function cancelOfflineTimer(state) {
+  if (state?.offlineTimer) {
+    clearTimeout(state.offlineTimer);
+    state.offlineTimer = null;
+  }
+}
+
+function sendConnectivityNotification(text) {
+  if (!bot || allowedChatIds.size === 0) return;
+
+  for (const chatId of allowedChatIds) {
+    void Promise.resolve()
+      .then(() => bot.api.sendMessage(chatId, text))
+      .catch(() => {
+        app.log.warn({ chat_id: chatId }, "Failed to send Newo connectivity notification");
+      });
+  }
+}
+
+function scheduleOfflineNotification(deviceId, state, ws) {
+  if (shuttingDown || !state.hasBeenConnected) return;
+
+  cancelOfflineTimer(state);
+  state.offlineSince = Date.now();
+  state.offlineNotified = false;
+  state.offlineTimer = setTimeout(() => {
+    state.offlineTimer = null;
+    const current = devices.get(deviceId);
+    if (
+      shuttingDown ||
+      current !== state ||
+      current.ws !== ws ||
+      current.ws.readyState === WebSocket.OPEN
+    ) {
+      return;
+    }
+
+    state.offlineNotified = true;
+    sendConnectivityNotification("Newo went offline.");
+  }, OFFLINE_GRACE_MS);
+  state.offlineTimer.unref();
 }
 
 app.get("/", async () => ({
@@ -149,7 +347,101 @@ app.get("/health", async () => ({
   device: getDeviceSnapshot(),
 }));
 
-let bot = null;
+const COMMAND_GUIDANCE = [
+  "/status - Live Newo status",
+  "/ping - Test Newo latency",
+  "/setup - Start Wi-Fi setup mode",
+  "/help - Show commands",
+].join("\n");
+
+async function handleStatusCommand(ctx) {
+  const request = sendDeviceRequest("status_request", "status");
+  if (request.kind === "offline") {
+    await ctx.reply(`Newo ${env.NEWO_DEVICE_ID}: offline`);
+    return;
+  }
+
+  const result = await request.promise;
+  if (result.kind === "response") {
+    await ctx.reply(formatDeviceStatus(getDeviceSnapshot()));
+    return;
+  }
+
+  if (result.kind === "timeout") {
+    const snapshot = getDeviceSnapshot();
+    if (snapshot.status) {
+      await ctx.reply(formatDeviceStatus(snapshot, "cached"));
+    } else {
+      await ctx.reply("Newo did not reply within 5 seconds.");
+    }
+    return;
+  }
+
+  await ctx.reply(
+    getConnectedDeviceState() ? "Newo did not reply within 5 seconds." : `Newo ${env.NEWO_DEVICE_ID}: offline`,
+  );
+}
+
+async function handlePingCommand(ctx) {
+  const request = sendDeviceRequest("ping", "pong");
+  if (request.kind === "offline") {
+    await ctx.reply("Newo is offline.");
+    return;
+  }
+
+  const result = await request.promise;
+  if (result.kind === "response") {
+    await ctx.reply(`Newo replied in ${result.elapsedMs} ms`);
+    return;
+  }
+
+  if (result.kind === "timeout") {
+    await ctx.reply("Newo did not reply within 5 seconds.");
+    return;
+  }
+
+  await ctx.reply(
+    getConnectedDeviceState() ? "Newo did not reply within 5 seconds." : "Newo is offline.",
+  );
+}
+
+async function handleSetupCommand(ctx) {
+  const request = sendDeviceRequest("setup_wifi", "setup_wifi_result");
+  if (request.kind === "offline") {
+    await ctx.reply("Newo is offline.");
+    return;
+  }
+
+  const result = await request.promise;
+  if (result.kind === "response") {
+    const message = result.message;
+    if (!message.active || !message.ssid || !message.password || !message.url) {
+      await ctx.reply("Newo could not start Wi-Fi setup.");
+      return;
+    }
+
+    const timeout = message.timeout_s ? `\nExpires in: ${message.timeout_s} seconds` : "";
+    await ctx.reply(
+      [
+        "Newo Wi-Fi setup is active.",
+        `Network: ${message.ssid}`,
+        `Password: ${message.password}`,
+        `Open: ${message.url}`,
+      ].join("\n") + timeout,
+    );
+    return;
+  }
+
+  if (result.kind === "timeout") {
+    await ctx.reply("Newo did not reply within 5 seconds.");
+    return;
+  }
+
+  await ctx.reply(
+    getConnectedDeviceState() ? "Newo did not reply within 5 seconds." : "Newo is offline.",
+  );
+}
+
 if (env.TELEGRAM_BOT_TOKEN) {
   bot = new Bot(env.TELEGRAM_BOT_TOKEN);
 
@@ -172,29 +464,17 @@ if (env.TELEGRAM_BOT_TOKEN) {
   });
 
   bot.command("start", async (ctx) => {
-    await ctx.reply("Newo cloud is online.");
+    const state = getDeviceSnapshot().connected ? "online" : "offline";
+    await ctx.reply(`Newo is ${state}.\n\n${COMMAND_GUIDANCE}`);
   });
 
-  bot.command("status", async (ctx) => {
-    const snapshot = getDeviceSnapshot();
-    if (!snapshot.connected) {
-      await ctx.reply(`Newo ${snapshot.id}: offline`);
-      return;
-    }
-
-    const rssi = snapshot.status?.rssi;
-    const suffix = typeof rssi === "number" ? ` | RSSI ${rssi} dBm` : "";
-    await ctx.reply(`Newo ${snapshot.id}: online${suffix}`);
+  bot.command("help", async (ctx) => {
+    await ctx.reply(COMMAND_GUIDANCE);
   });
 
-  bot.command("ping", async (ctx) => {
-    const requestId = randomUUID();
-    if (!sendToDevice({ type: "ping", request_id: requestId, ts: Date.now() })) {
-      await ctx.reply("Newo is offline.");
-      return;
-    }
-    await ctx.reply("Ping sent to Newo.");
-  });
+  bot.command("status", handleStatusCommand);
+  bot.command("ping", handlePingCommand);
+  bot.command("setup", handleSetupCommand);
 
   app.post(
     "/telegram/webhook",
@@ -249,7 +529,18 @@ app.server.on("upgrade", (request, socket, head) => {
 
 wss.on("connection", (ws, request, deviceId) => {
   const previous = devices.get(deviceId);
+  const reconnectingAfterNotifiedOffline = Boolean(
+    previous?.hasBeenConnected &&
+      previous.offlineNotified &&
+      previous.offlineSince !== null,
+  );
+  const offlineDuration = reconnectingAfterNotifiedOffline
+    ? Math.max(0, Date.now() - previous.offlineSince)
+    : 0;
+
+  cancelOfflineTimer(previous);
   if (previous?.ws.readyState === WebSocket.OPEN) {
+    failPendingRequestsForDevice(deviceId, previous.ws, "disconnected");
     previous.ws.close(4001, "replaced by new connection");
   }
 
@@ -257,10 +548,21 @@ wss.on("connection", (ws, request, deviceId) => {
     ws,
     connectedAt: new Date().toISOString(),
     lastSeen: new Date().toISOString(),
+    hello: previous?.hello ?? null,
     status: previous?.status ?? null,
+    hasBeenConnected: previous?.hasBeenConnected ?? true,
+    offlineSince: null,
+    offlineNotified: false,
+    offlineTimer: null,
     isAlive: true,
   };
   devices.set(deviceId, state);
+
+  if (reconnectingAfterNotifiedOffline) {
+    sendConnectivityNotification(
+      `Newo is back online after ${formatDuration(offlineDuration)}.`,
+    );
+  }
 
   app.log.info({ device_id: deviceId }, "Newo device connected");
 
@@ -270,6 +572,9 @@ wss.on("connection", (ws, request, deviceId) => {
   });
 
   ws.on("message", (raw, isBinary) => {
+    const current = devices.get(deviceId);
+    if (current !== state || current.ws !== ws) return;
+
     state.lastSeen = new Date().toISOString();
 
     if (isBinary) {
@@ -304,6 +609,15 @@ wss.on("connection", (ws, request, deviceId) => {
       return;
     }
 
+    if (message.type === "hello") {
+      state.hello = {
+        device: message.device,
+        firmware: message.firmware ?? null,
+        chip: message.chip ?? null,
+        received_at: state.lastSeen,
+      };
+    }
+
     if (message.type === "status" || message.type === "pong") {
       state.status = {
         ...(state.status ?? {}),
@@ -312,13 +626,16 @@ wss.on("connection", (ws, request, deviceId) => {
       };
     }
 
+    resolvePendingResponse(deviceId, ws, message);
     app.log.info({ device_id: deviceId, type: message.type }, "Device message received");
   });
 
   ws.on("close", (code, reason) => {
     const current = devices.get(deviceId);
+    failPendingRequestsForDevice(deviceId, ws, "disconnected");
     if (current?.ws === ws) {
       current.lastSeen = new Date().toISOString();
+      scheduleOfflineNotification(deviceId, current, ws);
     }
     app.log.info(
       { device_id: deviceId, code, reason: reason.toString() },
@@ -326,8 +643,8 @@ wss.on("connection", (ws, request, deviceId) => {
     );
   });
 
-  ws.on("error", (error) => {
-    app.log.warn({ device_id: deviceId, err: error }, "Newo WebSocket error");
+  ws.on("error", () => {
+    app.log.warn({ device_id: deviceId }, "Newo WebSocket error");
   });
 
   ws.send(
@@ -355,22 +672,72 @@ const heartbeatTimer = setInterval(() => {
 }, 30_000);
 heartbeatTimer.unref();
 
+async function closeDeviceSocket(ws) {
+  if (ws.readyState === WebSocket.CLOSED) return;
+
+  await new Promise((resolve) => {
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      resolve();
+    };
+    const timeout = setTimeout(() => {
+      ws.terminate();
+      finish();
+    }, 1_000);
+    timeout.unref();
+
+    ws.once("close", finish);
+    ws.once("error", finish);
+    try {
+      ws.close(1001, "server shutting down");
+    } catch {
+      ws.terminate();
+      finish();
+    }
+  });
+}
+
 async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   app.log.info({ signal }, "Shutting down Newo cloud");
   clearInterval(heartbeatTimer);
 
+  for (const [requestId] of pendingRequests) {
+    settlePendingRequest(requestId, { kind: "shutdown" });
+  }
   for (const state of devices.values()) {
-    if (state.ws.readyState === WebSocket.OPEN) {
-      state.ws.close(1001, "server shutting down");
-    }
+    cancelOfflineTimer(state);
   }
 
+  await Promise.all(
+    [...devices.values()]
+      .filter((state) => state.ws.readyState !== WebSocket.CLOSED)
+      .map((state) => closeDeviceSocket(state.ws)),
+  );
+
+  await new Promise((resolve) => {
+    try {
+      wss.close(() => resolve());
+    } catch {
+      resolve();
+    }
+  });
   await app.close();
-  process.exit(0);
+  process.exitCode = 0;
 }
 
-process.once("SIGINT", () => void shutdown("SIGINT"));
-process.once("SIGTERM", () => void shutdown("SIGTERM"));
+function handleShutdownSignal(signal) {
+  void shutdown(signal).catch(() => {
+    process.exitCode = 1;
+  });
+}
+
+process.once("SIGINT", () => handleShutdownSignal("SIGINT"));
+process.once("SIGTERM", () => handleShutdownSignal("SIGTERM"));
 
 await app.listen({ host: env.HOST, port: env.PORT });
 

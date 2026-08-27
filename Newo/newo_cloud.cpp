@@ -153,6 +153,14 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     return;
   }
 
+  if (strcmp(type, "setup_wifi") == 0) {
+    const char* requestId = doc["request_id"] | nullptr;
+    if (requestId && requestId[0] != '\0') {
+      sendSetupWifiResult(requestId);
+    }
+    return;
+  }
+
   Serial.printf("[cloud] Ignoring unsupported server message: %s\n", type);
 }
 
@@ -193,4 +201,28 @@ void NewoCloud::sendStatus(const char* requestId, bool pong) {
   serializeJson(doc, body);
   webSocket_.sendTXT(body);
   lastStatusMs_ = millis();
+}
+
+void NewoCloud::sendSetupWifiResult(const char* requestId) {
+  if (!connected_ || !requestId || requestId[0] == '\0') {
+    return;
+  }
+
+  const bool active = wifi_.startTemporarySetupAP(NewoConfig::SETUP_AP_TIMEOUT_MS);
+
+  JsonDocument doc;
+  doc["type"] = "setup_wifi_result";
+  doc["request_id"] = requestId;
+  doc["active"] = active;
+
+  if (active) {
+    doc["ssid"] = NewoConfig::SETUP_AP_SSID;
+    doc["password"] = wifi_.setupApPassword();
+    doc["url"] = String("http://") + wifi_.setupIP().toString();
+    doc["timeout_s"] = wifi_.setupApRemainingSeconds();
+  }
+
+  String body;
+  serializeJson(doc, body);
+  webSocket_.sendTXT(body);
 }

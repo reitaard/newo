@@ -112,18 +112,51 @@ void NewoWiFi::startSetupAP() {
   }
 
   // Enable Wi-Fi before reading the ESP32-S3 hardware RNG so RF entropy is active.
+  // WIFI_AP_STA preserves an existing station connection while adding the setup AP.
   WiFi.mode(WIFI_AP_STA);
   setupApPassword_ = generateSetupPassword();
 
   if (!WiFi.softAP(NewoConfig::SETUP_AP_SSID, setupApPassword_.c_str())) {
     Serial.println("[wifi] Failed to start setup AP");
+    setupApPassword_.clear();
     return;
   }
 
   setupApActive_ = true;
+  setupApExpiresAtMs_ = 0;
   Serial.printf("[wifi] Setup AP: %s\n", NewoConfig::SETUP_AP_SSID);
   Serial.printf("[wifi] Setup password: %s\n", setupApPassword_.c_str());
   Serial.printf("[wifi] Setup URL: http://%s\n", WiFi.softAPIP().toString().c_str());
+}
+
+bool NewoWiFi::startTemporarySetupAP(uint32_t timeoutMs) {
+  if (timeoutMs == 0) {
+    return false;
+  }
+
+  if (!setupApActive_) {
+    startSetupAP();
+  }
+
+  if (!setupApActive_) {
+    return false;
+  }
+
+  setupApExpiresAtMs_ = millis() + timeoutMs;
+  return true;
+}
+
+void NewoWiFi::stopSetupAP() {
+  if (!setupApActive_) {
+    return;
+  }
+
+  // Disconnect only the soft AP; leave an existing station connection intact.
+  WiFi.softAPdisconnect(true);
+  setupApActive_ = false;
+  setupApExpiresAtMs_ = 0;
+  setupApPassword_.clear();
+  Serial.println("[wifi] Temporary setup AP stopped");
 }
 
 void NewoWiFi::ensureMdns() {
@@ -150,6 +183,11 @@ void NewoWiFi::stopMdns() {
 }
 
 void NewoWiFi::loop() {
+  if (setupApActive_ && setupApExpiresAtMs_ != 0 &&
+      static_cast<int32_t>(millis() - setupApExpiresAtMs_) >= 0) {
+    stopSetupAP();
+  }
+
   if (connected()) {
     ensureMdns();
     return;
@@ -183,6 +221,19 @@ bool NewoWiFi::setupApActive() const {
 
 String NewoWiFi::setupApPassword() const {
   return setupApPassword_;
+}
+
+uint32_t NewoWiFi::setupApRemainingSeconds() const {
+  if (!setupApActive_ || setupApExpiresAtMs_ == 0) {
+    return 0;
+  }
+
+  const int32_t remainingMs = static_cast<int32_t>(setupApExpiresAtMs_ - millis());
+  if (remainingMs <= 0) {
+    return 0;
+  }
+
+  return static_cast<uint32_t>((remainingMs + 999) / 1000);
 }
 
 String NewoWiFi::connectedSsid() const {

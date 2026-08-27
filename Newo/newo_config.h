@@ -20,6 +20,7 @@ constexpr uint32_t INITIAL_CONNECT_TIMEOUT_MS = 15000;
 constexpr uint32_t RECONNECT_INTERVAL_MS = 10000;
 constexpr uint32_t RECONNECT_TIMEOUT_MS = 5000;
 constexpr uint32_t PORTAL_REBOOT_DELAY_MS = 1500;
+constexpr uint32_t SETUP_AP_TIMEOUT_MS = 300000;
 
 constexpr uint32_t CLOUD_RECONNECT_INTERVAL_MS = 5000;
 constexpr uint32_t CLOUD_STATUS_INTERVAL_MS = 30000;
