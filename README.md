@@ -83,6 +83,10 @@ Open `Newo/Newo.ino` in Arduino IDE, select the board settings above, compile, a
 
 > The setup link is local HTTP inside the password-protected setup WLAN. Phase 1 is still development firmware; provisioning and credential reset will receive additional physical/authentication hardening before production use.
 
+## Bring-up note
+
+If Arduino IDE offers to move `Newo.ino` into a `Newo/` directory, use the repository's existing `Newo/Newo.ino` instead. The project is already laid out as a valid Arduino sketch folder; moving only the `.ino` away from its local headers causes `newo_config.h: No such file or directory`.
+
 ## Repository rule
 
 Do not commit real Wi-Fi passwords, Telegram bot tokens, webhook secrets, API keys, certificates, or VPS credentials. Network passwords are entered through Newo's setup portal and stored on-device in NVS. Telegram secrets stay on the VPS.
