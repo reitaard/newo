@@ -39,6 +39,7 @@ boot
        |
        +-- no -------------------------> Newo-Setup access point
                                                |
+                                               +-- random setup password
                                                +-- captive portal
                                                +-- scan nearby 2.4 GHz networks
                                                +-- save/update/remove credentials
@@ -63,9 +64,11 @@ The selected `16M Flash (3MB APP/9.9MB FATFS)` Arduino partition scheme contains
 
 ## Security boundary
 
-Phase 1 is development firmware. The setup AP is intentionally open for quick bring-up. Before Newo is treated as a production device:
+Phase 1 is development firmware. Setup mode creates `Newo-Setup` with a fresh 12-character WPA password generated from the ESP32-S3 hardware RNG and printed to Serial Monitor. The setup page itself is local HTTP inside that WLAN.
 
-- setup mode must be authenticated or physically gated;
+Before Newo is treated as a production device:
+
+- setup mode should also be physically gated or explicitly invoked;
 - cloud identity must use per-device credentials;
 - TLS certificate validation must remain enabled;
 - secrets must never be committed to Git;
