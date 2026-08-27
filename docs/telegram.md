@@ -48,6 +48,20 @@ npm install grammy fastify ws zod
 
 Development dependencies can be added once the backend source tree is created (TypeScript, linting, tests) rather than being required for ESP32 Phase 1.
 
+## ESP32 cloud transport
+
+For the ESP32-side persistent cloud channel, use the `WebSockets` Arduino library by Markus Sattler / Links2004, version 2.7.2 or later compatible 2.7.x. The project supports ESP32 secure WebSocket clients (`wss://`); release 2.7.1 added Arduino >=3.x custom-network-client support and 2.7.2 is the current release selected for Newo bring-up.
+
+Arduino Library Manager package:
+
+```text
+WebSockets by Markus Sattler — 2.7.2
+```
+
+This dependency belongs to the future `newo_cloud` module and does not alter the Phase 1 Wi-Fi provisioning design.
+
+TLS certificate validation must stay enabled in production. Do not use an insecure TLS mode as the normal Newo configuration.
+
 ## Telegram update transport
 
 Production should use a Telegram webhook terminating on the VPS/domain over HTTPS. Telegram supports `setWebhook`, requires HTTPS for the standard hosted Bot API webhook flow, and supports ports 443, 80, 88, and 8443. Newo should normally use 443.
@@ -112,7 +126,7 @@ Before wiring the bot into Newo, verify the token against the official Bot API `
 
 Do not paste the bot token into source files, screenshots, GitHub issues, or Serial Monitor output.
 
-## ESP32 library decision
+## ESP32 Telegram-library decision
 
 No Telegram-specific Arduino library is required for the planned architecture.
 
@@ -129,5 +143,6 @@ This keeps the ESP32 firmware focused on `newo_cloud` rather than binding the as
 - grammY: https://grammy.dev/
 - grammY VPS/webhook guide: https://grammy.dev/hosting/vps
 - ws: https://github.com/websockets/ws
+- ESP32 WebSockets: https://github.com/Links2004/arduinoWebSockets
 - AsyncTelegram2: https://github.com/cotestatnt/AsyncTelegram2
 - Universal Arduino Telegram Bot: https://github.com/witnessmenow/Universal-Arduino-Telegram-Bot
