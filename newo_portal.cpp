@@ -59,7 +59,7 @@ String NewoPortal::htmlEscape(const String& value) const {
       case '<': escaped += F("&lt;"); break;
       case '>': escaped += F("&gt;"); break;
       case '"': escaped += F("&quot;"); break;
-      case '\'': escaped += F("&#39;"); break;
+      case 39: escaped += F("&#39;"); break;
       default: escaped += value[i]; break;
     }
   }
