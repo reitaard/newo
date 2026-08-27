@@ -4,7 +4,7 @@
 
 Newo is a portable ESP32-S3 assistant endpoint. The ESP32 handles device I/O, local provisioning, connectivity, and real-time peripheral work; larger AI inference can live on a VPS, home GPU, or other backend.
 
-The firmware is split into small modules so later audio, display, AI, cloud, and OTA work does not turn the main sketch into one large file.
+The firmware is split into small modules so later audio, display, AI, cloud, Telegram, and OTA work does not turn the main sketch into one large file.
 
 ## Firmware layers
 
@@ -21,6 +21,8 @@ Newo.ino
   +-- future: newo_ai
   +-- future: newo_update
 ```
+
+Telegram is intentionally not a firmware module. Telegram terminates at the VPS and communicates with the ESP32 through `newo_cloud`.
 
 ## Phase 1 network flow
 
@@ -48,13 +50,29 @@ boot
 
 ## Why outbound cloud communication
 
-Newo should not require a stable LAN IP and should not expose its ESP32 web server directly to the public Internet. Later, `newo_cloud` will initiate an outbound authenticated TLS connection to a VPS/domain. This lets Newo work behind NAT, DHCP, and networks where clients are isolated from one another.
+Newo should not require a stable LAN IP and should not expose its ESP32 web server directly to the public Internet. `newo_cloud` will initiate an outbound authenticated TLS connection to a VPS/domain. This lets Newo work behind NAT, DHCP, and networks where clients are isolated from one another.
 
 ```text
-Newo --> HTTPS/WSS :443 --> VPS/domain --> AI/backend/web UI
+Newo --> authenticated TLS/WSS :443 --> VPS/domain --> AI/backend/web UI
 ```
 
 The local `WebServer` remains a setup/status surface, not Newo's public Internet server.
+
+## Telegram path
+
+Telegram belongs on the cloud side of that boundary:
+
+```text
+Telegram --HTTPS webhook--> VPS/domain --device channel--> Newo
+    ^                            |
+    +------ Bot API reply -------+
+```
+
+The VPS holds the Telegram bot token and webhook secret, validates Telegram user/chat authorization, and translates bot commands into typed Newo commands. The ESP32 never needs the Telegram bot token.
+
+This prevents Telegram polling or API work from competing with future real-time microphone, speaker, camera, display, or wake-word tasks on the ESP32. It also means the same Newo cloud channel can later serve Telegram, a web UI, AI services, automation, and administration without vendor-specific logic in the firmware.
+
+See [`telegram.md`](telegram.md).
 
 ## Storage
 
@@ -73,13 +91,14 @@ Before Newo is treated as a production device:
 - TLS certificate validation must remain enabled;
 - secrets must never be committed to Git;
 - credential reset should require a physical action such as a BOOT-button hold;
+- Telegram commands must be authorized by user/chat identity on the VPS;
 - OTA updates must be authenticated and tested with rollback/recovery behavior.
 
 ## Planned modules
 
 ### `newo_cloud`
 
-Persistent outbound connection to the VPS/domain, device authentication, heartbeat, remote commands, and AI transport.
+Persistent outbound connection to the VPS/domain, device authentication, heartbeat, remote commands, and AI transport. Telegram uses this same channel instead of talking directly to the ESP32.
 
 ### `newo_audio`
 
