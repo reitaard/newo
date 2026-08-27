@@ -27,6 +27,27 @@ The ESP32 remains a device endpoint. `newo_cloud` will maintain an outbound auth
 - the same cloud/device channel can later carry web UI, AI, telemetry, OTA metadata, and other integrations;
 - bot authorization and command policy live on the VPS where they are easier to update safely.
 
+## VPS stack
+
+Use Node.js with:
+
+- `grammy` for Telegram Bot API handling;
+- `fastify` as the HTTP/webhook server;
+- `ws` for the persistent Newo device WebSocket channel;
+- `zod` for validation of environment/config values and typed command payloads.
+
+Node 22+ provides native `fetch`, so no extra HTTP client is needed for ordinary backend HTTP calls.
+
+grammY supports webhook operation through `webhookCallback`, including Fastify adapters and Telegram webhook secret-token validation. `ws` is a focused WebSocket implementation that supports attaching to an existing HTTP/S server and provides heartbeat/client-authentication patterns suitable for the device channel.
+
+Initial VPS dependency install:
+
+```bash
+npm install grammy fastify ws zod
+```
+
+Development dependencies can be added once the backend source tree is created (TypeScript, linting, tests) rather than being required for ESP32 Phase 1.
+
 ## Telegram update transport
 
 Production should use a Telegram webhook terminating on the VPS/domain over HTTPS. Telegram supports `setWebhook`, requires HTTPS for the standard hosted Bot API webhook flow, and supports ports 443, 80, 88, and 8443. Newo should normally use 443.
@@ -105,5 +126,8 @@ This keeps the ESP32 firmware focused on `newo_cloud` rather than binding the as
 - Telegram bot tutorial: https://core.telegram.org/bots/tutorial
 - Telegram webhook guide: https://core.telegram.org/bots/webhooks
 - Telegram bot FAQ: https://core.telegram.org/bots/faq
+- grammY: https://grammy.dev/
+- grammY VPS/webhook guide: https://grammy.dev/hosting/vps
+- ws: https://github.com/websockets/ws
 - AsyncTelegram2: https://github.com/cotestatnt/AsyncTelegram2
 - Universal Arduino Telegram Bot: https://github.com/witnessmenow/Universal-Arduino-Telegram-Bot
