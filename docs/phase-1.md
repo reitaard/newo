@@ -28,9 +28,9 @@ Use these Arduino IDE settings for the current ESP32-S3 N16R8 board:
 1. Compile and upload `Newo.ino`.
 2. Open Serial Monitor at `115200`.
 3. Newo should print its ESP32-S3 hardware information.
-4. With no saved networks, Newo creates an access point named `Newo-Setup`.
+4. With no saved networks, Newo creates an access point named `newo@ai.link`.
 5. Serial Monitor prints a fresh 12-character setup password.
-6. Connect a phone or PC to `Newo-Setup` using that password.
+6. Connect a phone or PC to `newo@ai.link` using that password.
 7. The captive portal may open automatically. If it does not, browse to `http://192.168.4.1`.
 8. Select a nearby Wi-Fi network, enter its password, and press **Save & connect**.
 9. Newo stores the network in NVS and reboots.
@@ -50,7 +50,7 @@ Free PSRAM: 7 MB
 ================================
 [storage] Loaded 0 saved network(s)
 [wifi] No saved networks
-[wifi] Setup AP: Newo-Setup
+[wifi] Setup AP: newo@ai.link
 [wifi] Setup password: Ab3Example9Z
 [wifi] Setup URL: http://192.168.4.1
 [portal] HTTP server started
@@ -90,7 +90,7 @@ JSON list of visible Wi-Fi networks with RSSI and whether the AP reports securit
 
 Newo supports up to eight saved networks in Phase 1. At boot, the firmware loads those credentials into the official Arduino-ESP32 `WiFiMulti` component. WiFiMulti scans and attempts an available entry from its configured list.
 
-If no saved network is reachable, Newo falls back to `Newo-Setup`. While disconnected, it periodically retries the saved list.
+If no saved network is reachable, Newo falls back to `newo@ai.link`. While disconnected, it periodically retries the saved list.
 
 Adding, updating, deleting, or clearing a network through the web interface saves the change and reboots Newo so the network state starts cleanly.
 
