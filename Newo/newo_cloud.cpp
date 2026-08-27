@@ -142,20 +142,21 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
   }
 
   if (strcmp(type, "ping") == 0) {
-    const char* requestId = doc["request_id"] | nullptr;
+    // Use a string fallback so ArduinoJson converts the request ID correctly.
+    const char* requestId = doc["request_id"] | "";
     sendStatus(requestId, true);
     return;
   }
 
   if (strcmp(type, "status_request") == 0) {
-    const char* requestId = doc["request_id"] | nullptr;
+    const char* requestId = doc["request_id"] | "";
     sendStatus(requestId, false);
     return;
   }
 
   if (strcmp(type, "setup_wifi") == 0) {
-    const char* requestId = doc["request_id"] | nullptr;
-    if (requestId && requestId[0] != '\0') {
+    const char* requestId = doc["request_id"] | "";
+    if (requestId[0] != '\0') {
       sendSetupWifiResult(requestId);
     }
     return;
