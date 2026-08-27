@@ -1,6 +1,7 @@
 #include "newo_wifi.h"
 
 #include <ESPmDNS.h>
+#include <esp_random.h>
 
 #include "newo_config.h"
 
@@ -59,20 +60,37 @@ bool NewoWiFi::tryConnect(uint32_t timeoutMs) {
   return true;
 }
 
+String NewoWiFi::generateSetupPassword() const {
+  static constexpr char alphabet[] =
+      "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+
+  String password;
+  password.reserve(13);
+
+  for (uint8_t i = 0; i < 12; ++i) {
+    password += alphabet[esp_random() % (sizeof(alphabet) - 1)];
+  }
+
+  return password;
+}
+
 void NewoWiFi::startSetupAP() {
   if (setupApActive_) {
     return;
   }
 
+  // Enable Wi-Fi before reading the ESP32-S3 hardware RNG so RF entropy is active.
   WiFi.mode(WIFI_AP_STA);
+  setupApPassword_ = generateSetupPassword();
 
-  if (!WiFi.softAP(NewoConfig::SETUP_AP_SSID)) {
+  if (!WiFi.softAP(NewoConfig::SETUP_AP_SSID, setupApPassword_.c_str())) {
     Serial.println("[wifi] Failed to start setup AP");
     return;
   }
 
   setupApActive_ = true;
   Serial.printf("[wifi] Setup AP: %s\n", NewoConfig::SETUP_AP_SSID);
+  Serial.printf("[wifi] Setup password: %s\n", setupApPassword_.c_str());
   Serial.printf("[wifi] Setup URL: http://%s\n", WiFi.softAPIP().toString().c_str());
 }
 
@@ -129,6 +147,10 @@ bool NewoWiFi::connected() const {
 
 bool NewoWiFi::setupApActive() const {
   return setupApActive_;
+}
+
+String NewoWiFi::setupApPassword() const {
+  return setupApPassword_;
 }
 
 String NewoWiFi::connectedSsid() const {
