@@ -8,6 +8,10 @@
 
 No WiFiManager, AutoConnect, ESPAsyncWebServer, or other third-party networking layer is required for Phase 1.
 
+## Sketch location
+
+Open `Newo/Newo.ino` in Arduino IDE. All sketch-local `.h` and `.cpp` files live beside it in the `Newo/` folder so Arduino includes and compiles them correctly.
+
 ## Board configuration
 
 Use these Arduino IDE settings for the current ESP32-S3 N16R8 board:
@@ -25,7 +29,7 @@ Use these Arduino IDE settings for the current ESP32-S3 N16R8 board:
 
 ## First boot
 
-1. Compile and upload `Newo.ino`.
+1. Compile and upload `Newo/Newo.ino`.
 2. Open Serial Monitor at `115200`.
 3. Newo should print its ESP32-S3 hardware information.
 4. With no saved networks, Newo creates an access point named `newo@ai.link`.
