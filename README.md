@@ -27,6 +27,18 @@ Phase 1 establishes the permanent device foundation:
 
 See [`docs/architecture.md`](docs/architecture.md) and [`docs/phase-1.md`](docs/phase-1.md).
 
+## Telegram direction
+
+Newo will connect to the user's Telegram bot through the VPS/cloud layer rather than storing the Telegram bot token on the ESP32.
+
+```text
+Telegram -> HTTPS webhook -> VPS/domain -> authenticated Newo cloud channel -> ESP32-S3
+```
+
+The VPS will own the Telegram bot token, validate authorized Telegram users/chats, and translate bot commands into Newo device commands. This keeps Telegram-specific networking off the ESP32 and leaves the device free for later real-time microphone, speaker, camera, display, and AI work.
+
+See [`docs/telegram.md`](docs/telegram.md).
+
 ## Arduino IDE board settings
 
 | Setting | Value |
@@ -55,6 +67,8 @@ Additional library:
 
 - ArduinoJson 7.4.3
 
+No Telegram-specific Arduino library is required for the primary architecture.
+
 ## First upload
 
 Open `Newo.ino` in Arduino IDE, select the board settings above, compile, and upload. On first boot, Newo has no saved networks and creates a Wi-Fi access point named `Newo-Setup`. Serial Monitor prints a fresh 12-character setup password and the setup URL. Connect using that password and open `http://192.168.4.1` if the captive portal does not appear automatically.
@@ -63,4 +77,4 @@ Open `Newo.ino` in Arduino IDE, select the board settings above, compile, and up
 
 ## Repository rule
 
-Do not commit real Wi-Fi passwords, API keys, certificates, or VPS credentials. Network passwords are entered through Newo's setup portal and stored on-device in NVS.
+Do not commit real Wi-Fi passwords, Telegram bot tokens, webhook secrets, API keys, certificates, or VPS credentials. Network passwords are entered through Newo's setup portal and stored on-device in NVS. Telegram secrets stay on the VPS.
