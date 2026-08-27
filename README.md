@@ -11,6 +11,14 @@ Newo is an ESP32-S3 based portable assistant platform. The firmware is being bui
 - Arduino-ESP32 3.3.11
 - ArduinoJson 7.4.3
 
+## Repository layout
+
+- `Newo/` — Arduino sketch and ESP32 firmware sources
+- `server/` — VPS/cloud + Telegram bridge
+- `docs/` — architecture and bring-up notes
+
+Arduino requires the main `.ino` file and its sketch-local `.h/.cpp` files to live in the sketch folder, so the firmware entry point is `Newo/Newo.ino`.
+
 ## Phase 1 — foundation
 
 Phase 1 establishes the permanent device foundation:
@@ -71,7 +79,7 @@ No Telegram-specific Arduino library is required for the primary architecture.
 
 ## First upload
 
-Open `Newo.ino` in Arduino IDE, select the board settings above, compile, and upload. On first boot, Newo has no saved networks and creates a Wi-Fi access point named `newo@ai.link`. Serial Monitor prints a fresh 12-character setup password and the setup URL. Connect using that password and open `http://192.168.4.1` if the captive portal does not appear automatically.
+Open `Newo/Newo.ino` in Arduino IDE, select the board settings above, compile, and upload. On first boot, Newo has no saved networks and creates a Wi-Fi access point named `newo@ai.link`. Serial Monitor prints a fresh 12-character setup password and the setup URL. Connect using that password and open `http://192.168.4.1` if the captive portal does not appear automatically.
 
 > The setup link is local HTTP inside the password-protected setup WLAN. Phase 1 is still development firmware; provisioning and credential reset will receive additional physical/authentication hardening before production use.
 
