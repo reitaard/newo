@@ -10,6 +10,7 @@ build/
 
 # Local secrets and credentials
 secrets.h
+Newo/newo_secrets.h
 *.pem
 *.key
 .env
