@@ -20,6 +20,7 @@ Phase 1 establishes the permanent device foundation:
 - persistent saved Wi-Fi credentials using ESP32 Preferences/NVS
 - automatic connection to the best available saved network using WiFiMulti
 - fallback access point: `Newo-Setup`
+- random 12-character setup password generated on each setup-mode boot
 - captive setup portal for scanning, adding, and removing Wi-Fi networks
 - local status API
 - mDNS hostname: `newo.local` when the LAN supports local peer access
@@ -56,9 +57,9 @@ Additional library:
 
 ## First upload
 
-Open `Newo.ino` in Arduino IDE, select the board settings above, compile, and upload. On first boot, Newo has no saved networks and creates an open Wi-Fi access point named `Newo-Setup`. Connect to it and open `http://192.168.4.1` if the captive portal does not appear automatically.
+Open `Newo.ino` in Arduino IDE, select the board settings above, compile, and upload. On first boot, Newo has no saved networks and creates a Wi-Fi access point named `Newo-Setup`. Serial Monitor prints a fresh 12-character setup password and the setup URL. Connect using that password and open `http://192.168.4.1` if the captive portal does not appear automatically.
 
-> Phase 1 uses an open setup AP for development convenience. Before Newo is treated as a production device, provisioning will gain setup authentication and credential-management hardening.
+> The setup link is local HTTP inside the password-protected setup WLAN. Phase 1 is still development firmware; provisioning and credential reset will receive additional physical/authentication hardening before production use.
 
 ## Repository rule
 
