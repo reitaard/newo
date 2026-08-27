@@ -96,7 +96,9 @@ String NewoPortal::buildHomePage() {
   }
 
   if (wifi_.setupApActive()) {
-    html += F("<br>Setup AP: <b>Newo-Setup</b><br>Setup IP: ");
+    html += F("<br>Setup AP: <b>");
+    html += NewoConfig::SETUP_AP_SSID;
+    html += F("</b><br>Setup IP: ");
     html += wifi_.setupIP().toString();
   }
   html += F("</p></div>");
