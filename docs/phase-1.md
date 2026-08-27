@@ -29,11 +29,12 @@ Use these Arduino IDE settings for the current ESP32-S3 N16R8 board:
 2. Open Serial Monitor at `115200`.
 3. Newo should print its ESP32-S3 hardware information.
 4. With no saved networks, Newo creates an access point named `Newo-Setup`.
-5. Connect a phone or PC to `Newo-Setup`.
-6. The captive portal may open automatically. If it does not, browse to `http://192.168.4.1`.
-7. Select a nearby Wi-Fi network, enter its password, and press **Save & connect**.
-8. Newo stores the network in NVS and reboots.
-9. On the next boot it should connect automatically.
+5. Serial Monitor prints a fresh 12-character setup password.
+6. Connect a phone or PC to `Newo-Setup` using that password.
+7. The captive portal may open automatically. If it does not, browse to `http://192.168.4.1`.
+8. Select a nearby Wi-Fi network, enter its password, and press **Save & connect**.
+9. Newo stores the network in NVS and reboots.
+10. On the next boot it should connect automatically.
 
 Expected first-boot output is similar to:
 
@@ -50,11 +51,14 @@ Free PSRAM: 7 MB
 [storage] Loaded 0 saved network(s)
 [wifi] No saved networks
 [wifi] Setup AP: Newo-Setup
+[wifi] Setup password: Ab3Example9Z
 [wifi] Setup URL: http://192.168.4.1
 [portal] HTTP server started
 [portal] Captive DNS started
 [boot] Newo ready
 ```
+
+The setup password changes whenever setup mode starts after a reboot.
 
 After a network is saved, a later boot should show a connection and DHCP address:
 
@@ -92,7 +96,7 @@ Adding, updating, deleting, or clearing a network through the web interface save
 
 ## Development security note
 
-The Phase 1 setup AP is open and the local setup page uses HTTP. This is deliberate only for bring-up. Do not use Phase 1 provisioning on an untrusted radio environment with sensitive credentials. Setup authentication/physical gating is a required hardening task before production use.
+The setup WLAN uses a random per-boot WPA password generated from the ESP32-S3 hardware RNG, so the provisioning traffic is not sent over an open radio network. The setup page itself is still local HTTP, not HTTPS, and Phase 1 remains development firmware. Physical gating, credential reset controls, and production provisioning hardening are still planned.
 
 ## Upstream references
 
@@ -100,4 +104,5 @@ The Phase 1 setup AP is open and the local setup page uses HTTP. This is deliber
 - Arduino-ESP32 Preferences API: https://docs.espressif.com/projects/arduino-esp32/en/latest/api/preferences.html
 - Espressif captive portal example: https://github.com/espressif/arduino-esp32/tree/master/libraries/DNSServer/examples/CaptivePortal
 - Espressif mDNS example: https://github.com/espressif/arduino-esp32/tree/master/libraries/ESPmDNS/examples/mDNS_Web_Server
+- ESP32-S3 random-number API: https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/system/random.html
 - Arduino-ESP32 partition-table guide: https://docs.espressif.com/projects/arduino-esp32/en/latest/tutorials/partition_table.html
