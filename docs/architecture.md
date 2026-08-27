@@ -37,9 +37,9 @@ boot
        |             |
        |             +-- connected --> internet + newo.local + local HTTP API
        |             |
-       |             +-- unavailable --> Newo-Setup access point
+       |             +-- unavailable --> newo@ai.link access point
        |
-       +-- no -------------------------> Newo-Setup access point
+       +-- no -------------------------> newo@ai.link access point
                                                |
                                                +-- random setup password
                                                +-- captive portal
@@ -82,7 +82,7 @@ The selected `16M Flash (3MB APP/9.9MB FATFS)` Arduino partition scheme contains
 
 ## Security boundary
 
-Phase 1 is development firmware. Setup mode creates `Newo-Setup` with a fresh 12-character WPA password generated from the ESP32-S3 hardware RNG and printed to Serial Monitor. The setup page itself is local HTTP inside that WLAN.
+Phase 1 is development firmware. Setup mode creates `newo@ai.link` with a fresh 12-character WPA password generated from the ESP32-S3 hardware RNG and printed to Serial Monitor. The setup page itself is local HTTP inside that WLAN.
 
 Before Newo is treated as a production device:
 
