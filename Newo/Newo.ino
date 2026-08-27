@@ -2,13 +2,11 @@
 
 #include "newo_cloud.h"
 #include "newo_config.h"
-#include "newo_portal.h"
 #include "newo_storage.h"
 #include "newo_wifi.h"
 
 NewoStorage newoStorage;
 NewoWiFi newoWiFi(newoStorage);
-NewoPortal newoPortal(newoStorage, newoWiFi);
 NewoCloud newoCloud(newoWiFi);
 
 void printHardwareInfo() {
@@ -18,16 +16,16 @@ void printHardwareInfo() {
   Serial.println("================================");
   Serial.printf("Firmware: %s\n", NewoConfig::FIRMWARE_VERSION);
   Serial.printf("Chip: %s\n", ESP.getChipModel());
-  Serial.printf("CPU: %u MHz\n", ESP.getCpuFreqMHz());
-  Serial.printf("Flash: %u MB\n", ESP.getFlashChipSize() / 1024 / 1024);
-  Serial.printf("PSRAM: %u MB\n", ESP.getPsramSize() / 1024 / 1024);
-  Serial.printf("Free PSRAM: %u MB\n", ESP.getFreePsram() / 1024 / 1024);
+  Serial.printf("CPU: %lu MHz\n", static_cast<unsigned long>(ESP.getCpuFreqMHz()));
+  Serial.printf("Flash: %lu MB\n", static_cast<unsigned long>(ESP.getFlashChipSize() / 1024 / 1024));
+  Serial.printf("PSRAM: %lu MB\n", static_cast<unsigned long>(ESP.getPsramSize() / 1024 / 1024));
+  Serial.printf("Free PSRAM: %lu MB\n", static_cast<unsigned long>(ESP.getFreePsram() / 1024 / 1024));
   Serial.println("================================");
 }
 
 void setup() {
   // Keep the confirmed onboard RGB LED dark.
-  neopixelWrite(NewoConfig::RGB_LED_PIN, 0, 0, 0);
+  rgbLedWrite(NewoConfig::RGB_LED_PIN, 0, 0, 0);
 
   Serial.begin(115200);
   delay(1200);
@@ -38,7 +36,6 @@ void setup() {
   }
 
   newoWiFi.begin();
-  newoPortal.begin();
   newoCloud.begin();
 
   Serial.println("[boot] Newo ready");
@@ -46,7 +43,6 @@ void setup() {
 
 void loop() {
   newoWiFi.loop();
-  newoPortal.loop();
   newoCloud.loop();
   delay(2);
 }

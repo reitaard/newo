@@ -2,7 +2,10 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiMulti.h>
+#include <WiFiProv.h>
+#include <freertos/FreeRTOS.h>
+
+#include <vector>
 
 #include "newo_storage.h"
 
@@ -12,31 +15,41 @@ class NewoWiFi {
 
   void begin();
   void loop();
-  void reloadSavedNetworks();
-  bool startTemporarySetupAP(uint32_t timeoutMs);
 
   bool connected() const;
-  bool setupApActive() const;
-  String setupApPassword() const;
-  uint32_t setupApRemainingSeconds() const;
   String connectedSsid() const;
-  IPAddress localIP() const;
-  IPAddress setupIP() const;
   int32_t rssi() const;
 
  private:
-  bool tryConnect(uint32_t timeoutMs);
-  void startSetupAP();
-  void stopSetupAP();
-  String generateSetupPassword() const;
-  void ensureMdns();
-  void stopMdns();
+  struct VisibleSavedNetwork {
+    size_t savedIndex;
+    int32_t rssi;
+  };
+
+  bool connectSavedNetworks(uint32_t windowMs);
+  bool scanAndConnect(uint32_t deadlineMs);
+  bool connectToSavedNetwork(const NewoWifiCredential& network, uint32_t timeoutMs);
+  void startBleProvisioning();
+  void stopBleProvisioning();
+  void handleWiFiEvent(arduino_event_id_t eventId, const arduino_event_info_t& info);
+  void processProvisioningHandoff();
+  bool provisioningTimedOut() const;
+  void scheduleReboot();
+  static bool deadlineReached(uint32_t deadlineMs);
+  static void copyProvisioningField(char* destination, size_t destinationSize,
+                                    const uint8_t* source, size_t sourceSize);
 
   NewoStorage& storage_;
-  WiFiMulti wifiMulti_;
-  String setupApPassword_;
-  bool setupApActive_ = false;
-  uint32_t setupApExpiresAtMs_ = 0;
-  bool mdnsStarted_ = false;
+  bool provisioningAttempted_ = false;
+  bool provisioningActive_ = false;
+  bool hasConnected_ = false;
+  uint32_t provisioningStartedAtMs_ = 0;
   uint32_t lastReconnectAttemptMs_ = 0;
+  uint32_t rebootAtMs_ = 0;
+
+  portMUX_TYPE provisioningMux_ = portMUX_INITIALIZER_UNLOCKED;
+  char pendingProvisioningSsid_[33] = {};
+  char pendingProvisioningPassword_[65] = {};
+  volatile bool provisioningCredentialsPending_ = false;
+  volatile bool provisioningCredentialsSucceeded_ = false;
 };

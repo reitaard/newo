@@ -2,6 +2,8 @@
 
 #include <ArduinoJson.h>
 
+#include <utility>
+
 #include "newo_config.h"
 
 namespace {
@@ -32,8 +34,8 @@ size_t NewoStorage::count() const {
 }
 
 bool NewoStorage::isCredentialValid(const String& ssid, const String& password) const {
-  // WiFiMulti in Arduino-ESP32 currently accepts SSIDs up to 31 characters.
-  if (ssid.length() == 0 || ssid.length() > 31) {
+  // IEEE 802.11 and ESP-IDF permit SSIDs up to 32 bytes.
+  if (ssid.length() == 0 || ssid.length() > 32) {
     return false;
   }
 
@@ -53,8 +55,9 @@ bool NewoStorage::loadNetworks() {
   const DeserializationError error = deserializeJson(doc, raw);
 
   if (error || !doc.is<JsonArray>()) {
-    Serial.printf("[storage] Invalid saved network data: %s\n", error ? error.c_str() : "not an array");
-    return saveNetworks();
+    Serial.printf("[storage] Invalid saved network data: %s\n",
+                  error ? error.c_str() : "not an array");
+    return saveNetworks(networks_);
   }
 
   for (JsonObject item : doc.as<JsonArray>()) {
@@ -72,11 +75,12 @@ bool NewoStorage::loadNetworks() {
     networks_.push_back({ssid, password});
   }
 
-  Serial.printf("[storage] Loaded %u saved network(s)\n", static_cast<unsigned>(networks_.size()));
+  Serial.printf("[storage] Loaded %u saved network(s)\n",
+                static_cast<unsigned>(networks_.size()));
   return true;
 }
 
-bool NewoStorage::saveNetworks() {
+bool NewoStorage::saveNetworks(const std::vector<NewoWifiCredential>& networks) {
   if (!started_) {
     return false;
   }
@@ -84,7 +88,7 @@ bool NewoStorage::saveNetworks() {
   JsonDocument doc;
   JsonArray array = doc.to<JsonArray>();
 
-  for (const auto& network : networks_) {
+  for (const auto& network : networks) {
     JsonObject item = array.add<JsonObject>();
     item["ssid"] = network.ssid;
     item["password"] = network.password;
@@ -107,41 +111,28 @@ bool NewoStorage::addOrUpdateNetwork(const String& ssid, const String& password)
     return false;
   }
 
-  for (auto& network : networks_) {
+  std::vector<NewoWifiCredential> updated = networks_;
+  bool found = false;
+  for (auto& network : updated) {
     if (network.ssid == ssid) {
       network.password = password;
-      return saveNetworks();
+      found = true;
+      break;
     }
   }
 
-  if (networks_.size() >= NewoConfig::MAX_SAVED_NETWORKS) {
-    return false;
-  }
-
-  networks_.push_back({ssid, password});
-  return saveNetworks();
-}
-
-bool NewoStorage::removeNetwork(const String& ssid) {
-  if (!started_) {
-    return false;
-  }
-
-  for (auto it = networks_.begin(); it != networks_.end(); ++it) {
-    if (it->ssid == ssid) {
-      networks_.erase(it);
-      return saveNetworks();
+  if (!found) {
+    if (updated.size() >= NewoConfig::MAX_SAVED_NETWORKS) {
+      Serial.println("[storage] Saved network limit reached");
+      return false;
     }
+    updated.push_back({ssid, password});
   }
 
-  return false;
-}
-
-bool NewoStorage::clearNetworks() {
-  if (!started_) {
+  if (!saveNetworks(updated)) {
     return false;
   }
 
-  networks_.clear();
-  return saveNetworks();
+  networks_ = std::move(updated);
+  return true;
 }

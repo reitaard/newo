@@ -2,19 +2,14 @@
 
 ## Required software
 
-- Arduino IDE 2.x
+- Arduino IDE 2.x or Arduino CLI
 - Arduino-ESP32 3.3.11
 - ArduinoJson 7.4.3
+- WebSockets 2.7.2
 
-No WiFiManager, AutoConnect, ESPAsyncWebServer, or other third-party networking layer is required for Phase 1.
-
-## Sketch location
-
-Open `Newo/Newo.ino` in Arduino IDE. All sketch-local `.h` and `.cpp` files live beside it in the `Newo/` folder so Arduino includes and compiles them correctly.
+The official Arduino-ESP32 `WiFi`, `WiFiProv`, and `Preferences` libraries provide networking, BLE provisioning, and NVS storage. No third-party Wi-Fi manager or web server is used.
 
 ## Board configuration
-
-Use these Arduino IDE settings for the current ESP32-S3 N16R8 board:
 
 | Setting | Value |
 |---|---|
@@ -27,86 +22,52 @@ Use these Arduino IDE settings for the current ESP32-S3 N16R8 board:
 | Upload Speed | 921600 |
 | Core Debug Level | None |
 
-## First boot
+Open the existing `Newo/Newo.ino` sketch directory; do not move the `.ino` away from its adjacent sources.
 
-1. Compile and upload `Newo/Newo.ino`.
-2. Open Serial Monitor at `115200`.
-3. Newo should print its ESP32-S3 hardware information.
-4. With no saved networks, Newo creates an access point named `newo@ai.link`.
-5. Serial Monitor prints a fresh 12-character setup password.
-6. Connect a phone or PC to `newo@ai.link` using that password.
-7. The captive portal may open automatically. If it does not, browse to `http://192.168.4.1`.
-8. Select a nearby Wi-Fi network, enter its password, and press **Save & connect**.
-9. Newo stores the network in NVS and reboots.
-10. On the next boot it should connect automatically.
+## First provisioning
 
-Expected first-boot output is similar to:
+1. Compile and upload the sketch.
+2. Open Serial Monitor at 115200.
+3. With no reachable saved network, Newo advertises BLE service `PROV_NEWO`.
+4. Open Espressif **ESP BLE Provisioning** on Android/iOS.
+5. Select the device, Security 1, and leave proof of possession empty.
+6. Choose a 2.4 GHz Wi-Fi network and submit its credential.
+7. Newo saves the credential only after the provisioning framework reports connection success.
+8. BLE is stopped and Newo reboots; the next boot scans and connects automatically.
+
+Representative output:
 
 ```text
-================================
-            NEWO
-================================
-Chip: ESP32-S3
-CPU: 240 MHz
-Flash: 16 MB
-PSRAM: 8 MB
-Free PSRAM: 7 MB
-================================
 [storage] Loaded 0 saved network(s)
-[wifi] No saved networks
-[wifi] Setup AP: newo@ai.link
-[wifi] Setup password: Ab3Example9Z
-[wifi] Setup URL: http://192.168.4.1
-[portal] HTTP server started
-[portal] Captive DNS started
-[boot] Newo ready
+[wifi] No saved networks; opening BLE provisioning
+[prov] BLE provisioning started: PROV_NEWO (timeout 300 s)
+[prov] Wi-Fi credentials received; waiting for connection success
+[prov] Wi-Fi credentials accepted
+[prov] Wi-Fi network saved; rebooting Newo
 ```
 
-The setup password changes whenever setup mode starts after a reboot.
-
-After a network is saved, a later boot should show a connection and DHCP address:
-
-```text
-[wifi] Trying 1 saved network(s)...
-[wifi] Connected: example-ssid
-[wifi] IP: 192.168.1.123
-[wifi] RSSI: -52 dBm
-[wifi] Local name: http://newo.local
-```
-
-`newo.local` depends on the LAN allowing peer communication and mDNS. Client-isolated Wi-Fi may still permit Newo to reach the Internet while preventing another local device from reaching Newo.
-
-## Local endpoints
-
-### `/`
-
-Setup/status web interface.
-
-### `/api/status`
-
-JSON device status, including connectivity, IP, signal level, free heap/PSRAM, uptime, and number of saved networks.
-
-### `/api/wifi/scan`
-
-JSON list of visible Wi-Fi networks with RSSI and whether the AP reports security enabled.
+Provisioning stops after five minutes. Reboot to open another attempt. Hardware execution remains pending while the board is disconnected.
 
 ## Saved-network behavior
 
-Newo supports up to eight saved networks in Phase 1. At boot, the firmware loads those credentials into the official Arduino-ESP32 `WiFiMulti` component. WiFiMulti scans and attempts an available entry from its configured list.
+Newo stores up to eight entries. Every recovery cycle scans first, matches only saved SSIDs, ranks matches by strongest RSSI, and attempts them in that order. Initial recovery lasts 18 seconds. After a previously connected station disconnects, Newo periodically runs bounded recovery windows.
 
-If no saved network is reachable, Newo falls back to `newo@ai.link`. While disconnected, it periodically retries the saved list.
+Provisioning updates an existing SSID or appends a new one without deleting unrelated entries. Passwords are never printed or included in status/cloud messages.
 
-Adding, updating, deleting, or clearing a network through the web interface saves the change and reboots Newo so the network state starts cleanly.
+## Security note
 
-## Development security note
+Security 1 provides X25519 key exchange and encrypted provisioning messages. Null PoP is an explicit prototype convenience, not production authentication. A later display/label flow should provide per-device PoP and QR data, while a physical action should gate provisioning/reset.
 
-The setup WLAN uses a random per-boot WPA password generated from the ESP32-S3 hardware RNG, so the provisioning traffic is not sent over an open radio network. The setup page itself is still local HTTP, not HTTPS, and Phase 1 remains development firmware. Physical gating, credential reset controls, and production provisioning hardening are still planned.
+## Verified build
 
-## Upstream references
+Arduino CLI compilation with Arduino-ESP32 3.3.11 and the settings above succeeds:
 
-- Arduino-ESP32 Wi-Fi API: https://docs.espressif.com/projects/arduino-esp32/en/latest/api/wifi.html
-- Arduino-ESP32 Preferences API: https://docs.espressif.com/projects/arduino-esp32/en/latest/api/preferences.html
-- Espressif captive portal example: https://github.com/espressif/arduino-esp32/tree/master/libraries/DNSServer/examples/CaptivePortal
-- Espressif mDNS example: https://github.com/espressif/arduino-esp32/tree/master/libraries/ESPmDNS/examples/mDNS_Web_Server
-- ESP32-S3 random-number API: https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/system/random.html
-- Arduino-ESP32 partition-table guide: https://docs.espressif.com/projects/arduino-esp32/en/latest/tutorials/partition_table.html
+- program storage: 1,410,663 bytes (44% of 3,145,728)
+- static RAM: 49,096 bytes (14% of 327,680)
+- delta from supplied pre-BLE baseline: +217,756 flash, -1,044 RAM
+
+## References
+
+- [Arduino-ESP32 Wi-Fi API](https://docs.espressif.com/projects/arduino-esp32/en/latest/api/wifi.html)
+- [Arduino-ESP32 Wi-Fi provisioning API](https://docs.espressif.com/projects/arduino-esp32/en/latest/api/wifi_provisioning.html)
+- [Arduino-ESP32 Preferences API](https://docs.espressif.com/projects/arduino-esp32/en/latest/api/preferences.html)

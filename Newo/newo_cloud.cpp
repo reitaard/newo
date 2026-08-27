@@ -70,11 +70,21 @@ void NewoCloud::startConnection() {
 }
 
 void NewoCloud::loop() {
+  if (rebootAtMs_ != 0 && static_cast<int32_t>(millis() - rebootAtMs_) >= 0) {
+    Serial.println("[cloud] Restarting Newo...");
+    ESP.restart();
+    return;
+  }
+
   if (!configured_) {
     return;
   }
 
   if (!wifi_.connected()) {
+    if (started_) {
+      webSocket_.disconnect();
+      started_ = false;
+    }
     connected_ = false;
     return;
   }
@@ -111,6 +121,7 @@ void NewoCloud::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
         Serial.println("[cloud] Disconnected; automatic reconnect is enabled");
       }
       connected_ = false;
+      started_ = false;
       break;
 
     case WStype_TEXT:
@@ -142,7 +153,6 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
   }
 
   if (strcmp(type, "ping") == 0) {
-    // Use a string fallback so ArduinoJson converts the request ID correctly.
     const char* requestId = doc["request_id"] | "";
     sendStatus(requestId, true);
     return;
@@ -154,11 +164,9 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     return;
   }
 
-  if (strcmp(type, "setup_wifi") == 0) {
+  if (strcmp(type, "reboot") == 0) {
     const char* requestId = doc["request_id"] | "";
-    if (requestId[0] != '\0') {
-      sendSetupWifiResult(requestId);
-    }
+    sendRebootAck(requestId);
     return;
   }
 
@@ -195,6 +203,7 @@ void NewoCloud::sendStatus(const char* requestId, bool pong) {
   }
   doc["uptime_ms"] = millis();
   doc["rssi"] = wifi_.rssi();
+  doc["ssid"] = wifi_.connectedSsid();
   doc["free_heap"] = ESP.getFreeHeap();
   doc["free_psram"] = ESP.getFreePsram();
 
@@ -204,26 +213,23 @@ void NewoCloud::sendStatus(const char* requestId, bool pong) {
   lastStatusMs_ = millis();
 }
 
-void NewoCloud::sendSetupWifiResult(const char* requestId) {
+void NewoCloud::sendRebootAck(const char* requestId) {
   if (!connected_ || !requestId || requestId[0] == '\0') {
     return;
   }
 
-  const bool active = wifi_.startTemporarySetupAP(NewoConfig::SETUP_AP_TIMEOUT_MS);
-
   JsonDocument doc;
-  doc["type"] = "setup_wifi_result";
+  doc["type"] = "reboot_ack";
   doc["request_id"] = requestId;
-  doc["active"] = active;
-
-  if (active) {
-    doc["ssid"] = NewoConfig::SETUP_AP_SSID;
-    doc["password"] = wifi_.setupApPassword();
-    doc["url"] = String("http://") + wifi_.setupIP().toString();
-    doc["timeout_s"] = wifi_.setupApRemainingSeconds();
-  }
 
   String body;
   serializeJson(doc, body);
-  webSocket_.sendTXT(body);
+  if (!webSocket_.sendTXT(body)) {
+    Serial.println("[cloud] Reboot acknowledgement could not be sent; restart cancelled");
+    return;
+  }
+
+  // sendTXT accepted the complete frame for transmission. Keep servicing the
+  // socket for a short drain interval before restarting.
+  rebootAtMs_ = millis() + NewoConfig::REMOTE_REBOOT_DELAY_MS;
 }

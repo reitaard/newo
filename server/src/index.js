@@ -86,6 +86,7 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
       request_id: z.string().optional(),
       uptime_ms: z.number().nonnegative().optional(),
       rssi: z.number().optional(),
+      ssid: z.string().optional(),
     })
     .passthrough(),
   z
@@ -94,19 +95,15 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
       request_id: z.string().optional(),
       uptime_ms: z.number().nonnegative().optional(),
       rssi: z.number().optional(),
+      ssid: z.string().optional(),
       free_heap: z.number().nonnegative().optional(),
       free_psram: z.number().nonnegative().optional(),
     })
     .passthrough(),
   z
     .object({
-      type: z.literal("setup_wifi_result"),
+      type: z.literal("reboot_ack"),
       request_id: z.string().optional(),
-      active: z.boolean(),
-      ssid: z.string().optional(),
-      password: z.string().optional(),
-      url: z.string().url().optional(),
-      timeout_s: z.number().int().positive().optional(),
     })
     .passthrough(),
 ]);
@@ -256,39 +253,22 @@ function formatDuration(milliseconds) {
   return parts.join(" ");
 }
 
-function formatBytes(bytes) {
-  if (!Number.isFinite(bytes) || bytes < 0) return "unknown";
-
-  const units = ["B", "KiB", "MiB", "GiB"];
-  let value = bytes;
-  let unitIndex = 0;
-  while (value >= 1_024 && unitIndex < units.length - 1) {
-    value /= 1_024;
-    unitIndex += 1;
-  }
-
-  const digits = unitIndex === 0 ? 0 : value >= 10 ? 1 : 2;
-  return `${value.toFixed(digits)} ${units[unitIndex]}`;
-}
-
 function formatDeviceStatus(snapshot, source = "live") {
   const status = snapshot.status ?? {};
   const hello = snapshot.hello ?? {};
-  const heading =
-    source === "cached" ? "Cached Newo status (live request timed out)" : "Newo status";
+  const suffix = source === "cached" ? " (cached)" : "";
+  const lines = [`Newo ${snapshot.connected ? "online" : "offline"}${suffix}`];
 
-  return [
-    `${heading}: ${snapshot.connected ? "online" : "offline"}`,
-    `Device ID: ${snapshot.id}`,
-    `Firmware: ${hello.firmware ?? "unknown"}`,
-    `Chip: ${hello.chip ?? "unknown"}`,
+  if (!snapshot.connected) {
+    return lines.join("\n");
+  }
+
+  lines.push(
+    `Wi-Fi: ${status.ssid ?? "unknown"} (${typeof status.rssi === "number" ? `${status.rssi} dBm` : "unknown"})`,
     `Uptime: ${formatDuration(status.uptime_ms)}`,
-    `RSSI: ${typeof status.rssi === "number" ? `${status.rssi} dBm` : "unknown"}`,
-    `Free heap: ${formatBytes(status.free_heap)}`,
-    `Free PSRAM: ${formatBytes(status.free_psram)}`,
-    `Connection time: ${snapshot.connected_at ?? "unknown"}`,
-    `Last seen: ${snapshot.last_seen ?? "unknown"}`,
-  ].join("\n");
+    `Firmware: ${hello.firmware ?? "unknown"}`,
+  );
+  return lines.join("\n");
 }
 
 function cancelOfflineTimer(state) {
@@ -339,20 +319,28 @@ app.get("/", async () => ({
   status: "ok",
 }));
 
-app.get("/health", async () => ({
-  status: "ok",
-  service: "newo-cloud",
-  uptime_s: Math.floor(process.uptime()),
-  telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN),
-  device: getDeviceSnapshot(),
-}));
+app.get("/health", async () => {
+  const device = getDeviceSnapshot();
+  return {
+    status: "ok",
+    service: "newo-cloud",
+    uptime_s: Math.floor(process.uptime()),
+    telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN),
+    device: {
+      connected: device.connected,
+      id: device.id,
+      connected_at: device.connected_at,
+      last_seen: device.last_seen,
+      firmware: device.hello?.firmware ?? null,
+      chip: device.hello?.chip ?? null,
+    },
+  };
+});
 
-const COMMAND_GUIDANCE = [
-  "/status - Live Newo status",
-  "/ping - Test Newo latency",
-  "/setup - Start Wi-Fi setup mode",
-  "/help - Show commands",
-].join("\n");
+const TELEGRAM_COMMANDS = [
+  { command: "status", description: "Device status" },
+  { command: "reboot", description: "Restart Newo" },
+];
 
 async function handleStatusCommand(ctx) {
   const request = sendDeviceRequest("status_request", "status");
@@ -405,8 +393,8 @@ async function handlePingCommand(ctx) {
   );
 }
 
-async function handleSetupCommand(ctx) {
-  const request = sendDeviceRequest("setup_wifi", "setup_wifi_result");
+async function handleRebootCommand(ctx) {
+  const request = sendDeviceRequest("reboot", "reboot_ack");
   if (request.kind === "offline") {
     await ctx.reply("Newo is offline.");
     return;
@@ -414,31 +402,17 @@ async function handleSetupCommand(ctx) {
 
   const result = await request.promise;
   if (result.kind === "response") {
-    const message = result.message;
-    if (!message.active || !message.ssid || !message.password || !message.url) {
-      await ctx.reply("Newo could not start Wi-Fi setup.");
-      return;
-    }
-
-    const timeout = message.timeout_s ? `\nExpires in: ${message.timeout_s} seconds` : "";
-    await ctx.reply(
-      [
-        "Newo Wi-Fi setup is active.",
-        `Network: ${message.ssid}`,
-        `Password: ${message.password}`,
-        `Open: ${message.url}`,
-      ].join("\n") + timeout,
-    );
+    await ctx.reply("Restarting Newo.");
     return;
   }
 
   if (result.kind === "timeout") {
-    await ctx.reply("Newo did not reply within 5 seconds.");
+    await ctx.reply("Newo did not acknowledge the restart.");
     return;
   }
 
   await ctx.reply(
-    getConnectedDeviceState() ? "Newo did not reply within 5 seconds." : "Newo is offline.",
+    getConnectedDeviceState() ? "Newo did not acknowledge the restart." : "Newo is offline.",
   );
 }
 
@@ -465,16 +439,16 @@ if (env.TELEGRAM_BOT_TOKEN) {
 
   bot.command("start", async (ctx) => {
     const state = getDeviceSnapshot().connected ? "online" : "offline";
-    await ctx.reply(`Newo is ${state}.\n\n${COMMAND_GUIDANCE}`);
-  });
-
-  bot.command("help", async (ctx) => {
-    await ctx.reply(COMMAND_GUIDANCE);
+    await ctx.reply(`Newo is ${state}.`);
   });
 
   bot.command("status", handleStatusCommand);
   bot.command("ping", handlePingCommand);
-  bot.command("setup", handleSetupCommand);
+  bot.command("reboot", handleRebootCommand);
+
+  void bot.api.setMyCommands(TELEGRAM_COMMANDS).catch(() => {
+    app.log.warn("Failed to register the Telegram command menu");
+  });
 
   app.post(
     "/telegram/webhook",

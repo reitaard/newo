@@ -58,7 +58,7 @@ Arduino Library Manager package:
 WebSockets by Markus Sattler — 2.7.2
 ```
 
-This dependency belongs to the future `newo_cloud` module and does not alter the Phase 1 Wi-Fi provisioning design.
+This dependency belongs to `newo_cloud` and remains separate from BLE Wi-Fi provisioning.
 
 TLS certificate validation must stay enabled in production. Do not use an insecure TLS mode as the normal Newo configuration.
 
@@ -96,29 +96,20 @@ The ESP32 receives a separate per-device identity/credential. It does **not** re
 
 ## Initial command surface
 
-Bring-up commands should be deliberately small and remain behind the VPS allowlist:
+The visible menu is deliberately limited and remains behind the VPS allowlist:
 
-- `/start` — identify Newo and show the command guide
-- `/status` — request fresh online/offline, Wi-Fi RSSI, uptime, firmware, chip, heap, PSRAM, connection-time, and last-seen information
-- `/ping` — wait for the matching ESP32 `pong` and report the measured round-trip latency
-- `/setup` — temporarily start the existing ESP32 Wi-Fi setup AP and return its generated password only to the authorized requester
-- `/help` — show the compact command guide
+- `/status` — request fresh online/offline state, SSID/RSSI, uptime, and firmware
+- `/reboot` — request restart and report success only after the ESP32 sends `reboot_ack`
 
-The server correlates device requests by unique `request_id` values. Each pending request records its type and start time, expires after five seconds, and is removed on response, timeout, device disconnect, or shutdown. A response from another socket or with a mismatched type cannot resolve it.
+`/start` returns a one-line online/offline greeting. `/ping` remains functional as a hidden diagnostic command that waits for the correlated ESP32 `pong` and reports round-trip latency.
 
-`/status` uses a fresh `status_request` whenever the device is online. If the live request times out, a cached telemetry snapshot may be returned with an explicit cached label. If the device is offline, the command returns immediately.
+The server correlates device requests by unique `request_id` values. Each pending request records its expected response type and start time, expires after five seconds, and is removed on response, timeout, disconnect, or shutdown. A response from another socket or with a mismatched type cannot resolve it.
 
-`/setup` sends `setup_wifi`; the ESP32 reuses its existing captive portal, keeps station Wi-Fi and saved networks intact, generates the temporary AP password locally, and expires that AP after five minutes. The VPS never stores or logs the password.
+`/status` requests fresh telemetry whenever the device is online. If that request times out, a concise cached snapshot is clearly labelled. `/reboot` sends `reboot`; firmware sends `reboot_ack`, allows the WSS frame to drain, and only then schedules restart.
 
-Commands that change device state beyond Wi-Fi setup, reboot firmware, capture camera/audio, or trigger OTA should be added only after authorization and cloud transport are tested.
+Wi-Fi provisioning is BLE-only and cannot be initiated or receive credentials through Telegram. Commands for camera/audio capture or OTA should be added only after authorization and transport are hardware-tested.
 
-The Telegram command menu is registered with these entries:
-
-- `start` — Start Newo
-- `status` — Live Newo status
-- `ping` — Test Newo latency
-- `setup` — Start Wi-Fi setup mode
-- `help` — Show commands
+The Telegram command menu contains only `status` and `reboot`.
 
 ## Authorization
 

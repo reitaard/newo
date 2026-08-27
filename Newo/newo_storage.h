@@ -17,12 +17,10 @@ class NewoStorage {
   size_t count() const;
 
   bool addOrUpdateNetwork(const String& ssid, const String& password);
-  bool removeNetwork(const String& ssid);
-  bool clearNetworks();
 
  private:
   bool loadNetworks();
-  bool saveNetworks();
+  bool saveNetworks(const std::vector<NewoWifiCredential>& networks);
   bool isCredentialValid(const String& ssid, const String& password) const;
 
   Preferences preferences_;

@@ -1,117 +1,52 @@
 # Newo architecture
 
-## Goal
-
-Newo is a portable ESP32-S3 assistant endpoint. The ESP32 handles device I/O, local provisioning, connectivity, and real-time peripheral work; larger AI inference can live on a VPS, home GPU, or other backend.
-
-The firmware is split into small modules so later audio, display, AI, cloud, Telegram, and OTA work does not turn the main sketch into one large file.
-
 ## Firmware layers
 
 ```text
 Newo/Newo.ino
-  |
-  +-- newo_storage   persistent device settings / NVS
-  +-- newo_wifi      station mode, multiple saved APs, reconnect, mDNS
-  +-- newo_portal    local setup UI, captive DNS, status APIs
-  |
-  +-- future: newo_cloud
-  +-- future: newo_audio
-  +-- future: newo_display
-  +-- future: newo_ai
-  +-- future: newo_update
+  +-- newo_storage   up to eight Wi-Fi credentials in Preferences/NVS
+  +-- newo_wifi      scan/rank/connect/recover plus BLE WiFiProv
+  +-- newo_cloud     authenticated outbound WSS, telemetry, commands
+  +-- future: audio, display, AI, update
 ```
 
-Telegram is intentionally not a firmware module. Telegram terminates at the VPS and communicates with the ESP32 through `newo_cloud`.
+Telegram is cloud-side and never a firmware dependency.
 
-## Phase 1 network flow
+## Network flow
 
 ```text
 boot
-  |
-  +-- load saved Wi-Fi credentials from NVS
-  |
-  +-- credentials exist?
-       |
-       +-- yes --> WiFiMulti tries available saved APs
-       |             |
-       |             +-- connected --> internet + newo.local + local HTTP API
-       |             |
-       |             +-- unavailable --> newo@ai.link access point
-       |
-       +-- no -------------------------> newo@ai.link access point
-                                               |
-                                               +-- random setup password
-                                               +-- captive portal
-                                               +-- scan nearby 2.4 GHz networks
-                                               +-- save/update/remove credentials
-                                               +-- reboot and retry
+  -> load saved networks
+  -> scan 2.4 GHz and rank visible saved SSIDs by RSSI
+  -> connect strongest-first within the 18-second recovery window
+       -> connected: authenticated outbound WSS on :443
+       -> none reachable: BLE provisioning as PROV_NEWO
+            -> Security 1, null PoP prototype
+            -> test candidate connection
+            -> save/add only on credential success
+            -> stop BLE and reboot
 ```
 
-## Why outbound cloud communication
+Existing saved networks are preserved when provisioning adds or updates one entry. Storage is capped at eight. Runtime disconnects trigger bounded scan-first recovery rather than relying on `WiFiMulti` or an arbitrary last-used network.
 
-Newo should not require a stable LAN IP and should not expose its ESP32 web server directly to the public Internet. `newo_cloud` will initiate an outbound authenticated TLS connection to a VPS/domain. This lets Newo work behind NAT, DHCP, and networks where clients are isolated from one another.
+BLE is provisioning-only. Normal operation is Wi-Fi plus outbound WSS. The firmware contains no SoftAP, captive DNS, local web server, or mDNS service.
+
+## Cloud boundary
 
 ```text
-Newo --> authenticated TLS/WSS :443 --> VPS/domain --> AI/backend/web UI
+Newo --authenticated certificate-validated WSS :443--> Caddy
+      --> 127.0.0.1:8788 Newo Node service
+      --> Telegram / later AI services
 ```
 
-The local `WebServer` remains a setup/status surface, not Newo's public Internet server.
+The ESP32 requires no inbound port or stable LAN address. Device authentication uses an ID and bearer credential; server identity uses an explicit trusted CA. Firmware does not fall back to insecure TLS.
 
-## Telegram path
+The VPS holds Telegram secrets and validates webhook secrets plus user/chat allowlists. Device messages use typed payloads and correlated request IDs. Remote reboot sends `reboot_ack` before the ESP32 schedules restart.
 
-Telegram belongs on the cloud side of that boundary:
+## Storage and security
 
-```text
-Telegram --HTTPS webhook--> VPS/domain --device channel--> Newo
-    ^                            |
-    +------ Bot API reply -------+
-```
+Wi-Fi credentials are encoded in a compact JSON list under the `newo-wifi` NVS namespace. They must never be logged or sent through Telegram/cloud telemetry.
 
-The VPS holds the Telegram bot token and webhook secret, validates Telegram user/chat authorization, and translates bot commands into typed Newo commands. The ESP32 never needs the Telegram bot token.
+BLE Security 1 encrypts provisioning traffic, but null proof-of-possession permits nearby onboarding attempts and is suitable only for this personal prototype. Production work should add per-device PoP/QR material, physical provisioning/reset gating, authenticated OTA with recovery, and hardware regression tests.
 
-This prevents Telegram polling or API work from competing with future real-time microphone, speaker, camera, display, or wake-word tasks on the ESP32. It also means the same Newo cloud channel can later serve Telegram, a web UI, AI services, automation, and administration without vendor-specific logic in the firmware.
-
-See [`telegram.md`](telegram.md).
-
-## Storage
-
-Small persistent settings use ESP32 Preferences/NVS. Phase 1 stores a compact JSON list of Wi-Fi credentials under the `newo-wifi` namespace. Larger future assets should use FFat instead of NVS.
-
-The selected `16M Flash (3MB APP/9.9MB FATFS)` Arduino partition scheme contains two 3 MB OTA application slots plus a roughly 9.9 MB FAT filesystem, so it leaves a path for future OTA work while preserving substantial local storage.
-
-## Security boundary
-
-Phase 1 is development firmware. Setup mode creates `newo@ai.link` with a fresh 12-character WPA password generated from the ESP32-S3 hardware RNG and printed to Serial Monitor. The setup page itself is local HTTP inside that WLAN.
-
-Before Newo is treated as a production device:
-
-- setup mode should also be physically gated or explicitly invoked;
-- cloud identity must use per-device credentials;
-- TLS certificate validation must remain enabled;
-- secrets must never be committed to Git;
-- credential reset should require a physical action such as a BOOT-button hold;
-- Telegram commands must be authorized by user/chat identity on the VPS;
-- OTA updates must be authenticated and tested with rollback/recovery behavior.
-
-## Planned modules
-
-### `newo_cloud`
-
-Persistent outbound connection to the VPS/domain, device authentication, heartbeat, remote commands, and AI transport. Telegram uses this same channel instead of talking directly to the ESP32.
-
-### `newo_audio`
-
-I2S microphone input, audio buffering in PSRAM, speaker output through an I2S amplifier, wake-word/VAD integration.
-
-### `newo_display`
-
-Display driver, status UI, setup information, and assistant visual state.
-
-### `newo_ai`
-
-High-level assistant state machine. It should not contain vendor-specific networking; it communicates through `newo_cloud` and local speech/audio modules.
-
-### `newo_update`
-
-OTA firmware update and recovery logic. It is deliberately postponed until Phase 1 networking is verified on hardware.
+Physical BLE provisioning, reboot, and reconnect validation remains pending while the ESP32 is disconnected.

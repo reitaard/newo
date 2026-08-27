@@ -1,115 +1,58 @@
 # Newo
 
-Newo is an ESP32-S3 based portable assistant platform. The firmware is being built in phases so networking, provisioning, cloud communication, audio, display, and AI features can evolve independently.
+Newo is an ESP32-S3 portable assistant platform. Firmware is split into provisioning, connectivity, cloud, and future peripheral layers.
 
-## Current hardware target
+## Hardware and toolchain
 
-- ESP32-S3 N16R8
-- 16 MB flash
-- 8 MB OPI PSRAM
-- 240 MHz dual-core CPU
+- ESP32-S3 N16R8, 16 MB flash, 8 MB OPI PSRAM, 240 MHz
 - Arduino-ESP32 3.3.11
 - ArduinoJson 7.4.3
+- WebSockets 2.7.2
 
-## Repository layout
+Use `ESP32S3 Dev Module`, QIO 80 MHz, 16 MB flash, OPI PSRAM, `16M Flash (3MB APP/9.9MB FATFS)`, and 921600 upload speed.
 
-- `Newo/` — Arduino sketch and ESP32 firmware sources
-- `server/` — VPS/cloud + Telegram bridge
+## Repository
+
+- `Newo/` — Arduino firmware
+- `server/` — VPS cloud and Telegram bridge
 - `docs/` — architecture and bring-up notes
 
-Arduino requires the main `.ino` file and its sketch-local `.h/.cpp` files to live in the sketch folder, so the firmware entry point is `Newo/Newo.ino`.
+## Wi-Fi and provisioning
 
-## Phase 1 — foundation
+Newo stores up to eight Wi-Fi networks in ESP32 Preferences/NVS. At boot it scans the supported 2.4 GHz band, filters the results to saved SSIDs, ranks visible saved networks by RSSI, and attempts them strongest-first. A disconnected device retries saved networks within bounded recovery windows.
 
-Phase 1 establishes the permanent device foundation:
+If no saved network exists or none is reachable during the initial 18-second recovery window, Newo starts official Arduino-ESP32 `WiFiProv` over BLE as `PROV_NEWO`. Use the Espressif **ESP BLE Provisioning** app and select Security 1 with no proof-of-possession value. Credentials cross from the provisioning callback through fixed-size buffers and are added or updated in NVS only after `ARDUINO_EVENT_PROV_CRED_SUCCESS`. Existing networks are preserved. Newo then stops BLE and reboots.
 
-- device identity: `Newo`
-- onboard RGB LED disabled by default
-- persistent saved Wi-Fi credentials using ESP32 Preferences/NVS
-- automatic connection to the best available saved network using WiFiMulti
-- fallback access point: `newo@ai.link`
-- random 12-character setup password generated on each setup-mode boot
-- captive setup portal for scanning, adding, and removing Wi-Fi networks
-- local status API
-- mDNS hostname: `newo.local` when the LAN supports local peer access
+BLE provisioning times out after five minutes. Reboot to retry. There is no setup AP, captive portal, local HTTP server, or mDNS service.
 
-See [`docs/architecture.md`](docs/architecture.md) and [`docs/phase-1.md`](docs/phase-1.md).
+Security 1 encrypts the session, but null PoP is a prototype tradeoff. Production provisioning should use a per-device PoP/QR flow and physical gating. Physical BLE and reconnect validation is pending while the board is disconnected.
 
 ## Cloud endpoint
 
-The Newo cloud service is hosted at:
-
 - `https://newo.reitaard.de`
 - health: `https://newo.reitaard.de/health`
-- device WebSocket: `wss://newo.reitaard.de/device`
+- device channel: `wss://newo.reitaard.de/device`
 
-The public endpoint is reverse-proxied by Caddy to the Newo Node service bound only to `127.0.0.1:8788` on the VPS.
+Caddy proxies the public endpoint to the Node service on loopback `127.0.0.1:8788`. Firmware opens an outbound, certificate-validated WSS connection, authenticates with device ID and bearer secret, sends hello/status telemetry, answers correlated ping/status requests, and acknowledges reboot before restarting.
 
-The ESP32 firmware now contains a `newo_cloud` module that:
+`Newo/newo_secrets.h` is ignored. Copy `Newo/newo_secrets.example.h` locally and supply the matching device credential and trusted public CA. Missing secrets disable cloud connectivity rather than weakening TLS.
 
-- opens an outbound WSS connection only after Wi-Fi is available;
-- authenticates with `X-Newo-Device-Id` plus a bearer device secret;
-- validates the server certificate with an explicitly supplied trusted CA;
-- never falls back to insecure TLS;
-- sends `hello` and periodic `status` messages;
-- answers cloud `ping` requests with `pong`;
-- uses WebSocket heartbeat and automatic reconnect behavior.
+## Telegram
 
-The real local file `Newo/newo_secrets.h` is ignored by Git. Copy `Newo/newo_secrets.example.h` locally and provision the same device secret used by the VPS plus the trusted public CA certificate(s). If the local secrets file or CA is missing, the cloud module stays disabled rather than connecting insecurely.
-
-## Telegram direction
-
-Newo will connect to the user's Telegram bot through the VPS/cloud layer rather than storing the Telegram bot token on the ESP32.
+Telegram terminates at the VPS:
 
 ```text
-Telegram -> HTTPS webhook -> VPS/domain -> authenticated Newo cloud channel -> ESP32-S3
+Telegram -> HTTPS webhook -> VPS -> authenticated WSS -> ESP32-S3
 ```
 
-The VPS will own the Telegram bot token, validate authorized Telegram users/chats, and translate bot commands into Newo device commands. This keeps Telegram-specific networking off the ESP32 and leaves the device free for later real-time microphone, speaker, camera, display, and AI work.
+The visible bot menu is `/status` and `/reboot`. `/ping` remains available for diagnostics but hidden from the menu. User/chat allowlists remain mandatory. The ESP32 never stores the Telegram token.
 
-See [`docs/telegram.md`](docs/telegram.md).
+See [`docs/architecture.md`](docs/architecture.md), [`docs/phase-1.md`](docs/phase-1.md), and [`docs/telegram.md`](docs/telegram.md).
 
-## Arduino IDE board settings
+## Build
 
-| Setting | Value |
-|---|---|
-| Board | ESP32S3 Dev Module |
-| CPU Frequency | 240MHz (WiFi) |
-| Flash Mode | QIO 80MHz |
-| Flash Size | 16MB (128Mb) |
-| PSRAM | OPI PSRAM |
-| Partition Scheme | 16M Flash (3MB APP/9.9MB FATFS) |
-| Upload Speed | 921600 |
-| Core Debug Level | None |
-
-## Dependencies
-
-Built into Arduino-ESP32:
-
-- WiFi
-- WiFiMulti
-- Preferences
-- WebServer
-- DNSServer
-- ESPmDNS
-
-Additional libraries:
-
-- ArduinoJson 7.4.3
-- WebSockets by Markus Sattler 2.7.2
-
-No Telegram-specific Arduino library is required for the primary architecture.
-
-## First upload
-
-Open `Newo/Newo.ino` in Arduino IDE, select the board settings above, compile, and upload. On first boot, Newo has no saved networks and creates a Wi-Fi access point named `newo@ai.link`. Serial Monitor prints a fresh 12-character setup password and the setup URL. Connect using that password and open `http://192.168.4.1` if the captive portal does not appear automatically.
-
-> The setup link is local HTTP inside the password-protected setup WLAN. Phase 1 is still development firmware; provisioning and credential reset will receive additional physical/authentication hardening before production use.
-
-## Bring-up note
-
-If Arduino IDE offers to move `Newo.ino` into a `Newo/` directory, use the repository's existing `Newo/Newo.ino` instead. The project is already laid out as a valid Arduino sketch folder; moving only the `.ino` away from its local headers causes `newo_config.h: No such file or directory`.
+Open `Newo/Newo.ino` as the existing Arduino sketch directory. With the settings above, firmware `0.3.0-dev` compiles under Arduino-ESP32 3.3.11 at 1,410,663 flash bytes and 49,096 static RAM bytes. Against the supplied pre-BLE baseline (1,192,907 / 50,140), that is +217,756 flash and -1,044 RAM.
 
 ## Repository rule
 
-Do not commit real Wi-Fi passwords, Telegram bot tokens, webhook secrets, API keys, private keys, device secrets, or VPS credentials. Network passwords are entered through Newo's setup portal and stored on-device in NVS. Telegram secrets stay on the VPS. Public CA certificates are trust material rather than private credentials, but the local `newo_secrets.h` file is still ignored because it also contains the device secret.
+Never commit Wi-Fi passwords, Telegram tokens, webhook secrets, API keys, private keys, device secrets, VPS credentials, `.env`, or `Newo/newo_secrets.h`. Wi-Fi credentials are provisioned over BLE and stored only in device NVS; Telegram secrets remain on the VPS.
