@@ -19,7 +19,7 @@ Phase 1 establishes the permanent device foundation:
 - onboard RGB LED disabled by default
 - persistent saved Wi-Fi credentials using ESP32 Preferences/NVS
 - automatic connection to the best available saved network using WiFiMulti
-- fallback access point: `Newo-Setup`
+- fallback access point: `newo@ai.link`
 - random 12-character setup password generated on each setup-mode boot
 - captive setup portal for scanning, adding, and removing Wi-Fi networks
 - local status API
@@ -71,7 +71,7 @@ No Telegram-specific Arduino library is required for the primary architecture.
 
 ## First upload
 
-Open `Newo.ino` in Arduino IDE, select the board settings above, compile, and upload. On first boot, Newo has no saved networks and creates a Wi-Fi access point named `Newo-Setup`. Serial Monitor prints a fresh 12-character setup password and the setup URL. Connect using that password and open `http://192.168.4.1` if the captive portal does not appear automatically.
+Open `Newo.ino` in Arduino IDE, select the board settings above, compile, and upload. On first boot, Newo has no saved networks and creates a Wi-Fi access point named `newo@ai.link`. Serial Monitor prints a fresh 12-character setup password and the setup URL. Connect using that password and open `http://192.168.4.1` if the captive portal does not appear automatically.
 
 > The setup link is local HTTP inside the password-protected setup WLAN. Phase 1 is still development firmware; provisioning and credential reset will receive additional physical/authentication hardening before production use.
 
