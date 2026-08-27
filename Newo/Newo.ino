@@ -1,5 +1,6 @@
 #include <Arduino.h>
 
+#include "newo_cloud.h"
 #include "newo_config.h"
 #include "newo_portal.h"
 #include "newo_storage.h"
@@ -8,12 +9,14 @@
 NewoStorage newoStorage;
 NewoWiFi newoWiFi(newoStorage);
 NewoPortal newoPortal(newoStorage, newoWiFi);
+NewoCloud newoCloud(newoWiFi);
 
 void printHardwareInfo() {
   Serial.println();
   Serial.println("================================");
   Serial.println("            NEWO");
   Serial.println("================================");
+  Serial.printf("Firmware: %s\n", NewoConfig::FIRMWARE_VERSION);
   Serial.printf("Chip: %s\n", ESP.getChipModel());
   Serial.printf("CPU: %u MHz\n", ESP.getCpuFreqMHz());
   Serial.printf("Flash: %u MB\n", ESP.getFlashChipSize() / 1024 / 1024);
@@ -36,6 +39,7 @@ void setup() {
 
   newoWiFi.begin();
   newoPortal.begin();
+  newoCloud.begin();
 
   Serial.println("[boot] Newo ready");
 }
@@ -43,5 +47,6 @@ void setup() {
 void loop() {
   newoWiFi.loop();
   newoPortal.loop();
+  newoCloud.loop();
   delay(2);
 }
