@@ -35,6 +35,16 @@ Phase 1 establishes the permanent device foundation:
 
 See [`docs/architecture.md`](docs/architecture.md) and [`docs/phase-1.md`](docs/phase-1.md).
 
+## Cloud endpoint
+
+The Newo cloud service is hosted at:
+
+- `https://newo.reitaard.de`
+- health: `https://newo.reitaard.de/health`
+- device WebSocket: `wss://newo.reitaard.de/device`
+
+The public endpoint is reverse-proxied by Caddy to the Newo Node service bound only to `127.0.0.1:8788` on the VPS.
+
 ## Telegram direction
 
 Newo will connect to the user's Telegram bot through the VPS/cloud layer rather than storing the Telegram bot token on the ESP32.
@@ -71,9 +81,10 @@ Built into Arduino-ESP32:
 - DNSServer
 - ESPmDNS
 
-Additional library:
+Additional libraries:
 
 - ArduinoJson 7.4.3
+- WebSockets by Markus Sattler 2.7.2
 
 No Telegram-specific Arduino library is required for the primary architecture.
 
