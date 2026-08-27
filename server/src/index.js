@@ -68,7 +68,9 @@ const devices = new Map();
 const pendingRequests = new Map();
 const DEVICE_REQUEST_TIMEOUT_MS = 5_000;
 const OFFLINE_GRACE_MS = 12_000;
+const REBOOT_RETURN_TIMEOUT_MS = 60_000;
 let bot = null;
+let pendingReboot = null;
 let shuttingDown = false;
 
 const DeviceMessageSchema = z.discriminatedUnion("type", [
@@ -291,7 +293,11 @@ function sendConnectivityNotification(text) {
 }
 
 function scheduleOfflineNotification(deviceId, state, ws) {
-  if (shuttingDown || !state.hasBeenConnected) return;
+  if (
+    shuttingDown ||
+    !state.hasBeenConnected ||
+    pendingReboot?.deviceId === deviceId
+  ) return;
 
   cancelOfflineTimer(state);
   state.offlineSince = Date.now();
@@ -301,6 +307,7 @@ function scheduleOfflineNotification(deviceId, state, ws) {
     const current = devices.get(deviceId);
     if (
       shuttingDown ||
+      pendingReboot?.deviceId === deviceId ||
       current !== state ||
       current.ws !== ws ||
       current.ws.readyState === WebSocket.OPEN
@@ -393,6 +400,51 @@ async function handlePingCommand(ctx) {
   );
 }
 
+function trackPendingReboot(chatId, messageId, deviceId) {
+  if (pendingReboot?.timer) {
+    clearTimeout(pendingReboot.timer);
+  }
+
+  const tracker = { chatId, messageId, deviceId, timer: null };
+  tracker.timer = setTimeout(() => {
+    if (pendingReboot !== tracker) return;
+    pendingReboot = null;
+
+    void bot?.api
+      .editMessageText(chatId, messageId, "Newo has not come back online yet.")
+      .catch(() => {
+        app.log.warn({ chat_id: chatId }, "Failed to update timed-out reboot message");
+      });
+  }, REBOOT_RETURN_TIMEOUT_MS);
+  tracker.timer.unref();
+  pendingReboot = tracker;
+}
+
+function completePendingReboot(deviceId) {
+  const tracker = pendingReboot;
+  if (!tracker || tracker.deviceId !== deviceId) return false;
+
+  pendingReboot = null;
+  clearTimeout(tracker.timer);
+
+  void Promise.resolve()
+    .then(() => bot?.api.deleteMessage(tracker.chatId, tracker.messageId))
+    .catch(() => {
+      app.log.warn(
+        { chat_id: tracker.chatId },
+        "Failed to delete Telegram reboot message",
+      );
+    })
+    .then(() => bot?.api.sendMessage(tracker.chatId, "Newo is back online."))
+    .catch(() => {
+      app.log.warn(
+        { chat_id: tracker.chatId },
+        "Failed to send Telegram reboot completion message",
+      );
+    });
+  return true;
+}
+
 async function handleRebootCommand(ctx) {
   const request = sendDeviceRequest("reboot", "reboot_ack");
   if (request.kind === "offline") {
@@ -402,7 +454,8 @@ async function handleRebootCommand(ctx) {
 
   const result = await request.promise;
   if (result.kind === "response") {
-    await ctx.reply("Restarting Newo.");
+    const message = await ctx.reply("Restarting Newo.");
+    trackPendingReboot(ctx.chat.id, message.message_id, env.NEWO_DEVICE_ID);
     return;
   }
 
@@ -532,7 +585,8 @@ wss.on("connection", (ws, request, deviceId) => {
   };
   devices.set(deviceId, state);
 
-  if (reconnectingAfterNotifiedOffline) {
+  const completedIntentionalReboot = completePendingReboot(deviceId);
+  if (reconnectingAfterNotifiedOffline && !completedIntentionalReboot) {
     sendConnectivityNotification(
       `Newo is back online after ${formatDuration(offlineDuration)}.`,
     );
@@ -679,6 +733,10 @@ async function shutdown(signal) {
   shuttingDown = true;
   app.log.info({ signal }, "Shutting down Newo cloud");
   clearInterval(heartbeatTimer);
+  if (pendingReboot?.timer) {
+    clearTimeout(pendingReboot.timer);
+    pendingReboot = null;
+  }
 
   for (const [requestId] of pendingRequests) {
     settlePendingRequest(requestId, { kind: "shutdown" });
