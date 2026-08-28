@@ -1,5 +1,6 @@
 #include <Arduino.h>
 
+#include "newo_audio.h"
 #include "newo_cloud.h"
 #include "newo_config.h"
 #include "newo_log.h"
@@ -9,6 +10,7 @@
 NewoStorage newoStorage;
 NewoWiFi newoWiFi(newoStorage);
 NewoCloud newoCloud(newoWiFi);
+NewoAudio newoAudio(newoWiFi);
 
 void printHardwareInfo() {
   Serial.println();
@@ -43,6 +45,7 @@ void setup() {
 
   newoWiFi.begin();
   newoCloud.begin();
+  newoAudio.begin();
 
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::BOOT, "BOOT_READY");
   newoCloud.recordStack("after boot");
@@ -51,5 +54,6 @@ void setup() {
 void loop() {
   newoWiFi.loop();
   newoCloud.loop();
+  newoAudio.loop();
   delay(2);
 }

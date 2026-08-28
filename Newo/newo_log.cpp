@@ -42,6 +42,7 @@ const char* subsystemName(Subsystem subsystem) {
     case Subsystem::WIFI: return "wifi";
     case Subsystem::PROV: return "prov";
     case Subsystem::CLOUD: return "cloud";
+    case Subsystem::AUDIO: return "audio";
   }
   return "system";
 }

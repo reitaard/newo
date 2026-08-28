@@ -7,7 +7,8 @@ Newo/Newo.ino
   +-- newo_storage   up to eight Wi-Fi credentials in Preferences/NVS
   +-- newo_wifi      scan/rank/connect/recover plus BLE WiFiProv
   +-- newo_cloud     authenticated outbound WSS, telemetry, commands
-  +-- future: audio, display, AI, update
+  +-- newo_audio     I2S/DMA microphone capture plus authenticated WSS PCM sender
+  +-- future: display, AI, update
 ```
 
 Telegram is cloud-side and never a firmware dependency.
@@ -40,6 +41,8 @@ Newo --authenticated certificate-validated WSS :443--> Caddy
 ```
 
 The ESP32 requires no inbound port or stable LAN address. Device authentication uses an ID and bearer credential; server identity uses an explicit trusted CA. Firmware does not fall back to insecure TLS.
+
+The microphone test opens a separate authenticated `/voice` WSS connection using those same headers and CA. `newo_audio` reads INMP441 24-bit samples from 32-bit I2S stereo slots in a dedicated FreeRTOS task, explicitly converts the selected L/R slot to 16 kHz signed PCM16, and enqueues 20 ms frames. The normal loop owns WebSocket transmission; it sends raw binary frames only and drops stale queued frames on a disconnect/reconnect rather than blocking capture or replaying delayed speech.
 
 The VPS holds Telegram secrets and validates webhook secrets plus user/chat allowlists. Device messages use typed payloads and correlated request IDs. Remote reboot sends `reboot_ack` before the ESP32 schedules restart.
 

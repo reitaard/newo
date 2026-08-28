@@ -37,6 +37,25 @@ Caddy proxies the public endpoint to the Node service on loopback `127.0.0.1:878
 
 `Newo/newo_secrets.h` is ignored. Copy `Newo/newo_secrets.example.h` locally and supply the matching device credential and trusted public CA. Missing secrets disable cloud connectivity rather than weakening TLS.
 
+## Microphone streaming test
+
+The isolated `newo_audio` module captures an INMP441 and opens a second authenticated, certificate-validated WSS connection to `wss://newo.reitaard.de/voice`. It reuses the device ID and bearer-secret headers from the cloud channel; credentials never enter the URL or serial log.
+
+Proposed wiring for the generic ESP32-S3 Dev Module (confirm against the physical board schematic before flashing):
+
+```text
+INMP441 VDD  -> 3V3
+INMP441 GND  -> GND
+INMP441 SCK  -> GPIO4  (I2S BCLK)
+INMP441 WS   -> GPIO5  (I2S LRCLK/WS)
+INMP441 SD   -> GPIO6  (I2S data in)
+INMP441 L/R  -> GND    (left channel)
+```
+
+GPIO4/5/6 are configurable in `newo_config.h`; the firmware audit found no current Newo assignments for them and deliberately excludes GPIO0 (bootstrap), GPIO19/20 (USB/JTAG), GPIO48 (RGB LED), and flash/PSRAM pins. The module receives 32-bit stereo I2S slots at 16 kHz, selects the configured INMP441 channel, sign-extends the left-aligned 24-bit sample (`slot32 >> 8`), then reduces and clamps it to signed PCM16 (`sample24 >> 8`).
+
+Audio uses a dedicated FreeRTOS capture task and I2S DMA, feeding an eight-frame (160 ms) queue. The loop-owned WebSockets client sends only 640-byte binary PCM frames (320 mono samples / 20 ms), so network stalls cannot run in the capture task. Queue overflow and reconnect transitions discard stale frames rather than replay speech. Every five seconds `AUDIO_LEVEL` logs peak/RMS and capture, send, drop, overrun, and reconnect counters; raw samples are never logged.
+
 ## Telegram
 
 Telegram terminates at the VPS:
@@ -55,7 +74,7 @@ See [`docs/architecture.md`](docs/architecture.md), [`docs/phase-1.md`](docs/pha
 
 ## Build
 
-Open `Newo/Newo.ino` as the existing Arduino sketch directory. With the settings above, firmware `0.3.0-dev` compiles under Arduino-ESP32 3.3.11 at 1,410,663 flash bytes and 49,096 static RAM bytes. Against the supplied pre-BLE baseline (1,192,907 / 50,140), that is +217,756 flash and -1,044 RAM.
+Open `Newo/Newo.ino` as the existing Arduino sketch directory. The current microphone-streaming build was verified with Arduino-ESP32 3.3.11 using `ESP32S3 Dev Module`, QIO 80 MHz, 16 MB flash, OPI PSRAM, `16M Flash (3MB APP/9.9MB FATFS)`, and 921600 upload speed: 1,447,315 bytes flash (46% of 3 MB) and 61,736 bytes static RAM (18% of 320 KB). No hardware was flashed during this build verification.
 
 ## Repository rule
 

@@ -6,7 +6,7 @@
 namespace NewoLog {
 
 enum class Level : uint8_t { INFO, WARN, ERROR };
-enum class Subsystem : uint8_t { BOOT, SYSTEM, STORAGE, WIFI, PROV, CLOUD };
+enum class Subsystem : uint8_t { BOOT, SYSTEM, STORAGE, WIFI, PROV, CLOUD, AUDIO };
 
 constexpr size_t kCapacity = 64;
 constexpr size_t kDetailSize = 97;
