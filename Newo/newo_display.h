@@ -46,9 +46,11 @@ class NewoDisplay {
   uint8_t ecoPage_ = 0;
   uint32_t nextFaceFrameMs_ = 0;
   uint32_t modeStartedMs_ = 0;
+  enum class BlinkPhase : uint8_t { OPEN, HALF_CLOSED, CLOSED, HALF_OPEN };
   uint32_t nextBlinkMs_ = 0;
-  uint32_t blinkStartedMs_ = 0;
-  bool blinking_ = false;
+  BlinkPhase blinkPhase_ = BlinkPhase::OPEN;
+  uint8_t blinkFramesRemaining_ = 0;
+  bool verificationBlink_ = true;
   struct Telemetry {
     bool wifi = false;
     int32_t rssi = 0;

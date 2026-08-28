@@ -40,7 +40,9 @@ bool NewoDisplay::setMode(NewoDisplayMode mode, const char* text, bool temporary
   if (mode > NewoDisplayMode::ECO) return false;
   if (mode_ != mode) {
     modeStartedMs_ = millis();
-    blinking_ = false;
+    blinkPhase_ = BlinkPhase::OPEN;
+    blinkFramesRemaining_ = 0;
+    verificationBlink_ = true;
     nextBlinkMs_ = modeStartedMs_ + 1'000;
   }
   mode_ = mode;
@@ -72,7 +74,9 @@ void NewoDisplay::toggleEco() {
   } else {
     ecoEnabled_ = false;
     mode_ = persistentMode_;
-    blinking_ = false;
+    blinkPhase_ = BlinkPhase::OPEN;
+    blinkFramesRemaining_ = 0;
+    verificationBlink_ = true;
     nextBlinkMs_ = millis() + 1'000;
     strncpy(text_, persistentText_, sizeof(text_) - 1);
     text_[sizeof(text_) - 1] = '\0';
@@ -133,7 +137,10 @@ void NewoDisplay::drawFace() {
   const char* status = statusFor(mode_);
   if (status[0]) drawCentered(status, 145);
   // Do not re-arm blink timing on redraw: incoming telemetry may cause a render.
-  if (nextBlinkMs_ == 0) nextBlinkMs_ = millis() + 1'000;
+  if (nextBlinkMs_ == 0) {
+    verificationBlink_ = true;
+    nextBlinkMs_ = millis() + 1'000;
+  }
   nextFaceFrameMs_ = 0;
   drawFaceFrame(millis());
 }
@@ -142,14 +149,9 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   // Compose the whole 200x82 eye region off-screen, then blit a complete frame.
   // This prevents the black clear/draw tear visible with direct TFT rendering.
   eyeCanvas_.fillScreen(0);
-  if (!blinking_ && static_cast<int32_t>(now - nextBlinkMs_) >= 0) {
-    blinking_ = true;
-    blinkStartedMs_ = now;
-  }
-  constexpr uint32_t kBlinkDurationMs = 170;
-  if (blinking_ && now - blinkStartedMs_ >= kBlinkDurationMs) {
-    blinking_ = false;
-    nextBlinkMs_ = now + random(3'000, 7'001);
+  if (blinkPhase_ == BlinkPhase::OPEN && static_cast<int32_t>(now - nextBlinkMs_) >= 0) {
+    blinkPhase_ = BlinkPhase::HALF_CLOSED;
+    blinkFramesRemaining_ = 1;
   }
   const float phase = static_cast<float>(now % 3000) / 3000.0f * 6.2831853f;
   int16_t floatY = static_cast<int16_t>(sinf(phase) * 1.0f);
@@ -166,18 +168,32 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   if (mode_ == NewoDisplayMode::THINKING) y -= 5;
   if (mode_ == NewoDisplayMode::ERROR) { y += 10; h = 18; }
   const int16_t baseHeight = h;
-  if (blinking_) {
-    const float progress = static_cast<float>(now - blinkStartedMs_) / kBlinkDurationMs;
-    // Quadratic easing makes the 170 ms blink visibly close for the sampled 20 FPS frames.
-    const float edge = progress < 0.5f ? 1.0f - progress * 2.0f : progress * 2.0f - 1.0f;
-    const float openness = edge * edge;
-    h = static_cast<int16_t>(baseHeight * openness);
+  if (blinkPhase_ == BlinkPhase::HALF_CLOSED || blinkPhase_ == BlinkPhase::HALF_OPEN) {
+    h = static_cast<int16_t>(baseHeight * 0.40f);
+  } else if (blinkPhase_ == BlinkPhase::CLOSED) {
+    h = static_cast<int16_t>(baseHeight * 0.07f);
     if (h < 2) h = 2;
   }
   const int16_t localY = y - 40 + (baseHeight - h) / 2;
   eyeCanvas_.fillRoundRect(leftX - 20, localY, w, h, h / 2, 1);
   eyeCanvas_.fillRoundRect(rightX - 20, localY, w, h, h / 2, 1);
   display_.drawBitmap(20, 40, eyeCanvas_.getBuffer(), 200, 82, kWhite, ST77XX_BLACK);
+  // Advance only after this completed canvas frame has reached the TFT.
+  if (blinkPhase_ != BlinkPhase::OPEN) {
+    if (--blinkFramesRemaining_ == 0) {
+      if (blinkPhase_ == BlinkPhase::HALF_CLOSED) {
+        blinkPhase_ = BlinkPhase::CLOSED;
+        blinkFramesRemaining_ = verificationBlink_ ? 2 : 1;
+      } else if (blinkPhase_ == BlinkPhase::CLOSED) {
+        blinkPhase_ = BlinkPhase::HALF_OPEN;
+        blinkFramesRemaining_ = 1;
+      } else {
+        blinkPhase_ = BlinkPhase::OPEN;
+        verificationBlink_ = false;
+        nextBlinkMs_ = now + random(3'000, 7'001);
+      }
+    }
+  }
   drawStateAnimation(now);
 }
 
