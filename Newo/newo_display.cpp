@@ -132,18 +132,20 @@ void NewoDisplay::drawFace() {
 }
 
 void NewoDisplay::drawFaceFrame(uint32_t now) {
-  // Only the eye region is erased at animation rate; text and dashboard pages stay untouched.
-  display_.fillRect(20, 40, 200, 82, ST77XX_BLACK);
+  // Compose the whole 200x82 eye region off-screen, then blit a complete frame.
+  // This prevents the black clear/draw tear visible with direct TFT rendering.
+  eyeCanvas_.fillScreen(0);
   if (!blinking_ && static_cast<int32_t>(now - nextBlinkMs_) >= 0) {
     blinking_ = true;
     blinkStartedMs_ = now;
   }
-  if (blinking_ && now - blinkStartedMs_ >= 180) {
+  constexpr uint32_t kBlinkDurationMs = 170;
+  if (blinking_ && now - blinkStartedMs_ >= kBlinkDurationMs) {
     blinking_ = false;
     nextBlinkMs_ = now + random(3'000, 7'001);
   }
   const float phase = static_cast<float>(now % 3000) / 3000.0f * 6.2831853f;
-  int16_t floatY = static_cast<int16_t>(sinf(phase) * 1.5f);
+  int16_t floatY = static_cast<int16_t>(sinf(phase) * 1.0f);
   int16_t gazeX = 0;
   if (mode_ == NewoDisplayMode::IDLE) gazeX = static_cast<int16_t>(sinf(phase * 0.55f) * 3.0f);
   if (mode_ == NewoDisplayMode::THINKING) gazeX = static_cast<int16_t>(sinf(phase * 0.32f) * 5.0f);
@@ -156,38 +158,47 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   if (mode_ == NewoDisplayMode::LISTENING) { leftX = 35 + gazeX; rightX = 132 + gazeX; w = 73; h = 38; }
   if (mode_ == NewoDisplayMode::THINKING) y -= 5;
   if (mode_ == NewoDisplayMode::ERROR) { y += 10; h = 18; }
-  if (blinking_) h = 3;
-  display_.fillRoundRect(leftX, y + (35 - h) / 2, w, h, h / 2, kWhite);
-  display_.fillRoundRect(rightX, y + (35 - h) / 2, w, h, h / 2, kWhite);
+  const int16_t baseHeight = h;
+  if (blinking_) {
+    const float progress = static_cast<float>(now - blinkStartedMs_) / kBlinkDurationMs;
+    const float openness = progress < 0.5f ? 1.0f - progress * 1.84f : 0.08f + (progress - 0.5f) * 1.84f;
+    h = static_cast<int16_t>(baseHeight * openness);
+    if (h < 2) h = 2;
+  }
+  const int16_t localY = y - 40 + (baseHeight - h) / 2;
+  eyeCanvas_.fillRoundRect(leftX - 20, localY, w, h, h / 2, 1);
+  eyeCanvas_.fillRoundRect(rightX - 20, localY, w, h, h / 2, 1);
+  display_.drawBitmap(20, 40, eyeCanvas_.getBuffer(), 200, 82, kWhite, ST77XX_BLACK);
   drawStateAnimation(now);
 }
 
 void NewoDisplay::drawStateAnimation(uint32_t now) {
-  display_.fillRect(72, 160, 96, 23, ST77XX_BLACK);
+  activityCanvas_.fillScreen(0);
   const float phase = static_cast<float>(now % 2400) / 2400.0f * 6.2831853f;
   if (mode_ == NewoDisplayMode::IDLE) {
     const int16_t width = 20 + static_cast<int16_t>((sinf(phase) + 1.0f) * 13.0f);
-    display_.drawFastHLine(120 - width, 172, width * 2, kWhite);
+    activityCanvas_.drawFastHLine(48 - width, 12, width * 2, 1);
   } else if (mode_ == NewoDisplayMode::LISTENING) {
     for (int8_t i = 0; i < 7; ++i) {
       const int16_t height = 5 + static_cast<int16_t>((sinf(phase * 2.0f + i * 0.8f) + 1.0f) * 5.5f);
-      display_.fillRect(84 + i * 12, 176 - height, 5, height, kWhite);
+      activityCanvas_.fillRect(12 + i * 12, 16 - height, 5, height, 1);
     }
   } else if (mode_ == NewoDisplayMode::THINKING) {
     for (int8_t i = 0; i < 3; ++i) {
       const int16_t rise = static_cast<int16_t>((sinf(phase * 1.5f + i * 1.4f) + 1.0f) * 3.0f);
-      display_.fillCircle(108 + i * 12, 175 - rise, 2, kWhite);
+      activityCanvas_.fillCircle(36 + i * 12, 15 - rise, 2, 1);
     }
   } else if (mode_ == NewoDisplayMode::SPEAKING) {
     int16_t lastY = 172;
     for (int16_t x = 0; x <= 72; x += 4) {
       const int16_t y = 172 + static_cast<int16_t>(sinf(phase * 2.0f + x * 0.16f) * 6.0f);
-      display_.drawLine(84 + x - 4, lastY, 84 + x, y, kWhite);
+      activityCanvas_.drawLine(x - 4, lastY - 160, x, y - 160, 1);
       lastY = y;
     }
   } else if (mode_ == NewoDisplayMode::ERROR) {
-    display_.setFont(&FreeSans9pt7b); display_.setCursor(116, 177); display_.print("!"); display_.setFont(nullptr);
+    activityCanvas_.setFont(&FreeSans9pt7b); activityCanvas_.setCursor(44, 17); activityCanvas_.print("!"); activityCanvas_.setFont(nullptr);
   }
+  display_.drawBitmap(72, 160, activityCanvas_.getBuffer(), 96, 23, kWhite, ST77XX_BLACK);
 }
 
 void NewoDisplay::drawFaceResponse() {

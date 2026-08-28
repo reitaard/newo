@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 
 #include "newo_log.h"
@@ -31,6 +32,8 @@ class NewoDisplay {
   static const char* statusFor(NewoDisplayMode mode);
 
   Adafruit_ST7789 display_;
+  GFXcanvas1 eyeCanvas_{200, 82};
+  GFXcanvas1 activityCanvas_{96, 23};
   NewoDisplayMode mode_ = NewoDisplayMode::IDLE;
   NewoDisplayMode persistentMode_ = NewoDisplayMode::IDLE;
   char text_[97] = {};
