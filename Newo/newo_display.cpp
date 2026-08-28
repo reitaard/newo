@@ -38,7 +38,11 @@ void NewoDisplay::begin() {
 
 bool NewoDisplay::setMode(NewoDisplayMode mode, const char* text, bool temporary) {
   if (mode > NewoDisplayMode::ECO) return false;
-  if (mode_ != mode) modeStartedMs_ = millis();
+  if (mode_ != mode) {
+    modeStartedMs_ = millis();
+    blinking_ = false;
+    nextBlinkMs_ = modeStartedMs_ + 1'000;
+  }
   mode_ = mode;
   strncpy(text_, text ? text : "", sizeof(text_) - 1);
   text_[sizeof(text_) - 1] = '\0';
@@ -68,6 +72,8 @@ void NewoDisplay::toggleEco() {
   } else {
     ecoEnabled_ = false;
     mode_ = persistentMode_;
+    blinking_ = false;
+    nextBlinkMs_ = millis() + 1'000;
     strncpy(text_, persistentText_, sizeof(text_) - 1);
     text_[sizeof(text_) - 1] = '\0';
   }
@@ -126,8 +132,8 @@ void NewoDisplay::render() {
 void NewoDisplay::drawFace() {
   const char* status = statusFor(mode_);
   if (status[0]) drawCentered(status, 145);
-  // Give each newly-entered face state one visible verification blink, then use 3–7 s intervals.
-  nextBlinkMs_ = millis() + 1'000;
+  // Do not re-arm blink timing on redraw: incoming telemetry may cause a render.
+  if (nextBlinkMs_ == 0) nextBlinkMs_ = millis() + 1'000;
   nextFaceFrameMs_ = 0;
   drawFaceFrame(millis());
 }
