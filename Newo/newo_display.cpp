@@ -161,7 +161,9 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   const int16_t baseHeight = h;
   if (blinking_) {
     const float progress = static_cast<float>(now - blinkStartedMs_) / kBlinkDurationMs;
-    const float openness = progress < 0.5f ? 1.0f - progress * 1.84f : 0.08f + (progress - 0.5f) * 1.84f;
+    // Quadratic easing makes the 170 ms blink visibly close for the sampled 20 FPS frames.
+    const float edge = progress < 0.5f ? 1.0f - progress * 2.0f : progress * 2.0f - 1.0f;
+    const float openness = edge * edge;
     h = static_cast<int16_t>(baseHeight * openness);
     if (h < 2) h = 2;
   }
