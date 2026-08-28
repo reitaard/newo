@@ -7,7 +7,8 @@
   "scripts": {
     "check": "node --check src/index.js && node --check src/voice.js",
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "voice:benchmark": "node test/voice-sherpa-benchmark.js"
   },
   "engines": {
     "node": ">=22"
@@ -15,6 +16,7 @@
   "dependencies": {
     "fastify": "5.12.1",
     "grammy": "1.45.1",
+    "sherpa-onnx-node": "^1.13.6",
     "ws": "8.21.3",
     "zod": "4.4.3"
   }

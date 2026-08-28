@@ -1,6 +1,9 @@
 import { mkdir, open } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
 
 function wavHeader({ dataBytes, sampleRate, channels, bitsPerSample }) {
   const header = Buffer.alloc(44);
@@ -22,15 +25,88 @@ function wavHeader({ dataBytes, sampleRate, channels, bitsPerSample }) {
   return header;
 }
 
-/**
- * Replace this with a streaming engine adapter (for example sherpa-onnx).
- * The adapter receives PCM buffers and emits { type: "partial" | "final", text }.
- */
+/** A safe no-transcription fallback for transport and capture debugging. */
 export class NullAsrBackend {
   async createStream() {
+    return { async acceptAudio() {}, async stop() {} };
+  }
+}
+
+function pcm16leToFloat32(chunk) {
+  if (chunk.length % 2 !== 0) throw new Error("PCM16 chunk must contain an even number of bytes");
+  const samples = new Float32Array(chunk.length / 2);
+  for (let index = 0; index < samples.length; index += 1) samples[index] = chunk.readInt16LE(index * 2) / 32768;
+  return samples;
+}
+
+/** Streaming sherpa-onnx adapter. One recognizer is shared, while every voice connection owns its stream. */
+export class SherpaAsrBackend {
+  constructor({ modelDirectory, numThreads = 2, provider = "cpu" }) {
+    this.sherpa = require("sherpa-onnx-node");
+    this.modelDirectory = path.resolve(modelDirectory);
+    this.recognizer = new this.sherpa.OnlineRecognizer({
+      featConfig: { sampleRate: 16_000, featureDim: 80 },
+      modelConfig: {
+        transducer: {
+          encoder: path.join(this.modelDirectory, "encoder-epoch-99-avg-1.int8.onnx"),
+          decoder: path.join(this.modelDirectory, "decoder-epoch-99-avg-1.int8.onnx"),
+          joiner: path.join(this.modelDirectory, "joiner-epoch-99-avg-1.int8.onnx"),
+        },
+        tokens: path.join(this.modelDirectory, "tokens.txt"),
+        numThreads,
+        provider,
+        debug: 0,
+        modelType: "zipformer",
+      },
+      enableEndpoint: true,
+      rule1MinTrailingSilence: 2.4,
+      rule2MinTrailingSilence: 1.2,
+      rule3MinUtteranceLength: 20,
+    });
+  }
+
+  async createStream({ format, onEvent }) {
+    if (format.sampleRate !== 16_000 || format.channels !== 1 || format.bitsPerSample !== 16) {
+      throw new Error("Sherpa ASR requires mono 16 kHz signed 16-bit PCM");
+    }
+
+    const recognizer = this.recognizer;
+    const stream = recognizer.createStream();
+    let partial = "";
+    let final = "";
+    const emit = (type, text) => {
+      const normalized = String(text ?? "").trim();
+      if (!normalized) return;
+      if (type === "partial" && normalized === partial) return;
+      if (type === "final" && normalized === final) return;
+      if (type === "partial") partial = normalized;
+      else final = normalized;
+      onEvent({ type, text: normalized });
+    };
+    const decode = () => {
+      while (recognizer.isReady(stream)) recognizer.decode(stream);
+      const text = recognizer.getResult(stream).text;
+      emit("partial", text);
+      if (recognizer.isEndpoint(stream)) {
+        emit("final", text);
+        recognizer.reset(stream);
+        partial = "";
+        final = "";
+      }
+    };
+
     return {
-      async acceptAudio() {},
-      async stop() {},
+      async acceptAudio(chunk) {
+        stream.acceptWaveform({ samples: pcm16leToFloat32(chunk), sampleRate: format.sampleRate });
+        decode();
+      },
+      async stop() {
+        stream.acceptWaveform({ samples: new Float32Array(6_400), sampleRate: format.sampleRate });
+        decode();
+        stream.inputFinished();
+        decode();
+        emit("final", recognizer.getResult(stream).text);
+      },
     };
   }
 }

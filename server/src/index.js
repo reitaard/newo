@@ -6,7 +6,7 @@ import { Bot, webhookCallback } from "grammy";
 import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 
-import { createVoiceRuntime } from "./voice.js";
+import { createVoiceRuntime, NullAsrBackend, SherpaAsrBackend } from "./voice.js";
 
 try {
   loadEnvFile(".env");
@@ -43,6 +43,9 @@ const EnvSchema = z.object({
   VOICE_MAX_CHUNK_BYTES: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().max(256 * 1024).default(64 * 1024)),
   VOICE_SAVE_WAV: z.preprocess(stringToBoolean, z.boolean().default(false)),
   VOICE_CAPTURE_DIRECTORY: z.preprocess(emptyToUndefined, z.string().default("/tmp/newo-voice")),
+  VOICE_ASR_BACKEND: z.preprocess(emptyToUndefined, z.enum(["null", "sherpa"]).default("sherpa")),
+  VOICE_ASR_MODEL_DIRECTORY: z.preprocess(emptyToUndefined, z.string().default("models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17")),
+  VOICE_ASR_THREADS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(6).default(2)),
 });
 
 const env = EnvSchema.parse(process.env);
@@ -78,8 +81,12 @@ const voiceWss = new WebSocketServer({
   perMessageDeflate: false,
   maxPayload: env.VOICE_MAX_CHUNK_BYTES,
 });
+const voiceAsr = env.VOICE_ASR_BACKEND === "sherpa"
+  ? new SherpaAsrBackend({ modelDirectory: env.VOICE_ASR_MODEL_DIRECTORY, numThreads: env.VOICE_ASR_THREADS })
+  : new NullAsrBackend();
 const voiceRuntime = createVoiceRuntime({
   logger: app.log,
+  asr: voiceAsr,
   config: {
     sampleRate: env.VOICE_SAMPLE_RATE,
     channels: env.VOICE_CHANNELS,
@@ -1010,6 +1017,7 @@ app.log.info(
     voice_websocket_path: "/voice",
     voice_format: `${env.VOICE_CHANNELS}ch ${env.VOICE_SAMPLE_RATE}Hz ${env.VOICE_BITS_PER_SAMPLE}-bit PCM LE`,
     voice_wav_capture_enabled: env.VOICE_SAVE_WAV,
+    voice_asr_backend: env.VOICE_ASR_BACKEND,
     telegram_enabled: Boolean(bot),
     device_auth_configured: Boolean(env.NEWO_DEVICE_SECRET),
   },

@@ -21,6 +21,10 @@ Newo/newo_secrets.h
 # Node dependencies
 node_modules/
 
+# Downloaded ASR models and development voice captures
+server/models/
+server/voice-captures/
+
 # OS files
 .DS_Store
 Thumbs.db

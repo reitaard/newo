@@ -73,9 +73,21 @@ Send continuous **binary WebSocket frames** containing raw PCM only. Default for
 
 The voice runtime logs connect/start/progress outcome metadata without logging audio. It calculates received PCM duration from the configured format. `VOICE_SAVE_WAV=false` is the default. Set it to `true` only during a local development capture; the finalized WAV file is written to `/tmp/newo-voice` by default and is never tracked by git.
 
-`src/voice.js` defines the replaceable streaming ASR boundary: `createStream({ format, onEvent })`, `acceptAudio(chunk)`, and `stop()`. The current `NullAsrBackend` safely consumes audio but transcribes nothing. A later sherpa-onnx streaming Zipformer adapter can emit `{ type: "partial", text }` and `{ type: "final", text }`; those events are logged as `PARTIAL:`/`FINAL:` and returned to the voice WebSocket as JSON transcript events. No ASR package or model has been installed yet, avoiding an unmeasured model download on the production VPS.
+`src/voice.js` defines the replaceable streaming ASR boundary: `createStream({ format, onEvent })`, `acceptAudio(chunk)`, and `stop()`. `VOICE_ASR_BACKEND=sherpa` is the default and loads the native `sherpa-onnx-node` addon with `sherpa-onnx-streaming-zipformer-en-20M-2023-02-17` INT8 encoder/decoder/joiner files. `VOICE_ASR_BACKEND=null` retains the transport-only fallback. The native addon resolves its bundled Linux shared libraries via its rpath, verified with `ldd`; no interactive-shell `LD_LIBRARY_PATH` is required by PM2.
 
-For a local transport-only test after setting `NEWO_DEVICE_SECRET`, start the existing service with `npm start` (or restart its PM2 process), then connect a WebSocket client to `ws://127.0.0.1:8788/voice` with the headers above and send PCM frames. Use the public WSS address only through the existing reverse proxy. Stop the test by closing the WebSocket; the server logs final byte and duration totals.
+The streaming adapter decodes every ready chunk, emits only changed partial text, finalizes/reset streams at sherpa endpoints, and finalizes remaining text on disconnect. `{ type: "partial", text }` / `{ type: "final", text }` events are logged as `PARTIAL:`/`FINAL:` and returned to the voice WebSocket as JSON transcript events.
+
+Models are intentionally gitignored. To provision the selected model on a new VPS:
+
+```bash
+cd /opt/newo/server
+mkdir -p models
+curl -fL -o /tmp/newo-model.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2
+tar -xjf /tmp/newo-model.tar.bz2 -C models
+npm run voice:benchmark
+```
+
+For a local transport test after setting `NEWO_DEVICE_SECRET`, start the existing service with `npm start` (or restart its PM2 process), then connect a WebSocket client to `ws://127.0.0.1:8788/voice` with the headers above and send PCM frames. Use the public WSS address only through the existing reverse proxy. Stop the test by closing the WebSocket; the server logs final byte and duration totals.
 
 ## First VPS test
 
