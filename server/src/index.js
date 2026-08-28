@@ -793,7 +793,7 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["ping", "p"], handlePingCommand);
   bot.command(["reboot", "r"], handleRebootCommand);
   bot.command(["newo", "n"], handleNewoCommand);
-  bot.command(["eco", "e"], handleEcoCommand);
+  bot.command("eco", handleEcoCommand);
   // Developer-only: authorization is enforced by the shared allowlist middleware.
   bot.command("voicereset", handleVoiceResetCommand);
 
