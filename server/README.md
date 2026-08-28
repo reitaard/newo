@@ -32,6 +32,8 @@ Telegram commands are allowlist-protected. The visible menu contains `/status` (
 
 `/health` and `/logs` use the existing authenticated, correlated WSS request path. Device logs are a fixed 64-entry volatile RAM ring buffer; they remain available over USB Serial, are erased on reboot, contain no secrets, and are never returned by public HTTP `/health`.
 
+Temporary structured operational tracing records safe Telegram update/message/chat IDs, normalized command name, handler invocation, request ID/type/expected response, single terminal settlement, and reply emission. It deliberately never records message text, tokens, secrets, or credentials; it is present to diagnose suspected duplicate replies.
+
 ## Environment
 
 Copy `.env.example` to `.env` on the VPS and fill secrets there. Never commit `.env`.

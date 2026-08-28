@@ -125,7 +125,7 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
     logs: z.object({ stored: z.number().int(), capacity: z.number().int(), warnings: z.number(), errors: z.number() }),
   }),
   z.object({
-    type: z.literal("logs"), request_id: z.string(), firmware: z.string(), uptime_ms: z.number().nonnegative(), warnings: z.number().nonnegative(), errors: z.number().nonnegative(),
+    type: z.literal("logs"), request_id: z.string(), firmware: z.string(), uptime_ms: z.number().nonnegative(), warnings: z.number().nonnegative(), errors: z.number().nonnegative(), error: z.string().optional(),
     entries: z.array(z.object({ seq: z.number(), first_ms: z.number(), last_ms: z.number(), repeat: z.number().int().positive(), level: z.enum(["info", "warn", "error"]), subsystem: z.string(), code: z.string(), detail: z.string().max(96) })).max(40),
   }),
 ]);
@@ -165,10 +165,18 @@ function getConnectedDeviceState() {
 
 function settlePendingRequest(requestId, result) {
   const pending = pendingRequests.get(requestId);
-  if (!pending) return false;
+  if (!pending) {
+    app.log.info({ request_id: requestId, settlement: result.kind }, "Ignored already-settled Newo request");
+    return false;
+  }
 
   pendingRequests.delete(requestId);
   clearTimeout(pending.timer);
+  app.log.info({
+    request_id: requestId, request_type: pending.requestType, expected_response_type: pending.responseType,
+    telegram_update_id: pending.trace?.updateId ?? null, settlement: result.kind,
+    elapsed_ms: Math.max(0, Date.now() - pending.startedAt),
+  }, "Newo request settled");
   pending.resolve(result);
   return true;
 }
@@ -181,7 +189,7 @@ function createRequestId() {
   return requestId;
 }
 
-function sendDeviceRequest(requestType, responseType, fields = {}) {
+function sendDeviceRequest(requestType, responseType, fields = {}, trace = null) {
   const device = getConnectedDeviceState();
   if (!device) return { kind: "offline" };
 
@@ -205,7 +213,10 @@ function sendDeviceRequest(requestType, responseType, fields = {}) {
     startedAt,
     timer,
     resolve: resolveRequest,
+    trace,
   });
+  app.log.info({ request_id: requestId, request_type: requestType, expected_response_type: responseType,
+    telegram_update_id: trace?.updateId ?? null, created_at: new Date(startedAt).toISOString() }, "Newo request created");
 
   try {
     device.ws.send(
@@ -375,31 +386,45 @@ const TELEGRAM_COMMANDS = [
   { command: "reboot", description: "Restart Newo" },
 ];
 
+function commandTrace(ctx) {
+  return ctx.state?.newoTrace ?? null;
+}
+
+async function commandReply(ctx, text, category = "reply", requestId = null) {
+  const trace = commandTrace(ctx);
+  if (trace) {
+    trace.replyCategory = category;
+    trace.requestId = requestId;
+  }
+  return ctx.reply(text);
+}
+
 async function handleStatusCommand(ctx) {
-  const request = sendDeviceRequest("status_request", "status");
+  const request = sendDeviceRequest("status_request", "status", {}, commandTrace(ctx));
   if (request.kind === "offline") {
-    await ctx.reply(`Newo ${env.NEWO_DEVICE_ID}: offline`);
+    await commandReply(ctx, `Newo ${env.NEWO_DEVICE_ID}: offline`);
     return;
   }
 
   const result = await request.promise;
   if (result.kind === "response") {
-    await ctx.reply(formatDeviceStatus(getDeviceSnapshot()));
+    await commandReply(ctx, formatDeviceStatus(getDeviceSnapshot()), "response", request.requestId);
     return;
   }
 
   if (result.kind === "timeout") {
     const snapshot = getDeviceSnapshot();
     if (snapshot.status) {
-      await ctx.reply(formatDeviceStatus(snapshot, "cached"));
+      await commandReply(ctx, formatDeviceStatus(snapshot, "cached"), "cached", request.requestId);
     } else {
-      await ctx.reply("Newo did not reply within 5 seconds.");
+      await commandReply(ctx, "Newo did not reply within 5 seconds.", "timeout", request.requestId);
     }
     return;
   }
 
-  await ctx.reply(
+  await commandReply(ctx,
     getConnectedDeviceState() ? "Newo did not reply within 5 seconds." : `Newo ${env.NEWO_DEVICE_ID}: offline`,
+    "unavailable", request.requestId,
   );
 }
 
@@ -454,16 +479,16 @@ async function replyLines(ctx, lines) {
   let message = "";
   for (const line of lines) {
     if (message && message.length + line.length + 1 > 3800) {
-      await ctx.reply(message);
+      await commandReply(ctx, message, "logs_chunk");
       message = "";
     }
     message += `${message ? "\n" : ""}${line}`;
   }
-  if (message) await ctx.reply(message);
+  if (message) await commandReply(ctx, message, "logs_chunk");
 }
 
 async function handleHealthCommand(ctx) {
-  const request = sendDeviceRequest("health_request", "health");
+  const request = sendDeviceRequest("health_request", "health", {}, commandTrace(ctx));
   if (request.kind === "offline") return ctx.reply("Newo is offline.");
   const result = await request.promise;
   if (result.kind !== "response") return ctx.reply(result.kind === "timeout" ? "Newo did not reply within 5 seconds." : "Newo is offline.");
@@ -474,10 +499,11 @@ async function handleHealthCommand(ctx) {
 async function handleLogsCommand(ctx, forceProblems = false) {
   const args = parseLogsArguments(ctx.match, forceProblems);
   if (!args) return ctx.reply("Usage: /logs [1-40] [warn|error]");
-  const request = sendDeviceRequest("logs_request", "logs", args);
+  const request = sendDeviceRequest("logs_request", "logs", args, commandTrace(ctx));
   if (request.kind === "offline") return ctx.reply("Newo is offline.");
   const result = await request.promise;
   if (result.kind !== "response") return ctx.reply(result.kind === "timeout" ? "Newo did not reply within 5 seconds." : "Newo is offline.");
+  if (result.message.error) return commandReply(ctx, "Newo could not prepare logs.", "device_error", request.requestId);
   const entries = result.message.entries;
   if (forceProblems && entries.length === 0) return ctx.reply("Newo errors\n\nNo problems since startup.");
   const title = forceProblems ? ["Newo errors", "", `${result.message.warnings} warnings`, `${result.message.errors} errors`, ""] : ["Newo logs", ""];
@@ -485,7 +511,7 @@ async function handleLogsCommand(ctx, forceProblems = false) {
 }
 
 async function handlePingCommand(ctx) {
-  const request = sendDeviceRequest("ping", "pong");
+  const request = sendDeviceRequest("ping", "pong", {}, commandTrace(ctx));
   if (request.kind === "offline") {
     await ctx.reply("Newo is offline.");
     return;
@@ -553,7 +579,7 @@ function completePendingReboot(deviceId) {
 }
 
 async function handleRebootCommand(ctx) {
-  const request = sendDeviceRequest("reboot", "reboot_ack");
+  const request = sendDeviceRequest("reboot", "reboot_ack", {}, commandTrace(ctx));
   if (request.kind === "offline") {
     await ctx.reply("Newo is offline.");
     return;
@@ -580,6 +606,27 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot = new Bot(env.TELEGRAM_BOT_TOKEN);
 
   bot.use(async (ctx, next) => {
+    const text = ctx.message?.text;
+    const command = typeof text === "string" ? text.match(/^\/([a-z0-9_]+)/i)?.[1]?.toLowerCase() ?? null : null;
+    ctx.state.newoTrace = {
+      updateId: ctx.update.update_id ?? null,
+      messageId: ctx.message?.message_id ?? null,
+      command,
+      invokedAt: new Date().toISOString(),
+      replyCount: 0,
+    };
+    app.log.info({ telegram_update_id: ctx.state.newoTrace.updateId, telegram_message_id: ctx.state.newoTrace.messageId,
+      chat_id: ctx.chat?.id?.toString() ?? null, command, handler_invoked_at: ctx.state.newoTrace.invokedAt },
+      "Newo Telegram update received");
+    const originalReply = ctx.reply.bind(ctx);
+    ctx.reply = async (...args) => {
+      const trace = ctx.state.newoTrace;
+      trace.replyCount += 1;
+      app.log.info({ telegram_update_id: trace.updateId, request_id: trace.requestId ?? null,
+        result: trace.replyCategory ?? "reply", reply_already_emitted: trace.replyCount > 1 },
+        "Newo Telegram reply emitted");
+      return originalReply(...args);
+    };
     const userId = ctx.from?.id?.toString();
     const chatId = ctx.chat?.id?.toString();
     const allowed =

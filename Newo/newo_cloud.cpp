@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <cstring>
 #include <esp_system.h>
+#include <esp_heap_caps.h>
 
 #include "newo_config.h"
 #include "newo_log.h"
@@ -49,6 +50,7 @@ void NewoCloud::startConnection() {
     return;
   }
 
+  recordStack("after wifi connection");
   String headers;
   headers.reserve(strlen(NewoSecrets::DEVICE_ID) + strlen(NewoSecrets::DEVICE_SECRET) + 64);
   headers += F("X-Newo-Device-Id: ");
@@ -106,6 +108,15 @@ bool NewoCloud::connected() const {
   return connected_;
 }
 
+void NewoCloud::recordStack(const char* point) {
+  // FreeRTOS returns StackType_t words (4 bytes on ESP32-S3).
+  const uint32_t bytes = uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t);
+  if (bytes < minimumLoopStackBytes_) minimumLoopStackBytes_ = bytes;
+  Serial.printf("[stack] %s: %lu bytes free (low %lu)\n", point,
+                static_cast<unsigned long>(bytes),
+                static_cast<unsigned long>(minimumLoopStackBytes_));
+}
+
 void NewoCloud::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
   switch (type) {
     case WStype_CONNECTED:
@@ -153,6 +164,7 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
   if (strcmp(type, "hello_ack") == 0) {
     authenticated_ = true;
     NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::CLOUD, "CLOUD_AUTHENTICATED");
+    recordStack("cloud authenticated");
     return;
   }
 
@@ -232,7 +244,9 @@ void NewoCloud::sendStatus(const char* requestId, bool pong) {
 void NewoCloud::sendHealth(const char* requestId) {
   if (!connected_ || !requestId || requestId[0] == '\0') return;
 
-  const NewoLog::Snapshot logs = NewoLog::snapshot();
+  recordStack("before health");
+  const NewoLog::Stats logs = NewoLog::stats();
+  recordStack("during health");
   JsonDocument doc;
   doc["type"] = "health";
   doc["request_id"] = requestId;
@@ -262,40 +276,59 @@ void NewoCloud::sendHealth(const char* requestId) {
   logger["capacity"] = NewoLog::kCapacity;
   logger["warnings"] = logs.warnings;
   logger["errors"] = logs.errors;
+  doc["loop_stack_low_bytes"] = minimumLoopStackBytes_;
 
   String body;
   serializeJson(doc, body);
   webSocket_.sendTXT(body);
+  recordStack("after health");
 }
 
 void NewoCloud::sendLogs(const char* requestId, uint8_t limit, const char* minLevel) {
   if (!connected_ || !requestId || requestId[0] == '\0') return;
 
+  recordStack("before logs");
   NewoLog::Level minimum = NewoLog::Level::INFO;
   if (strcmp(minLevel, "warn") == 0) minimum = NewoLog::Level::WARN;
   if (strcmp(minLevel, "error") == 0) minimum = NewoLog::Level::ERROR;
-  const NewoLog::Snapshot snapshot = NewoLog::snapshot();
 
+  const size_t exportBytes = static_cast<size_t>(limit) * sizeof(NewoLog::Entry);
+  NewoLog::Entry* entries = static_cast<NewoLog::Entry*>(
+      heap_caps_malloc(exportBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!entries) entries = static_cast<NewoLog::Entry*>(malloc(exportBytes));
+
+  NewoLog::Stats logStats = {};
+  if (!entries) {
+    JsonDocument failed;
+    failed["type"] = "logs";
+    failed["request_id"] = requestId;
+    failed["firmware"] = NewoConfig::FIRMWARE_VERSION;
+    failed["uptime_ms"] = millis();
+    const NewoLog::Stats current = NewoLog::stats();
+    failed["warnings"] = current.warnings;
+    failed["errors"] = current.errors;
+    failed["error"] = "allocation_failed";
+    failed["entries"].to<JsonArray>();
+    String body;
+    serializeJson(failed, body);
+    webSocket_.sendTXT(body);
+    recordStack("logs allocation failed");
+    return;
+  }
+
+  const size_t count = NewoLog::copyRecent(entries, limit, minimum, &logStats);
+  recordStack("during logs");
   JsonDocument doc;
   doc["type"] = "logs";
   doc["request_id"] = requestId;
   doc["firmware"] = NewoConfig::FIRMWARE_VERSION;
   doc["uptime_ms"] = millis();
-  doc["warnings"] = snapshot.warnings;
-  doc["errors"] = snapshot.errors;
-  JsonArray entries = doc["entries"].to<JsonArray>();
-  size_t first = snapshot.count;
-  size_t selected = 0;
-  for (size_t i = snapshot.count; i > 0 && selected < limit; --i) {
-    if (static_cast<uint8_t>(snapshot.entries[i - 1].level) >= static_cast<uint8_t>(minimum)) {
-      first = i - 1;
-      ++selected;
-    }
-  }
-  for (size_t i = first; i < snapshot.count; ++i) {
-    const NewoLog::Entry& entry = snapshot.entries[i];
-    if (static_cast<uint8_t>(entry.level) < static_cast<uint8_t>(minimum)) continue;
-    JsonObject output = entries.add<JsonObject>();
+  doc["warnings"] = logStats.warnings;
+  doc["errors"] = logStats.errors;
+  JsonArray outputEntries = doc["entries"].to<JsonArray>();
+  for (size_t i = 0; i < count; ++i) {
+    const NewoLog::Entry& entry = entries[i];
+    JsonObject output = outputEntries.add<JsonObject>();
     output["seq"] = entry.sequence;
     output["first_ms"] = entry.firstMs;
     output["last_ms"] = entry.lastMs;
@@ -309,6 +342,8 @@ void NewoCloud::sendLogs(const char* requestId, uint8_t limit, const char* minLe
   String body;
   serializeJson(doc, body);
   if (body.length() <= 16 * 1024) webSocket_.sendTXT(body);
+  heap_caps_free(entries);
+  recordStack("after logs");
 }
 
 void NewoCloud::sendRebootAck(const char* requestId) {

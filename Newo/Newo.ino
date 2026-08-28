@@ -45,6 +45,7 @@ void setup() {
   newoCloud.begin();
 
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::BOOT, "BOOT_READY");
+  newoCloud.recordStack("after boot");
 }
 
 void loop() {

@@ -22,15 +22,20 @@ struct Entry {
   char detail[kDetailSize];
 };
 
-struct Snapshot {
-  Entry entries[kCapacity];
+struct Stats {
   size_t count;
   uint32_t warnings;
   uint32_t errors;
 };
 
+static_assert(sizeof(Entry) == 148, "Entry size changed; review RAM budget");
+static_assert(sizeof(Stats) == 12, "Stats must remain small");
+
 void log(Level level, Subsystem subsystem, const char* code, const char* detail = nullptr);
-Snapshot snapshot();
+Stats stats();
+// Copies up to capacity newest matching entries in chronological order. The caller
+// owns destination storage and must keep allocation/serialization outside the lock.
+size_t copyRecent(Entry* destination, size_t capacity, Level minimum, Stats* resultStats = nullptr);
 const char* levelName(Level level);
 const char* subsystemName(Subsystem subsystem);
 

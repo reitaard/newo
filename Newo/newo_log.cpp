@@ -80,18 +80,46 @@ void log(Level level, Subsystem subsystem, const char* code, const char* detail)
                 safeDetail[0] ? " — " : "", safeDetail);
 }
 
-Snapshot snapshot() {
-  Snapshot result = {};
+Stats stats() {
+  Stats result = {};
   portENTER_CRITICAL(&mux);
   result.count = count;
   result.warnings = warnings;
   result.errors = errors;
-  const size_t start = (head + kCapacity - count) % kCapacity;
-  for (size_t i = 0; i < count; ++i) {
-    result.entries[i] = entries[(start + i) % kCapacity];
-  }
   portEXIT_CRITICAL(&mux);
   return result;
+}
+
+size_t copyRecent(Entry* destination, size_t capacity, Level minimum, Stats* resultStats) {
+  if (!destination || capacity == 0) {
+    if (resultStats) *resultStats = stats();
+    return 0;
+  }
+
+  portENTER_CRITICAL(&mux);
+  if (resultStats) {
+    resultStats->count = count;
+    resultStats->warnings = warnings;
+    resultStats->errors = errors;
+  }
+
+  size_t selected = 0;
+  size_t oldestSelected = count;
+  for (size_t offset = 1; offset <= count && selected < capacity; ++offset) {
+    const Entry& entry = entries[(head + kCapacity - offset) % kCapacity];
+    if (static_cast<uint8_t>(entry.level) >= static_cast<uint8_t>(minimum)) {
+      oldestSelected = count - offset;
+      ++selected;
+    }
+  }
+  for (size_t i = oldestSelected, output = 0; i < count && output < selected; ++i) {
+    const Entry& entry = entries[(head + kCapacity - count + i) % kCapacity];
+    if (static_cast<uint8_t>(entry.level) >= static_cast<uint8_t>(minimum)) {
+      destination[output++] = entry;
+    }
+  }
+  portEXIT_CRITICAL(&mux);
+  return selected;
 }
 
 }  // namespace NewoLog

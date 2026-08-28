@@ -12,6 +12,8 @@ class NewoCloud {
   void begin();
   void loop();
   bool connected() const;
+  // Temporary physical-validation instrumentation. FreeRTOS reports words.
+  void recordStack(const char* point);
 
  private:
   void startConnection();
@@ -34,4 +36,5 @@ class NewoCloud {
   uint32_t disconnectCount_ = 0;
   uint32_t errorCount_ = 0;
   bool authenticated_ = false;
+  uint32_t minimumLoopStackBytes_ = UINT32_MAX;
 };
