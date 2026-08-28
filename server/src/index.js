@@ -789,7 +789,7 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["status", "s"], handleStatusCommand);
   bot.command(["health", "h"], handleHealthCommand);
   bot.command(["logs", "l"], (ctx) => handleLogsCommand(ctx));
-  bot.command(["errors", "e"], (ctx) => handleLogsCommand(ctx, true));
+  bot.command("errors", (ctx) => handleLogsCommand(ctx, true));
   bot.command(["ping", "p"], handlePingCommand);
   bot.command(["reboot", "r"], handleRebootCommand);
   bot.command(["newo", "n"], handleNewoCommand);
