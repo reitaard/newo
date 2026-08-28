@@ -29,7 +29,7 @@ The Node service binds to loopback by default. Port 8788 should not be exposed p
 - `WS /voice` authenticated raw PCM audio stream for development ASR preparation
 - `POST /telegram/webhook` enabled only when Telegram environment variables are configured
 
-Telegram commands are allowlist-protected. The visible menu contains `/status` (quick status), `/health` (live device health), `/logs` (recent events), `/errors` (warnings/errors), and `/reboot` (acknowledged restart). Hidden aliases `/s`, `/h`, `/l`, `/r`, `/n`, `/e`, `/ping`, and `/p` remain available; `/e` toggles ECO (the errors command has no short alias); aliases and latency checks are not placed in the menu.
+Telegram commands are allowlist-protected. The visible menu contains `/status` (quick status), `/health` (live device health), `/logs` (recent events), `/errors` (warnings/errors), and `/reboot` (acknowledged restart). Hidden aliases `/s`, `/h`, `/l`, `/e`, `/r`, `/ping`, and `/p` remain available; aliases and latency checks are not placed in the menu.
 
 `/health` and `/logs` use the existing authenticated, correlated WSS request path. Device logs are a fixed 64-entry volatile RAM ring buffer; they remain available over USB Serial, are erased on reboot, contain no secrets, and are never returned by public HTTP `/health`.
 

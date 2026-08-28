@@ -104,7 +104,7 @@ The visible menu is deliberately limited and remains behind the VPS allowlist:
 - `/errors` — warnings and errors from the same event buffer
 - `/reboot` — restart with acknowledged lifecycle
 
-Hidden aliases are `/s`, `/h`, `/l`, and `/r`; `/n` controls the display and `/e` toggles ECO. `/errors` intentionally has no short alias because `/e` is reserved for ECO. `/start` returns a one-line online/offline greeting. `/ping` and `/p` remain hidden diagnostic latency commands.
+Hidden aliases are `/s`, `/h`, `/l`, `/e`, and `/r`. `/start` returns a one-line online/offline greeting. `/ping` and `/p` remain hidden diagnostic latency commands.
 
 Firmware keeps important app events in a fixed 64-entry volatile RAM ring buffer while still printing them to USB Serial. Entries have stable machine codes, but the VPS maps them to readable Telegram text. The buffer is intentionally erased on reboot, stores no secrets, and is not exposed by public HTTP; health/log requests travel only over the authenticated WSS device channel.
 
