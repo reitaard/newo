@@ -6,6 +6,8 @@ import { Bot, webhookCallback } from "grammy";
 import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 
+import { createVoiceRuntime } from "./voice.js";
+
 try {
   loadEnvFile(".env");
 } catch (error) {
@@ -19,6 +21,7 @@ const emptyToUndefined = (value) => {
   const trimmed = value.trim();
   return trimmed.length === 0 ? undefined : trimmed;
 };
+const stringToBoolean = (value) => typeof value === "string" ? value.trim().toLowerCase() === "true" : value;
 
 const EnvSchema = z.object({
   HOST: z.preprocess(emptyToUndefined, z.string().default("127.0.0.1")),
@@ -33,6 +36,13 @@ const EnvSchema = z.object({
   TELEGRAM_ALLOWED_CHAT_IDS: z.preprocess(emptyToUndefined, z.string().optional()),
   NEWO_DEVICE_ID: z.preprocess(emptyToUndefined, z.string().min(1).default("newo-01")),
   NEWO_DEVICE_SECRET: z.preprocess(emptyToUndefined, z.string().min(24).optional()),
+  VOICE_SAMPLE_RATE: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(16_000)),
+  VOICE_CHANNELS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(2).default(1)),
+  VOICE_BITS_PER_SAMPLE: z.preprocess(emptyToUndefined, z.coerce.number().int().refine((value) => [8, 16, 24, 32].includes(value)).default(16)),
+  VOICE_MAX_STREAM_BYTES: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(19_200_000)),
+  VOICE_MAX_CHUNK_BYTES: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().max(256 * 1024).default(64 * 1024)),
+  VOICE_SAVE_WAV: z.preprocess(stringToBoolean, z.boolean().default(false)),
+  VOICE_CAPTURE_DIRECTORY: z.preprocess(emptyToUndefined, z.string().default("/tmp/newo-voice")),
 });
 
 const env = EnvSchema.parse(process.env);
@@ -62,6 +72,22 @@ const wss = new WebSocketServer({
   noServer: true,
   perMessageDeflate: false,
   maxPayload: 64 * 1024,
+});
+const voiceWss = new WebSocketServer({
+  noServer: true,
+  perMessageDeflate: false,
+  maxPayload: env.VOICE_MAX_CHUNK_BYTES,
+});
+const voiceRuntime = createVoiceRuntime({
+  logger: app.log,
+  config: {
+    sampleRate: env.VOICE_SAMPLE_RATE,
+    channels: env.VOICE_CHANNELS,
+    bitsPerSample: env.VOICE_BITS_PER_SAMPLE,
+    maxStreamBytes: env.VOICE_MAX_STREAM_BYTES,
+    saveWav: env.VOICE_SAVE_WAV,
+    captureDirectory: env.VOICE_CAPTURE_DIRECTORY,
+  },
 });
 
 const devices = new Map();
@@ -717,13 +743,13 @@ app.server.on("upgrade", (request, socket, head) => {
     return;
   }
 
-  if (pathname !== "/device") {
+  if (pathname !== "/device" && pathname !== "/voice") {
     rejectUpgrade(socket, 404, "Not Found");
     return;
   }
 
   if (!env.NEWO_DEVICE_SECRET) {
-    app.log.error("Rejected device connection because NEWO_DEVICE_SECRET is not configured");
+    app.log.error("Rejected Newo WebSocket because NEWO_DEVICE_SECRET is not configured");
     rejectUpgrade(socket, 503, "Service Unavailable");
     return;
   }
@@ -739,13 +765,21 @@ app.server.on("upgrade", (request, socket, head) => {
     !safeEqual(deviceId, env.NEWO_DEVICE_ID) ||
     !safeEqual(presentedSecret, env.NEWO_DEVICE_SECRET)
   ) {
-    app.log.warn({ device_id: deviceId ?? null }, "Rejected unauthenticated Newo device");
+    app.log.warn({ device_id: deviceId ?? null, path: pathname }, "Rejected unauthenticated Newo WebSocket");
     rejectUpgrade(socket, 401, "Unauthorized");
     return;
   }
 
-  wss.handleUpgrade(request, socket, head, (ws) => {
-    wss.emit("connection", ws, request, deviceId);
+  const server = pathname === "/voice" ? voiceWss : wss;
+  server.handleUpgrade(request, socket, head, (ws) => {
+    server.emit("connection", ws, request, deviceId);
+  });
+});
+
+voiceWss.on("connection", (ws, request, deviceId) => {
+  void voiceRuntime.handleConnection(ws, deviceId).catch((error) => {
+    app.log.error({ device_id: deviceId, error_message: error?.message ?? "unknown" }, "Voice connection setup failed");
+    ws.close(1011, "voice setup failed");
   });
 });
 
@@ -941,19 +975,18 @@ async function shutdown(signal) {
     cancelOfflineTimer(state);
   }
 
-  await Promise.all(
-    [...devices.values()]
-      .filter((state) => state.ws.readyState !== WebSocket.CLOSED)
-      .map((state) => closeDeviceSocket(state.ws)),
-  );
+  await Promise.all([
+    ...[...devices.values()].map((state) => state.ws),
+    ...voiceWss.clients,
+  ].filter((ws) => ws.readyState !== WebSocket.CLOSED).map(closeDeviceSocket));
 
-  await new Promise((resolve) => {
+  await Promise.all([wss, voiceWss].map((server) => new Promise((resolve) => {
     try {
-      wss.close(() => resolve());
+      server.close(() => resolve());
     } catch {
       resolve();
     }
-  });
+  })));
   await app.close();
   process.exitCode = 0;
 }
@@ -974,6 +1007,9 @@ app.log.info(
     bind: `${env.HOST}:${env.PORT}`,
     public_base_url: env.PUBLIC_BASE_URL,
     websocket_path: "/device",
+    voice_websocket_path: "/voice",
+    voice_format: `${env.VOICE_CHANNELS}ch ${env.VOICE_SAMPLE_RATE}Hz ${env.VOICE_BITS_PER_SAMPLE}-bit PCM LE`,
+    voice_wav_capture_enabled: env.VOICE_SAVE_WAV,
     telegram_enabled: Boolean(bot),
     device_auth_configured: Boolean(env.NEWO_DEVICE_SECRET),
   },

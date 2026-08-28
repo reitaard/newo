@@ -25,7 +25,8 @@ The Node service binds to loopback by default. Port 8788 should not be exposed p
 
 - `GET /` basic service identity
 - `GET /health` cloud/device health JSON
-- `WS /device` authenticated Newo device connection
+- `WS /device` authenticated Newo device control/status connection
+- `WS /voice` authenticated raw PCM audio stream for development ASR preparation
 - `POST /telegram/webhook` enabled only when Telegram environment variables are configured
 
 Telegram commands are allowlist-protected. The visible menu contains `/status` (quick status), `/health` (live device health), `/logs` (recent events), `/errors` (warnings/errors), and `/reboot` (acknowledged restart). Hidden aliases `/s`, `/h`, `/l`, `/e`, `/r`, `/ping`, and `/p` remain available; aliases and latency checks are not placed in the menu.
@@ -58,6 +59,23 @@ Authorization: Bearer <NEWO_DEVICE_SECRET>
 ```
 
 Secrets are never accepted in the URL query string.
+
+## Voice stream preparation
+
+`WS /voice` is a separate runtime from `/device`; it does not change device control, Telegram, or firmware behavior. It uses the same device-ID and bearer-secret headers as `/device`, so it is not a public unauthenticated endpoint:
+
+```text
+X-Newo-Device-Id: newo-01
+Authorization: Bearer <NEWO_DEVICE_SECRET>
+```
+
+Send continuous **binary WebSocket frames** containing raw PCM only. Default format is mono, 16 kHz, signed 16-bit little-endian. The server format is configured with `VOICE_SAMPLE_RATE`, `VOICE_CHANNELS`, and `VOICE_BITS_PER_SAMPLE`; `VOICE_MAX_CHUNK_BYTES` (64 KiB) limits one frame and `VOICE_MAX_STREAM_BYTES` (default 10 minutes at 16 kHz mono 16-bit) bounds one connection. Do not send WAV headers, base64, or binary payloads on `/device`.
+
+The voice runtime logs connect/start/progress outcome metadata without logging audio. It calculates received PCM duration from the configured format. `VOICE_SAVE_WAV=false` is the default. Set it to `true` only during a local development capture; the finalized WAV file is written to `/tmp/newo-voice` by default and is never tracked by git.
+
+`src/voice.js` defines the replaceable streaming ASR boundary: `createStream({ format, onEvent })`, `acceptAudio(chunk)`, and `stop()`. The current `NullAsrBackend` safely consumes audio but transcribes nothing. A later sherpa-onnx streaming Zipformer adapter can emit `{ type: "partial", text }` and `{ type: "final", text }`; those events are logged as `PARTIAL:`/`FINAL:` and returned to the voice WebSocket as JSON transcript events. No ASR package or model has been installed yet, avoiding an unmeasured model download on the production VPS.
+
+For a local transport-only test after setting `NEWO_DEVICE_SECRET`, start the existing service with `npm start` (or restart its PM2 process), then connect a WebSocket client to `ws://127.0.0.1:8788/voice` with the headers above and send PCM frames. Use the public WSS address only through the existing reverse proxy. Stop the test by closing the WebSocket; the server logs final byte and duration totals.
 
 ## First VPS test
 
