@@ -20,11 +20,14 @@ class NewoDisplay {
  private:
   void render();
   void drawFace();
+  void drawFaceFrame(uint32_t now);
+  void drawStateAnimation(uint32_t now);
+  void drawFaceResponse();
   void drawTextPage(const char* heading, const char* body, bool info = false);
   void drawMessage();
   void drawEco();
   void drawCentered(const char* text, int16_t y);
-  void drawWrapped(const char* text, int16_t firstY, bool info, bool centered = false);
+  void drawWrapped(const char* text, int16_t firstY, bool info, bool centered = false, uint8_t maxLines = 0);
   static const char* statusFor(NewoDisplayMode mode);
 
   Adafruit_ST7789 display_;
@@ -38,6 +41,11 @@ class NewoDisplay {
   uint32_t restoreAtMs_ = 0;
   uint32_t nextEcoPageMs_ = 0;
   uint8_t ecoPage_ = 0;
+  uint32_t nextFaceFrameMs_ = 0;
+  uint32_t modeStartedMs_ = 0;
+  uint32_t nextBlinkMs_ = 0;
+  uint32_t blinkStartedMs_ = 0;
+  bool blinking_ = false;
   struct Telemetry {
     bool wifi = false;
     int32_t rssi = 0;

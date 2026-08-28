@@ -5,6 +5,7 @@
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSansBold9pt7b.h>
 #include <SPI.h>
+#include <cmath>
 #include <cstring>
 
 #include "newo_config.h"
@@ -37,6 +38,7 @@ void NewoDisplay::begin() {
 
 bool NewoDisplay::setMode(NewoDisplayMode mode, const char* text, bool temporary) {
   if (mode > NewoDisplayMode::ECO) return false;
+  if (mode_ != mode) modeStartedMs_ = millis();
   mode_ = mode;
   strncpy(text_, text ? text : "", sizeof(text_) - 1);
   text_[sizeof(text_) - 1] = '\0';
@@ -94,6 +96,11 @@ void NewoDisplay::loop() {
     dirty_ = true;
   }
   if (dirty_) render();
+  if (!temporary_ && mode_ != NewoDisplayMode::ECO && mode_ != NewoDisplayMode::MESSAGE &&
+      static_cast<int32_t>(now - nextFaceFrameMs_) >= 0) {
+    nextFaceFrameMs_ = now + 50;  // 20 FPS, deliberately below audio/control loop rates.
+    drawFaceFrame(now);
+  }
 }
 
 const char* NewoDisplay::statusFor(NewoDisplayMode mode) {
@@ -113,17 +120,83 @@ void NewoDisplay::render() {
   if (temporary_) return drawTextPage("", text_, true);
   if (mode_ == NewoDisplayMode::MESSAGE) return drawMessage();
   drawFace();
+  drawFaceResponse();
 }
 
 void NewoDisplay::drawFace() {
-  int16_t leftX = 42, rightX = 137, y = 89, w = 61, h = 35;
-  if (mode_ == NewoDisplayMode::LISTENING) { leftX = 35; rightX = 132; w = 73; h = 38; }
-  if (mode_ == NewoDisplayMode::THINKING) y = 78;
-  if (mode_ == NewoDisplayMode::ERROR) { y = 99; h = 18; }
-  display_.fillRoundRect(leftX, y, w, h, h / 2, kWhite);
-  display_.fillRoundRect(rightX, y, w, h, h / 2, kWhite);
   const char* status = statusFor(mode_);
-  if (status[0]) drawCentered(status, 207);
+  if (status[0]) drawCentered(status, 145);
+  nextBlinkMs_ = millis() + random(3'000, 7'001);
+  nextFaceFrameMs_ = 0;
+  drawFaceFrame(millis());
+}
+
+void NewoDisplay::drawFaceFrame(uint32_t now) {
+  // Only the eye region is erased at animation rate; text and dashboard pages stay untouched.
+  display_.fillRect(20, 40, 200, 82, ST77XX_BLACK);
+  if (!blinking_ && static_cast<int32_t>(now - nextBlinkMs_) >= 0) {
+    blinking_ = true;
+    blinkStartedMs_ = now;
+  }
+  if (blinking_ && now - blinkStartedMs_ >= 180) {
+    blinking_ = false;
+    nextBlinkMs_ = now + random(3'000, 7'001);
+  }
+  const float phase = static_cast<float>(now % 3000) / 3000.0f * 6.2831853f;
+  int16_t floatY = static_cast<int16_t>(sinf(phase) * 1.5f);
+  int16_t gazeX = 0;
+  if (mode_ == NewoDisplayMode::IDLE) gazeX = static_cast<int16_t>(sinf(phase * 0.55f) * 3.0f);
+  if (mode_ == NewoDisplayMode::THINKING) gazeX = static_cast<int16_t>(sinf(phase * 0.32f) * 5.0f);
+  if (mode_ == NewoDisplayMode::SPEAKING) gazeX = static_cast<int16_t>(sinf(phase * 1.5f) * 2.0f);
+  int16_t shake = 0;
+  if (mode_ == NewoDisplayMode::ERROR && now - modeStartedMs_ < 420) {
+    shake = static_cast<int16_t>(sinf(static_cast<float>(now - modeStartedMs_) * 0.06f) * 3.0f);
+  }
+  int16_t leftX = 42 + gazeX + shake, rightX = 137 + gazeX + shake, y = 66 + floatY, w = 61, h = 35;
+  if (mode_ == NewoDisplayMode::LISTENING) { leftX = 35 + gazeX; rightX = 132 + gazeX; w = 73; h = 38; }
+  if (mode_ == NewoDisplayMode::THINKING) y -= 5;
+  if (mode_ == NewoDisplayMode::ERROR) { y += 10; h = 18; }
+  if (blinking_) h = 3;
+  display_.fillRoundRect(leftX, y + (35 - h) / 2, w, h, h / 2, kWhite);
+  display_.fillRoundRect(rightX, y + (35 - h) / 2, w, h, h / 2, kWhite);
+  drawStateAnimation(now);
+}
+
+void NewoDisplay::drawStateAnimation(uint32_t now) {
+  display_.fillRect(72, 160, 96, 23, ST77XX_BLACK);
+  const float phase = static_cast<float>(now % 2400) / 2400.0f * 6.2831853f;
+  if (mode_ == NewoDisplayMode::IDLE) {
+    const int16_t width = 20 + static_cast<int16_t>((sinf(phase) + 1.0f) * 13.0f);
+    display_.drawFastHLine(120 - width, 172, width * 2, kWhite);
+  } else if (mode_ == NewoDisplayMode::LISTENING) {
+    for (int8_t i = 0; i < 7; ++i) {
+      const int16_t height = 5 + static_cast<int16_t>((sinf(phase * 2.0f + i * 0.8f) + 1.0f) * 5.5f);
+      display_.fillRect(84 + i * 12, 176 - height, 5, height, kWhite);
+    }
+  } else if (mode_ == NewoDisplayMode::THINKING) {
+    for (int8_t i = 0; i < 3; ++i) {
+      const int16_t rise = static_cast<int16_t>((sinf(phase * 1.5f + i * 1.4f) + 1.0f) * 3.0f);
+      display_.fillCircle(108 + i * 12, 175 - rise, 2, kWhite);
+    }
+  } else if (mode_ == NewoDisplayMode::SPEAKING) {
+    int16_t lastY = 172;
+    for (int16_t x = 0; x <= 72; x += 4) {
+      const int16_t y = 172 + static_cast<int16_t>(sinf(phase * 2.0f + x * 0.16f) * 6.0f);
+      display_.drawLine(84 + x - 4, lastY, 84 + x, y, kWhite);
+      lastY = y;
+    }
+  } else if (mode_ == NewoDisplayMode::ERROR) {
+    display_.setFont(&FreeSans9pt7b); display_.setCursor(116, 177); display_.print("!"); display_.setFont(nullptr);
+  }
+}
+
+void NewoDisplay::drawFaceResponse() {
+  if (!text_[0]) return;
+  // State responses are deliberately bounded to two left-aligned lines.
+  char response[49] = {};
+  strncpy(response, text_, sizeof(response) - 1);
+  if (strlen(text_) >= sizeof(response)) { response[44] = '.'; response[45] = '.'; response[46] = '.'; response[47] = '\0'; }
+  drawWrapped(response, 204, false, false, 2);
 }
 
 void NewoDisplay::drawTextPage(const char* heading, const char* body, bool info) {
@@ -201,7 +274,7 @@ void NewoDisplay::drawCentered(const char* text, int16_t y) {
   display_.setFont(nullptr);
 }
 
-void NewoDisplay::drawWrapped(const char* text, int16_t firstY, bool info, bool centered) {
+void NewoDisplay::drawWrapped(const char* text, int16_t firstY, bool info, bool centered, uint8_t maxLines) {
   constexpr int16_t kMargin = 16;
   const int16_t maxWidth = kWidth - (kMargin * 2);
   const int16_t lineHeight = info ? 17 : 19;
@@ -209,6 +282,7 @@ void NewoDisplay::drawWrapped(const char* text, int16_t firstY, bool info, bool 
   char line[97] = {};
   size_t length = 0;
   int16_t y = firstY;
+  uint8_t lines = 0;
   const char* cursor = text ? text : "";
   auto flush = [&]() {
     if (length == 0 || y > 230) return;
@@ -217,9 +291,10 @@ void NewoDisplay::drawWrapped(const char* text, int16_t firstY, bool info, bool 
     else { display_.setCursor(kMargin, y); display_.print(line); }
     display_.setFont(info ? &FreeMono9pt7b : &FreeSans9pt7b);
     y += lineHeight;
+    ++lines;
     length = 0;
   };
-  while (*cursor && y <= 230) {
+  while (*cursor && y <= 230 && (!maxLines || lines < maxLines)) {
     if (*cursor == '\n') { flush(); ++cursor; continue; }
     while (*cursor == ' ') ++cursor;
     if (!*cursor) break;
