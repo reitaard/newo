@@ -467,15 +467,36 @@ function formatLogTime(milliseconds) {
   return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}` : `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
 }
 
-function parseDetail(detail) {
-  return Object.fromEntries(String(detail).split(" ").map((part) => part.split(/=(.*)/, 2)).filter(([key, value]) => key && value !== undefined));
+function parseLogDetail(code, detail) {
+  const text = String(detail ?? "");
+  const valueAfter = (prefix) => text.startsWith(prefix) ? text.slice(prefix.length) : undefined;
+  switch (code) {
+    case "WIFI_CONNECTING":
+      return { ssid: valueAfter("ssid=") };
+    case "WIFI_CONNECTED": {
+      const marker = " rssi=";
+      const index = text.lastIndexOf(marker);
+      if (index === -1 || !text.startsWith("ssid=")) return {};
+      return { ssid: text.slice("ssid=".length, index), rssi: text.slice(index + marker.length) };
+    }
+    case "WIFI_CONNECT_FAILED": {
+      const marker = " reason=";
+      const index = text.lastIndexOf(marker);
+      if (index === -1 || !text.startsWith("ssid=")) return {};
+      return { ssid: text.slice("ssid=".length, index), reason: text.slice(index + marker.length) };
+    }
+    case "WIFI_DISCONNECTED":
+      return { reason: valueAfter("reason=") };
+    default:
+      return Object.fromEntries(text.split(" ").map((part) => part.split(/=(.*)/, 2)).filter(([key, value]) => key && value !== undefined));
+  }
 }
 
 function formatLogEntry(entry) {
-  const detail = parseDetail(entry.detail);
+  const detail = parseLogDetail(entry.code, entry.detail);
   const labels = {
     BOOT_START: ["Started"], BOOT_READY: ["Newo ready"], STORAGE_READY: ["Storage ready", `${detail.saved_networks ?? "0"} networks`], STORAGE_FAILED: ["Storage failed"],
-    WIFI_SCAN_START: ["Scanning for saved Wi-Fi"], WIFI_SCAN_EMPTY: ["Wi-Fi scan found nothing"], WIFI_SCAN_RESULT: ["Found saved Wi-Fi"], WIFI_CONNECTING: ["Connecting", detail.ssid ?? "Wi-Fi"], WIFI_CONNECTED: ["Wi-Fi connected", detail.ssid ?? "unknown", detail.rssi ? `${detail.rssi} dBm` : null], WIFI_CONNECT_FAILED: ["Wi-Fi connection failed"], WIFI_DISCONNECTED: ["Wi-Fi disconnected", detail.reason ?? "unknown reason"], WIFI_RECONNECTING: ["Reconnecting Wi-Fi"],
+    WIFI_SCAN_START: ["Scanning for saved Wi-Fi"], WIFI_SCAN_EMPTY: ["Wi-Fi scan found nothing"], WIFI_SCAN_RESULT: ["Found saved Wi-Fi"], WIFI_CONNECTING: ["Connecting", detail.ssid ?? "Wi-Fi"], WIFI_CONNECTED: ["Wi-Fi connected", detail.ssid ?? "unknown", detail.rssi ? `${detail.rssi} dBm` : null], WIFI_CONNECT_FAILED: ["Wi-Fi connection failed", detail.ssid ?? "unknown", detail.reason ?? "unknown reason"], WIFI_DISCONNECTED: ["Wi-Fi disconnected", detail.reason ?? "unknown reason"], WIFI_RECONNECTING: ["Reconnecting Wi-Fi"],
     PROV_STARTED: ["Wi-Fi setup started"], PROV_READY: ["Wi-Fi setup ready"], PROV_CREDENTIALS_RECEIVED: ["Wi-Fi details received"], PROV_CREDENTIALS_ACCEPTED: ["Wi-Fi details accepted"], PROV_CREDENTIALS_REJECTED: ["Wi-Fi details rejected"], PROV_SAVE_FAILED: ["Wi-Fi setup could not save"], PROV_SAVED: ["Wi-Fi network saved"], PROV_STOPPED: ["Wi-Fi setup stopped"], PROV_TIMEOUT: ["Wi-Fi setup timed out"],
     CLOUD_CONFIGURED: ["Cloud configured"], CLOUD_DISABLED: ["Cloud disabled"], CLOUD_CONNECTING: ["Connecting to cloud"], CLOUD_CONNECTED: ["Cloud connected"], CLOUD_AUTHENTICATED: ["Newo authenticated"], CLOUD_DISCONNECTED: ["Cloud disconnected"], CLOUD_WS_ERROR: ["Cloud connection error"], CLOUD_INVALID_JSON: ["Cloud sent invalid data"], CLOUD_UNSUPPORTED_MESSAGE: ["Cloud sent unsupported message"], CLOUD_REBOOT_ACK_FAILED: ["Restart acknowledgement failed"], SYSTEM_REBOOT_REQUESTED: ["Restart requested"], SYSTEM_REBOOTING: ["Restarting"],
   };
