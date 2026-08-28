@@ -93,12 +93,19 @@ void NewoAudio::loop() {
   voiceWebSocket_.loop();
   if (!voiceConnected_) return;
 
+  // One frame per loop made the old 160 ms queue vulnerable to ordinary loop
+  // stalls. Drain a bounded burst while healthy so Wi-Fi/WebSocket servicing
+  // still regains control promptly.
   AudioFrame frame;
-  if (xQueueReceive(queue_, &frame, 0) != pdTRUE) return;
-  if (!voiceWebSocket_.sendBIN(reinterpret_cast<uint8_t*>(frame.samples), sizeof(frame.samples))) {
-    ++droppedFrames_;
-    NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO, "VOICE_FRAME_DROPPED", "send_failed");
-  } else {
+  for (size_t sent = 0;
+       sent < NewoConfig::AUDIO_SEND_DRAIN_LIMIT && voiceConnected_;
+       ++sent) {
+    if (xQueueReceive(queue_, &frame, 0) != pdTRUE) break;
+    if (!voiceWebSocket_.sendBIN(reinterpret_cast<uint8_t*>(frame.samples), sizeof(frame.samples))) {
+      ++droppedFrames_;
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO, "VOICE_FRAME_DROPPED", "send_failed");
+      break;
+    }
     ++transmittedFrames_;
   }
 }
@@ -127,10 +134,21 @@ void NewoAudio::audioTask() {
       const size_t channelOffset = sample * 2 + (NewoConfig::AUDIO_I2S_MIC_IS_LEFT ? 0 : 1);
       const int32_t slot32 = inputWords_[channelOffset];
       // INMP441 drives a signed 24-bit sample in bits 31..8 of each 32-bit I2S slot.
-      // First recover the signed 24-bit value, then explicitly reduce it to PCM16.
+      // Apply fixed gain while its 24-bit precision is still available. int64_t
+      // keeps the multiplication and subsequent reduction safely in range.
       const int32_t sample24 = slot32 >> 8;
-      const int32_t sample16 = sample24 >> 8;
-      frame.samples[sample] = static_cast<int16_t>(constrain(sample16, -32768, 32767));
+      const int64_t gainedSample24 = static_cast<int64_t>(sample24) * NewoConfig::AUDIO_MIC_GAIN;
+      const int64_t pcm16 = gainedSample24 >> 8;
+      if (pcm16 > INT16_MAX) {
+        frame.samples[sample] = INT16_MAX;
+        ++clippedSamplesSinceLevel_;
+      } else if (pcm16 < INT16_MIN) {
+        frame.samples[sample] = INT16_MIN;
+        ++clippedSamplesSinceLevel_;
+      } else {
+        frame.samples[sample] = static_cast<int16_t>(pcm16);
+      }
+      ++pcmSamplesSinceLevel_;
     }
 
     ++capturedFrames_;
@@ -191,11 +209,22 @@ void NewoAudio::logLevel(const AudioFrame& frame) {
     sumSquares += static_cast<uint64_t>(value) * static_cast<uint64_t>(value);
   }
   const uint32_t rms = static_cast<uint32_t>(sqrt(sumSquares / NewoConfig::AUDIO_SAMPLES_PER_FRAME));
+  const uint32_t clipped = clippedSamplesSinceLevel_;
+  const uint32_t observedSamples = pcmSamplesSinceLevel_;
+  // Tenths of a percent avoids float formatting and makes low clipping visible.
+  const uint32_t clipPercentTenths = observedSamples == 0
+      ? 0
+      : (clipped * 1'000U + observedSamples / 2U) / observedSamples;
+  clippedSamplesSinceLevel_ = 0;
+  pcmSamplesSinceLevel_ = 0;
+
   char detail[96];
-  snprintf(detail, sizeof(detail), "peak=%ld rms=%lu cap=%lu tx=%lu drop=%lu over=%lu recon=%lu",
+  snprintf(detail, sizeof(detail), "p=%ld r=%lu c=%lu t=%lu d=%lu o=%lu n=%lu clip=%lu/%lu.%lu%%",
            static_cast<long>(peak), static_cast<unsigned long>(rms),
            static_cast<unsigned long>(capturedFrames_), static_cast<unsigned long>(transmittedFrames_),
            static_cast<unsigned long>(droppedFrames_), static_cast<unsigned long>(queueOverruns_),
-           static_cast<unsigned long>(reconnectCount_));
+           static_cast<unsigned long>(reconnectCount_), static_cast<unsigned long>(clipped),
+           static_cast<unsigned long>(clipPercentTenths / 10),
+           static_cast<unsigned long>(clipPercentTenths % 10));
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "AUDIO_LEVEL", detail);
 }

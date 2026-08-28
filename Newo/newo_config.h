@@ -26,7 +26,13 @@ constexpr uint32_t AUDIO_SAMPLE_RATE = 16'000;
 constexpr uint16_t AUDIO_FRAME_DURATION_MS = 20;
 constexpr size_t AUDIO_SAMPLES_PER_FRAME = AUDIO_SAMPLE_RATE * AUDIO_FRAME_DURATION_MS / 1'000;
 constexpr size_t AUDIO_FRAME_BYTES = AUDIO_SAMPLES_PER_FRAME * sizeof(int16_t);
-constexpr size_t AUDIO_QUEUE_DEPTH = 8;
+// Fixed digital gain for the physical microphone test. Applied to signed PCM24
+// before the final PCM16 reduction; raise only after reviewing clip metrics.
+constexpr uint8_t AUDIO_MIC_GAIN = 4;
+// 24 frames retain at most 480 ms. Bounded sender draining catches short loop
+// stalls without letting audio become unboundedly stale.
+constexpr size_t AUDIO_QUEUE_DEPTH = 24;
+constexpr size_t AUDIO_SEND_DRAIN_LIMIT = 6;
 constexpr uint32_t AUDIO_LEVEL_LOG_INTERVAL_MS = 5'000;
 
 constexpr uint32_t INITIAL_RECOVERY_WINDOW_MS = 18'000;

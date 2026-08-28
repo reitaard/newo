@@ -54,7 +54,9 @@ INMP441 L/R  -> GND    (left channel)
 
 GPIO4/5/6 are configurable in `newo_config.h`; the firmware audit found no current Newo assignments for them and deliberately excludes GPIO0 (bootstrap), GPIO19/20 (USB/JTAG), GPIO48 (RGB LED), and flash/PSRAM pins. The module receives 32-bit stereo I2S slots at 16 kHz, selects the configured INMP441 channel, sign-extends the left-aligned 24-bit sample (`slot32 >> 8`), then reduces and clamps it to signed PCM16 (`sample24 >> 8`).
 
-Audio uses a dedicated FreeRTOS capture task and I2S DMA, feeding an eight-frame (160 ms) queue. The loop-owned WebSockets client sends only 640-byte binary PCM frames (320 mono samples / 20 ms), so network stalls cannot run in the capture task. Queue overflow and reconnect transitions discard stale frames rather than replay speech. Every five seconds `AUDIO_LEVEL` logs peak/RMS and capture, send, drop, overrun, and reconnect counters; raw samples are never logged.
+Audio uses a dedicated FreeRTOS capture task and I2S DMA, feeding a 24-frame (480 ms) bounded queue. The loop-owned WebSockets client sends only 640-byte binary PCM frames (320 mono samples / 20 ms), draining up to six queued frames per healthy loop to catch up after short scheduling stalls without monopolizing the loop. Queue overflow and reconnect transitions discard stale frames rather than replay speech.
+
+`AUDIO_MIC_GAIN` is a fixed physical-test gain, default `4`. It is applied with 64-bit arithmetic to the recovered signed PCM24 sample before PCM16 reduction and saturating clamp. Every five seconds `AUDIO_LEVEL` reports post-gain `p` (peak), `r` (RMS), and cumulative `c` (captured), `t` (sent), `d` (dropped), `o` (queue overrun), and `n` (reconnect) frames/events. `clip=count/percent` is the clipped PCM16 samples and percentage for that reporting interval. Raw samples are never logged.
 
 ## Telegram
 

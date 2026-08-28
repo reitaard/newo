@@ -39,6 +39,8 @@ class NewoAudio {
   uint32_t droppedFrames_ = 0;
   uint32_t queueOverruns_ = 0;
   uint32_t reconnectCount_ = 0;
+  uint32_t clippedSamplesSinceLevel_ = 0;
+  uint32_t pcmSamplesSinceLevel_ = 0;
   uint32_t lastLevelLogMs_ = 0;
   int32_t inputWords_[NewoConfig::AUDIO_SAMPLES_PER_FRAME * 2] = {};
 };
