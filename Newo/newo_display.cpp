@@ -126,7 +126,8 @@ void NewoDisplay::render() {
 void NewoDisplay::drawFace() {
   const char* status = statusFor(mode_);
   if (status[0]) drawCentered(status, 145);
-  nextBlinkMs_ = millis() + random(3'000, 7'001);
+  // Give each newly-entered face state one visible verification blink, then use 3–7 s intervals.
+  nextBlinkMs_ = millis() + 1'000;
   nextFaceFrameMs_ = 0;
   drawFaceFrame(millis());
 }
