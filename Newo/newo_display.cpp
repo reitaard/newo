@@ -39,6 +39,10 @@ bool NewoDisplay::setMode(NewoDisplayMode mode, const char* text, bool temporary
   strncpy(text_, text ? text : "", sizeof(text_) - 1);
   text_[sizeof(text_) - 1] = '\0';
   if (!temporary && mode != NewoDisplayMode::ECO) {
+    // A manual /newo selection supersedes ECO; transient command-result pages do not.
+    ecoEnabled_ = false;
+    ecoPage_ = 0;
+    nextEcoPageMs_ = 0;
     persistentMode_ = mode;
     strncpy(persistentText_, text_, sizeof(persistentText_) - 1);
     persistentText_[sizeof(persistentText_) - 1] = '\0';
