@@ -54,6 +54,7 @@ void setup() {
 void loop() {
   newoWiFi.loop();
   newoCloud.loop();
+  if (newoCloud.consumeVoiceResetRequest()) newoAudio.resetVoiceStream("manual");
   newoAudio.loop();
   delay(2);
 }

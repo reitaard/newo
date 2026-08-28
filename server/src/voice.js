@@ -187,22 +187,40 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
     let finalTranscript = null;
     let processing = Promise.resolve();
     let closed = false;
+    let closeRequested = false;
+    let cleanupPromise = null;
 
-    const stop = async (outcome) => {
-      if (closed) return;
-      closed = true;
-      const durationMs = Math.round((bytesReceived / bytesPerSecond) * 1_000);
-      try {
-        await asrStream?.stop();
-        await capture?.close();
-      } catch (error) {
-        logger.warn({ device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Voice stream cleanup failed");
-      }
-      const fields = { device_id: deviceId, stream_id: streamId, bytes_received: bytesReceived, audio_duration_ms: durationMs, outcome };
-      if (config.liveTestMode) {
-        Object.assign(fields, { first_partial_ms: firstPartialMs, final_ms: finalMs, final_transcript: finalTranscript });
-      }
-      logger.info(fields, "Voice stream stopped");
+    const requestClose = (code, reason) => {
+      if (closeRequested) return;
+      closeRequested = true;
+      if (ws.readyState === 1) ws.close(code, reason);
+    };
+    const stop = (outcome) => {
+      if (cleanupPromise) return cleanupPromise;
+      cleanupPromise = (async () => {
+        // Do not race recognizer teardown with an in-flight acceptAudio().
+        await processing.catch(() => {});
+        if (closed) return;
+        closed = true;
+        const durationMs = Math.round((bytesReceived / bytesPerSecond) * 1_000);
+        try {
+          await asrStream?.stop();
+        } catch (error) {
+          logger.warn({ device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Voice ASR stream cleanup failed");
+        } finally {
+          try {
+            await capture?.close();
+          } catch (error) {
+            logger.warn({ device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Voice WAV cleanup failed");
+          }
+        }
+        if (asrStream) logger.info({ old_stream_id: streamId, device_id: deviceId, outcome }, "VOICE_ASR_STREAM_CLOSED");
+        asrStream = null;
+        const fields = { device_id: deviceId, stream_id: streamId, bytes_received: bytesReceived, audio_duration_ms: durationMs, outcome };
+        if (config.liveTestMode) Object.assign(fields, { first_partial_ms: firstPartialMs, final_ms: finalMs, final_transcript: finalTranscript });
+        logger.info(fields, "Voice stream stopped");
+      })();
+      return cleanupPromise;
     };
 
     logger.info({ device_id: deviceId, stream_id: streamId, format }, "Voice device connected");
@@ -219,7 +237,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
         if (chunk.length === 0) return;
         if (bytesReceived + chunk.length > config.maxStreamBytes) {
           logger.warn({ device_id: deviceId, stream_id: streamId, bytes_received: bytesReceived }, "Voice stream exceeded configured size limit");
-          ws.close(1009, "voice stream too large");
+          requestClose(1009, "voice stream too large");
           return;
         }
 
@@ -254,6 +272,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
             await capture.start();
             logger.info({ device_id: deviceId, stream_id: streamId, capture_file: file }, "Voice WAV capture started");
           }
+          logger.info({ new_stream_id: streamId, device_id: deviceId, format }, "VOICE_ASR_STREAM_CREATED");
           logger.info({ device_id: deviceId, stream_id: streamId, format }, "Voice stream started");
         }
 
@@ -267,14 +286,15 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
         }
       } catch (error) {
         logger.warn({ device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Voice stream processing failed");
-        ws.close(1011, "voice stream processing failed");
+        requestClose(1011, "voice stream processing failed");
       }
       });
     });
 
-    ws.on("close", (code) => { void processing.then(() => stop(`disconnect:${code}`)); });
+    ws.on("close", (code) => { void stop(`disconnect:${code}`); });
     ws.on("error", (error) => {
       logger.warn({ device_id: deviceId, stream_id: streamId, error_message: error.message }, "Voice WebSocket error");
+      requestClose(1011, "voice websocket error");
       void stop("error");
     });
   }

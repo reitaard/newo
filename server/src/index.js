@@ -161,6 +161,12 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
       request_id: z.string().optional(),
     })
     .passthrough(),
+  z
+    .object({
+      type: z.literal("voice_reset_ack"),
+      request_id: z.string().optional(),
+    })
+    .passthrough(),
   z.object({
     type: z.literal("health"),
     request_id: z.string(),
@@ -671,6 +677,15 @@ function completePendingReboot(deviceId) {
   return true;
 }
 
+async function handleVoiceResetCommand(ctx) {
+  const request = sendDeviceRequest("voice_reset", "voice_reset_ack", {}, commandTrace(ctx));
+  if (request.kind === "offline") return commandReply(ctx, statusMessage("voice reset", "offline"), "offline");
+  const result = await request.promise;
+  if (result.kind === "response") return commandReply(ctx, commandMessage("voice reset", [quote(["Voice stream reset requested."])]), "response", request.requestId);
+  const unavailable = getConnectedDeviceState() ? "Voice reset was not acknowledged." : "Newo is offline.";
+  return commandReply(ctx, commandMessage("voice reset", [quote([unavailable])]), result.kind, request.requestId);
+}
+
 async function handleRebootCommand(ctx) {
   const request = sendDeviceRequest("reboot", "reboot_ack", {}, commandTrace(ctx));
   if (request.kind === "offline") return commandReply(ctx, statusMessage("reboot", "offline"), "offline");
@@ -746,6 +761,8 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["errors", "e"], (ctx) => handleLogsCommand(ctx, true));
   bot.command(["ping", "p"], handlePingCommand);
   bot.command(["reboot", "r"], handleRebootCommand);
+  // Developer-only: authorization is enforced by the shared allowlist middleware.
+  bot.command("voicereset", handleVoiceResetCommand);
 
   void bot.api.setMyCommands(TELEGRAM_COMMANDS).catch(() => {
     app.log.warn("Failed to register the Telegram command menu");

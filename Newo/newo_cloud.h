@@ -12,6 +12,7 @@ class NewoCloud {
   void begin();
   void loop();
   bool connected() const;
+  bool consumeVoiceResetRequest();
   // Temporary physical-validation instrumentation; ESP-IDF reports bytes on ESP32-S3.
   void recordStack(const char* point);
 
@@ -24,6 +25,7 @@ class NewoCloud {
   void sendHealth(const char* requestId);
   void sendLogs(const char* requestId, uint8_t limit, const char* minLevel);
   void sendRebootAck(const char* requestId);
+  void sendVoiceResetAck(const char* requestId);
 
   NewoWiFi& wifi_;
   WebSocketsClient webSocket_;
@@ -36,5 +38,6 @@ class NewoCloud {
   uint32_t disconnectCount_ = 0;
   uint32_t errorCount_ = 0;
   bool authenticated_ = false;
+  bool voiceResetRequested_ = false;
   uint32_t minimumLoopStackBytes_ = UINT32_MAX;
 };

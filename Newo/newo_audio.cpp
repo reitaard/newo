@@ -116,6 +116,8 @@ void NewoAudio::loop() {
     const bool sent = voiceWebSocket_.sendBIN(bundle_, sizeof(bundle_));
     const uint32_t sendDurationUs = micros() - sendStartedUs;
     if (sendDurationUs > maxSendDurationUsSinceLevel_) maxSendDurationUsSinceLevel_ = sendDurationUs;
+    evaluateVoiceHealth(sendDurationUs);
+    if (!voiceConnected_) break;
     if (!sent) {
       droppedFrames_ += NewoConfig::AUDIO_WS_BUNDLE_FRAMES;
       NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO, "VOICE_FRAME_DROPPED", "send_failed");
@@ -124,6 +126,61 @@ void NewoAudio::loop() {
     transmittedFrames_ += NewoConfig::AUDIO_WS_BUNDLE_FRAMES;
     ++bundleSends_;
   }
+  evaluateVoiceHealth();
+}
+
+const char* NewoAudio::healthReasonName(VoiceHealthReason reason) {
+  switch (reason) {
+    case VoiceHealthReason::QUEUE: return "queue";
+    case VoiceHealthReason::SEND_LATENCY: return "send_latency";
+    case VoiceHealthReason::DROPS: return "drops";
+    default: return "unknown";
+  }
+}
+
+void NewoAudio::evaluateVoiceHealth(uint32_t sendDurationUs) {
+  if (!queue_ || !voiceConnected_) return;
+  const uint8_t queueDepth = static_cast<uint8_t>(uxQueueMessagesWaiting(queue_));
+  const uint32_t dropDelta = droppedFrames_ - lastHealthDropped_;
+  const uint32_t overrunDelta = queueOverruns_ - lastHealthOverruns_;
+  lastHealthDropped_ = droppedFrames_;
+  lastHealthOverruns_ = queueOverruns_;
+  const VoiceHealthDecision decision = voiceHealth_.observe(millis(), queueDepth, droppedFrames_, queueOverruns_, sendDurationUs);
+  if (decision.degraded) {
+    char detail[96];
+    snprintf(detail, sizeof(detail), "reason=%s q=%u age=%ums dd=%lu od=%lu su=%lu", healthReasonName(decision.reason),
+             static_cast<unsigned>(queueDepth), static_cast<unsigned>(queueDepth * NewoConfig::AUDIO_FRAME_DURATION_MS),
+             static_cast<unsigned long>(dropDelta), static_cast<unsigned long>(overrunDelta),
+             static_cast<unsigned long>(sendDurationUs));
+    NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO, "VOICE_HEALTH_DEGRADED", detail);
+  }
+  if (decision.recovered) NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_HEALTH_RECOVERED");
+  if (decision.reset) {
+    char reason[32];
+    snprintf(reason, sizeof(reason), "auto_%s", healthReasonName(decision.reason));
+    ++automaticVoiceResets_;
+    resetVoiceStream(reason);
+  }
+}
+
+void NewoAudio::resetVoiceStream(const char* reason) {
+  if (!configured_) return;
+  char detail[64];
+  snprintf(detail, sizeof(detail), "reason=%s ar=%lu", reason ? reason : "manual", static_cast<unsigned long>(automaticVoiceResets_));
+  NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO, "VOICE_RESET_START", detail);
+  voiceConnected_ = false;
+  started_ = false;
+  voiceWebSocket_.disconnect();
+  const uint32_t flushed = discardQueuedFrames();
+  memset(bundle_, 0, sizeof(bundle_));
+  voiceHealth_.resetComplete(millis());
+  lastHealthDropped_ = droppedFrames_;
+  lastHealthOverruns_ = queueOverruns_;
+  resetReconnectPending_ = true;
+  snprintf(detail, sizeof(detail), "frames=%lu", static_cast<unsigned long>(flushed));
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_RESET_QUEUE_FLUSHED", detail);
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_RESET_RECONNECTING");
+  startVoiceConnection();
 }
 
 void NewoAudio::audioTaskEntry(void* context) {
@@ -185,6 +242,10 @@ void NewoAudio::handleVoiceEvent(WStype_t type, uint8_t* payload, size_t length)
       voiceConnected_ = true;
       ++reconnectCount_;
       discardQueuedFrames();
+      if (resetReconnectPending_) {
+        resetReconnectPending_ = false;
+        NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_RESET_CONNECTED");
+      }
       NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_CONNECTED");
       break;
     case WStype_DISCONNECTED:
@@ -205,13 +266,14 @@ void NewoAudio::handleVoiceEvent(WStype_t type, uint8_t* payload, size_t length)
   }
 }
 
-void NewoAudio::discardQueuedFrames() {
-  if (!queue_) return;
+uint32_t NewoAudio::discardQueuedFrames() {
+  if (!queue_) return 0;
   const UBaseType_t stale = uxQueueMessagesWaiting(queue_);
   if (stale) {
     droppedFrames_ += stale;
     xQueueReset(queue_);
   }
+  return static_cast<uint32_t>(stale);
 }
 
 void NewoAudio::logLevel(const AudioFrame& frame) {
@@ -242,12 +304,13 @@ void NewoAudio::logLevel(const AudioFrame& frame) {
   queueHighWaterSinceLevel_ = 0;
 
   char detail[96];
-  snprintf(detail, sizeof(detail), "p=%ld r=%lu c=%lu t=%lu d=%lu o=%lu b=%lu su=%lu q=%u cl=%lu/%lu.%lu%%",
+  snprintf(detail, sizeof(detail), "p=%ld r=%lu c=%lu t=%lu d=%lu o=%lu b=%lu su=%lu q=%u ar=%lu cl=%lu/%lu.%lu%%",
            static_cast<long>(peak), static_cast<unsigned long>(rms),
            static_cast<unsigned long>(capturedFrames_), static_cast<unsigned long>(transmittedFrames_),
            static_cast<unsigned long>(droppedFrames_), static_cast<unsigned long>(queueOverruns_),
            static_cast<unsigned long>(bundleSends_), static_cast<unsigned long>(maxSendDurationUs),
-           static_cast<unsigned>(queueHighWater), static_cast<unsigned long>(clipped),
+           static_cast<unsigned>(queueHighWater), static_cast<unsigned long>(automaticVoiceResets_),
+           static_cast<unsigned long>(clipped),
            static_cast<unsigned long>(clipPercentTenths / 10),
            static_cast<unsigned long>(clipPercentTenths % 10));
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "AUDIO_LEVEL", detail);

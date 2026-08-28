@@ -53,5 +53,10 @@ constexpr uint32_t CLOUD_WS_PING_INTERVAL_MS = 15'000;
 constexpr uint32_t CLOUD_WS_PONG_TIMEOUT_MS = 3'000;
 constexpr uint8_t CLOUD_WS_MISSED_PONG_LIMIT = 2;
 constexpr uint32_t VOICE_WS_RECONNECT_INTERVAL_MS = 5'000;
+constexpr uint8_t VOICE_HEALTH_QUEUE_THRESHOLD = 20;
+constexpr uint32_t VOICE_HEALTH_SEND_WARN_US = 750'000;
+constexpr uint32_t VOICE_HEALTH_SEND_FATAL_US = 1'500'000;
+constexpr uint32_t VOICE_HEALTH_SUSTAIN_MS = 2'000;
+constexpr uint32_t VOICE_HEALTH_RESET_COOLDOWN_MS = 10'000;
 
 }  // namespace NewoConfig

@@ -8,7 +8,8 @@
     "check": "node --check src/index.js && node --check src/voice.js",
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "voice:benchmark": "node test/voice-sherpa-benchmark.js"
+    "voice:benchmark": "node test/voice-sherpa-benchmark.js",
+    "test": "node --test test/voice-runtime.test.js"
   },
   "engines": {
     "node": ">=22"

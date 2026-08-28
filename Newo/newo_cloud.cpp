@@ -108,6 +108,12 @@ bool NewoCloud::connected() const {
   return connected_;
 }
 
+bool NewoCloud::consumeVoiceResetRequest() {
+  const bool requested = voiceResetRequested_;
+  voiceResetRequested_ = false;
+  return requested;
+}
+
 void NewoCloud::recordStack(const char* point) {
   // ESP-IDF on ESP32-S3 returns this high-water mark in bytes.
   const uint32_t bytes = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
@@ -183,6 +189,12 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
   if (strcmp(type, "reboot") == 0) {
     const char* requestId = doc["request_id"] | "";
     sendRebootAck(requestId);
+    return;
+  }
+
+  if (strcmp(type, "voice_reset") == 0) {
+    const char* requestId = doc["request_id"] | "";
+    sendVoiceResetAck(requestId);
     return;
   }
 
@@ -344,6 +356,21 @@ void NewoCloud::sendLogs(const char* requestId, uint8_t limit, const char* minLe
   if (body.length() <= 16 * 1024) webSocket_.sendTXT(body);
   heap_caps_free(entries);
   recordStack("after logs");
+}
+
+void NewoCloud::sendVoiceResetAck(const char* requestId) {
+  if (!connected_ || !requestId || requestId[0] == '\0') return;
+  JsonDocument doc;
+  doc["type"] = "voice_reset_ack";
+  doc["request_id"] = requestId;
+  String body;
+  serializeJson(doc, body);
+  if (!webSocket_.sendTXT(body)) {
+    NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::CLOUD, "VOICE_RESET_ACK_FAILED");
+    return;
+  }
+  voiceResetRequested_ = true;
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_RESET_REQUESTED");
 }
 
 void NewoCloud::sendRebootAck(const char* requestId) {
