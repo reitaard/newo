@@ -1,6 +1,7 @@
 #include "newo_display.h"
 
 #include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/Org_01.h>
 #include <SPI.h>
 #include <cstring>
 
@@ -34,10 +35,14 @@ void NewoDisplay::begin() {
 
 bool NewoDisplay::setMode(NewoDisplayMode mode, const char* text, bool temporary) {
   if (mode > NewoDisplayMode::ECO) return false;
-  if (temporary && !ecoEnabled_) previousMode_ = mode_;
   mode_ = mode;
   strncpy(text_, text ? text : "", sizeof(text_) - 1);
   text_[sizeof(text_) - 1] = '\0';
+  if (!temporary && mode != NewoDisplayMode::ECO) {
+    persistentMode_ = mode;
+    strncpy(persistentText_, text_, sizeof(persistentText_) - 1);
+    persistentText_[sizeof(persistentText_) - 1] = '\0';
+  }
   temporary_ = temporary;
   restoreAtMs_ = temporary ? millis() + kTemporaryMs : 0;
   dirty_ = true;
@@ -45,10 +50,19 @@ bool NewoDisplay::setMode(NewoDisplayMode mode, const char* text, bool temporary
 }
 
 void NewoDisplay::toggleEco() {
-  ecoEnabled_ = !ecoEnabled_;
   temporary_ = false;
-  mode_ = ecoEnabled_ ? NewoDisplayMode::ECO : previousMode_;
-  nextEcoPageMs_ = 0;
+  if (!ecoEnabled_) {
+    ecoEnabled_ = true;
+    mode_ = NewoDisplayMode::ECO;
+    text_[0] = '\0';
+    ecoPage_ = 0;
+    nextEcoPageMs_ = millis() + kEcoPageMs;
+  } else {
+    ecoEnabled_ = false;
+    mode_ = persistentMode_;
+    strncpy(text_, persistentText_, sizeof(text_) - 1);
+    text_[sizeof(text_) - 1] = '\0';
+  }
   dirty_ = true;
 }
 
@@ -61,7 +75,11 @@ void NewoDisplay::loop() {
   const uint32_t now = millis();
   if (temporary_ && static_cast<int32_t>(now - restoreAtMs_) >= 0) {
     temporary_ = false;
-    mode_ = ecoEnabled_ ? NewoDisplayMode::ECO : previousMode_;
+    mode_ = ecoEnabled_ ? NewoDisplayMode::ECO : persistentMode_;
+    if (!ecoEnabled_) {
+      strncpy(text_, persistentText_, sizeof(text_) - 1);
+      text_[sizeof(text_) - 1] = '\0';
+    }
     dirty_ = true;
   }
   if (ecoEnabled_ && !temporary_ && static_cast<int32_t>(now - nextEcoPageMs_) >= 0) {
@@ -86,7 +104,7 @@ void NewoDisplay::render() {
   dirty_ = false;
   display_.fillScreen(ST77XX_BLACK);
   if (mode_ == NewoDisplayMode::ECO) return drawEco();
-  if (mode_ == NewoDisplayMode::MESSAGE || temporary_) return drawTextPage(mode_ == NewoDisplayMode::MESSAGE ? "" : statusFor(mode_), text_);
+  if (mode_ == NewoDisplayMode::MESSAGE || temporary_) return drawTextPage(mode_ == NewoDisplayMode::MESSAGE ? "" : statusFor(mode_), text_, true);
   drawFace();
 }
 
@@ -101,9 +119,9 @@ void NewoDisplay::drawFace() {
   if (status[0]) drawCentered(status, 207);
 }
 
-void NewoDisplay::drawTextPage(const char* heading, const char* body) {
-  if (heading && heading[0]) drawCentered(heading, 42);
-  drawWrapped(body, heading && heading[0] ? 76 : 94);
+void NewoDisplay::drawTextPage(const char* heading, const char* body, bool dense) {
+  if (heading && heading[0]) drawCentered(heading, dense ? 20 : 42, dense);
+  drawWrapped(body, heading && heading[0] ? (dense ? 38 : 76) : (dense ? 28 : 94), dense);
 }
 
 void NewoDisplay::drawEco() {
@@ -114,22 +132,22 @@ void NewoDisplay::drawEco() {
     snprintf(body, sizeof(body), "ONLINE  %s\n\nWiFi   %s\nRSSI   %ld dBm\nUp     %s\nFW     %s",
              telemetry_.cloud ? "YES" : "NO", telemetry_.wifi ? "OK" : "OFF",
              static_cast<long>(telemetry_.rssi), up, NewoConfig::FIRMWARE_VERSION);
-    drawTextPage("NEWO", body);
+    drawTextPage("NEWO", body, true);
   } else if (ecoPage_ == 1) {
     snprintf(body, sizeof(body), "Heap   %luK\nPSRAM  %luK\nWarn   %lu\nError  %lu",
              static_cast<unsigned long>(telemetry_.heap / 1024), static_cast<unsigned long>(telemetry_.psram / 1024),
              static_cast<unsigned long>(telemetry_.logs.warnings), static_cast<unsigned long>(telemetry_.logs.errors));
-    drawTextPage("HEALTH", body);
+    drawTextPage("HEALTH", body, true);
   } else {
-    snprintf(body, sizeof(body), "WiFi   %s\nCloud  %s\nVoice  ACTIVE\nWarn   %lu\nError  %lu",
+    snprintf(body, sizeof(body), "WiFi   %s\nCloud  %s\nWarn   %lu\nError  %lu",
              telemetry_.wifi ? "OK" : "OFF", telemetry_.cloud ? "OK" : "OFF",
              static_cast<unsigned long>(telemetry_.logs.warnings), static_cast<unsigned long>(telemetry_.logs.errors));
-    drawTextPage("SERVICES", body);
+    drawTextPage("SERVICES", body, true);
   }
 }
 
-void NewoDisplay::drawCentered(const char* text, int16_t y) {
-  display_.setFont(&FreeSans9pt7b);
+void NewoDisplay::drawCentered(const char* text, int16_t y, bool dense) {
+  display_.setFont(dense ? &Org_01 : &FreeSans9pt7b);
   int16_t x1, y1; uint16_t w, h;
   display_.getTextBounds(text, 0, y, &x1, &y1, &w, &h);
   display_.setCursor((kWidth - w) / 2, y);
@@ -137,12 +155,48 @@ void NewoDisplay::drawCentered(const char* text, int16_t y) {
   display_.setFont(nullptr);
 }
 
-void NewoDisplay::drawWrapped(const char* text, int16_t firstY) {
-  display_.setFont(&FreeSans9pt7b);
-  char copy[sizeof(text_)];
-  strncpy(copy, text ? text : "", sizeof(copy) - 1); copy[sizeof(copy) - 1] = '\0';
-  char* line = strtok(copy, "\n");
+void NewoDisplay::drawWrapped(const char* text, int16_t firstY, bool dense) {
+  constexpr int16_t kMargin = 10;
+  const int16_t maxWidth = kWidth - (kMargin * 2);
+  const int16_t lineHeight = dense ? 10 : 20;
+  display_.setFont(dense ? &Org_01 : &FreeSans9pt7b);
+  char line[97] = {};
+  size_t length = 0;
   int16_t y = firstY;
-  while (line && y < 220) { drawCentered(line, y); y += 20; line = strtok(nullptr, "\n"); }
+  const char* cursor = text ? text : "";
+  auto flush = [&]() {
+    if (length == 0 || y > 230) return;
+    line[length] = '\0';
+    drawCentered(line, y, dense);
+    display_.setFont(dense ? &Org_01 : &FreeSans9pt7b);
+    y += lineHeight;
+    length = 0;
+  };
+  while (*cursor && y <= 230) {
+    if (*cursor == '\n') { flush(); ++cursor; continue; }
+    while (*cursor == ' ') ++cursor;
+    if (!*cursor) break;
+    if (*cursor == '\n') { flush(); ++cursor; continue; }
+    char word[97] = {};
+    size_t wordLength = 0;
+    while (cursor[wordLength] && cursor[wordLength] != ' ' && cursor[wordLength] != '\n' && wordLength < sizeof(word) - 1) {
+      word[wordLength] = cursor[wordLength]; ++wordLength;
+    }
+    word[wordLength] = '\0';
+    cursor += wordLength;
+    char candidate[97] = {};
+    snprintf(candidate, sizeof(candidate), "%s%s%s", line, length ? " " : "", word);
+    int16_t x1, y1; uint16_t width, height;
+    display_.getTextBounds(candidate, 0, 0, &x1, &y1, &width, &height);
+    if (width <= maxWidth) { strncpy(line, candidate, sizeof(line) - 1); length = strlen(line); continue; }
+    if (length) flush();
+    // A single long word is split character-by-character to remain in bounds.
+    for (size_t index = 0; index < wordLength && y <= 230; ++index) {
+      line[length++] = word[index]; line[length] = '\0';
+      display_.getTextBounds(line, 0, 0, &x1, &y1, &width, &height);
+      if (width > maxWidth) { line[--length] = '\0'; flush(); line[length++] = word[index]; line[length] = '\0'; }
+    }
+  }
+  flush();
   display_.setFont(nullptr);
 }

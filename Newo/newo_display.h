@@ -20,16 +20,17 @@ class NewoDisplay {
  private:
   void render();
   void drawFace();
-  void drawTextPage(const char* heading, const char* body);
+  void drawTextPage(const char* heading, const char* body, bool dense = false);
   void drawEco();
-  void drawCentered(const char* text, int16_t y);
-  void drawWrapped(const char* text, int16_t firstY);
+  void drawCentered(const char* text, int16_t y, bool dense = false);
+  void drawWrapped(const char* text, int16_t firstY, bool dense);
   static const char* statusFor(NewoDisplayMode mode);
 
   Adafruit_ST7789 display_;
   NewoDisplayMode mode_ = NewoDisplayMode::IDLE;
-  NewoDisplayMode previousMode_ = NewoDisplayMode::IDLE;
+  NewoDisplayMode persistentMode_ = NewoDisplayMode::IDLE;
   char text_[97] = {};
+  char persistentText_[97] = {};
   bool ecoEnabled_ = false;
   bool temporary_ = false;
   bool dirty_ = true;

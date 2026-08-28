@@ -64,7 +64,7 @@ Audio uses a dedicated FreeRTOS capture task and I2S DMA, feeding a 24-frame (48
 
 ## Display and Telegram control
 
-The ST7789 uses GPIO42 SCK, GPIO41 MOSI, GPIO40 RST, GPIO38 DC, and GPIO2 CS; it is initialized with rotation `3` for the confirmed physical mount. The local display has `IDLE`, `LISTENING`, `THINKING`, `SPEAKING`, `ERROR`, `MESSAGE`, and `ECO` modes. Normal mode draws only a white code-drawn face on black; information pages use the bundled Adafruit `FreeSans9pt7b` font rather than scaled text. ECO rotates compact ONLINE, HEALTH, and SERVICES pages every five seconds without blocking.
+The ST7789 uses GPIO42 SCK, GPIO41 MOSI, GPIO40 RST, GPIO38 DC, and GPIO2 CS; it is initialized with rotation `3` for the confirmed physical mount. The local display has `IDLE`, `LISTENING`, `THINKING`, `SPEAKING`, `ERROR`, `MESSAGE`, and `ECO` modes. Normal mode draws only a white code-drawn face on black; face status words use bundled Adafruit `FreeSans9pt7b`; dense information pages use the compact `Org_01` (~6 px) font rather than scaled text. ECO rotates compact ONLINE, HEALTH, and SERVICES pages every five seconds without blocking.
 
 Authorized Telegram users can use visible `/newo <idle|listening|thinking|speaking|error|short text>` and `/eco`; hidden alias `/n` is equivalent. `/newo` semantic display updates use `display_set`/`display_ack`; `/eco` uses `eco_toggle`/`display_ack`. Status, health, ping, reboot, logs, and errors results briefly mirror compact summaries on-screen before returning to the prior face or ECO dashboard.
 
