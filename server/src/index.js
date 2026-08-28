@@ -183,6 +183,7 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
     cloud: z.object({ connections: z.number(), disconnects: z.number(), errors: z.number() }),
     logs: z.object({ stored: z.number().int(), capacity: z.number().int(), warnings: z.number(), errors: z.number() }),
   }),
+  z.object({ type: z.literal("display_ack"), request_id: z.string().optional(), mode: z.string().max(16) }).passthrough(),
   z.object({
     type: z.literal("logs"), request_id: z.string(), firmware: z.string(), uptime_ms: z.number().nonnegative(), warnings: z.number().nonnegative(), errors: z.number().nonnegative(), error: z.string().optional(),
     entries: z.array(z.object({ seq: z.number(), first_ms: z.number(), last_ms: z.number(), repeat: z.number().int().positive(), level: z.enum(["info", "warn", "error"]), subsystem: z.string(), code: z.string(), detail: z.string().max(96) })).max(40),
@@ -282,9 +283,7 @@ function sendDeviceRequest(requestType, responseType, fields = {}, trace = null)
       JSON.stringify({
         type: requestType,
         request_id: requestId,
-        ...(requestType === "logs_request"
-          ? { limit: fields.limit, min_level: fields.minLevel }
-          : {}),
+        ...fields,
       }),
       (error) => {
         if (error) {
@@ -451,6 +450,8 @@ const TELEGRAM_COMMANDS = [
   { command: "logs", description: "Recent logs" },
   { command: "errors", description: "Problems" },
   { command: "reboot", description: "Restart Newo" },
+  { command: "newo", description: "Set Newo display" },
+  { command: "eco", description: "Toggle ECO display" },
 ];
 
 function commandTrace(ctx) {
@@ -466,6 +467,31 @@ async function commandReply(ctx, text, category = "reply", requestId = null) {
   return ctx.reply(text, { parse_mode: "HTML" });
 }
 
+function showDisplay(text) {
+  const request = sendDeviceRequest("display_set", "display_ack", { mode: "message", text: String(text).slice(0, 96), temporary: true });
+  if (request.kind === "sent") void request.promise;
+}
+
+async function handleNewoCommand(ctx) {
+  const input = String(ctx.match ?? "").trim();
+  if (!input || input.length > 96) return commandReply(ctx, commandMessage("newo", [quote(["Use a mode or up to 96 characters."])]), "usage");
+  const mode = ["idle", "listening", "thinking", "speaking", "error"].includes(input.toLowerCase()) ? input.toLowerCase() : "message";
+  const text = mode === "message" ? input : "";
+  const request = sendDeviceRequest("display_set", "display_ack", { mode, text }, commandTrace(ctx));
+  if (request.kind === "offline") return commandReply(ctx, statusMessage("newo", "offline"), "offline");
+  const result = await request.promise;
+  if (result.kind === "response") return commandReply(ctx, commandMessage("newo", [quote([mode === "message" ? text : mode.toUpperCase()])]), "response", request.requestId);
+  return commandReply(ctx, commandMessage("newo", [quote(["Display update was not acknowledged."])]), result.kind, request.requestId);
+}
+
+async function handleEcoCommand(ctx) {
+  const request = sendDeviceRequest("eco_toggle", "display_ack", {}, commandTrace(ctx));
+  if (request.kind === "offline") return commandReply(ctx, statusMessage("eco", "offline"), "offline");
+  const result = await request.promise;
+  if (result.kind === "response") return commandReply(ctx, commandMessage("eco", [quote([result.message.mode === "eco_on" ? "ECO ON" : "ECO OFF"])]), "response", request.requestId);
+  return commandReply(ctx, commandMessage("eco", [quote(["ECO toggle was not acknowledged."])]), result.kind, request.requestId);
+}
+
 async function handleStatusCommand(ctx) {
   const request = sendDeviceRequest("status_request", "status", {}, commandTrace(ctx));
   if (request.kind === "offline") {
@@ -475,7 +501,9 @@ async function handleStatusCommand(ctx) {
 
   const result = await request.promise;
   if (result.kind === "response") {
-    await commandReply(ctx, formatDeviceStatus(getDeviceSnapshot()), "response", request.requestId);
+    const state = getDeviceSnapshot();
+    showDisplay(`STATUS\nOnline ${state.connected ? "YES" : "NO"}\nWiFi ${state.status?.rssi ?? "?"}\nHeap ${Math.round((state.status?.free_heap ?? 0) / 1024)}K\nPSRAM ${Math.round((state.status?.free_psram ?? 0) / 1024)}K`);
+    await commandReply(ctx, formatDeviceStatus(state), "response", request.requestId);
     return;
   }
 
@@ -597,6 +625,7 @@ async function handleHealthCommand(ctx) {
   const result = await request.promise;
   if (result.kind !== "response") return commandReply(ctx, result.kind === "timeout" ? timeoutMessage("health") : statusMessage("health", "offline"), result.kind, request.requestId);
   const health = result.message;
+  showDisplay(`HEALTH\nWiFi ${health.wifi.connections ? "OK" : "OFF"}\nCloud ${health.cloud_connected ? "OK" : "OFF"}\nHeap ${Math.round(health.free_heap / 1024)}K\nPSRAM ${Math.round(health.free_psram / 1024)}K\nWarn ${health.logs.warnings}\nErrors ${health.logs.errors}`);
   const value = (label, data) => `${label}: ${bold(data)}`;
   await commandReply(ctx, commandMessage("health", [
     quote(["System", value("Firmware", health.firmware), `Uptime: ${boldItalic(formatDuration(health.uptime_ms))}`, value("Last restart", formatResetReason(health.reset_reason))]),
@@ -619,6 +648,7 @@ async function handleLogsCommand(ctx, forceProblems = false) {
   if (result.message.error) return commandReply(ctx, commandMessage(name, [quote([`Status: ${bold("Unavailable")}`])]), "device_error", request.requestId);
   const entries = result.message.entries;
   if (entries.length === 0) return commandReply(ctx, commandMessage(name, [quote([forceProblems ? "No problems since startup." : "No logs since startup."])]), "clean", request.requestId);
+  showDisplay(`${forceProblems ? "ERRORS" : "LOGS"}\nStored ${result.message.entries.length}\nWarn ${result.message.warnings}\nErrors ${result.message.errors}`);
   const summary = forceProblems ? [quote(["Summary", `Warnings: ${bold(result.message.warnings)}`, `Errors: ${bold(result.message.errors)}`])] : [];
   await replyLogLines(ctx, name, entries.map(formatLogEntry), request.requestId, summary);
 }
@@ -627,7 +657,7 @@ async function handlePingCommand(ctx) {
   const request = sendDeviceRequest("ping", "pong", {}, commandTrace(ctx));
   if (request.kind === "offline") return commandReply(ctx, statusMessage("ping", "offline"), "offline");
   const result = await request.promise;
-  if (result.kind === "response") return commandReply(ctx, commandMessage("ping", [quote([`Latency: ${bold(result.elapsedMs)} ${italic("ms")}`])]), "response", request.requestId);
+  if (result.kind === "response") { showDisplay(`PING\n${result.elapsedMs} ms`); return commandReply(ctx, commandMessage("ping", [quote([`Latency: ${bold(result.elapsedMs)} ${italic("ms")}`])]), "response", request.requestId); }
   if (result.kind === "timeout") return commandReply(ctx, timeoutMessage("ping"), "timeout", request.requestId);
   return commandReply(ctx, getConnectedDeviceState() ? timeoutMessage("ping") : statusMessage("ping", "offline"), "unavailable", request.requestId);
 }
@@ -691,6 +721,7 @@ async function handleRebootCommand(ctx) {
   if (request.kind === "offline") return commandReply(ctx, statusMessage("reboot", "offline"), "offline");
   const result = await request.promise;
   if (result.kind === "response") {
+    showDisplay("REBOOTING");
     const message = await commandReply(ctx, statusMessage("reboot", "Restarting"), "response", request.requestId);
     trackPendingReboot(ctx.chat.id, message.message_id, env.NEWO_DEVICE_ID);
     return;
@@ -761,6 +792,8 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["errors", "e"], (ctx) => handleLogsCommand(ctx, true));
   bot.command(["ping", "p"], handlePingCommand);
   bot.command(["reboot", "r"], handleRebootCommand);
+  bot.command(["newo", "n"], handleNewoCommand);
+  bot.command(["eco", "e"], handleEcoCommand);
   // Developer-only: authorization is enforced by the shared allowlist middleware.
   bot.command("voicereset", handleVoiceResetCommand);
 

@@ -10,9 +10,9 @@
 
 NewoStorage newoStorage;
 NewoWiFi newoWiFi(newoStorage);
-NewoCloud newoCloud(newoWiFi);
-NewoAudio newoAudio(newoWiFi);
 NewoDisplay newoDisplay;
+NewoCloud newoCloud(newoWiFi, newoDisplay);
+NewoAudio newoAudio(newoWiFi);
 
 void printHardwareInfo() {
   Serial.println();
@@ -59,5 +59,8 @@ void loop() {
   newoCloud.loop();
   if (newoCloud.consumeVoiceResetRequest()) newoAudio.resetVoiceStream("manual");
   newoAudio.loop();
+  newoDisplay.updateTelemetry(newoWiFi.connected(), newoWiFi.rssi(), newoCloud.connected(), millis(),
+                              ESP.getFreeHeap(), ESP.getFreePsram(), NewoLog::stats());
+  newoDisplay.loop();
   delay(2);
 }

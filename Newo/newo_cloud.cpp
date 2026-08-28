@@ -15,7 +15,7 @@
 #define NEWO_HAS_LOCAL_SECRETS 0
 #endif
 
-NewoCloud::NewoCloud(NewoWiFi& wifi) : wifi_(wifi) {}
+NewoCloud::NewoCloud(NewoWiFi& wifi, NewoDisplay& display) : wifi_(wifi), display_(display) {}
 
 void NewoCloud::begin() {
 #if !NEWO_HAS_LOCAL_SECRETS
@@ -192,6 +192,30 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     return;
   }
 
+  if (strcmp(type, "display_set") == 0) {
+    const char* requestId = doc["request_id"] | "";
+    const char* mode = doc["mode"] | "";
+    const char* text = doc["text"] | "";
+    NewoDisplayMode displayMode = NewoDisplayMode::MESSAGE;
+    if (strcmp(mode, "idle") == 0) displayMode = NewoDisplayMode::IDLE;
+    else if (strcmp(mode, "listening") == 0) displayMode = NewoDisplayMode::LISTENING;
+    else if (strcmp(mode, "thinking") == 0) displayMode = NewoDisplayMode::THINKING;
+    else if (strcmp(mode, "speaking") == 0) displayMode = NewoDisplayMode::SPEAKING;
+    else if (strcmp(mode, "error") == 0) displayMode = NewoDisplayMode::ERROR;
+    else if (strcmp(mode, "message") != 0) { NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "DISPLAY_INVALID_MODE"); return; }
+    if (strlen(text) > 96 || !display_.setMode(displayMode, text, doc["temporary"] | false)) {
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "DISPLAY_INVALID_PAYLOAD"); return;
+    }
+    sendDisplayAck(requestId, mode);
+    return;
+  }
+
+  if (strcmp(type, "eco_toggle") == 0) {
+    display_.toggleEco();
+    sendDisplayAck(doc["request_id"] | "", display_.ecoEnabled() ? "eco_on" : "eco_off");
+    return;
+  }
+
   if (strcmp(type, "voice_reset") == 0) {
     const char* requestId = doc["request_id"] | "";
     sendVoiceResetAck(requestId);
@@ -356,6 +380,15 @@ void NewoCloud::sendLogs(const char* requestId, uint8_t limit, const char* minLe
   if (body.length() <= 16 * 1024) webSocket_.sendTXT(body);
   heap_caps_free(entries);
   recordStack("after logs");
+}
+
+void NewoCloud::sendDisplayAck(const char* requestId, const char* mode) {
+  if (!connected_ || !requestId || requestId[0] == '\0') return;
+  JsonDocument doc;
+  doc["type"] = "display_ack";
+  doc["request_id"] = requestId;
+  doc["mode"] = mode;
+  String body; serializeJson(doc, body); webSocket_.sendTXT(body);
 }
 
 void NewoCloud::sendVoiceResetAck(const char* requestId) {

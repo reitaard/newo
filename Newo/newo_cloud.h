@@ -3,11 +3,12 @@
 #include <Arduino.h>
 #include <WebSocketsClient.h>
 
+#include "newo_display.h"
 #include "newo_wifi.h"
 
 class NewoCloud {
  public:
-  explicit NewoCloud(NewoWiFi& wifi);
+  NewoCloud(NewoWiFi& wifi, NewoDisplay& display);
 
   void begin();
   void loop();
@@ -26,8 +27,10 @@ class NewoCloud {
   void sendLogs(const char* requestId, uint8_t limit, const char* minLevel);
   void sendRebootAck(const char* requestId);
   void sendVoiceResetAck(const char* requestId);
+  void sendDisplayAck(const char* requestId, const char* mode);
 
   NewoWiFi& wifi_;
+  NewoDisplay& display_;
   WebSocketsClient webSocket_;
   bool configured_ = false;
   bool started_ = false;
