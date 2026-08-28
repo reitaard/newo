@@ -3,6 +3,7 @@
 #include "newo_audio.h"
 #include "newo_cloud.h"
 #include "newo_config.h"
+#include "newo_display.h"
 #include "newo_log.h"
 #include "newo_storage.h"
 #include "newo_wifi.h"
@@ -11,6 +12,7 @@ NewoStorage newoStorage;
 NewoWiFi newoWiFi(newoStorage);
 NewoCloud newoCloud(newoWiFi);
 NewoAudio newoAudio(newoWiFi);
+NewoDisplay newoDisplay;
 
 void printHardwareInfo() {
   Serial.println();
@@ -34,6 +36,7 @@ void setup() {
   delay(1200);
   printHardwareInfo();
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::BOOT, "BOOT_START");
+  newoDisplay.begin();
 
   if (!newoStorage.begin()) {
     NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::STORAGE, "STORAGE_FAILED");

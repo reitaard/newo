@@ -15,6 +15,13 @@ constexpr uint16_t CLOUD_PORT = 443;
 constexpr uint8_t RGB_LED_PIN = 48;
 constexpr size_t MAX_SAVED_NETWORKS = 8;
 
+// ST7789 240x240 SPI display. VCC and BLK are wired to 3V3; GND to GND.
+constexpr int8_t DISPLAY_SCK_PIN = 42;
+constexpr int8_t DISPLAY_MOSI_PIN = 41;
+constexpr int8_t DISPLAY_RST_PIN = 40;
+constexpr int8_t DISPLAY_DC_PIN = 38;
+constexpr int8_t DISPLAY_CS_PIN = 2;
+
 // ESP32-S3 Dev Module audit: GPIO48 is the onboard RGB LED; flash/PSRAM,
 // USB-JTAG (GPIO19/20), and bootstrap GPIO0 are deliberately avoided.
 // GPIO4/5/6 are otherwise unused by Newo and are the proposed INMP441 wiring.

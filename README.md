@@ -8,6 +8,8 @@ Newo is an ESP32-S3 portable assistant platform. Firmware is split into provisio
 - Arduino-ESP32 3.3.11
 - ArduinoJson 7.4.3
 - WebSockets 2.7.2
+- Adafruit GFX Library 1.12.6
+- Adafruit ST7735 and ST7789 Library 1.11.0
 
 Use `ESP32S3 Dev Module`, QIO 80 MHz, 16 MB flash, OPI PSRAM, `16M Flash (3MB APP/9.9MB FATFS)`, and 921600 upload speed.
 
@@ -16,6 +18,10 @@ Use `ESP32S3 Dev Module`, QIO 80 MHz, 16 MB flash, OPI PSRAM, `16M Flash (3MB AP
 - `Newo/` — Arduino firmware
 - `server/` — VPS cloud and Telegram bridge
 - `docs/` — architecture and bring-up notes
+
+## Display test
+
+A 240x240 ST7789 display is wired over SPI: SCK GPIO42, MOSI GPIO41, RST GPIO40, DC GPIO38, and CS GPIO2. VCC and BLK connect to 3V3; GND connects to GND. On boot, the minimal display module clears the screen and renders `NEWO` and `DISPLAY OK`. Microphone GPIO4/5/6 and RGB GPIO48 remain unchanged.
 
 ## Wi-Fi and provisioning
 
@@ -80,7 +86,7 @@ See [`docs/architecture.md`](docs/architecture.md), [`docs/phase-1.md`](docs/pha
 
 ## Build
 
-Open `Newo/Newo.ino` as the existing Arduino sketch directory. The current microphone-streaming build was verified with Arduino-ESP32 3.3.11 using `ESP32S3 Dev Module`, QIO 80 MHz, 16 MB flash, OPI PSRAM, `16M Flash (3MB APP/9.9MB FATFS)`, and 921600 upload speed: 1,447,315 bytes flash (46% of 3 MB) and 61,736 bytes static RAM (18% of 320 KB). No hardware was flashed during this build verification.
+Open `Newo/Newo.ino` as the existing Arduino sketch directory. The current microphone-streaming build was verified with Arduino-ESP32 3.3.11 using `ESP32S3 Dev Module`, QIO 80 MHz, 16 MB flash, OPI PSRAM, `16M Flash (3MB APP/9.9MB FATFS)`, and 921600 upload speed: 1,490,079 bytes flash (47% of 3 MB) and 66,680 bytes static RAM (20% of 320 KB). No hardware was flashed during this build verification.
 
 ## Repository rule
 
