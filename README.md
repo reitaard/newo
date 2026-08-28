@@ -45,7 +45,9 @@ Telegram terminates at the VPS:
 Telegram -> HTTPS webhook -> VPS -> authenticated WSS -> ESP32-S3
 ```
 
-The visible bot menu is `/status` and `/reboot`. `/ping` remains available for diagnostics but hidden from the menu. User/chat allowlists remain mandatory. The ESP32 never stores the Telegram token.
+The visible bot menu is `/status`, `/health`, `/logs`, `/errors`, and `/reboot`. Short aliases `/s`, `/h`, `/l`, `/e`, and `/r` work but stay hidden; `/ping` and `/p` are hidden developer latency checks. User/chat allowlists remain mandatory. The ESP32 never stores the Telegram token.
+
+Important firmware events still print over USB Serial and are also held in a fixed 64-entry RAM ring buffer. `/health` requests live device counters/memory/reset reason; `/logs` returns recent entries and `/errors` returns warnings/errors. Logs disappear on reboot by design, never enter NVS/filesystem, and are available only through the authenticated device channel and authorized Telegram commands.
 
 See [`docs/architecture.md`](docs/architecture.md), [`docs/phase-1.md`](docs/phase-1.md), and [`docs/telegram.md`](docs/telegram.md).
 

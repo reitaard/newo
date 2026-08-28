@@ -2,8 +2,10 @@
 
 #include <ArduinoJson.h>
 #include <cstring>
+#include <esp_system.h>
 
 #include "newo_config.h"
+#include "newo_log.h"
 
 #if __has_include("newo_secrets.h")
 #include "newo_secrets.h"
@@ -16,17 +18,16 @@ NewoCloud::NewoCloud(NewoWiFi& wifi) : wifi_(wifi) {}
 
 void NewoCloud::begin() {
 #if !NEWO_HAS_LOCAL_SECRETS
-  Serial.println("[cloud] Disabled: Newo/newo_secrets.h is missing");
-  Serial.println("[cloud] Copy newo_secrets.example.h locally and provision the device secret + trusted CA");
+  NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "CLOUD_DISABLED", "secrets_missing");
   return;
 #else
   if (strlen(NewoSecrets::DEVICE_ID) == 0 || strlen(NewoSecrets::DEVICE_SECRET) < 24) {
-    Serial.println("[cloud] Disabled: device identity/secret is not provisioned");
+    NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "CLOUD_DISABLED", "identity_missing");
     return;
   }
 
   if (strlen(NewoSecrets::CLOUD_CA_CERT) < 100) {
-    Serial.println("[cloud] Disabled: trusted cloud CA certificate is not provisioned");
+    NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "CLOUD_DISABLED", "ca_missing");
     return;
   }
 
@@ -38,8 +39,7 @@ void NewoCloud::begin() {
                              NewoConfig::CLOUD_WS_MISSED_PONG_LIMIT);
 
   configured_ = true;
-  Serial.printf("[cloud] Configured for wss://%s%s\n", NewoConfig::CLOUD_HOST,
-                NewoConfig::CLOUD_PATH);
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::CLOUD, "CLOUD_CONFIGURED");
 #endif
 }
 
@@ -65,13 +65,13 @@ void NewoCloud::startConnection() {
   webSocket_.beginSslWithCA(NewoConfig::CLOUD_HOST, NewoConfig::CLOUD_PORT,
                             NewoConfig::CLOUD_PATH, NewoSecrets::CLOUD_CA_CERT, "");
   started_ = true;
-  Serial.println("[cloud] Starting certificate-validated WSS connection...");
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::CLOUD, "CLOUD_CONNECTING");
 #endif
 }
 
 void NewoCloud::loop() {
   if (rebootAtMs_ != 0 && static_cast<int32_t>(millis() - rebootAtMs_) >= 0) {
-    Serial.println("[cloud] Restarting Newo...");
+    NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::SYSTEM, "SYSTEM_REBOOTING");
     ESP.restart();
     return;
   }
@@ -110,17 +110,19 @@ void NewoCloud::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
   switch (type) {
     case WStype_CONNECTED:
       connected_ = true;
-      Serial.printf("[cloud] Connected: wss://%s%s\n", NewoConfig::CLOUD_HOST,
-                    NewoConfig::CLOUD_PATH);
+      ++connectionCount_;
+      NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::CLOUD, "CLOUD_CONNECTED");
       sendHello();
       sendStatus();
       break;
 
     case WStype_DISCONNECTED:
       if (connected_) {
-        Serial.println("[cloud] Disconnected; automatic reconnect is enabled");
+        ++disconnectCount_;
+        NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "CLOUD_DISCONNECTED");
       }
       connected_ = false;
+      authenticated_ = false;
       started_ = false;
       break;
 
@@ -129,7 +131,8 @@ void NewoCloud::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
       break;
 
     case WStype_ERROR:
-      Serial.println("[cloud] WebSocket error");
+      ++errorCount_;
+      NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::CLOUD, "CLOUD_WS_ERROR");
       break;
 
     default:
@@ -141,14 +144,15 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
   JsonDocument doc;
   const DeserializationError error = deserializeJson(doc, payload, length);
   if (error) {
-    Serial.printf("[cloud] Ignoring invalid server JSON: %s\n", error.c_str());
+    NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "CLOUD_INVALID_JSON");
     return;
   }
 
   const char* type = doc["type"] | "";
 
   if (strcmp(type, "hello_ack") == 0) {
-    Serial.println("[cloud] Server authenticated Newo");
+    authenticated_ = true;
+    NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::CLOUD, "CLOUD_AUTHENTICATED");
     return;
   }
 
@@ -170,7 +174,19 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     return;
   }
 
-  Serial.printf("[cloud] Ignoring unsupported server message: %s\n", type);
+  if (strcmp(type, "health_request") == 0) {
+    sendHealth(doc["request_id"] | "");
+    return;
+  }
+
+  if (strcmp(type, "logs_request") == 0) {
+    const uint8_t limit = constrain(doc["limit"] | 20, 1, 40);
+    const char* minLevel = doc["min_level"] | "info";
+    sendLogs(doc["request_id"] | "", limit, minLevel);
+    return;
+  }
+
+  NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "CLOUD_UNSUPPORTED_MESSAGE");
 }
 
 void NewoCloud::sendHello() {
@@ -213,11 +229,94 @@ void NewoCloud::sendStatus(const char* requestId, bool pong) {
   lastStatusMs_ = millis();
 }
 
+void NewoCloud::sendHealth(const char* requestId) {
+  if (!connected_ || !requestId || requestId[0] == '\0') return;
+
+  const NewoLog::Snapshot logs = NewoLog::snapshot();
+  JsonDocument doc;
+  doc["type"] = "health";
+  doc["request_id"] = requestId;
+  doc["firmware"] = NewoConfig::FIRMWARE_VERSION;
+  doc["chip"] = ESP.getChipModel();
+  doc["uptime_ms"] = millis();
+  doc["reset_reason"] = static_cast<uint32_t>(esp_reset_reason());
+  doc["ssid"] = wifi_.connectedSsid();
+  doc["rssi"] = wifi_.rssi();
+  doc["cloud_connected"] = connected_ && authenticated_;
+  doc["free_heap"] = ESP.getFreeHeap();
+  doc["min_free_heap"] = ESP.getMinFreeHeap();
+  doc["free_psram"] = ESP.getFreePsram();
+  JsonObject wifi = doc["wifi"].to<JsonObject>();
+  wifi["scans"] = wifi_.scanCount();
+  wifi["connect_attempts"] = wifi_.connectAttemptCount();
+  wifi["connections"] = wifi_.connectSuccessCount();
+  wifi["failed"] = wifi_.connectFailureCount();
+  wifi["disconnects"] = wifi_.disconnectCount();
+  wifi["last_disconnect_reason"] = wifi_.lastDisconnectReason();
+  JsonObject cloud = doc["cloud"].to<JsonObject>();
+  cloud["connections"] = connectionCount_;
+  cloud["disconnects"] = disconnectCount_;
+  cloud["errors"] = errorCount_;
+  JsonObject logger = doc["logs"].to<JsonObject>();
+  logger["stored"] = logs.count;
+  logger["capacity"] = NewoLog::kCapacity;
+  logger["warnings"] = logs.warnings;
+  logger["errors"] = logs.errors;
+
+  String body;
+  serializeJson(doc, body);
+  webSocket_.sendTXT(body);
+}
+
+void NewoCloud::sendLogs(const char* requestId, uint8_t limit, const char* minLevel) {
+  if (!connected_ || !requestId || requestId[0] == '\0') return;
+
+  NewoLog::Level minimum = NewoLog::Level::INFO;
+  if (strcmp(minLevel, "warn") == 0) minimum = NewoLog::Level::WARN;
+  if (strcmp(minLevel, "error") == 0) minimum = NewoLog::Level::ERROR;
+  const NewoLog::Snapshot snapshot = NewoLog::snapshot();
+
+  JsonDocument doc;
+  doc["type"] = "logs";
+  doc["request_id"] = requestId;
+  doc["firmware"] = NewoConfig::FIRMWARE_VERSION;
+  doc["uptime_ms"] = millis();
+  doc["warnings"] = snapshot.warnings;
+  doc["errors"] = snapshot.errors;
+  JsonArray entries = doc["entries"].to<JsonArray>();
+  size_t first = snapshot.count;
+  size_t selected = 0;
+  for (size_t i = snapshot.count; i > 0 && selected < limit; --i) {
+    if (static_cast<uint8_t>(snapshot.entries[i - 1].level) >= static_cast<uint8_t>(minimum)) {
+      first = i - 1;
+      ++selected;
+    }
+  }
+  for (size_t i = first; i < snapshot.count; ++i) {
+    const NewoLog::Entry& entry = snapshot.entries[i];
+    if (static_cast<uint8_t>(entry.level) < static_cast<uint8_t>(minimum)) continue;
+    JsonObject output = entries.add<JsonObject>();
+    output["seq"] = entry.sequence;
+    output["first_ms"] = entry.firstMs;
+    output["last_ms"] = entry.lastMs;
+    output["repeat"] = entry.repeat;
+    output["level"] = NewoLog::levelName(entry.level);
+    output["subsystem"] = NewoLog::subsystemName(entry.subsystem);
+    output["code"] = entry.code;
+    output["detail"] = entry.detail;
+  }
+
+  String body;
+  serializeJson(doc, body);
+  if (body.length() <= 16 * 1024) webSocket_.sendTXT(body);
+}
+
 void NewoCloud::sendRebootAck(const char* requestId) {
   if (!connected_ || !requestId || requestId[0] == '\0') {
     return;
   }
 
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::SYSTEM, "SYSTEM_REBOOT_REQUESTED");
   JsonDocument doc;
   doc["type"] = "reboot_ack";
   doc["request_id"] = requestId;
@@ -225,7 +324,7 @@ void NewoCloud::sendRebootAck(const char* requestId) {
   String body;
   serializeJson(doc, body);
   if (!webSocket_.sendTXT(body)) {
-    Serial.println("[cloud] Reboot acknowledgement could not be sent; restart cancelled");
+    NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::CLOUD, "CLOUD_REBOOT_ACK_FAILED");
     return;
   }
 

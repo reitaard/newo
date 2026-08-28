@@ -2,6 +2,7 @@
 
 #include "newo_cloud.h"
 #include "newo_config.h"
+#include "newo_log.h"
 #include "newo_storage.h"
 #include "newo_wifi.h"
 
@@ -30,15 +31,20 @@ void setup() {
   Serial.begin(115200);
   delay(1200);
   printHardwareInfo();
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::BOOT, "BOOT_START");
 
   if (!newoStorage.begin()) {
-    Serial.println("[boot] Storage initialization failed");
+    NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::STORAGE, "STORAGE_FAILED");
+  } else {
+    char detail[48];
+    snprintf(detail, sizeof(detail), "saved_networks=%u", static_cast<unsigned>(newoStorage.count()));
+    NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::STORAGE, "STORAGE_READY", detail);
   }
 
   newoWiFi.begin();
   newoCloud.begin();
 
-  Serial.println("[boot] Newo ready");
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::BOOT, "BOOT_READY");
 }
 
 void loop() {

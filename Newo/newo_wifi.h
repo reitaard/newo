@@ -19,6 +19,12 @@ class NewoWiFi {
   bool connected() const;
   String connectedSsid() const;
   int32_t rssi() const;
+  uint32_t scanCount() const;
+  uint32_t connectAttemptCount() const;
+  uint32_t connectSuccessCount() const;
+  uint32_t connectFailureCount() const;
+  uint32_t disconnectCount() const;
+  const char* lastDisconnectReason() const;
 
  private:
   struct VisibleSavedNetwork {
@@ -46,6 +52,12 @@ class NewoWiFi {
   uint32_t provisioningStartedAtMs_ = 0;
   uint32_t lastReconnectAttemptMs_ = 0;
   uint32_t rebootAtMs_ = 0;
+  uint32_t scanCount_ = 0;
+  uint32_t connectAttemptCount_ = 0;
+  uint32_t connectSuccessCount_ = 0;
+  uint32_t connectFailureCount_ = 0;
+  uint32_t disconnectCount_ = 0;
+  char lastDisconnectReason_[48] = "Unknown";
 
   portMUX_TYPE provisioningMux_ = portMUX_INITIALIZER_UNLOCKED;
   char pendingProvisioningSsid_[33] = {};

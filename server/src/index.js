@@ -108,6 +108,26 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
       request_id: z.string().optional(),
     })
     .passthrough(),
+  z.object({
+    type: z.literal("health"),
+    request_id: z.string(),
+    firmware: z.string(),
+    uptime_ms: z.number().nonnegative(),
+    reset_reason: z.number().int(),
+    ssid: z.string().optional(),
+    rssi: z.number().optional(),
+    cloud_connected: z.boolean(),
+    free_heap: z.number().nonnegative(),
+    min_free_heap: z.number().nonnegative(),
+    free_psram: z.number().nonnegative(),
+    wifi: z.object({ scans: z.number(), connect_attempts: z.number(), connections: z.number(), failed: z.number(), disconnects: z.number(), last_disconnect_reason: z.string() }),
+    cloud: z.object({ connections: z.number(), disconnects: z.number(), errors: z.number() }),
+    logs: z.object({ stored: z.number().int(), capacity: z.number().int(), warnings: z.number(), errors: z.number() }),
+  }),
+  z.object({
+    type: z.literal("logs"), request_id: z.string(), firmware: z.string(), uptime_ms: z.number().nonnegative(), warnings: z.number().nonnegative(), errors: z.number().nonnegative(),
+    entries: z.array(z.object({ seq: z.number(), first_ms: z.number(), last_ms: z.number(), repeat: z.number().int().positive(), level: z.enum(["info", "warn", "error"]), subsystem: z.string(), code: z.string(), detail: z.string().max(96) })).max(40),
+  }),
 ]);
 
 function safeEqual(left, right) {
@@ -161,7 +181,7 @@ function createRequestId() {
   return requestId;
 }
 
-function sendDeviceRequest(requestType, responseType) {
+function sendDeviceRequest(requestType, responseType, fields = {}) {
   const device = getConnectedDeviceState();
   if (!device) return { kind: "offline" };
 
@@ -192,6 +212,9 @@ function sendDeviceRequest(requestType, responseType) {
       JSON.stringify({
         type: requestType,
         request_id: requestId,
+        ...(requestType === "logs_request"
+          ? { limit: fields.limit, min_level: fields.minLevel }
+          : {}),
       }),
       (error) => {
         if (error) {
@@ -345,7 +368,10 @@ app.get("/health", async () => {
 });
 
 const TELEGRAM_COMMANDS = [
-  { command: "status", description: "Device status" },
+  { command: "status", description: "Quick status" },
+  { command: "health", description: "Device health" },
+  { command: "logs", description: "Recent logs" },
+  { command: "errors", description: "Problems" },
   { command: "reboot", description: "Restart Newo" },
 ];
 
@@ -375,6 +401,87 @@ async function handleStatusCommand(ctx) {
   await ctx.reply(
     getConnectedDeviceState() ? "Newo did not reply within 5 seconds." : `Newo ${env.NEWO_DEVICE_ID}: offline`,
   );
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return "unknown";
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+  return `${Math.round(bytes / 1024)} KB`;
+}
+
+function formatResetReason(reason) {
+  return ({ 1: "Power on", 2: "External reset", 3: "Software restart", 4: "Crash", 5: "Watchdog", 6: "Watchdog", 7: "Watchdog", 8: "Deep sleep wake", 9: "Brownout" })[reason] ?? "Unknown";
+}
+
+function parseLogsArguments(match, forceProblems = false) {
+  const parts = String(match ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  let limit = 20;
+  let minLevel = forceProblems ? "warn" : "info";
+  for (const part of parts) {
+    if (/^\d+$/.test(part) && limit === 20) limit = Number(part);
+    else if (["warn", "error"].includes(part) && minLevel === (forceProblems ? "warn" : "info")) minLevel = part;
+    else return null;
+  }
+  if (!Number.isInteger(limit) || limit < 1 || limit > 40) return null;
+  return { limit, minLevel };
+}
+
+function formatLogTime(milliseconds) {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}` : `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+}
+
+function parseDetail(detail) {
+  return Object.fromEntries(String(detail).split(" ").map((part) => part.split(/=(.*)/, 2)).filter(([key, value]) => key && value !== undefined));
+}
+
+function formatLogEntry(entry) {
+  const detail = parseDetail(entry.detail);
+  const labels = {
+    BOOT_START: "Started", BOOT_READY: "Newo ready", STORAGE_READY: `Storage ready — ${detail.saved_networks ?? "0"} networks`, STORAGE_FAILED: "Storage failed",
+    WIFI_SCAN_START: "Scanning for saved Wi-Fi", WIFI_SCAN_EMPTY: "Wi-Fi scan found nothing", WIFI_SCAN_RESULT: "Found saved Wi-Fi", WIFI_CONNECTING: `Connecting to ${detail.ssid ?? "Wi-Fi"}`, WIFI_CONNECTED: `Wi-Fi connected — ${detail.ssid ?? "unknown"}${detail.rssi ? `, ${detail.rssi} dBm` : ""}`, WIFI_CONNECT_FAILED: "Wi-Fi connection failed", WIFI_DISCONNECTED: `Wi-Fi disconnected — ${detail.reason ?? "unknown reason"}`, WIFI_RECONNECTING: "Reconnecting Wi-Fi",
+    PROV_STARTED: "Wi-Fi setup started", PROV_READY: "Wi-Fi setup ready", PROV_CREDENTIALS_RECEIVED: "Wi-Fi details received", PROV_CREDENTIALS_ACCEPTED: "Wi-Fi details accepted", PROV_CREDENTIALS_REJECTED: "Wi-Fi details rejected", PROV_SAVE_FAILED: "Wi-Fi setup could not save", PROV_SAVED: "Wi-Fi network saved", PROV_STOPPED: "Wi-Fi setup stopped", PROV_TIMEOUT: "Wi-Fi setup timed out",
+    CLOUD_CONFIGURED: "Cloud configured", CLOUD_DISABLED: "Cloud disabled", CLOUD_CONNECTING: "Connecting to cloud", CLOUD_CONNECTED: "Cloud connected", CLOUD_AUTHENTICATED: "Newo authenticated", CLOUD_DISCONNECTED: "Cloud disconnected", CLOUD_WS_ERROR: "Cloud connection error", CLOUD_INVALID_JSON: "Cloud sent invalid data", CLOUD_UNSUPPORTED_MESSAGE: "Cloud sent unsupported message", CLOUD_REBOOT_ACK_FAILED: "Restart acknowledgement failed", SYSTEM_REBOOT_REQUESTED: "Restart requested", SYSTEM_REBOOTING: "Restarting",
+  };
+  const text = labels[entry.code] ?? entry.code.replaceAll("_", " ");
+  return `${formatLogTime(entry.last_ms)}  ${text}${entry.repeat > 1 ? ` ×${entry.repeat}` : ""}`;
+}
+
+async function replyLines(ctx, lines) {
+  let message = "";
+  for (const line of lines) {
+    if (message && message.length + line.length + 1 > 3800) {
+      await ctx.reply(message);
+      message = "";
+    }
+    message += `${message ? "\n" : ""}${line}`;
+  }
+  if (message) await ctx.reply(message);
+}
+
+async function handleHealthCommand(ctx) {
+  const request = sendDeviceRequest("health_request", "health");
+  if (request.kind === "offline") return ctx.reply("Newo is offline.");
+  const result = await request.promise;
+  if (result.kind !== "response") return ctx.reply(result.kind === "timeout" ? "Newo did not reply within 5 seconds." : "Newo is offline.");
+  const health = result.message;
+  await ctx.reply(["Newo health", "", "System", `Firmware: ${health.firmware}`, `Uptime: ${formatDuration(health.uptime_ms)}`, `Last restart: ${formatResetReason(health.reset_reason)}`, "", "Network", `Wi-Fi: ${health.ssid || "not connected"}`, `Signal: ${typeof health.rssi === "number" ? `${health.rssi} dBm` : "unknown"}`, `Cloud: ${health.cloud_connected ? "connected" : "not connected"}`, "", "Memory", `Heap: ${formatBytes(health.free_heap)} free`, `Lowest heap: ${formatBytes(health.min_free_heap)}`, `PSRAM: ${formatBytes(health.free_psram)} free`, "", "Wi-Fi activity", `Scans: ${health.wifi.scans}`, `Attempts: ${health.wifi.connect_attempts}`, `Connections: ${health.wifi.connections}`, `Failed: ${health.wifi.failed}`, `Disconnects: ${health.wifi.disconnects}`, `Last disconnect: ${health.wifi.last_disconnect_reason || "none"}`, "", "Cloud activity", `Connections: ${health.cloud.connections}`, `Disconnects: ${health.cloud.disconnects}`, `Errors: ${health.cloud.errors}`, "", "Logs", `Stored: ${health.logs.stored} / ${health.logs.capacity}`, `Warnings: ${health.logs.warnings}`, `Errors: ${health.logs.errors}`].join("\n"));
+}
+
+async function handleLogsCommand(ctx, forceProblems = false) {
+  const args = parseLogsArguments(ctx.match, forceProblems);
+  if (!args) return ctx.reply("Usage: /logs [1-40] [warn|error]");
+  const request = sendDeviceRequest("logs_request", "logs", args);
+  if (request.kind === "offline") return ctx.reply("Newo is offline.");
+  const result = await request.promise;
+  if (result.kind !== "response") return ctx.reply(result.kind === "timeout" ? "Newo did not reply within 5 seconds." : "Newo is offline.");
+  const entries = result.message.entries;
+  if (forceProblems && entries.length === 0) return ctx.reply("Newo errors\n\nNo problems since startup.");
+  const title = forceProblems ? ["Newo errors", "", `${result.message.warnings} warnings`, `${result.message.errors} errors`, ""] : ["Newo logs", ""];
+  await replyLines(ctx, [...title, ...entries.map(formatLogEntry)]);
 }
 
 async function handlePingCommand(ctx) {
@@ -495,9 +602,12 @@ if (env.TELEGRAM_BOT_TOKEN) {
     await ctx.reply(`Newo is ${state}.`);
   });
 
-  bot.command("status", handleStatusCommand);
-  bot.command("ping", handlePingCommand);
-  bot.command("reboot", handleRebootCommand);
+  bot.command(["status", "s"], handleStatusCommand);
+  bot.command(["health", "h"], handleHealthCommand);
+  bot.command(["logs", "l"], (ctx) => handleLogsCommand(ctx));
+  bot.command(["errors", "e"], (ctx) => handleLogsCommand(ctx, true));
+  bot.command(["ping", "p"], handlePingCommand);
+  bot.command(["reboot", "r"], handleRebootCommand);
 
   void bot.api.setMyCommands(TELEGRAM_COMMANDS).catch(() => {
     app.log.warn("Failed to register the Telegram command menu");

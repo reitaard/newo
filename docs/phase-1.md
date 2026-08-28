@@ -46,7 +46,7 @@ Representative output:
 [prov] Wi-Fi network saved; rebooting Newo
 ```
 
-Provisioning stops after five minutes. Reboot to open another attempt. Hardware execution remains pending while the board is disconnected.
+Provisioning stops after five minutes. Reboot to open another attempt. Hardware BLE execution remains pending while the board is disconnected. USB Serial continues to show important application events; firmware also keeps a fixed 64-entry volatile RAM event buffer for authenticated remote `/health`, `/logs`, and `/errors` requests. It is deliberately erased on reboot and never persisted to NVS or a filesystem.
 
 ## Saved-network behavior
 

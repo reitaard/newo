@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "newo_config.h"
+#include "newo_log.h"
 
 namespace {
 
@@ -40,8 +41,9 @@ void NewoWiFi::begin() {
     return;
   }
 
-  Serial.printf("[wifi] Scanning for %u saved network(s)...\n",
-                static_cast<unsigned>(storage_.count()));
+  char detail[48];
+  snprintf(detail, sizeof(detail), "saved_networks=%u", static_cast<unsigned>(storage_.count()));
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::WIFI, "WIFI_SCAN_START", detail);
   if (connectSavedNetworks(NewoConfig::INITIAL_RECOVERY_WINDOW_MS)) {
     return;
   }
@@ -75,6 +77,7 @@ bool NewoWiFi::connectSavedNetworks(uint32_t windowMs) {
 
 bool NewoWiFi::scanAndConnect(uint32_t deadlineMs) {
   // ESP32-S3 Wi-Fi is 2.4 GHz-only, so this scan covers the supported band.
+  ++scanCount_;
   const int16_t found = WiFi.scanNetworks(false, false);
   std::vector<VisibleSavedNetwork> candidates;
 
@@ -109,12 +112,13 @@ bool NewoWiFi::scanAndConnect(uint32_t deadlineMs) {
             });
 
   if (candidates.empty()) {
-    Serial.println("[wifi] Scan found no saved network");
+    NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::WIFI, "WIFI_SCAN_EMPTY");
     return false;
   }
 
-  Serial.printf("[wifi] Found %u saved network(s)\n",
-                static_cast<unsigned>(candidates.size()));
+  char resultDetail[48];
+  snprintf(resultDetail, sizeof(resultDetail), "saved_networks=%u", static_cast<unsigned>(candidates.size()));
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::WIFI, "WIFI_SCAN_RESULT", resultDetail);
   for (const auto& candidate : candidates) {
     if (deadlineReached(deadlineMs)) {
       break;
@@ -136,7 +140,10 @@ bool NewoWiFi::scanAndConnect(uint32_t deadlineMs) {
 }
 
 bool NewoWiFi::connectToSavedNetwork(const NewoWifiCredential& network, uint32_t timeoutMs) {
-  Serial.printf("[wifi] Trying saved network: %s\n", network.ssid.c_str());
+  ++connectAttemptCount_;
+  char detail[96];
+  snprintf(detail, sizeof(detail), "ssid=%s", network.ssid.c_str());
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::WIFI, "WIFI_CONNECTING", detail);
   WiFi.disconnect(false, false);
 
   if (network.password.length() == 0) {
@@ -148,16 +155,19 @@ bool NewoWiFi::connectToSavedNetwork(const NewoWifiCredential& network, uint32_t
   const uint32_t deadlineMs = millis() + timeoutMs;
   while (!deadlineReached(deadlineMs)) {
     if (connected()) {
-      Serial.printf("[wifi] Connected: %s\n", WiFi.SSID().c_str());
-      Serial.printf("[wifi] IP: %s\n", WiFi.localIP().toString().c_str());
-      Serial.printf("[wifi] RSSI: %d dBm\n", WiFi.RSSI());
+      ++connectSuccessCount_;
+      char connectedDetail[96];
+      snprintf(connectedDetail, sizeof(connectedDetail), "ssid=%s rssi=%d", WiFi.SSID().c_str(), WiFi.RSSI());
+      NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::WIFI, "WIFI_CONNECTED", connectedDetail);
       return true;
     }
     delay(NewoConfig::WIFI_CONNECT_POLL_DELAY_MS);
   }
 
-  Serial.printf("[wifi] Connection failed: %s (%s)\n",
-                network.ssid.c_str(), wifiStatusName(WiFi.status()));
+  ++connectFailureCount_;
+  char failedDetail[96];
+  snprintf(failedDetail, sizeof(failedDetail), "ssid=%s reason=%s", network.ssid.c_str(), wifiStatusName(WiFi.status()));
+  NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::WIFI, "WIFI_CONNECT_FAILED", failedDetail);
   return false;
 }
 
@@ -181,9 +191,7 @@ void NewoWiFi::startBleProvisioning() {
       nullptr,
       nullptr,
       true);
-  Serial.printf("[prov] BLE provisioning started: %s (timeout %lu s)\n",
-                NewoConfig::PROVISIONING_DEVICE_NAME,
-                static_cast<unsigned long>(NewoConfig::BLE_PROVISIONING_TIMEOUT_MS / 1000));
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_STARTED");
 }
 
 void NewoWiFi::stopBleProvisioning() {
@@ -193,20 +201,23 @@ void NewoWiFi::stopBleProvisioning() {
 
   WiFiProv.endProvision();
   provisioningActive_ = false;
-  Serial.println("[prov] BLE provisioning stopped");
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_STOPPED");
 }
 
 void NewoWiFi::handleWiFiEvent(arduino_event_id_t eventId, const arduino_event_info_t& info) {
   switch (eventId) {
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
       const auto reason = static_cast<wifi_err_reason_t>(info.wifi_sta_disconnected.reason);
-      Serial.printf("[wifi] STA disconnect reason: %u (%s)\n",
-                    static_cast<unsigned>(reason), WiFi.STA.disconnectReasonName(reason));
+      ++disconnectCount_;
+      snprintf(lastDisconnectReason_, sizeof(lastDisconnectReason_), "%s", WiFi.STA.disconnectReasonName(reason));
+      char detail[96];
+      snprintf(detail, sizeof(detail), "reason=%s", lastDisconnectReason_);
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::WIFI, "WIFI_DISCONNECTED", detail);
       break;
     }
 
     case ARDUINO_EVENT_PROV_START:
-      Serial.println("[prov] BLE service is ready; use ESP BLE Provisioning");
+      NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_READY");
       break;
 
     case ARDUINO_EVENT_PROV_CRED_RECV:
@@ -222,14 +233,14 @@ void NewoWiFi::handleWiFiEvent(arduino_event_id_t eventId, const arduino_event_i
       provisioningCredentialsPending_ = true;
       provisioningCredentialsSucceeded_ = false;
       portEXIT_CRITICAL(&provisioningMux_);
-      Serial.println("[prov] Wi-Fi credentials received; waiting for connection success");
+      NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_CREDENTIALS_RECEIVED");
       break;
 
     case ARDUINO_EVENT_PROV_CRED_SUCCESS:
       portENTER_CRITICAL(&provisioningMux_);
       provisioningCredentialsSucceeded_ = true;
       portEXIT_CRITICAL(&provisioningMux_);
-      Serial.println("[prov] Wi-Fi credentials accepted");
+      NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_CREDENTIALS_ACCEPTED");
       break;
 
     case ARDUINO_EVENT_PROV_CRED_FAIL:
@@ -237,8 +248,7 @@ void NewoWiFi::handleWiFiEvent(arduino_event_id_t eventId, const arduino_event_i
       provisioningCredentialsPending_ = false;
       provisioningCredentialsSucceeded_ = false;
       portEXIT_CRITICAL(&provisioningMux_);
-      Serial.printf("[prov] Wi-Fi credentials rejected (reason %u)\n",
-                    static_cast<unsigned>(info.prov_fail_reason));
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::PROV, "PROV_CREDENTIALS_REJECTED");
       break;
 
     case ARDUINO_EVENT_PROV_END:
@@ -273,14 +283,14 @@ void NewoWiFi::processProvisioningHandoff() {
     // The provisioning framework has already accepted the network. Preserve
     // the old transactional list, close BLE, and reboot instead of remaining
     // in an ambiguous successful-but-unsaved session.
-    Serial.println("[prov] Could not save provisioned Wi-Fi network; rebooting without it");
+    NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::PROV, "PROV_SAVE_FAILED");
     stopBleProvisioning();
     scheduleReboot();
     return;
   }
 
   stopBleProvisioning();
-  Serial.println("[prov] Wi-Fi network saved; rebooting Newo");
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_SAVED");
   scheduleReboot();
 }
 
@@ -325,7 +335,7 @@ void NewoWiFi::loop() {
 
   if (provisioningActive_) {
     if (provisioningTimedOut()) {
-      Serial.println("[prov] BLE provisioning timed out; reboot to try again");
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::PROV, "PROV_TIMEOUT");
       stopBleProvisioning();
     }
     return;
@@ -344,7 +354,7 @@ void NewoWiFi::loop() {
     return;
   }
 
-  Serial.println("[wifi] Reconnecting to saved networks...");
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::WIFI, "WIFI_RECONNECTING");
   connectSavedNetworks(NewoConfig::RECONNECT_WINDOW_MS);
 }
 
@@ -359,3 +369,10 @@ String NewoWiFi::connectedSsid() const {
 int32_t NewoWiFi::rssi() const {
   return connected() ? WiFi.RSSI() : 0;
 }
+
+uint32_t NewoWiFi::scanCount() const { return scanCount_; }
+uint32_t NewoWiFi::connectAttemptCount() const { return connectAttemptCount_; }
+uint32_t NewoWiFi::connectSuccessCount() const { return connectSuccessCount_; }
+uint32_t NewoWiFi::connectFailureCount() const { return connectFailureCount_; }
+uint32_t NewoWiFi::disconnectCount() const { return disconnectCount_; }
+const char* NewoWiFi::lastDisconnectReason() const { return lastDisconnectReason_; }

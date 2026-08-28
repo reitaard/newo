@@ -98,10 +98,15 @@ The ESP32 receives a separate per-device identity/credential. It does **not** re
 
 The visible menu is deliberately limited and remains behind the VPS allowlist:
 
-- `/status` — request fresh online/offline state, SSID/RSSI, uptime, and firmware
-- `/reboot` — request restart and report success only after the ESP32 sends `reboot_ack`
+- `/status` — quick online/Wi-Fi/uptime/firmware view
+- `/health` — live device health, memory, reset reason, and activity counters
+- `/logs` — recent device events; optional `/logs 40`, `/logs warn`, or `/logs 40 warn`
+- `/errors` — warnings and errors from the same event buffer
+- `/reboot` — restart with acknowledged lifecycle
 
-`/start` returns a one-line online/offline greeting. `/ping` remains functional as a hidden diagnostic command that waits for the correlated ESP32 `pong` and reports round-trip latency.
+Hidden aliases are `/s`, `/h`, `/l`, `/e`, and `/r`. `/start` returns a one-line online/offline greeting. `/ping` and `/p` remain hidden diagnostic latency commands.
+
+Firmware keeps important app events in a fixed 64-entry volatile RAM ring buffer while still printing them to USB Serial. Entries have stable machine codes, but the VPS maps them to readable Telegram text. The buffer is intentionally erased on reboot, stores no secrets, and is not exposed by public HTTP; health/log requests travel only over the authenticated WSS device channel.
 
 The server correlates device requests by unique `request_id` values. Each pending request records its expected response type and start time, expires after five seconds, and is removed on response, timeout, disconnect, or shutdown. A response from another socket or with a mismatched type cannot resolve it.
 

@@ -28,7 +28,9 @@ The Node service binds to loopback by default. Port 8788 should not be exposed p
 - `WS /device` authenticated Newo device connection
 - `POST /telegram/webhook` enabled only when Telegram environment variables are configured
 
-Telegram commands are allowlist-protected. The visible menu contains `/status` for concise fresh telemetry and `/reboot` for an acknowledged device restart. `/start` returns a one-line greeting and `/ping` remains available as a hidden diagnostic command.
+Telegram commands are allowlist-protected. The visible menu contains `/status` (quick status), `/health` (live device health), `/logs` (recent events), `/errors` (warnings/errors), and `/reboot` (acknowledged restart). Hidden aliases `/s`, `/h`, `/l`, `/e`, `/r`, `/ping`, and `/p` remain available; aliases and latency checks are not placed in the menu.
+
+`/health` and `/logs` use the existing authenticated, correlated WSS request path. Device logs are a fixed 64-entry volatile RAM ring buffer; they remain available over USB Serial, are erased on reboot, contain no secrets, and are never returned by public HTTP `/health`.
 
 ## Environment
 
