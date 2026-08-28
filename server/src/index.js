@@ -289,22 +289,30 @@ function formatDuration(milliseconds) {
   return parts.join(" ");
 }
 
+function escapeHtml(value) {
+  return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function bold(value) { return `<b>${escapeHtml(value)}</b>`; }
+function italic(value) { return `<i>${escapeHtml(value)}</i>`; }
+function boldItalic(value) { return `<b><i>${escapeHtml(value)}</i></b>`; }
+function title(value) { return boldItalic(value); }
+function quote(lines) { return `<blockquote>${lines.join("\n")}</blockquote>`; }
+function commandMessage(name, blocks) { return `${title(`Newo ${name}`)}\n${blocks.join("\n")}`; }
+function statusMessage(name, status) { return commandMessage(name, [quote([`Status: ${bold(status)}`])]); }
+function timeoutMessage(name) { return commandMessage(name, [quote([`Status: ${bold("No reply")}`, `Timeout: ${bold(5)} ${italic("seconds")}`])]); }
+
 function formatDeviceStatus(snapshot, source = "live") {
+  if (!snapshot.connected) return statusMessage("status", "offline");
   const status = snapshot.status ?? {};
   const hello = snapshot.hello ?? {};
-  const suffix = source === "cached" ? " (cached)" : "";
-  const lines = [`Newo ${snapshot.connected ? "online" : "offline"}${suffix}`];
-
-  if (!snapshot.connected) {
-    return lines.join("\n");
-  }
-
-  lines.push(
-    `Wi-Fi: ${status.ssid ?? "unknown"} (${typeof status.rssi === "number" ? `${status.rssi} dBm` : "unknown"})`,
-    `Uptime: ${formatDuration(status.uptime_ms)}`,
-    `Firmware: ${hello.firmware ?? "unknown"}`,
-  );
-  return lines.join("\n");
+  return commandMessage("status", [quote([
+    `Status: ${bold("online")}${source === "cached" ? ` ${italic("cached")}` : ""}`,
+    `Wi-Fi: ${bold(status.ssid ?? "unknown")}`,
+    `Signal: ${bold(typeof status.rssi === "number" ? status.rssi : "unknown")}${typeof status.rssi === "number" ? ` ${italic("dBm")}` : ""}`,
+    `Uptime: ${boldItalic(formatDuration(status.uptime_ms))}`,
+    `Firmware: ${bold(hello.firmware ?? "unknown")}`,
+  ])]);
 }
 
 function cancelOfflineTimer(state) {
@@ -314,12 +322,12 @@ function cancelOfflineTimer(state) {
   }
 }
 
-function sendConnectivityNotification(text) {
+function sendConnectivityNotification(html) {
   if (!bot || allowedChatIds.size === 0) return;
 
   for (const chatId of allowedChatIds) {
     void Promise.resolve()
-      .then(() => bot.api.sendMessage(chatId, text))
+      .then(() => bot.api.sendMessage(chatId, html, { parse_mode: "HTML" }))
       .catch(() => {
         app.log.warn({ chat_id: chatId }, "Failed to send Newo connectivity notification");
       });
@@ -350,7 +358,7 @@ function scheduleOfflineNotification(deviceId, state, ws) {
     }
 
     state.offlineNotified = true;
-    sendConnectivityNotification("Newo went offline.");
+    sendConnectivityNotification(statusMessage("connectivity", "offline"));
   }, OFFLINE_GRACE_MS);
   state.offlineTimer.unref();
 }
@@ -396,13 +404,13 @@ async function commandReply(ctx, text, category = "reply", requestId = null) {
     trace.replyCategory = category;
     trace.requestId = requestId;
   }
-  return ctx.reply(text);
+  return ctx.reply(text, { parse_mode: "HTML" });
 }
 
 async function handleStatusCommand(ctx) {
   const request = sendDeviceRequest("status_request", "status", {}, commandTrace(ctx));
   if (request.kind === "offline") {
-    await commandReply(ctx, `Newo ${env.NEWO_DEVICE_ID}: offline`);
+    await commandReply(ctx, statusMessage("status", "offline"), "offline");
     return;
   }
 
@@ -417,13 +425,13 @@ async function handleStatusCommand(ctx) {
     if (snapshot.status) {
       await commandReply(ctx, formatDeviceStatus(snapshot, "cached"), "cached", request.requestId);
     } else {
-      await commandReply(ctx, "Newo did not reply within 5 seconds.", "timeout", request.requestId);
+      await commandReply(ctx, timeoutMessage("status"), "timeout", request.requestId);
     }
     return;
   }
 
   await commandReply(ctx,
-    getConnectedDeviceState() ? "Newo did not reply within 5 seconds." : `Newo ${env.NEWO_DEVICE_ID}: offline`,
+    getConnectedDeviceState() ? timeoutMessage("status") : statusMessage("status", "offline"),
     "unavailable", request.requestId,
   );
 }
@@ -466,71 +474,69 @@ function parseDetail(detail) {
 function formatLogEntry(entry) {
   const detail = parseDetail(entry.detail);
   const labels = {
-    BOOT_START: "Started", BOOT_READY: "Newo ready", STORAGE_READY: `Storage ready — ${detail.saved_networks ?? "0"} networks`, STORAGE_FAILED: "Storage failed",
-    WIFI_SCAN_START: "Scanning for saved Wi-Fi", WIFI_SCAN_EMPTY: "Wi-Fi scan found nothing", WIFI_SCAN_RESULT: "Found saved Wi-Fi", WIFI_CONNECTING: `Connecting to ${detail.ssid ?? "Wi-Fi"}`, WIFI_CONNECTED: `Wi-Fi connected — ${detail.ssid ?? "unknown"}${detail.rssi ? `, ${detail.rssi} dBm` : ""}`, WIFI_CONNECT_FAILED: "Wi-Fi connection failed", WIFI_DISCONNECTED: `Wi-Fi disconnected — ${detail.reason ?? "unknown reason"}`, WIFI_RECONNECTING: "Reconnecting Wi-Fi",
-    PROV_STARTED: "Wi-Fi setup started", PROV_READY: "Wi-Fi setup ready", PROV_CREDENTIALS_RECEIVED: "Wi-Fi details received", PROV_CREDENTIALS_ACCEPTED: "Wi-Fi details accepted", PROV_CREDENTIALS_REJECTED: "Wi-Fi details rejected", PROV_SAVE_FAILED: "Wi-Fi setup could not save", PROV_SAVED: "Wi-Fi network saved", PROV_STOPPED: "Wi-Fi setup stopped", PROV_TIMEOUT: "Wi-Fi setup timed out",
-    CLOUD_CONFIGURED: "Cloud configured", CLOUD_DISABLED: "Cloud disabled", CLOUD_CONNECTING: "Connecting to cloud", CLOUD_CONNECTED: "Cloud connected", CLOUD_AUTHENTICATED: "Newo authenticated", CLOUD_DISCONNECTED: "Cloud disconnected", CLOUD_WS_ERROR: "Cloud connection error", CLOUD_INVALID_JSON: "Cloud sent invalid data", CLOUD_UNSUPPORTED_MESSAGE: "Cloud sent unsupported message", CLOUD_REBOOT_ACK_FAILED: "Restart acknowledgement failed", SYSTEM_REBOOT_REQUESTED: "Restart requested", SYSTEM_REBOOTING: "Restarting",
+    BOOT_START: ["Started"], BOOT_READY: ["Newo ready"], STORAGE_READY: ["Storage ready", `${detail.saved_networks ?? "0"} networks`], STORAGE_FAILED: ["Storage failed"],
+    WIFI_SCAN_START: ["Scanning for saved Wi-Fi"], WIFI_SCAN_EMPTY: ["Wi-Fi scan found nothing"], WIFI_SCAN_RESULT: ["Found saved Wi-Fi"], WIFI_CONNECTING: ["Connecting", detail.ssid ?? "Wi-Fi"], WIFI_CONNECTED: ["Wi-Fi connected", detail.ssid ?? "unknown", detail.rssi ? `${detail.rssi} dBm` : null], WIFI_CONNECT_FAILED: ["Wi-Fi connection failed"], WIFI_DISCONNECTED: ["Wi-Fi disconnected", detail.reason ?? "unknown reason"], WIFI_RECONNECTING: ["Reconnecting Wi-Fi"],
+    PROV_STARTED: ["Wi-Fi setup started"], PROV_READY: ["Wi-Fi setup ready"], PROV_CREDENTIALS_RECEIVED: ["Wi-Fi details received"], PROV_CREDENTIALS_ACCEPTED: ["Wi-Fi details accepted"], PROV_CREDENTIALS_REJECTED: ["Wi-Fi details rejected"], PROV_SAVE_FAILED: ["Wi-Fi setup could not save"], PROV_SAVED: ["Wi-Fi network saved"], PROV_STOPPED: ["Wi-Fi setup stopped"], PROV_TIMEOUT: ["Wi-Fi setup timed out"],
+    CLOUD_CONFIGURED: ["Cloud configured"], CLOUD_DISABLED: ["Cloud disabled"], CLOUD_CONNECTING: ["Connecting to cloud"], CLOUD_CONNECTED: ["Cloud connected"], CLOUD_AUTHENTICATED: ["Newo authenticated"], CLOUD_DISCONNECTED: ["Cloud disconnected"], CLOUD_WS_ERROR: ["Cloud connection error"], CLOUD_INVALID_JSON: ["Cloud sent invalid data"], CLOUD_UNSUPPORTED_MESSAGE: ["Cloud sent unsupported message"], CLOUD_REBOOT_ACK_FAILED: ["Restart acknowledgement failed"], SYSTEM_REBOOT_REQUESTED: ["Restart requested"], SYSTEM_REBOOTING: ["Restarting"],
   };
-  const text = labels[entry.code] ?? entry.code.replaceAll("_", " ");
-  return `${formatLogTime(entry.last_ms)}  ${text}${entry.repeat > 1 ? ` ×${entry.repeat}` : ""}`;
+  const [event, ...details] = labels[entry.code] ?? [entry.code.replaceAll("_", " ")];
+  const renderedDetails = details.filter(Boolean).map((value) => escapeHtml(value).replace(/ dBm$/, ` ${italic("dBm")}`));
+  return `${italic(formatLogTime(entry.last_ms))}  ${bold(event)}${renderedDetails.length ? ` — ${renderedDetails.join(", ")}` : ""}${entry.repeat > 1 ? ` ${italic(`×${entry.repeat}`)}` : ""}`;
 }
 
-async function replyLines(ctx, lines, requestId = null) {
-  let message = "";
+async function replyLogLines(ctx, name, lines, requestId = null, prefixBlocks = []) {
+  const header = title(`Newo ${name}`);
+  let chunk = [];
   for (const line of lines) {
-    if (message && message.length + line.length + 1 > 3800) {
-      await commandReply(ctx, message, "logs_chunk", requestId);
-      message = "";
+    const candidate = `${header}\n${[...prefixBlocks, quote([...chunk, line])].join("\n")}`;
+    if (chunk.length && candidate.length > 3800) {
+      await commandReply(ctx, `${header}\n${[...prefixBlocks, quote(chunk)].join("\n")}`, "logs_chunk", requestId);
+      chunk = [];
     }
-    message += `${message ? "\n" : ""}${line}`;
+    chunk.push(line);
   }
-  if (message) await commandReply(ctx, message, "logs_chunk", requestId);
+  if (chunk.length || prefixBlocks.length) await commandReply(ctx, `${header}\n${[...prefixBlocks, quote(chunk)].join("\n")}`, "logs_chunk", requestId);
 }
 
 async function handleHealthCommand(ctx) {
   const request = sendDeviceRequest("health_request", "health", {}, commandTrace(ctx));
-  if (request.kind === "offline") return commandReply(ctx, "Newo is offline.", "offline");
+  if (request.kind === "offline") return commandReply(ctx, statusMessage("health", "offline"), "offline");
   const result = await request.promise;
-  if (result.kind !== "response") return commandReply(ctx, result.kind === "timeout" ? "Newo did not reply within 5 seconds." : "Newo is offline.", result.kind, request.requestId);
+  if (result.kind !== "response") return commandReply(ctx, result.kind === "timeout" ? timeoutMessage("health") : statusMessage("health", "offline"), result.kind, request.requestId);
   const health = result.message;
-  await commandReply(ctx, ["Newo health", "", "System", `Firmware: ${health.firmware}`, `Uptime: ${formatDuration(health.uptime_ms)}`, `Last restart: ${formatResetReason(health.reset_reason)}`, "", "Network", `Wi-Fi: ${health.ssid || "not connected"}`, `Signal: ${typeof health.rssi === "number" ? `${health.rssi} dBm` : "unknown"}`, `Cloud: ${health.cloud_connected ? "connected" : "not connected"}`, "", "Memory", `Heap: ${formatBytes(health.free_heap)} free`, `Lowest heap: ${formatBytes(health.min_free_heap)}`, `PSRAM: ${formatBytes(health.free_psram)} free`, "", "Wi-Fi activity", `Scans: ${health.wifi.scans}`, `Attempts: ${health.wifi.connect_attempts}`, `Connections: ${health.wifi.connections}`, `Failed: ${health.wifi.failed}`, `Disconnects: ${health.wifi.disconnects}`, `Last disconnect: ${health.wifi.last_disconnect_reason || "none"}`, "", "Cloud activity", `Connections: ${health.cloud.connections}`, `Disconnects: ${health.cloud.disconnects}`, `Errors: ${health.cloud.errors}`, "", "Logs", `Stored: ${health.logs.stored} / ${health.logs.capacity}`, `Warnings: ${health.logs.warnings}`, `Errors: ${health.logs.errors}`].join("\n"));
+  const value = (label, data) => `${label}: ${bold(data)}`;
+  await commandReply(ctx, commandMessage("health", [
+    quote(["System", value("Firmware", health.firmware), `Uptime: ${boldItalic(formatDuration(health.uptime_ms))}`, value("Last restart", formatResetReason(health.reset_reason))]),
+    quote(["Network", value("Wi-Fi", health.ssid || "not connected"), `Signal: ${bold(typeof health.rssi === "number" ? health.rssi : "unknown")}${typeof health.rssi === "number" ? ` ${italic("dBm")}` : ""}`, value("Cloud", health.cloud_connected ? "connected" : "not connected")]),
+    quote(["Memory", `Heap: ${bold(formatBytes(health.free_heap))} ${italic("free")}`, value("Lowest heap", formatBytes(health.min_free_heap)), `PSRAM: ${bold(formatBytes(health.free_psram))} ${italic("free")}`]),
+    quote(["Wi-Fi activity", value("Scans", health.wifi.scans), value("Attempts", health.wifi.connect_attempts), value("Connections", health.wifi.connections), value("Failed", health.wifi.failed), value("Disconnects", health.wifi.disconnects), value("Last disconnect", health.wifi.last_disconnect_reason || "Unknown")]),
+    quote(["Cloud activity", value("Connections", health.cloud.connections), value("Disconnects", health.cloud.disconnects), value("Errors", health.cloud.errors)]),
+    quote(["Logs", value("Stored", `${health.logs.stored} / ${health.logs.capacity}`), value("Warnings", health.logs.warnings), value("Errors", health.logs.errors)]),
+  ]), "response", request.requestId);
 }
 
 async function handleLogsCommand(ctx, forceProblems = false) {
+  const name = forceProblems ? "errors" : "logs";
   const args = parseLogsArguments(ctx.match, forceProblems);
-  if (!args) return commandReply(ctx, "Usage: /logs [1-40] [warn|error]", "usage");
+  if (!args) return commandReply(ctx, commandMessage(name, [quote(["Usage: /logs [1-40] [warn|error]"])]), "usage");
   const request = sendDeviceRequest("logs_request", "logs", args, commandTrace(ctx));
-  if (request.kind === "offline") return commandReply(ctx, "Newo is offline.", "offline");
+  if (request.kind === "offline") return commandReply(ctx, statusMessage(name, "offline"), "offline");
   const result = await request.promise;
-  if (result.kind !== "response") return commandReply(ctx, result.kind === "timeout" ? "Newo did not reply within 5 seconds." : "Newo is offline.", result.kind, request.requestId);
-  if (result.message.error) return commandReply(ctx, "Newo could not prepare logs.", "device_error", request.requestId);
+  if (result.kind !== "response") return commandReply(ctx, result.kind === "timeout" ? timeoutMessage(name) : statusMessage(name, "offline"), result.kind, request.requestId);
+  if (result.message.error) return commandReply(ctx, commandMessage(name, [quote([`Status: ${bold("Unavailable")}`])]), "device_error", request.requestId);
   const entries = result.message.entries;
-  if (forceProblems && entries.length === 0) return commandReply(ctx, "Newo errors\n\nNo problems since startup.", "clean", request.requestId);
-  const title = forceProblems ? ["Newo errors", "", `${result.message.warnings} warnings`, `${result.message.errors} errors`, ""] : ["Newo logs", ""];
-  await replyLines(ctx, [...title, ...entries.map(formatLogEntry)], request.requestId);
+  if (entries.length === 0) return commandReply(ctx, commandMessage(name, [quote([forceProblems ? "No problems since startup." : "No logs since startup."])]), "clean", request.requestId);
+  const summary = forceProblems ? [quote(["Summary", `Warnings: ${bold(result.message.warnings)}`, `Errors: ${bold(result.message.errors)}`])] : [];
+  await replyLogLines(ctx, name, entries.map(formatLogEntry), request.requestId, summary);
 }
 
 async function handlePingCommand(ctx) {
   const request = sendDeviceRequest("ping", "pong", {}, commandTrace(ctx));
-  if (request.kind === "offline") {
-    await commandReply(ctx, "Newo is offline.", "offline");
-    return;
-  }
-
+  if (request.kind === "offline") return commandReply(ctx, statusMessage("ping", "offline"), "offline");
   const result = await request.promise;
-  if (result.kind === "response") {
-    await commandReply(ctx, `Newo replied in ${result.elapsedMs} ms`, "response", request.requestId);
-    return;
-  }
-
-  if (result.kind === "timeout") {
-    await commandReply(ctx, "Newo did not reply within 5 seconds.", "timeout", request.requestId);
-    return;
-  }
-
-  await commandReply(ctx,
-    getConnectedDeviceState() ? "Newo did not reply within 5 seconds." : "Newo is offline.", "unavailable", request.requestId,
-  );
+  if (result.kind === "response") return commandReply(ctx, commandMessage("ping", [quote([`Latency: ${bold(result.elapsedMs)} ${italic("ms")}`])]), "response", request.requestId);
+  if (result.kind === "timeout") return commandReply(ctx, timeoutMessage("ping"), "timeout", request.requestId);
+  return commandReply(ctx, getConnectedDeviceState() ? timeoutMessage("ping") : statusMessage("ping", "offline"), "unavailable", request.requestId);
 }
 
 function trackPendingReboot(chatId, messageId, deviceId) {
@@ -544,7 +550,7 @@ function trackPendingReboot(chatId, messageId, deviceId) {
     pendingReboot = null;
 
     void bot?.api
-      .editMessageText(chatId, messageId, "Newo has not come back online yet.")
+      .editMessageText(chatId, messageId, statusMessage("reboot", "Not back online yet"), { parse_mode: "HTML" })
       .catch(() => {
         app.log.warn({ chat_id: chatId }, "Failed to update timed-out reboot message");
       });
@@ -568,7 +574,7 @@ function completePendingReboot(deviceId) {
         "Failed to delete Telegram reboot message",
       );
     })
-    .then(() => bot?.api.sendMessage(tracker.chatId, "Newo is back online."))
+    .then(() => bot?.api.sendMessage(tracker.chatId, statusMessage("reboot", "Back online"), { parse_mode: "HTML" }))
     .catch(() => {
       app.log.warn(
         { chat_id: tracker.chatId },
@@ -580,26 +586,15 @@ function completePendingReboot(deviceId) {
 
 async function handleRebootCommand(ctx) {
   const request = sendDeviceRequest("reboot", "reboot_ack", {}, commandTrace(ctx));
-  if (request.kind === "offline") {
-    await commandReply(ctx, "Newo is offline.", "offline");
-    return;
-  }
-
+  if (request.kind === "offline") return commandReply(ctx, statusMessage("reboot", "offline"), "offline");
   const result = await request.promise;
   if (result.kind === "response") {
-    const message = await commandReply(ctx, "Restarting Newo.", "response", request.requestId);
+    const message = await commandReply(ctx, statusMessage("reboot", "Restarting"), "response", request.requestId);
     trackPendingReboot(ctx.chat.id, message.message_id, env.NEWO_DEVICE_ID);
     return;
   }
-
-  if (result.kind === "timeout") {
-    await commandReply(ctx, "Newo did not acknowledge the restart.", "timeout", request.requestId);
-    return;
-  }
-
-  await commandReply(ctx,
-    getConnectedDeviceState() ? "Newo did not acknowledge the restart." : "Newo is offline.", "unavailable", request.requestId,
-  );
+  if (result.kind === "timeout") return commandReply(ctx, statusMessage("reboot", "Restart was not acknowledged"), "timeout", request.requestId);
+  return commandReply(ctx, getConnectedDeviceState() ? statusMessage("reboot", "Restart was not acknowledged") : statusMessage("reboot", "offline"), "unavailable", request.requestId);
 }
 
 if (env.TELEGRAM_BOT_TOKEN) {
@@ -655,7 +650,7 @@ if (env.TELEGRAM_BOT_TOKEN) {
 
   bot.command("start", async (ctx) => {
     const state = getDeviceSnapshot().connected ? "online" : "offline";
-    await ctx.reply(`Newo is ${state}.`);
+    await commandReply(ctx, `${title("Newo")}\n${quote([`Status: ${bold(state)}`])}`, "response");
   });
 
   bot.command(["status", "s"], handleStatusCommand);
@@ -753,9 +748,10 @@ wss.on("connection", (ws, request, deviceId) => {
 
   const completedIntentionalReboot = completePendingReboot(deviceId);
   if (reconnectingAfterNotifiedOffline && !completedIntentionalReboot) {
-    sendConnectivityNotification(
-      `Newo is back online after ${formatDuration(offlineDuration)}.`,
-    );
+    sendConnectivityNotification(commandMessage("connectivity", [quote([
+      `Status: ${bold("Back online")}`,
+      `Offline for: ${boldItalic(formatDuration(offlineDuration))}`,
+    ])]));
   }
 
   app.log.info({ device_id: deviceId }, "Newo device connected");
