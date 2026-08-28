@@ -20,10 +20,11 @@ class NewoDisplay {
  private:
   void render();
   void drawFace();
-  void drawTextPage(const char* heading, const char* body, bool dense = false);
+  void drawTextPage(const char* heading, const char* body, bool info = false);
+  void drawMessage();
   void drawEco();
-  void drawCentered(const char* text, int16_t y, bool dense = false);
-  void drawWrapped(const char* text, int16_t firstY, bool dense);
+  void drawCentered(const char* text, int16_t y);
+  void drawWrapped(const char* text, int16_t firstY, bool info, bool centered = false);
   static const char* statusFor(NewoDisplayMode mode);
 
   Adafruit_ST7789 display_;

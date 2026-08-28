@@ -21,7 +21,7 @@ Use `ESP32S3 Dev Module`, QIO 80 MHz, 16 MB flash, OPI PSRAM, `16M Flash (3MB AP
 
 ## Display test
 
-A 240x240 ST7789 display is wired over SPI: SCK GPIO42, MOSI GPIO41, RST GPIO40, DC GPIO38, and CS GPIO2. VCC and BLK connect to 3V3; GND connects to GND. On boot, the minimal display module clears the screen and renders `NEWO` and `DISPLAY OK`. Microphone GPIO4/5/6 and RGB GPIO48 remain unchanged.
+A 240x240 ST7789 display is wired over SPI: SCK GPIO42, MOSI GPIO41, RST GPIO40, DC GPIO38, and CS GPIO2. VCC and BLK connect to 3V3; GND connects to GND. The display initializes in the confirmed physical rotation and renders the Newo face/dashboard UI. Microphone GPIO4/5/6 and RGB GPIO48 remain unchanged.
 
 ## Wi-Fi and provisioning
 
@@ -64,7 +64,7 @@ Audio uses a dedicated FreeRTOS capture task and I2S DMA, feeding a 24-frame (48
 
 ## Display and Telegram control
 
-The ST7789 uses GPIO42 SCK, GPIO41 MOSI, GPIO40 RST, GPIO38 DC, and GPIO2 CS; it is initialized with rotation `3` for the confirmed physical mount. The local display has `IDLE`, `LISTENING`, `THINKING`, `SPEAKING`, `ERROR`, `MESSAGE`, and `ECO` modes. Normal mode draws only a white code-drawn face on black; face status words use bundled Adafruit `FreeSans9pt7b`; dense information pages use the compact `Org_01` (~6 px) font rather than scaled text. ECO rotates compact ONLINE, HEALTH, and SERVICES pages every five seconds without blocking.
+The ST7789 uses GPIO42 SCK, GPIO41 MOSI, GPIO40 RST, GPIO38 DC, and GPIO2 CS; it is initialized with rotation `3` for the confirmed physical mount. The local display has `IDLE`, `LISTENING`, `THINKING`, `SPEAKING`, `ERROR`, `MESSAGE`, and `ECO` modes. Normal mode draws only a white code-drawn face on black; face status words use bundled Adafruit `FreeSans9pt7b`; compact diagnostic pages use readable `FreeMono9pt7b` rows with `FreeSansBold9pt7b` headings, left aligned at a 16 px margin. One- or two-word messages up to 14 characters use a centered `FreeSans18pt7b` treatment; longer messages word-wrap left aligned. ECO rotates compact ONLINE, HEALTH, and SERVICES pages every five seconds without blocking.
 
 Authorized Telegram users can use visible `/newo <idle|listening|thinking|speaking|error|short text>` and `/eco`; hidden alias `/n` is equivalent. `/newo` semantic display updates use `display_set`/`display_ack`; `/eco` uses `eco_toggle`/`display_ack`. Status, health, ping, reboot, logs, and errors results briefly mirror compact summaries on-screen before returning to the prior face or ECO dashboard.
 
