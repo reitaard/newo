@@ -54,13 +54,15 @@ void NewoAudio::begin() {
       [this](WStype_t type, uint8_t* payload, size_t length) { handleVoiceEvent(type, payload, length); });
   voiceWebSocket_.setReconnectInterval(NewoConfig::VOICE_WS_RECONNECT_INTERVAL_MS);
   configured_ = true;
-  if (xTaskCreatePinnedToCore(audioTaskEntry, "newo-audio", 4096, this, 2, &task_, 0) != pdPASS) {
+  if (xTaskCreatePinnedToCore(audioTaskEntry, "newo-audio", 4096, this, 2, &task_, 0) != pdPASS ||
+      xTaskCreatePinnedToCore(voiceTaskEntry, "newo-voice", 6144, this, 2, &voiceTask_, 1) != pdPASS) {
     configured_ = false;
+    if (task_) vTaskDelete(task_);
     i2s_.end();
     NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::AUDIO, "AUDIO_DISABLED", "task_allocation_failed");
     return;
   }
-  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "AUDIO_CONFIGURED", "pcm16_16khz_20ms");
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "AUDIO_CONFIGURED", "pcm16_16khz_20ms_voice_task");
 #endif
 }
 
@@ -84,49 +86,60 @@ void NewoAudio::startVoiceConnection() {
 }
 
 void NewoAudio::loop() {
-  if (!configured_) return;
+  // `/device`, Wi-Fi, and the Arduino loop never service the voice socket.
+  // resetVoiceStream() only sets a request consumed by the voice task.
+}
 
-  if (!wifi_.connected()) {
-    if (started_) voiceWebSocket_.disconnect();
-    started_ = false;
-    voiceConnected_ = false;
-    discardQueuedFrames();
-    return;
-  }
+void NewoAudio::voiceTaskEntry(void* context) {
+  static_cast<NewoAudio*>(context)->voiceTask();
+}
 
-  startVoiceConnection();
-  voiceWebSocket_.loop();
-  if (!voiceConnected_) return;
-
-  // Bundle complete FIFO 20 ms frames to reduce WebSocket sends from 50/s to
-  // 10/s. Never transmit a partial bundle: it would add stale bytes or break
-  // PCM continuity. The frame budget keeps this loop bounded.
-  AudioFrame frame;
-  for (size_t drainedFrames = 0;
-       drainedFrames + NewoConfig::AUDIO_WS_BUNDLE_FRAMES <= NewoConfig::AUDIO_SEND_DRAIN_FRAME_LIMIT &&
-           voiceConnected_;
-       drainedFrames += NewoConfig::AUDIO_WS_BUNDLE_FRAMES) {
-    if (uxQueueMessagesWaiting(queue_) < NewoConfig::AUDIO_WS_BUNDLE_FRAMES) break;
-    for (size_t index = 0; index < NewoConfig::AUDIO_WS_BUNDLE_FRAMES; ++index) {
-      if (xQueueReceive(queue_, &frame, 0) != pdTRUE) return;
-      memcpy(bundle_ + (index * sizeof(frame.samples)), frame.samples, sizeof(frame.samples));
+void NewoAudio::voiceTask() {
+  while (true) {
+    if (resetRequested_) {
+      const char* reason = resetReason_;
+      resetRequested_ = false;
+      performVoiceReset(reason);
+    }
+    if (!wifi_.connected()) {
+      if (started_) voiceWebSocket_.disconnect();
+      started_ = false;
+      voiceConnected_ = false;
+      discardQueuedFrames();
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+    startVoiceConnection();
+    voiceWebSocket_.loop();
+    if (!voiceConnected_) {
+      vTaskDelay(pdMS_TO_TICKS(2));
+      continue;
     }
 
-    const uint32_t sendStartedUs = micros();
-    const bool sent = voiceWebSocket_.sendBIN(bundle_, sizeof(bundle_));
-    const uint32_t sendDurationUs = micros() - sendStartedUs;
-    if (sendDurationUs > maxSendDurationUsSinceLevel_) maxSendDurationUsSinceLevel_ = sendDurationUs;
-    evaluateVoiceHealth(sendDurationUs);
-    if (!voiceConnected_) break;
-    if (!sent) {
-      droppedFrames_ += NewoConfig::AUDIO_WS_BUNDLE_FRAMES;
-      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO, "VOICE_FRAME_DROPPED", "send_failed");
-      break;
+    AudioFrame frame;
+    if (uxQueueMessagesWaiting(queue_) >= NewoConfig::AUDIO_WS_BUNDLE_FRAMES) {
+      for (size_t index = 0; index < NewoConfig::AUDIO_WS_BUNDLE_FRAMES; ++index) {
+        if (xQueueReceive(queue_, &frame, 0) != pdTRUE) break;
+        memcpy(bundle_ + (index * sizeof(frame.samples)), frame.samples, sizeof(frame.samples));
+      }
+      const uint32_t sendStartedUs = micros();
+      const bool sent = voiceWebSocket_.sendBIN(bundle_, sizeof(bundle_));
+      const uint32_t sendDurationUs = micros() - sendStartedUs;
+      if (sendDurationUs > maxSendDurationUsSinceLevel_) maxSendDurationUsSinceLevel_ = sendDurationUs;
+      evaluateVoiceHealth(sendDurationUs);
+      if (resetRequested_ || !voiceConnected_) continue;
+      if (!sent) {
+        droppedFrames_ += NewoConfig::AUDIO_WS_BUNDLE_FRAMES;
+        NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO, "VOICE_FRAME_DROPPED", "send_failed");
+      } else {
+        transmittedFrames_ += NewoConfig::AUDIO_WS_BUNDLE_FRAMES;
+        ++bundleSends_;
+      }
+    } else {
+      evaluateVoiceHealth();
+      vTaskDelay(pdMS_TO_TICKS(1));
     }
-    transmittedFrames_ += NewoConfig::AUDIO_WS_BUNDLE_FRAMES;
-    ++bundleSends_;
   }
-  evaluateVoiceHealth();
 }
 
 const char* NewoAudio::healthReasonName(VoiceHealthReason reason) {
@@ -164,6 +177,12 @@ void NewoAudio::evaluateVoiceHealth(uint32_t sendDurationUs) {
 }
 
 void NewoAudio::resetVoiceStream(const char* reason) {
+  if (!configured_) return;
+  resetReason_ = reason ? reason : "manual";
+  resetRequested_ = true;
+}
+
+void NewoAudio::performVoiceReset(const char* reason) {
   if (!configured_) return;
   char detail[64];
   snprintf(detail, sizeof(detail), "reason=%s ar=%lu", reason ? reason : "manual", static_cast<unsigned long>(automaticVoiceResets_));

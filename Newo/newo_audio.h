@@ -13,6 +13,7 @@ class NewoAudio {
   explicit NewoAudio(NewoWiFi& wifi);
 
   void begin();
+  // Thread-safe request; the dedicated voice task owns all WebSocket calls.
   void loop();
   void resetVoiceStream(const char* reason);
 
@@ -22,7 +23,10 @@ class NewoAudio {
   };
 
   static void audioTaskEntry(void* context);
+  static void voiceTaskEntry(void* context);
   void audioTask();
+  void voiceTask();
+  void performVoiceReset(const char* reason);
   void startVoiceConnection();
   void handleVoiceEvent(WStype_t type, uint8_t* payload, size_t length);
   void logLevel(const AudioFrame& frame);
@@ -35,6 +39,7 @@ class NewoAudio {
   WebSocketsClient voiceWebSocket_;
   QueueHandle_t queue_ = nullptr;
   TaskHandle_t task_ = nullptr;
+  TaskHandle_t voiceTask_ = nullptr;
   bool configured_ = false;
   bool started_ = false;
   volatile bool voiceConnected_ = false;
@@ -50,6 +55,8 @@ class NewoAudio {
   uint32_t lastHealthDropped_ = 0;
   uint32_t lastHealthOverruns_ = 0;
   bool resetReconnectPending_ = false;
+  volatile bool resetRequested_ = false;
+  const char* volatile resetReason_ = "manual";
   uint32_t clippedSamplesSinceLevel_ = 0;
   uint32_t pcmSamplesSinceLevel_ = 0;
   uint32_t lastLevelLogMs_ = 0;
