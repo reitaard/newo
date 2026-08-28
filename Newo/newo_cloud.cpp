@@ -109,8 +109,8 @@ bool NewoCloud::connected() const {
 }
 
 void NewoCloud::recordStack(const char* point) {
-  // FreeRTOS returns StackType_t words (4 bytes on ESP32-S3).
-  const uint32_t bytes = uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t);
+  // ESP-IDF on ESP32-S3 returns this high-water mark in bytes.
+  const uint32_t bytes = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
   if (bytes < minimumLoopStackBytes_) minimumLoopStackBytes_ = bytes;
   Serial.printf("[stack] %s: %lu bytes free (low %lu)\n", point,
                 static_cast<unsigned long>(bytes),

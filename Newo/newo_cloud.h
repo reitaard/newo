@@ -12,7 +12,7 @@ class NewoCloud {
   void begin();
   void loop();
   bool connected() const;
-  // Temporary physical-validation instrumentation. FreeRTOS reports words.
+  // Temporary physical-validation instrumentation; ESP-IDF reports bytes on ESP32-S3.
   void recordStack(const char* point);
 
  private:
