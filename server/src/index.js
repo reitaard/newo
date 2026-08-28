@@ -444,15 +444,8 @@ app.get("/health", async () => {
   };
 });
 
-const TELEGRAM_COMMANDS = [
-  { command: "status", description: "Quick status" },
-  { command: "health", description: "Device health" },
-  { command: "logs", description: "Recent logs" },
-  { command: "errors", description: "Problems" },
-  { command: "reboot", description: "Restart Newo" },
-  { command: "newo", description: "Set Newo display" },
-  { command: "eco", description: "Toggle ECO display" },
-];
+// Commands remain callable but are intentionally not advertised in Telegram's menu.
+const TELEGRAM_COMMANDS = []; 
 
 function commandTrace(ctx) {
   return ctx.newoTrace ?? null;
@@ -789,7 +782,8 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["status", "s"], handleStatusCommand);
   bot.command(["health", "h"], handleHealthCommand);
   bot.command(["logs", "l"], (ctx) => handleLogsCommand(ctx));
-  bot.command(["errors", "e"], (ctx) => handleLogsCommand(ctx, true));
+  bot.command("errors", (ctx) => handleLogsCommand(ctx, true));
+  bot.command("e", (ctx) => handleLogsCommand(ctx, true));
   bot.command(["ping", "p"], handlePingCommand);
   bot.command(["reboot", "r"], handleRebootCommand);
   bot.command(["newo", "n"], handleNewoCommand);
