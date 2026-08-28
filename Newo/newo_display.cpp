@@ -108,7 +108,7 @@ void NewoDisplay::loop() {
   if (dirty_) render();
   if (!temporary_ && mode_ != NewoDisplayMode::ECO && mode_ != NewoDisplayMode::MESSAGE &&
       static_cast<int32_t>(now - nextFaceFrameMs_) >= 0) {
-    nextFaceFrameMs_ = now + 50;  // 20 FPS, deliberately below audio/control loop rates.
+    nextFaceFrameMs_ = now + 67;  // ~15 FPS: network/audio reliability takes priority.
     drawFaceFrame(now);
   }
 }
@@ -146,6 +146,7 @@ void NewoDisplay::drawFace() {
 }
 
 void NewoDisplay::drawFaceFrame(uint32_t now) {
+  const uint32_t frameStartedUs = micros();
   // Compose the whole 200x82 eye region off-screen, then blit a complete frame.
   // This prevents the black clear/draw tear visible with direct TFT rendering.
   eyeCanvas_.fillScreen(0);
@@ -177,7 +178,7 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   const int16_t localY = y - 40 + (baseHeight - h) / 2;
   eyeCanvas_.fillRoundRect(leftX - 20, localY, w, h, h / 2, 1);
   eyeCanvas_.fillRoundRect(rightX - 20, localY, w, h, h / 2, 1);
-  display_.drawBitmap(20, 40, eyeCanvas_.getBuffer(), 200, 82, kWhite, ST77XX_BLACK);
+  blitMonoCanvasFast(eyeCanvas_, 20, 40, 200, 82);
   // Advance only after this completed canvas frame has reached the TFT.
   if (blinkPhase_ != BlinkPhase::OPEN) {
     if (--blinkFramesRemaining_ == 0) {
@@ -190,11 +191,43 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
       } else {
         blinkPhase_ = BlinkPhase::OPEN;
         verificationBlink_ = false;
-        nextBlinkMs_ = now + random(3'000, 7'001);
+        nextBlinkMs_ = now + random(2'500, 5'501);
       }
     }
   }
   drawStateAnimation(now);
+  recordFaceFrame(micros() - frameStartedUs);
+}
+
+void NewoDisplay::blitMonoCanvasFast(GFXcanvas1& canvas, int16_t x, int16_t y, int16_t width, int16_t height) {
+  const uint8_t* source = canvas.getBuffer();
+  const int16_t stride = (width + 7) / 8;
+  display_.startWrite();
+  display_.setAddrWindow(x, y, width, height);
+  for (int16_t row = 0; row < height; ++row) {
+    const uint8_t* scanline = source + row * stride;
+    for (int16_t column = 0; column < width; ++column) {
+      monoLineBuffer_[column] = (scanline[column >> 3] & (0x80 >> (column & 7))) ? kWhite : ST77XX_BLACK;
+    }
+    display_.writePixels(monoLineBuffer_, width);
+  }
+  display_.endWrite();
+}
+
+void NewoDisplay::recordFaceFrame(uint32_t elapsedUs) {
+  if (!frameMetricsStartedMs_) frameMetricsStartedMs_ = millis();
+  frameMetricsTotalUs_ += elapsedUs;
+  if (elapsedUs > frameMetricsWorstUs_) frameMetricsWorstUs_ = elapsedUs;
+  ++frameMetricsCount_;
+  const uint32_t now = millis();
+  if (now - frameMetricsStartedMs_ < 5'000) return;
+  Serial.printf("DISPLAY_FRAME avg_us=%lu worst_us=%lu frames=%u\n",
+                static_cast<unsigned long>(frameMetricsTotalUs_ / frameMetricsCount_),
+                static_cast<unsigned long>(frameMetricsWorstUs_), static_cast<unsigned>(frameMetricsCount_));
+  frameMetricsStartedMs_ = now;
+  frameMetricsTotalUs_ = 0;
+  frameMetricsWorstUs_ = 0;
+  frameMetricsCount_ = 0;
 }
 
 void NewoDisplay::drawStateAnimation(uint32_t now) {
@@ -223,7 +256,7 @@ void NewoDisplay::drawStateAnimation(uint32_t now) {
   } else if (mode_ == NewoDisplayMode::ERROR) {
     activityCanvas_.setFont(&FreeSans9pt7b); activityCanvas_.setCursor(44, 17); activityCanvas_.print("!"); activityCanvas_.setFont(nullptr);
   }
-  display_.drawBitmap(72, 160, activityCanvas_.getBuffer(), 96, 23, kWhite, ST77XX_BLACK);
+  blitMonoCanvasFast(activityCanvas_, 72, 160, 96, 23);
 }
 
 void NewoDisplay::drawFaceResponse() {

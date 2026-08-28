@@ -24,6 +24,8 @@ class NewoDisplay {
   void drawFaceFrame(uint32_t now);
   void drawStateAnimation(uint32_t now);
   void drawFaceResponse();
+  void blitMonoCanvasFast(GFXcanvas1& canvas, int16_t x, int16_t y, int16_t width, int16_t height);
+  void recordFaceFrame(uint32_t elapsedUs);
   void drawTextPage(const char* heading, const char* body, bool info = false);
   void drawMessage();
   void drawEco();
@@ -34,6 +36,7 @@ class NewoDisplay {
   Adafruit_ST7789 display_;
   GFXcanvas1 eyeCanvas_{200, 82};
   GFXcanvas1 activityCanvas_{96, 23};
+  uint16_t monoLineBuffer_[200] = {};  // One RGB565 scanline; no full-color framebuffer.
   NewoDisplayMode mode_ = NewoDisplayMode::IDLE;
   NewoDisplayMode persistentMode_ = NewoDisplayMode::IDLE;
   char text_[97] = {};
@@ -51,6 +54,10 @@ class NewoDisplay {
   BlinkPhase blinkPhase_ = BlinkPhase::OPEN;
   uint8_t blinkFramesRemaining_ = 0;
   bool verificationBlink_ = true;
+  uint32_t frameMetricsStartedMs_ = 0;
+  uint32_t frameMetricsTotalUs_ = 0;
+  uint32_t frameMetricsWorstUs_ = 0;
+  uint16_t frameMetricsCount_ = 0;
   struct Telemetry {
     bool wifi = false;
     int32_t rssi = 0;
