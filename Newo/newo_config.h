@@ -32,7 +32,9 @@ constexpr uint8_t AUDIO_MIC_GAIN = 4;
 // 24 frames retain at most 480 ms. Bounded sender draining catches short loop
 // stalls without letting audio become unboundedly stale.
 constexpr size_t AUDIO_QUEUE_DEPTH = 24;
-constexpr size_t AUDIO_SEND_DRAIN_LIMIT = 6;
+constexpr size_t AUDIO_WS_BUNDLE_FRAMES = 5;
+constexpr size_t AUDIO_WS_BUNDLE_BYTES = AUDIO_WS_BUNDLE_FRAMES * AUDIO_FRAME_BYTES;
+constexpr size_t AUDIO_SEND_DRAIN_FRAME_LIMIT = 6;
 constexpr uint32_t AUDIO_LEVEL_LOG_INTERVAL_MS = 5'000;
 
 constexpr uint32_t INITIAL_RECOVERY_WINDOW_MS = 18'000;

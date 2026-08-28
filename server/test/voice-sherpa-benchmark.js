@@ -4,10 +4,20 @@ import path from "node:path";
 
 import { SherpaAsrBackend } from "../src/voice.js";
 
+const model = process.env.VOICE_SHERPA_MODEL ?? "20m";
 const modelDirectory = process.env.VOICE_ASR_MODEL_DIRECTORY
-  ?? "models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17";
+  ?? (model === "libri-giga"
+    ? "models/sherpa-onnx-streaming-zipformer-en-2023-06-21"
+    : "models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17");
+// Keep the same sample for direct 20M versus libri-giga comparisons.
 const wavFile = process.env.VOICE_ASR_TEST_WAV
-  ?? path.join(modelDirectory, "test_wavs/0.wav");
+  ?? "models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/test_wavs/0.wav";
+const hotwordsFile = process.env.VOICE_ASR_HOTWORDS_FILE
+  ?? (model === "libri-giga" ? "config/newo-hotwords.txt" : undefined);
+const chunkBytes = Number(process.env.VOICE_ASR_CHUNK_BYTES ?? 640);
+if (!Number.isInteger(chunkBytes) || chunkBytes <= 0 || chunkBytes % 2 !== 0) {
+  throw new Error("VOICE_ASR_CHUNK_BYTES must be a positive even integer");
+}
 
 function readPcm16MonoWav(buffer) {
   if (buffer.toString("ascii", 0, 4) !== "RIFF" || buffer.toString("ascii", 8, 12) !== "WAVE") {
@@ -31,7 +41,13 @@ function readPcm16MonoWav(buffer) {
 }
 
 const memoryBeforeBytes = process.memoryUsage().rss;
-const backend = new SherpaAsrBackend({ modelDirectory, numThreads: Number(process.env.VOICE_ASR_THREADS ?? 2) });
+const backend = new SherpaAsrBackend({
+  modelDirectory,
+  model,
+  numThreads: Number(process.env.VOICE_ASR_THREADS ?? 2),
+  hotwordsFile,
+  hotwordsScore: Number(process.env.VOICE_ASR_HOTWORDS_SCORE ?? 1.5),
+});
 const memoryAfterLoadBytes = process.memoryUsage().rss;
 const pcm = readPcm16MonoWav(await readFile(wavFile));
 const events = [];
@@ -41,20 +57,30 @@ const stream = await backend.createStream({
 });
 const startedAt = performance.now();
 const cpuStart = process.cpuUsage();
-for (let offset = 0; offset < pcm.length; offset += 640) await stream.acceptAudio(pcm.subarray(offset, offset + 640));
+for (let offset = 0; offset < pcm.length; offset += chunkBytes) {
+  await stream.acceptAudio(pcm.subarray(offset, offset + chunkBytes));
+}
+const stopStartedAt = performance.now();
 await stream.stop();
 const elapsedMs = performance.now() - startedAt;
 const cpu = process.cpuUsage(cpuStart);
 const durationSeconds = pcm.length / (16_000 * 2);
 const firstPartial = events.find((event) => event.type === "partial");
 const final = [...events].reverse().find((event) => event.type === "final");
+const finalAfterStop = events.find((event) => event.type === "final" && event.elapsedMs >= stopStartedAt - startedAt);
 
 if (!firstPartial || !final || !final.text.includes("YELLOW LAMPS")) throw new Error(`Streaming ASR regression: ${final?.text ?? "no final transcript"}`);
 console.log(JSON.stringify({
+  model,
   model_directory: modelDirectory,
+  hotwords_file: hotwordsFile ?? null,
+  chunk_bytes: chunkBytes,
   wav_file: wavFile,
   audio_duration_s: Number(durationSeconds.toFixed(3)),
   time_to_first_partial_ms: Number(firstPartial.elapsedMs.toFixed(1)),
+  endpoint_finalization_ms: finalAfterStop
+    ? Number((finalAfterStop.elapsedMs - (stopStartedAt - startedAt)).toFixed(1))
+    : null,
   elapsed_ms: Number(elapsedMs.toFixed(1)),
   real_time_factor: Number((elapsedMs / 1_000 / durationSeconds).toFixed(3)),
   cpu_ms: Number(((cpu.user + cpu.system) / 1_000).toFixed(1)),

@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -41,15 +42,17 @@ function pcm16leToFloat32(chunk) {
 
 /** Streaming sherpa-onnx adapter. One recognizer is shared, while every voice connection owns its stream. */
 export class SherpaAsrBackend {
-  constructor({ modelDirectory, numThreads = 2, provider = "cpu" }) {
+  constructor({ modelDirectory, model = "20m", numThreads = 2, provider = "cpu", hotwordsFile, hotwordsScore = 1.5 }) {
     this.sherpa = require("sherpa-onnx-node");
     this.modelDirectory = path.resolve(modelDirectory);
-    this.recognizer = new this.sherpa.OnlineRecognizer({
+    const libriGiga = model === "libri-giga";
+    const recognizerConfig = {
       featConfig: { sampleRate: 16_000, featureDim: 80 },
       modelConfig: {
         transducer: {
           encoder: path.join(this.modelDirectory, "encoder-epoch-99-avg-1.int8.onnx"),
-          decoder: path.join(this.modelDirectory, "decoder-epoch-99-avg-1.int8.onnx"),
+          // The larger bundle's supported INT8 recipe retains the FP32 decoder.
+          decoder: path.join(this.modelDirectory, libriGiga ? "decoder-epoch-99-avg-1.onnx" : "decoder-epoch-99-avg-1.int8.onnx"),
           joiner: path.join(this.modelDirectory, "joiner-epoch-99-avg-1.int8.onnx"),
         },
         tokens: path.join(this.modelDirectory, "tokens.txt"),
@@ -57,12 +60,25 @@ export class SherpaAsrBackend {
         provider,
         debug: 0,
         modelType: "zipformer",
+        ...(libriGiga ? {
+          modelingUnit: "bpe",
+          bpeVocab: path.join(this.modelDirectory, "bpe.vocab"),
+        } : {}),
       },
       enableEndpoint: true,
       rule1MinTrailingSilence: 2.4,
       rule2MinTrailingSilence: 1.2,
       rule3MinUtteranceLength: 20,
-    });
+    };
+    if (hotwordsFile) {
+      if (!libriGiga) throw new Error("Hotwords are currently supported only with the libri-giga BPE model");
+      if (!existsSync(hotwordsFile)) throw new Error(`Configured hotwords file does not exist: ${hotwordsFile}`);
+      recognizerConfig.decodingMethod = "modified_beam_search";
+      recognizerConfig.maxActivePaths = 4;
+      recognizerConfig.hotwordsFile = hotwordsFile;
+      recognizerConfig.hotwordsScore = hotwordsScore;
+    }
+    this.recognizer = new this.sherpa.OnlineRecognizer(recognizerConfig);
   }
 
   async createStream({ format, onEvent }) {
@@ -81,7 +97,9 @@ export class SherpaAsrBackend {
       if (type === "final" && normalized === final) return;
       if (type === "partial") partial = normalized;
       else final = normalized;
-      onEvent({ type, text: normalized });
+      // Keep the existing partial/final type for ESP compatibility. stage makes
+      // the first pass explicit and reserves rescored_final for a future pass.
+      onEvent({ type, stage: type === "final" ? "first_pass_final" : "partial", text: normalized });
     };
     const decode = () => {
       while (recognizer.isReady(stream)) recognizer.decode(stream);
@@ -149,10 +167,12 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
   });
   const bytesPerSecond = format.sampleRate * format.channels * (format.bitsPerSample / 8);
 
-  function logTranscript(deviceId, event) {
+  function logTranscript(deviceId, streamId, event, timings) {
     const text = String(event.text ?? "").trim();
     if (!text || !["partial", "final"].includes(event.type)) return;
-    logger.info({ device_id: deviceId, transcript_type: event.type, transcript: text }, `${event.type.toUpperCase()}: ${text}`);
+    const fields = { device_id: deviceId, stream_id: streamId, transcript_type: event.type, transcript_stage: event.stage, transcript: text };
+    if (config.liveTestMode) Object.assign(fields, timings);
+    logger.info(fields, `${event.type.toUpperCase()}: ${text}`);
   }
 
   async function handleConnection(ws, deviceId) {
@@ -162,6 +182,9 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
     let capture = null;
     let asrStream = null;
     let nextProgressBytes = bytesPerSecond * 5;
+    let firstPartialMs = null;
+    let finalMs = null;
+    let finalTranscript = null;
     let processing = Promise.resolve();
     let closed = false;
 
@@ -175,7 +198,11 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
       } catch (error) {
         logger.warn({ device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Voice stream cleanup failed");
       }
-      logger.info({ device_id: deviceId, stream_id: streamId, bytes_received: bytesReceived, audio_duration_ms: durationMs, outcome }, "Voice stream stopped");
+      const fields = { device_id: deviceId, stream_id: streamId, bytes_received: bytesReceived, audio_duration_ms: durationMs, outcome };
+      if (config.liveTestMode) {
+        Object.assign(fields, { first_partial_ms: firstPartialMs, final_ms: finalMs, final_transcript: finalTranscript });
+      }
+      logger.info(fields, "Voice stream stopped");
     };
 
     logger.info({ device_id: deviceId, stream_id: streamId, format }, "Voice device connected");
@@ -203,8 +230,22 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
             streamId,
             format,
             onEvent(event) {
-              logTranscript(deviceId, event);
-              if (ws.readyState === 1) ws.send(JSON.stringify({ type: "transcript", ...event }));
+              const elapsedMs = Math.max(0, Date.now() - startedAt);
+              const audioDurationMs = Math.round((bytesReceived / bytesPerSecond) * 1_000);
+              if (event.type === "partial" && firstPartialMs === null) firstPartialMs = elapsedMs;
+              if (event.type === "final") {
+                finalMs = elapsedMs;
+                finalTranscript = event.text;
+              }
+              logTranscript(deviceId, streamId, event, {
+                elapsed_ms: elapsedMs,
+                audio_duration_ms: audioDurationMs,
+                first_partial_ms: firstPartialMs,
+                final_ms: finalMs,
+              });
+              // `type` remains partial/final for deployed ESP clients. `stage`
+              // allows a later rescorer to emit rescored_final without a wire break.
+              if (ws.readyState === 1) ws.send(JSON.stringify(event));
             },
           });
           if (config.saveWav) {

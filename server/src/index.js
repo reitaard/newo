@@ -44,8 +44,14 @@ const EnvSchema = z.object({
   VOICE_SAVE_WAV: z.preprocess(stringToBoolean, z.boolean().default(false)),
   VOICE_CAPTURE_DIRECTORY: z.preprocess(emptyToUndefined, z.string().default("/tmp/newo-voice")),
   VOICE_ASR_BACKEND: z.preprocess(emptyToUndefined, z.enum(["null", "sherpa"]).default("sherpa")),
-  VOICE_ASR_MODEL_DIRECTORY: z.preprocess(emptyToUndefined, z.string().default("models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17")),
+  VOICE_SHERPA_MODEL: z.preprocess(emptyToUndefined, z.enum(["20m", "libri-giga"]).default("libri-giga")),
+  // Optional emergency/manual override; normally select a known bundle above.
+  VOICE_ASR_MODEL_DIRECTORY: z.preprocess(emptyToUndefined, z.string().optional()),
   VOICE_ASR_THREADS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(6).default(2)),
+  VOICE_ASR_HOTWORDS_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(true)),
+  VOICE_ASR_HOTWORDS_FILE: z.preprocess(emptyToUndefined, z.string().default("config/newo-hotwords.txt")),
+  VOICE_ASR_HOTWORDS_SCORE: z.preprocess(emptyToUndefined, z.coerce.number().min(0).max(5).default(1.5)),
+  VOICE_LIVE_TEST_MODE: z.preprocess(stringToBoolean, z.boolean().default(false)),
 });
 
 const env = EnvSchema.parse(process.env);
@@ -81,8 +87,21 @@ const voiceWss = new WebSocketServer({
   perMessageDeflate: false,
   maxPayload: env.VOICE_MAX_CHUNK_BYTES,
 });
+const sherpaModelDirectories = {
+  "20m": "models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
+  "libri-giga": "models/sherpa-onnx-streaming-zipformer-en-2023-06-21",
+};
+const voiceModelDirectory = env.VOICE_ASR_MODEL_DIRECTORY ?? sherpaModelDirectories[env.VOICE_SHERPA_MODEL];
 const voiceAsr = env.VOICE_ASR_BACKEND === "sherpa"
-  ? new SherpaAsrBackend({ modelDirectory: env.VOICE_ASR_MODEL_DIRECTORY, numThreads: env.VOICE_ASR_THREADS })
+  ? new SherpaAsrBackend({
+    modelDirectory: voiceModelDirectory,
+    model: env.VOICE_SHERPA_MODEL,
+    numThreads: env.VOICE_ASR_THREADS,
+    hotwordsFile: env.VOICE_SHERPA_MODEL === "libri-giga" && env.VOICE_ASR_HOTWORDS_ENABLED
+      ? env.VOICE_ASR_HOTWORDS_FILE
+      : undefined,
+    hotwordsScore: env.VOICE_ASR_HOTWORDS_SCORE,
+  })
   : new NullAsrBackend();
 const voiceRuntime = createVoiceRuntime({
   logger: app.log,
@@ -94,6 +113,7 @@ const voiceRuntime = createVoiceRuntime({
     maxStreamBytes: env.VOICE_MAX_STREAM_BYTES,
     saveWav: env.VOICE_SAVE_WAV,
     captureDirectory: env.VOICE_CAPTURE_DIRECTORY,
+    liveTestMode: env.VOICE_LIVE_TEST_MODE,
   },
 });
 
@@ -1018,6 +1038,8 @@ app.log.info(
     voice_format: `${env.VOICE_CHANNELS}ch ${env.VOICE_SAMPLE_RATE}Hz ${env.VOICE_BITS_PER_SAMPLE}-bit PCM LE`,
     voice_wav_capture_enabled: env.VOICE_SAVE_WAV,
     voice_asr_backend: env.VOICE_ASR_BACKEND,
+    voice_sherpa_model: env.VOICE_ASR_BACKEND === "sherpa" ? env.VOICE_SHERPA_MODEL : null,
+    voice_live_test_mode: env.VOICE_LIVE_TEST_MODE,
     telegram_enabled: Boolean(bot),
     device_auth_configured: Boolean(env.NEWO_DEVICE_SECRET),
   },

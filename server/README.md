@@ -69,23 +69,28 @@ X-Newo-Device-Id: newo-01
 Authorization: Bearer <NEWO_DEVICE_SECRET>
 ```
 
-Send continuous **binary WebSocket frames** containing raw PCM only. Default format is mono, 16 kHz, signed 16-bit little-endian. The server format is configured with `VOICE_SAMPLE_RATE`, `VOICE_CHANNELS`, and `VOICE_BITS_PER_SAMPLE`; `VOICE_MAX_CHUNK_BYTES` (64 KiB) limits one frame and `VOICE_MAX_STREAM_BYTES` (default 10 minutes at 16 kHz mono 16-bit) bounds one connection. Do not send WAV headers, base64, or binary payloads on `/device`.
+Send continuous **binary WebSocket frames** containing raw PCM only. Default format is mono, 16 kHz, signed 16-bit little-endian. The server accepts arbitrary even-sized raw PCM chunks; it has no 640-byte assumption. Newo currently groups five contiguous internal 20 ms frames into a 3,200-byte / 100 ms message. `VOICE_MAX_CHUNK_BYTES` (64 KiB) limits one message and `VOICE_MAX_STREAM_BYTES` (default 10 minutes at 16 kHz mono 16-bit) bounds one connection. Do not send WAV headers, base64, separators, or binary payloads on `/device`.
 
 The voice runtime logs connect/start/progress outcome metadata without logging audio. It calculates received PCM duration from the configured format. `VOICE_SAVE_WAV=false` is the default. Set it to `true` only during a local development capture; the finalized WAV file is written to `/tmp/newo-voice` by default and is never tracked by git.
 
-`src/voice.js` defines the replaceable streaming ASR boundary: `createStream({ format, onEvent })`, `acceptAudio(chunk)`, and `stop()`. `VOICE_ASR_BACKEND=sherpa` is the default and loads the native `sherpa-onnx-node` addon with `sherpa-onnx-streaming-zipformer-en-20M-2023-02-17` INT8 encoder/decoder/joiner files. `VOICE_ASR_BACKEND=null` retains the transport-only fallback. The native addon resolves its bundled Linux shared libraries via its rpath, verified with `ldd`; no interactive-shell `LD_LIBRARY_PATH` is required by PM2.
+`src/voice.js` defines the replaceable streaming ASR boundary: `createStream({ format, onEvent })`, `acceptAudio(chunk)`, and `stop()`. `VOICE_ASR_BACKEND=sherpa` defaults to `VOICE_SHERPA_MODEL=libri-giga`, the larger `sherpa-onnx-streaming-zipformer-en-2023-06-21` bundle. It uses its INT8 encoder/joiner and supported FP32 decoder. Set `VOICE_SHERPA_MODEL=20m` for the retained 20M INT8 fallback/reference. `VOICE_ASR_BACKEND=null` retains the transport-only fallback. The native addon resolves its bundled Linux shared libraries via its rpath, verified with `ldd`; no interactive-shell `LD_LIBRARY_PATH` is required by PM2.
 
-The streaming adapter decodes every ready chunk, emits only changed partial text, finalizes/reset streams at sherpa endpoints, and finalizes remaining text on disconnect. `{ type: "partial", text }` / `{ type: "final", text }` events are logged as `PARTIAL:`/`FINAL:` and returned to the voice WebSocket as JSON transcript events.
+The larger BPE model supports sherpa contextual biasing through `config/newo-hotwords.txt`: one phrase per line, initially `NEWO`, `HELLO`, `CHECK`, and `ONE TWO THREE`. `VOICE_ASR_HOTWORDS_SCORE=1.5` is intentionally conservative; changing the vocabulary or score requires a server restart. Biasing is enabled with modified beam search and affects recognition only—it does not rewrite transcript text or implement a wake word.
 
-Models are intentionally gitignored. To provision the selected model on a new VPS:
+The streaming adapter decodes every ready chunk, emits only changed partial text, finalizes/reset streams at sherpa endpoints, and finalizes remaining text on disconnect. Events retain `{ type: "partial" | "final", text }` compatibility and add `stage: "partial" | "first_pass_final"`; a future rescorer can add `rescored_final` without changing the ESP protocol. With `VOICE_LIVE_TEST_MODE=true`, logs add received duration, first-partial timing, final timing, and final transcript for controlled repeated-phrase tests; WAV capture remains disabled unless explicitly enabled.
+
+Models are intentionally gitignored. To provision the default larger model on a new VPS:
 
 ```bash
 cd /opt/newo/server
 mkdir -p models
-curl -fL -o /tmp/newo-model.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2
+curl -fL -o /tmp/newo-model.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-2023-06-21.tar.bz2
 tar -xjf /tmp/newo-model.tar.bz2 -C models
+# Generate bpe.vocab from the matching upstream bpe.model with sherpa's export_bpe_vocab.py.
 npm run voice:benchmark
 ```
+
+Use `VOICE_SHERPA_MODEL=20m npm run voice:benchmark` for the 20M comparison and `VOICE_SHERPA_MODEL=libri-giga npm run voice:benchmark` for the default large-model benchmark.
 
 For a local transport test after setting `NEWO_DEVICE_SECRET`, start the existing service with `npm start` (or restart its PM2 process), then connect a WebSocket client to `ws://127.0.0.1:8788/voice` with the headers above and send PCM frames. Use the public WSS address only through the existing reverse proxy. Stop the test by closing the WebSocket; the server logs final byte and duration totals.
 

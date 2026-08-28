@@ -17,6 +17,11 @@ static_assert(NewoConfig::AUDIO_SAMPLES_PER_FRAME == 320,
               "20 ms at 16 kHz must produce 320 PCM samples");
 static_assert(NewoConfig::AUDIO_FRAME_BYTES == 640,
               "Audio frame must be 640 bytes of PCM16");
+static_assert(NewoConfig::AUDIO_WS_BUNDLE_FRAMES > 0 &&
+                  NewoConfig::AUDIO_WS_BUNDLE_FRAMES <= NewoConfig::AUDIO_QUEUE_DEPTH,
+              "Audio bundle must fit in the bounded queue");
+static_assert(NewoConfig::AUDIO_WS_BUNDLE_FRAMES <= NewoConfig::AUDIO_SEND_DRAIN_FRAME_LIMIT,
+              "Sender budget must fit one complete audio bundle");
 
 NewoAudio::NewoAudio(NewoWiFi& wifi) : wifi_(wifi) {}
 
@@ -93,20 +98,31 @@ void NewoAudio::loop() {
   voiceWebSocket_.loop();
   if (!voiceConnected_) return;
 
-  // One frame per loop made the old 160 ms queue vulnerable to ordinary loop
-  // stalls. Drain a bounded burst while healthy so Wi-Fi/WebSocket servicing
-  // still regains control promptly.
+  // Bundle complete FIFO 20 ms frames to reduce WebSocket sends from 50/s to
+  // 10/s. Never transmit a partial bundle: it would add stale bytes or break
+  // PCM continuity. The frame budget keeps this loop bounded.
   AudioFrame frame;
-  for (size_t sent = 0;
-       sent < NewoConfig::AUDIO_SEND_DRAIN_LIMIT && voiceConnected_;
-       ++sent) {
-    if (xQueueReceive(queue_, &frame, 0) != pdTRUE) break;
-    if (!voiceWebSocket_.sendBIN(reinterpret_cast<uint8_t*>(frame.samples), sizeof(frame.samples))) {
-      ++droppedFrames_;
+  for (size_t drainedFrames = 0;
+       drainedFrames + NewoConfig::AUDIO_WS_BUNDLE_FRAMES <= NewoConfig::AUDIO_SEND_DRAIN_FRAME_LIMIT &&
+           voiceConnected_;
+       drainedFrames += NewoConfig::AUDIO_WS_BUNDLE_FRAMES) {
+    if (uxQueueMessagesWaiting(queue_) < NewoConfig::AUDIO_WS_BUNDLE_FRAMES) break;
+    for (size_t index = 0; index < NewoConfig::AUDIO_WS_BUNDLE_FRAMES; ++index) {
+      if (xQueueReceive(queue_, &frame, 0) != pdTRUE) return;
+      memcpy(bundle_ + (index * sizeof(frame.samples)), frame.samples, sizeof(frame.samples));
+    }
+
+    const uint32_t sendStartedUs = micros();
+    const bool sent = voiceWebSocket_.sendBIN(bundle_, sizeof(bundle_));
+    const uint32_t sendDurationUs = micros() - sendStartedUs;
+    if (sendDurationUs > maxSendDurationUsSinceLevel_) maxSendDurationUsSinceLevel_ = sendDurationUs;
+    if (!sent) {
+      droppedFrames_ += NewoConfig::AUDIO_WS_BUNDLE_FRAMES;
       NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO, "VOICE_FRAME_DROPPED", "send_failed");
       break;
     }
-    ++transmittedFrames_;
+    transmittedFrames_ += NewoConfig::AUDIO_WS_BUNDLE_FRAMES;
+    ++bundleSends_;
   }
 }
 
@@ -156,6 +172,9 @@ void NewoAudio::audioTask() {
     if (xQueueSend(queue_, &frame, 0) != pdTRUE) {
       ++droppedFrames_;
       ++queueOverruns_;
+    } else {
+      const UBaseType_t queueDepth = uxQueueMessagesWaiting(queue_);
+      if (queueDepth > queueHighWaterSinceLevel_) queueHighWaterSinceLevel_ = queueDepth;
     }
   }
 }
@@ -211,19 +230,24 @@ void NewoAudio::logLevel(const AudioFrame& frame) {
   const uint32_t rms = static_cast<uint32_t>(sqrt(sumSquares / NewoConfig::AUDIO_SAMPLES_PER_FRAME));
   const uint32_t clipped = clippedSamplesSinceLevel_;
   const uint32_t observedSamples = pcmSamplesSinceLevel_;
+  const uint32_t maxSendDurationUs = maxSendDurationUsSinceLevel_;
+  const UBaseType_t queueHighWater = queueHighWaterSinceLevel_;
   // Tenths of a percent avoids float formatting and makes low clipping visible.
   const uint32_t clipPercentTenths = observedSamples == 0
       ? 0
       : (clipped * 1'000U + observedSamples / 2U) / observedSamples;
   clippedSamplesSinceLevel_ = 0;
   pcmSamplesSinceLevel_ = 0;
+  maxSendDurationUsSinceLevel_ = 0;
+  queueHighWaterSinceLevel_ = 0;
 
   char detail[96];
-  snprintf(detail, sizeof(detail), "p=%ld r=%lu c=%lu t=%lu d=%lu o=%lu n=%lu clip=%lu/%lu.%lu%%",
+  snprintf(detail, sizeof(detail), "p=%ld r=%lu c=%lu t=%lu d=%lu o=%lu b=%lu su=%lu q=%u cl=%lu/%lu.%lu%%",
            static_cast<long>(peak), static_cast<unsigned long>(rms),
            static_cast<unsigned long>(capturedFrames_), static_cast<unsigned long>(transmittedFrames_),
            static_cast<unsigned long>(droppedFrames_), static_cast<unsigned long>(queueOverruns_),
-           static_cast<unsigned long>(reconnectCount_), static_cast<unsigned long>(clipped),
+           static_cast<unsigned long>(bundleSends_), static_cast<unsigned long>(maxSendDurationUs),
+           static_cast<unsigned>(queueHighWater), static_cast<unsigned long>(clipped),
            static_cast<unsigned long>(clipPercentTenths / 10),
            static_cast<unsigned long>(clipPercentTenths % 10));
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "AUDIO_LEVEL", detail);
