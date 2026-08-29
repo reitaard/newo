@@ -3,6 +3,7 @@ import { mkdir, open } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { Worker } from "node:worker_threads";
 
 const require = createRequire(import.meta.url);
 
@@ -129,6 +130,64 @@ export class SherpaAsrBackend {
   }
 }
 
+// The native recognizer must never be constructed in the Fastify event-loop
+// process. This proxy gives each real /voice connection a worker-owned stream.
+export class WorkerAsrBackend {
+  constructor(options) {
+    this.options = options;
+    this.worker = null;
+    this.requests = new Map();
+    this.streams = new Map();
+    this.nextId = 1;
+  }
+  ensureWorker() {
+    if (this.worker) return;
+    const worker = this.worker = new Worker(new URL("./sherpa-worker.js", import.meta.url), { workerData: this.options });
+    worker.on("message", (message) => {
+      if (message.type === "event") { this.streams.get(message.sessionId)?.onEvent(message.event); return; }
+      const pending = this.requests.get(message.requestId);
+      if (!pending) return;
+      this.requests.delete(message.requestId);
+      message.error ? pending.reject(new Error(message.error)) : pending.resolve(message);
+    });
+    worker.on("error", (error) => this.failAll(error));
+    worker.on("exit", (code) => { if (this.worker === worker) this.worker = null; if (code !== 0) this.failAll(new Error(`ASR worker exited (${code})`)); });
+  }
+  failAll(error) { for (const pending of this.requests.values()) pending.reject(error); this.requests.clear(); }
+  request(type, payload = {}, transfer = []) {
+    this.ensureWorker();
+    const requestId = this.nextId++;
+    return new Promise((resolve, reject) => {
+      this.requests.set(requestId, { resolve, reject });
+      this.worker.postMessage({ type, requestId, ...payload }, transfer);
+    });
+  }
+  async createStream({ format, onEvent }) {
+    const response = await this.request("create", { format });
+    const sessionId = response.sessionId;
+    this.streams.set(sessionId, { onEvent });
+    return {
+      acceptAudio: async (chunk) => {
+        // Copy exactly this bounded PCM chunk before transferring ownership.
+        const bytes = Uint8Array.from(chunk);
+        await this.request("audio", { sessionId, chunk: bytes.buffer }, [bytes.buffer]);
+      },
+      stop: async () => {
+        try { await this.request("stop", { sessionId }); }
+        finally {
+          this.streams.delete(sessionId);
+          // Keeping no native recognizer resident between voice sessions saves
+          // VPS memory and makes ARMED device state independent of ASR state.
+          if (this.streams.size === 0 && this.requests.size === 0 && this.worker) {
+            const worker = this.worker; this.worker = null; await worker.terminate();
+          }
+        }
+      },
+    };
+  }
+  async close() { if (this.worker) { const worker = this.worker; this.worker = null; await worker.terminate(); } }
+}
+
 class WavCapture {
   constructor(file, format) {
     this.file = file;
@@ -186,6 +245,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
     let finalMs = null;
     let finalTranscript = null;
     let processing = Promise.resolve();
+    let queuedChunks = 0;
     let closed = false;
     let closeRequested = false;
     let cleanupPromise = null;
@@ -226,6 +286,14 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
     logger.info({ device_id: deviceId, stream_id: streamId, format }, "Voice device connected");
 
     ws.on("message", (raw, isBinary) => {
+      // Do not allow WebSocket arrivals to form an unbounded Promise/PCM queue
+      // while the worker is decoding. Realtime audio is failed, not buffered.
+      if (isBinary && !closed && ++queuedChunks > (config.maxPendingChunks ?? 2)) {
+        queuedChunks -= 1;
+        logger.warn({ device_id: deviceId, stream_id: streamId }, "Voice worker backpressure limit reached");
+        requestClose(1013, "voice worker busy");
+        return;
+      }
       processing = processing.then(async () => {
       if (!isBinary || closed) {
         if (!isBinary) logger.warn({ device_id: deviceId, stream_id: streamId }, "Ignoring non-binary voice message");
@@ -287,6 +355,8 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
       } catch (error) {
         logger.warn({ device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Voice stream processing failed");
         requestClose(1011, "voice stream processing failed");
+      } finally {
+        if (isBinary) queuedChunks = Math.max(0, queuedChunks - 1);
       }
       });
     });

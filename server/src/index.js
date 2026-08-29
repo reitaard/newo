@@ -6,7 +6,7 @@ import { Bot, webhookCallback } from "grammy";
 import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 
-import { createVoiceRuntime, NullAsrBackend, SherpaAsrBackend } from "./voice.js";
+import { createVoiceRuntime, NullAsrBackend, WorkerAsrBackend } from "./voice.js";
 
 try {
   loadEnvFile(".env");
@@ -93,7 +93,7 @@ const sherpaModelDirectories = {
 };
 const voiceModelDirectory = env.VOICE_ASR_MODEL_DIRECTORY ?? sherpaModelDirectories[env.VOICE_SHERPA_MODEL];
 const voiceAsr = env.VOICE_ASR_BACKEND === "sherpa"
-  ? new SherpaAsrBackend({
+  ? new WorkerAsrBackend({
     modelDirectory: voiceModelDirectory,
     model: env.VOICE_SHERPA_MODEL,
     numThreads: env.VOICE_ASR_THREADS,
@@ -114,6 +114,7 @@ const voiceRuntime = createVoiceRuntime({
     saveWav: env.VOICE_SAVE_WAV,
     captureDirectory: env.VOICE_CAPTURE_DIRECTORY,
     liveTestMode: env.VOICE_LIVE_TEST_MODE,
+    maxPendingChunks: 2,
   },
 });
 
@@ -161,12 +162,11 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
       request_id: z.string().optional(),
     })
     .passthrough(),
-  z
-    .object({
-      type: z.literal("voice_reset_ack"),
-      request_id: z.string().optional(),
-    })
-    .passthrough(),
+  z.object({
+    type: z.literal("voice_ack"), request_id: z.string(),
+    state: z.enum(["off", "armed", "streaming"]), voice_connected: z.boolean(),
+    wake_count: z.number().nonnegative(), session_count: z.number().nonnegative(),
+  }).passthrough(),
   z.object({
     type: z.literal("health"),
     request_id: z.string(),
@@ -179,6 +179,8 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
     free_heap: z.number().nonnegative(),
     min_free_heap: z.number().nonnegative(),
     free_psram: z.number().nonnegative(),
+    largest_free_internal_block: z.number().nonnegative().optional(),
+    voice: z.object({ state: z.enum(["off", "armed", "streaming"]), connected: z.boolean(), wakes: z.number(), sessions: z.number(), failures: z.number(), timeouts: z.number() }).optional(),
     wifi: z.object({ scans: z.number(), connect_attempts: z.number(), connections: z.number(), failed: z.number(), disconnects: z.number(), last_disconnect_reason: z.string() }),
     cloud: z.object({ connections: z.number(), disconnects: z.number(), errors: z.number() }),
     logs: z.object({ stored: z.number().int(), capacity: z.number().int(), warnings: z.number(), errors: z.number() }),
@@ -623,7 +625,8 @@ async function handleHealthCommand(ctx) {
   await commandReply(ctx, commandMessage("health", [
     quote(["System", value("Firmware", health.firmware), `Uptime: ${boldItalic(formatDuration(health.uptime_ms))}`, value("Last restart", formatResetReason(health.reset_reason))]),
     quote(["Network", value("Wi-Fi", health.ssid || "not connected"), `Signal: ${bold(typeof health.rssi === "number" ? health.rssi : "unknown")}${typeof health.rssi === "number" ? ` ${italic("dBm")}` : ""}`, value("Cloud", health.cloud_connected ? "connected" : "not connected")]),
-    quote(["Memory", `Heap: ${bold(formatBytes(health.free_heap))} ${italic("free")}`, value("Lowest heap", formatBytes(health.min_free_heap)), `PSRAM: ${bold(formatBytes(health.free_psram))} ${italic("free")}`]),
+    quote(["Memory", `Heap: ${bold(formatBytes(health.free_heap))} ${italic("free")}`, value("Lowest heap", formatBytes(health.min_free_heap)), value("Largest internal block", formatBytes(health.largest_free_internal_block ?? 0)), `PSRAM: ${bold(formatBytes(health.free_psram))} ${italic("free")}`]),
+    quote(["Voice", value("State", (health.voice?.state ?? "off").toUpperCase()), value("Wake detections", health.voice?.wakes ?? 0), value("Sessions", health.voice?.sessions ?? 0), value("Failures / timeouts", `${health.voice?.failures ?? 0} / ${health.voice?.timeouts ?? 0}`)]),
     quote(["Wi-Fi activity", value("Scans", health.wifi.scans), value("Attempts", health.wifi.connect_attempts), value("Connections", health.wifi.connections), value("Failed", health.wifi.failed), value("Disconnects", health.wifi.disconnects), value("Last disconnect", health.wifi.last_disconnect_reason || "Unknown")]),
     quote(["Cloud activity", value("Connections", health.cloud.connections), value("Disconnects", health.cloud.disconnects), value("Errors", health.cloud.errors)]),
     quote(["Logs", value("Stored", `${health.logs.stored} / ${health.logs.capacity}`), value("Warnings", health.logs.warnings), value("Errors", health.logs.errors)]),
@@ -700,13 +703,26 @@ function completePendingReboot(deviceId) {
   return true;
 }
 
-async function handleVoiceResetCommand(ctx) {
-  const request = sendDeviceRequest("voice_reset", "voice_reset_ack", {}, commandTrace(ctx));
-  if (request.kind === "offline") return commandReply(ctx, statusMessage("voice reset", "offline"), "offline");
+async function handleVoiceCommand(ctx) {
+  const action = String(ctx.match ?? "").trim().toLowerCase();
+  const isStatus = action === "";
+  if (!isStatus && action !== "on" && action !== "off") {
+    return commandReply(ctx, commandMessage("voice", [quote(["Usage: /voice [on|off]"])]), "usage");
+  }
+  const request = isStatus
+    ? sendDeviceRequest("voice_status", "voice_ack", {}, commandTrace(ctx))
+    : sendDeviceRequest("voice_control", "voice_ack", { action }, commandTrace(ctx));
+  if (request.kind === "offline") return commandReply(ctx, statusMessage("voice", "offline"), "offline");
   const result = await request.promise;
-  if (result.kind === "response") return commandReply(ctx, commandMessage("voice reset", [quote(["Voice stream reset requested."])]), "response", request.requestId);
-  const unavailable = getConnectedDeviceState() ? "Voice reset was not acknowledged." : "Newo is offline.";
-  return commandReply(ctx, commandMessage("voice reset", [quote([unavailable])]), result.kind, request.requestId);
+  if (result.kind === "response") {
+    const voice = result.message;
+    return commandReply(ctx, commandMessage("voice", [quote([
+      `State: ${bold(voice.state.toUpperCase())}`,
+      `Wake detections: ${bold(voice.wake_count)}`,
+      `Sessions: ${bold(voice.session_count)}`,
+    ])]), "response", request.requestId);
+  }
+  return commandReply(ctx, result.kind === "timeout" ? timeoutMessage("voice") : statusMessage("voice", "offline"), result.kind, request.requestId);
 }
 
 async function handleRebootCommand(ctx) {
@@ -788,8 +804,8 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["reboot", "r"], handleRebootCommand);
   bot.command(["newo", "n"], handleNewoCommand);
   bot.command("eco", handleEcoCommand);
-  // Developer-only: authorization is enforced by the shared allowlist middleware.
-  bot.command("voicereset", handleVoiceResetCommand);
+  // Not advertised in the public command menu; shared middleware enforces allowlists.
+  bot.command("voice", handleVoiceCommand);
 
   void bot.api.setMyCommands(TELEGRAM_COMMANDS).catch(() => {
     app.log.warn("Failed to register the Telegram command menu");
@@ -1058,6 +1074,7 @@ async function shutdown(signal) {
       resolve();
     }
   })));
+  await voiceAsr.close?.();
   await app.close();
   process.exitCode = 0;
 }

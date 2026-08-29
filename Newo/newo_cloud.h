@@ -4,6 +4,7 @@
 #include <WebSocketsClient.h>
 
 #include "newo_display.h"
+#include "newo_voice_state.h"
 #include "newo_wifi.h"
 
 class NewoCloud {
@@ -13,7 +14,12 @@ class NewoCloud {
   void begin();
   void loop();
   bool connected() const;
-  bool consumeVoiceResetRequest();
+  struct VoiceRequest { enum class Action : uint8_t { STATUS, ON, OFF }; Action action; char requestId[40]; };
+  bool consumeVoiceRequest(VoiceRequest& request);
+  void sendVoiceAck(const char* requestId, NewoVoiceState state, bool voiceConnected,
+                    uint32_t wakes, uint32_t sessions);
+  void updateVoiceTelemetry(NewoVoiceState state, bool connected, uint32_t wakes,
+                            uint32_t sessions, uint32_t failures, uint32_t timeouts);
   // Temporary physical-validation instrumentation; ESP-IDF reports bytes on ESP32-S3.
   void recordStack(const char* point);
 
@@ -26,7 +32,6 @@ class NewoCloud {
   void sendHealth(const char* requestId);
   void sendLogs(const char* requestId, uint8_t limit, const char* minLevel);
   void sendRebootAck(const char* requestId);
-  void sendVoiceResetAck(const char* requestId);
   void sendDisplayAck(const char* requestId, const char* mode);
 
   NewoWiFi& wifi_;
@@ -41,6 +46,10 @@ class NewoCloud {
   uint32_t disconnectCount_ = 0;
   uint32_t errorCount_ = 0;
   bool authenticated_ = false;
-  bool voiceResetRequested_ = false;
+  bool voiceRequestPending_ = false;
+  VoiceRequest voiceRequest_ = {VoiceRequest::Action::STATUS, {0}};
+  NewoVoiceState voiceState_ = NewoVoiceState::OFF;
+  bool voiceConnected_ = false;
+  uint32_t voiceWakes_ = 0, voiceSessions_ = 0, voiceFailures_ = 0, voiceTimeouts_ = 0;
   uint32_t minimumLoopStackBytes_ = UINT32_MAX;
 };

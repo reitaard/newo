@@ -4,7 +4,7 @@
 
 namespace NewoConfig {
 
-constexpr char FIRMWARE_VERSION[] = "0.3.2-dev";
+constexpr char FIRMWARE_VERSION[] = "0.4.0-dev";
 constexpr char PROVISIONING_DEVICE_NAME[] = "PROV_NEWO";
 
 constexpr char CLOUD_HOST[] = "newo.reitaard.de";
@@ -63,11 +63,6 @@ constexpr uint8_t CLOUD_WS_MISSED_PONG_LIMIT = 2;
 // STREAMING has a finite lifetime and must never retain stale PCM.
 constexpr bool VOICE_DEFAULT_ENABLED = false;
 constexpr uint32_t VOICE_ACTIVE_SESSION_TIMEOUT_MS = 30'000;
-constexpr uint32_t VOICE_WS_RECONNECT_INTERVAL_MS = 5'000;
-constexpr uint8_t VOICE_HEALTH_QUEUE_THRESHOLD = 20;
-constexpr uint32_t VOICE_HEALTH_SEND_WARN_US = 750'000;
-constexpr uint32_t VOICE_HEALTH_SEND_FATAL_US = 1'500'000;
-constexpr uint32_t VOICE_HEALTH_SUSTAIN_MS = 2'000;
-constexpr uint32_t VOICE_HEALTH_RESET_COOLDOWN_MS = 10'000;
+
 
 }  // namespace NewoConfig

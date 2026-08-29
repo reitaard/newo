@@ -7,7 +7,7 @@ Newo/Newo.ino
   +-- newo_storage   up to eight Wi-Fi credentials in Preferences/NVS
   +-- newo_wifi      scan/rank/connect/recover plus BLE WiFiProv
   +-- newo_cloud     authenticated outbound WSS, telemetry, commands
-  +-- newo_audio     I2S/DMA microphone capture plus authenticated WSS PCM sender
+  +-- newo_audio     local ESP_SR WakeNet plus temporary authenticated WSS PCM sender
   +-- future: display, AI, update
 ```
 
@@ -42,9 +42,11 @@ Newo --authenticated certificate-validated WSS :443--> Caddy
 
 The ESP32 requires no inbound port or stable LAN address. Device authentication uses an ID and bearer credential; server identity uses an explicit trusted CA. Firmware does not fall back to insecure TLS.
 
-The microphone test opens a separate authenticated `/voice` WSS connection using those same headers and CA. `newo_audio` reads INMP441 24-bit samples from 32-bit I2S stereo slots in a dedicated FreeRTOS task, explicitly converts the selected L/R slot to 16 kHz signed PCM16, and enqueues 20 ms frames. A separate dedicated voice FreeRTOS task exclusively owns the `/voice` WebSocket and joins five frames into a 100 ms raw PCM message; the Arduino loop continues servicing Wi-Fi and `/device` independently. It drops stale queued frames on a disconnect/reconnect rather than replaying delayed speech.
+Voice has an explicit `OFF → ARMED → STREAMING → ARMED` lifecycle. OFF owns no I2S, ESP_SR, `/voice` socket, sender task, or PCM queue. ARMED starts official Arduino-ESP32 3.3.11 ESP_SR WakeNet with the model stored in the required `esp_sr_16` partition. It owns I2S and performs local detection only: it opens no `/voice` socket and uploads zero PCM.
 
-A physical test found synchronous `sendBIN()` stalls of 1.49–5 seconds. ArduinoWebsockets 2.7.2 implements `sendBIN()` as a synchronous write loop with a five-second `WEBSOCKETS_TCP_TIMEOUT`, so a task cannot cancel a write before the underlying TLS/TCP call returns. Moving the socket to the voice task isolates that library limitation from the control loop, but does not make the library's write non-blocking. The 24-frame queue saturated, capture overran, and ASR degraded to fragments; a later fresh `/voice` connection, after stale audio was discarded, restored accurate recognition. `newo_audio` therefore tracks a voice-only HEALTHY → DEGRADED → RESETTING → COOLDOWN state machine. Sustained queue saturation, repeated/very slow sends, or overrun growth at high queue depth reset only `/voice`: sending stops, the socket closes, queue/bundle state is cleared, and a fresh authenticated `/voice` connection begins. Wi-Fi, `/device`, Telegram, I2S, and the ESP are not restarted. A 10-second cooldown prevents reset loops. The authenticated `/device` `voice_reset` request invokes that exact reset routine.
+On a WakeNet event, ESP_SR is stopped (waiting for its feed/detect tasks) and I2S is released before a temporary voice task configures I2S. Arduino's supported `I2S_RX_TRANSFORM_32_TO_16` is the sole INMP441 32-bit-slot-to-PCM16 conversion; streaming selects the configured mono channel from that transformed stereo input. The task opens the authenticated CA-validated `/voice` connection and sends direct 20 ms frames, with no PCM queue. Final transcript, disconnect, send failure, session timeout, or cancellation closes `/voice`, ends I2S, and restores WakeNet. It never intentionally restarts Wi-Fi or `/device`.
+
+The packaged Arduino ESP_SR wrapper starts the framework's MultiNet support when its precompiled configuration enables it, even with an empty command list. Newo supplies no commands and never enters command mode; WakeNet is the only feature used. Removing that compiled dependency would require modifying installed framework sources, which Newo intentionally does not do.
 
 The VPS holds Telegram secrets and validates webhook secrets plus user/chat allowlists. Device messages use typed payloads and correlated request IDs. Remote reboot sends `reboot_ack` before the ESP32 schedules restart.
 

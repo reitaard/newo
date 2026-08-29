@@ -12,7 +12,7 @@ NewoStorage newoStorage;
 NewoWiFi newoWiFi(newoStorage);
 NewoDisplay newoDisplay;
 NewoCloud newoCloud(newoWiFi, newoDisplay);
-NewoAudio newoAudio(newoWiFi);
+NewoAudio newoAudio(newoWiFi, newoDisplay);
 
 void printHardwareInfo() {
   Serial.println();
@@ -55,10 +55,23 @@ void setup() {
 }
 
 void loop() {
+  static bool voiceRequestWaiting = false;
+  static NewoCloud::VoiceRequest voiceRequest;
   newoWiFi.loop();
   newoCloud.loop();
-  if (newoCloud.consumeVoiceResetRequest()) newoAudio.resetVoiceStream("manual");
+  if (!voiceRequestWaiting && newoCloud.consumeVoiceRequest(voiceRequest)) {
+    if (voiceRequest.action == NewoCloud::VoiceRequest::Action::ON) newoAudio.setEnabled(true);
+    else if (voiceRequest.action == NewoCloud::VoiceRequest::Action::OFF) newoAudio.setEnabled(false);
+    voiceRequestWaiting = true;
+  }
   newoAudio.loop();
+  newoCloud.updateVoiceTelemetry(newoAudio.state(), newoAudio.voiceConnected(), newoAudio.wakeCount(),
+                                  newoAudio.sessionCount(), newoAudio.failures(), newoAudio.timeouts());
+  if (voiceRequestWaiting && !newoAudio.transitionPending()) {
+    newoCloud.sendVoiceAck(voiceRequest.requestId, newoAudio.state(), newoAudio.voiceConnected(),
+                           newoAudio.wakeCount(), newoAudio.sessionCount());
+    voiceRequestWaiting = false;
+  }
   newoDisplay.updateTelemetry(newoWiFi.connected(), newoWiFi.rssi(), newoCloud.connected(), millis(),
                               ESP.getFreeHeap(), ESP.getFreePsram(), NewoLog::stats());
   newoDisplay.loop();

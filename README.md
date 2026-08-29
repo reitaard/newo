@@ -11,7 +11,7 @@ Newo is an ESP32-S3 portable assistant platform. Firmware is split into provisio
 - Adafruit GFX Library 1.12.6
 - Adafruit ST7735 and ST7789 Library 1.11.0
 
-Use `ESP32S3 Dev Module`, QIO 80 MHz, 16 MB flash, OPI PSRAM, `16M Flash (3MB APP/9.9MB FATFS)`, and 921600 upload speed.
+Use `ESP32S3 Dev Module`, QIO 80 MHz, 16 MB flash, OPI PSRAM, **`ESP SR 16M (3MB APP/6MB SPIFFS/3.9MB MODEL)`** (`PartitionScheme=esp_sr_16`), and 921600 upload speed.
 
 ## Repository
 
@@ -43,9 +43,11 @@ Caddy proxies the public endpoint to the Node service on loopback `127.0.0.1:878
 
 `Newo/newo_secrets.h` is ignored. Copy `Newo/newo_secrets.example.h` locally and supply the matching device credential and trusted public CA. Missing secrets disable cloud connectivity rather than weakening TLS.
 
-## Microphone streaming test
+## Local wake-word voice lifecycle
 
-The isolated `newo_audio` module captures an INMP441 and opens a second authenticated, certificate-validated WSS connection to `wss://newo.reitaard.de/voice`. It reuses the device ID and bearer-secret headers from the cloud channel; credentials never enter the URL or serial log.
+Voice defaults **OFF** so an initial flash is safe without the INMP441 attached. `/voice on` changes the device to **ARMED**: official Arduino-ESP32 3.3.11 ESP_SR WakeNet listens locally through the shipped English model, and sends **no microphone PCM and opens no `/voice` socket**. `/device` remains the sole persistent cloud WebSocket.
+
+A local wake changes the lifecycle to **STREAMING**: ESP_SR is stopped and releases I2S before the temporary voice task acquires it, opens authenticated certificate-validated `wss://newo.reitaard.de/voice`, and sends direct 20 ms 16 kHz mono PCM16 frames. A final transcript, disconnect, send failure, timeout, or `/voice off` closes `/voice`, releases I2S/task resources, restores WakeNet, and returns to ARMED (or OFF). There is no permanent PCM queue or cloud sender task; transport stalls fail the utterance rather than accumulating stale audio.
 
 Proposed wiring for the generic ESP32-S3 Dev Module (confirm against the physical board schematic before flashing):
 
@@ -60,19 +62,13 @@ INMP441 L/R  -> GND    (left channel)
 
 GPIO4/5/6 are configurable in `newo_config.h`; the firmware audit found no current Newo assignments for them and deliberately excludes GPIO0 (bootstrap), GPIO19/20 (USB/JTAG), GPIO48 (RGB LED), and flash/PSRAM pins. The module receives 32-bit stereo I2S slots at 16 kHz, selects the configured INMP441 channel, sign-extends the left-aligned 24-bit sample (`slot32 >> 8`), then reduces and clamps it to signed PCM16 (`sample24 >> 8`).
 
-Audio uses a dedicated FreeRTOS capture task and I2S DMA, feeding a 24-frame (480 ms) bounded queue. It keeps 20 ms / 640-byte PCM frames internally but joins exactly five contiguous frames into each 3,200-byte binary WebSocket message (100 ms, approximately 10 sends/sec). A dedicated voice FreeRTOS task exclusively owns the WebSockets client and drains one complete five-frame bundle per healthy iteration; it never sends a partial bundle, padding, framing bytes, or stale data. Queue overflow and reconnect transitions discard stale frames rather than replay speech.
-
 ## Display and Telegram control
 
 The ST7789 uses GPIO42 SCK, GPIO41 MOSI, GPIO40 RST, GPIO38 DC, and GPIO2 CS; it is initialized with rotation `3` for the confirmed physical mount. The local display has `IDLE`, `LISTENING`, `THINKING`, `SPEAKING`, `ERROR`, `MESSAGE`, and `ECO` modes. Normal mode draws only a white code-drawn face on black; face status words use bundled Adafruit `FreeSans9pt7b`; compact diagnostic pages use readable `FreeMono9pt7b` rows with `FreeSansBold9pt7b` headings, left aligned at a 16 px margin. One- or two-word messages up to 14 characters use a centered `FreeSans18pt7b` treatment; longer messages word-wrap left aligned. Normal face mode animates only the eye/activity regions at 20 FPS using `millis()` (blinks, gaze/breathing, and mode-specific line/bars/dots/wave/error indicator), compositing each region in a small 1-bit `GFXcanvas1` before a single TFT blit to avoid animation tearing; text regions remain intact. ECO rotates compact ONLINE, HEALTH, and SERVICES pages every five seconds without blocking.
 
 Authorized Telegram users can use visible `/newo <idle|listening|thinking|speaking|error|short text>` and `/eco`; hidden alias `/n` is equivalent. `/newo` semantic display updates use `display_set`/`display_ack`; `/eco` uses `eco_toggle`/`display_ack`. Status, health, ping, reboot, logs, and errors results briefly mirror compact summaries on-screen before returning to the prior face or ECO dashboard.
 
-ArduinoWebsockets 2.7.2 performs synchronous TCP/TLS writes with a five-second library timeout. The dedicated task prevents this from starving the Arduino control loop, but a future transport replacement is required if physical testing still shows multi-second writes; queue growth is never solved by increasing its size.
-
-Voice transport self-heals without disrupting Wi-Fi or `/device`. It enters `DEGRADED` at queue depth 20+, two consecutive sends of 750 ms+, one 1.5 s+ send, or continued drop/overrun growth while saturated. If degradation remains for 2 seconds it closes only `/voice`, flushes all queued audio, clears the bundle, reconnects, and waits 10 seconds before another automatic reset. `voice_reset` on authenticated `/device` (and hidden allowlisted Telegram `/voicereset`) invokes the same routine. The physical investigation motivating this found multi-second synchronous `sendBIN()` stalls, queue saturation, stale/dropped speech, and poor ASR; a fresh voice stream recovered recognition.
-
-`AUDIO_MIC_GAIN` is a fixed physical-test gain, default `4`. It is applied with 64-bit arithmetic to the recovered signed PCM24 sample before PCM16 reduction and saturating clamp. Every five seconds `AUDIO_LEVEL` reports post-gain `p` (peak), `r` (RMS), and cumulative 20 ms-frame `c` (captured), `t` (sent), `d` (dropped), `o` (queue overrun), plus `b` (successful bundle sends), `su` (maximum `sendBIN()` time in microseconds), and `q` (queue high-water mark in frames). `cl=count/percent` is the clipped PCM16 samples and percentage for that reporting interval. Raw samples are never logged.
+The Arduino WebSockets implementation may block one voice-task write for seconds; that task is created only for an utterance, so `/device` and Wi-Fi servicing remain independent. A failed realtime send ends the utterance instead of creating a queue.
 
 ## Telegram
 
@@ -92,7 +88,7 @@ See [`docs/architecture.md`](docs/architecture.md), [`docs/phase-1.md`](docs/pha
 
 ## Build
 
-Open `Newo/Newo.ino` as the existing Arduino sketch directory. The current microphone-streaming build was verified with Arduino-ESP32 3.3.11 using `ESP32S3 Dev Module`, QIO 80 MHz, 16 MB flash, OPI PSRAM, `16M Flash (3MB APP/9.9MB FATFS)`, and 921600 upload speed: 1,490,079 bytes flash (47% of 3 MB) and 66,680 bytes static RAM (20% of 320 KB). No hardware was flashed during this build verification.
+Open `Newo/Newo.ino`. Build with Arduino-ESP32 3.3.11 and `esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=esp_sr_16,UploadSpeed=921600`. The ESP_SR partition is mandatory because its official model is stored in the model partition. `/voice`, `/voice on`, and `/voice off` are allowlisted Telegram controls and wait for a correlated `/device` acknowledgement.
 
 ## Repository rule
 

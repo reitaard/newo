@@ -108,10 +108,30 @@ bool NewoCloud::connected() const {
   return connected_;
 }
 
-bool NewoCloud::consumeVoiceResetRequest() {
-  const bool requested = voiceResetRequested_;
-  voiceResetRequested_ = false;
-  return requested;
+bool NewoCloud::consumeVoiceRequest(VoiceRequest& request) {
+  if (!voiceRequestPending_) return false;
+  request = voiceRequest_;
+  voiceRequestPending_ = false;
+  return true;
+}
+
+void NewoCloud::updateVoiceTelemetry(NewoVoiceState state, bool connected, uint32_t wakes,
+                                      uint32_t sessions, uint32_t failures, uint32_t timeouts) {
+  voiceState_ = state; voiceConnected_ = connected; voiceWakes_ = wakes;
+  voiceSessions_ = sessions; voiceFailures_ = failures; voiceTimeouts_ = timeouts;
+}
+
+void NewoCloud::sendVoiceAck(const char* requestId, NewoVoiceState state, bool voiceConnected,
+                             uint32_t wakes, uint32_t sessions) {
+  if (!connected_ || !requestId || !requestId[0]) return;
+  JsonDocument doc;
+  doc["type"] = "voice_ack";
+  doc["request_id"] = requestId;
+  doc["state"] = newoVoiceStateName(state);
+  doc["voice_connected"] = voiceConnected;
+  doc["wake_count"] = wakes;
+  doc["session_count"] = sessions;
+  String body; serializeJson(doc, body); webSocket_.sendTXT(body);
 }
 
 void NewoCloud::recordStack(const char* point) {
@@ -216,9 +236,18 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     return;
   }
 
-  if (strcmp(type, "voice_reset") == 0) {
+  if (strcmp(type, "voice_control") == 0 || strcmp(type, "voice_status") == 0) {
     const char* requestId = doc["request_id"] | "";
-    sendVoiceResetAck(requestId);
+    if (!requestId[0] || voiceRequestPending_) return;
+    voiceRequest_.action = VoiceRequest::Action::STATUS;
+    if (strcmp(type, "voice_control") == 0) {
+      const char* action = doc["action"] | "";
+      if (strcmp(action, "on") == 0) voiceRequest_.action = VoiceRequest::Action::ON;
+      else if (strcmp(action, "off") == 0) voiceRequest_.action = VoiceRequest::Action::OFF;
+      else { NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "VOICE_INVALID_ACTION"); return; }
+    }
+    strlcpy(voiceRequest_.requestId, requestId, sizeof(voiceRequest_.requestId));
+    voiceRequestPending_ = true;
     return;
   }
 
@@ -296,6 +325,14 @@ void NewoCloud::sendHealth(const char* requestId) {
   doc["free_heap"] = ESP.getFreeHeap();
   doc["min_free_heap"] = ESP.getMinFreeHeap();
   doc["free_psram"] = ESP.getFreePsram();
+  doc["largest_free_internal_block"] = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  JsonObject voice = doc["voice"].to<JsonObject>();
+  voice["state"] = newoVoiceStateName(voiceState_);
+  voice["connected"] = voiceConnected_;
+  voice["wakes"] = voiceWakes_;
+  voice["sessions"] = voiceSessions_;
+  voice["failures"] = voiceFailures_;
+  voice["timeouts"] = voiceTimeouts_;
   JsonObject wifi = doc["wifi"].to<JsonObject>();
   wifi["scans"] = wifi_.scanCount();
   wifi["connect_attempts"] = wifi_.connectAttemptCount();
@@ -389,21 +426,6 @@ void NewoCloud::sendDisplayAck(const char* requestId, const char* mode) {
   doc["request_id"] = requestId;
   doc["mode"] = mode;
   String body; serializeJson(doc, body); webSocket_.sendTXT(body);
-}
-
-void NewoCloud::sendVoiceResetAck(const char* requestId) {
-  if (!connected_ || !requestId || requestId[0] == '\0') return;
-  JsonDocument doc;
-  doc["type"] = "voice_reset_ack";
-  doc["request_id"] = requestId;
-  String body;
-  serializeJson(doc, body);
-  if (!webSocket_.sendTXT(body)) {
-    NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::CLOUD, "VOICE_RESET_ACK_FAILED");
-    return;
-  }
-  voiceResetRequested_ = true;
-  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_RESET_REQUESTED");
 }
 
 void NewoCloud::sendRebootAck(const char* requestId) {
