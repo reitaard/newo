@@ -24,6 +24,10 @@ class NewoDisplay {
   void drawFaceFrame(uint32_t now);
   void drawStateAnimation(uint32_t now);
   void drawFaceResponse();
+  void updateGaze(uint32_t now);
+  void resetFaceMotion(uint32_t now);
+  void applyEyeExpression(int16_t leftX, int16_t rightX, int16_t y, int16_t leftW, int16_t rightW,
+                          int16_t height);
   void blitMonoCanvasFast(GFXcanvas1& canvas, int16_t x, int16_t y, int16_t width, int16_t height);
   void recordFaceFrame(uint32_t elapsedUs);
   void drawTextPage(const char* heading, const char* body, bool info = false);
@@ -54,6 +58,11 @@ class NewoDisplay {
   BlinkPhase blinkPhase_ = BlinkPhase::OPEN;
   uint8_t blinkFramesRemaining_ = 0;
   bool verificationBlink_ = true;
+  int16_t gazeX_ = 0;
+  int16_t gazeY_ = 0;
+  int16_t gazeTargetX_ = 0;
+  int16_t gazeTargetY_ = 0;
+  uint32_t nextGazeMs_ = 0;
   uint32_t frameMetricsStartedMs_ = 0;
   uint32_t frameMetricsTotalUs_ = 0;
   uint32_t frameMetricsWorstUs_ = 0;

@@ -16,6 +16,10 @@ constexpr uint16_t kHeight = 240;
 constexpr uint32_t kTemporaryMs = 7'000;
 constexpr uint32_t kEcoPageMs = 5'000;
 constexpr uint16_t kWhite = ST77XX_WHITE;
+constexpr int16_t kEyeCanvasWidth = 200;
+constexpr int16_t kEyeCanvasHeight = 82;
+constexpr int16_t kEyeCanvasX = 20;
+constexpr int16_t kEyeCanvasY = 40;
 
 void formatUptime(char* out, size_t size, uint32_t ms) {
   const uint32_t seconds = ms / 1000;
@@ -33,6 +37,7 @@ void NewoDisplay::begin() {
   display_.setRotation(3);
   display_.setTextColor(kWhite);
   display_.setTextWrap(false);
+  resetFaceMotion(millis());
   render();
 }
 
@@ -40,10 +45,7 @@ bool NewoDisplay::setMode(NewoDisplayMode mode, const char* text, bool temporary
   if (mode > NewoDisplayMode::ECO) return false;
   if (mode_ != mode) {
     modeStartedMs_ = millis();
-    blinkPhase_ = BlinkPhase::OPEN;
-    blinkFramesRemaining_ = 0;
-    verificationBlink_ = true;
-    nextBlinkMs_ = modeStartedMs_ + 1'000;
+    resetFaceMotion(modeStartedMs_);
   }
   mode_ = mode;
   strncpy(text_, text ? text : "", sizeof(text_) - 1);
@@ -74,10 +76,7 @@ void NewoDisplay::toggleEco() {
   } else {
     ecoEnabled_ = false;
     mode_ = persistentMode_;
-    blinkPhase_ = BlinkPhase::OPEN;
-    blinkFramesRemaining_ = 0;
-    verificationBlink_ = true;
-    nextBlinkMs_ = millis() + 1'000;
+    resetFaceMotion(millis());
     strncpy(text_, persistentText_, sizeof(text_) - 1);
     text_[sizeof(text_) - 1] = '\0';
   }
@@ -95,6 +94,7 @@ void NewoDisplay::loop() {
     temporary_ = false;
     mode_ = ecoEnabled_ ? NewoDisplayMode::ECO : persistentMode_;
     if (!ecoEnabled_) {
+      resetFaceMotion(now);
       strncpy(text_, persistentText_, sizeof(text_) - 1);
       text_[sizeof(text_) - 1] = '\0';
     }
@@ -136,50 +136,175 @@ void NewoDisplay::render() {
 void NewoDisplay::drawFace() {
   const char* status = statusFor(mode_);
   if (status[0]) drawCentered(status, 145);
-  // Do not re-arm blink timing on redraw: incoming telemetry may cause a render.
-  if (nextBlinkMs_ == 0) {
-    verificationBlink_ = true;
-    nextBlinkMs_ = millis() + 1'000;
-  }
+  if (nextBlinkMs_ == 0) resetFaceMotion(millis());
   nextFaceFrameMs_ = 0;
   drawFaceFrame(millis());
 }
 
+void NewoDisplay::resetFaceMotion(uint32_t now) {
+  blinkPhase_ = BlinkPhase::OPEN;
+  blinkFramesRemaining_ = 0;
+  verificationBlink_ = true;
+  nextBlinkMs_ = now + 1'000;
+  gazeX_ = 0;
+  gazeY_ = 0;
+  gazeTargetX_ = 0;
+  gazeTargetY_ = 0;
+  nextGazeMs_ = now;
+  nextFaceFrameMs_ = 0;
+}
+
+void NewoDisplay::updateGaze(uint32_t now) {
+  if (static_cast<int32_t>(now - nextGazeMs_) >= 0) {
+    switch (mode_) {
+      case NewoDisplayMode::IDLE:
+        gazeTargetX_ = static_cast<int16_t>(random(-14, 15));
+        gazeTargetY_ = static_cast<int16_t>(random(-6, 7));
+        nextGazeMs_ = now + static_cast<uint32_t>(random(1'300, 3'401));
+        break;
+      case NewoDisplayMode::LISTENING:
+        // Stay mostly centered and attentive, with small human-like corrections.
+        gazeTargetX_ = static_cast<int16_t>(random(-5, 6));
+        gazeTargetY_ = static_cast<int16_t>(random(-3, 4));
+        nextGazeMs_ = now + static_cast<uint32_t>(random(900, 1'601));
+        break;
+      case NewoDisplayMode::THINKING:
+        // Prefer the upper corners rather than mechanically oscillating left/right.
+        gazeTargetX_ = random(0, 2) ? static_cast<int16_t>(random(8, 17))
+                                    : static_cast<int16_t>(random(-16, -7));
+        gazeTargetY_ = static_cast<int16_t>(random(-9, -3));
+        nextGazeMs_ = now + static_cast<uint32_t>(random(1'100, 2'401));
+        break;
+      case NewoDisplayMode::SPEAKING:
+        gazeTargetX_ = static_cast<int16_t>(random(-8, 9));
+        gazeTargetY_ = static_cast<int16_t>(random(-2, 4));
+        nextGazeMs_ = now + static_cast<uint32_t>(random(650, 1'301));
+        break;
+      default:
+        gazeTargetX_ = 0;
+        gazeTargetY_ = 0;
+        nextGazeMs_ = now + 1'000;
+        break;
+    }
+  }
+
+  auto easeToward = [](int16_t current, int16_t target) -> int16_t {
+    const int16_t delta = target - current;
+    if (delta > -2 && delta < 2) return target;
+    int16_t step = delta / 3;
+    if (step == 0) step = delta > 0 ? 1 : -1;
+    return current + step;
+  };
+  gazeX_ = easeToward(gazeX_, gazeTargetX_);
+  gazeY_ = easeToward(gazeY_, gazeTargetY_);
+}
+
+void NewoDisplay::applyEyeExpression(int16_t leftX, int16_t rightX, int16_t y, int16_t leftW, int16_t rightW,
+                                     int16_t height) {
+  if (height < 8) return;  // Do not fight the blink geometry while the eyes are nearly closed.
+
+  if (mode_ == NewoDisplayMode::THINKING) {
+    // Soft outer eyelids create a pensive/tired look while preserving the bright eye bodies.
+    const int16_t cover = height / 4;
+    eyeCanvas_.fillTriangle(leftX, y, leftX + leftW, y, leftX, y + cover, 0);
+    eyeCanvas_.fillTriangle(rightX, y, rightX + rightW, y, rightX + rightW, y + cover, 0);
+  } else if (mode_ == NewoDisplayMode::SPEAKING) {
+    // Carve the lower half into a smile/crescent instead of adding another sprite or bitmap.
+    const int16_t leftCenter = leftX + leftW / 2;
+    const int16_t rightCenter = rightX + rightW / 2;
+    const int16_t radius = height / 2 + 5;
+    const int16_t centerY = y + height + 4;
+    eyeCanvas_.fillCircle(leftCenter, centerY, radius, 0);
+    eyeCanvas_.fillCircle(rightCenter, centerY, radius, 0);
+  } else if (mode_ == NewoDisplayMode::ERROR) {
+    // Inner-heavy top eyelids form an angry/error expression; the frame shake supplies urgency.
+    const int16_t cover = height / 2;
+    eyeCanvas_.fillTriangle(leftX, y, leftX + leftW, y, leftX + leftW, y + cover, 0);
+    eyeCanvas_.fillTriangle(rightX, y, rightX + rightW, y, rightX, y + cover, 0);
+  }
+}
+
 void NewoDisplay::drawFaceFrame(uint32_t now) {
   const uint32_t frameStartedUs = micros();
-  // Compose the whole 200x82 eye region off-screen, then blit a complete frame.
-  // This prevents the black clear/draw tear visible with direct TFT rendering.
+  // RoboEyes-style behavior is rendered into the existing 1-bit canvas. No full-screen sprite,
+  // extra display driver, or second framebuffer is introduced.
   eyeCanvas_.fillScreen(0);
+
   if (blinkPhase_ == BlinkPhase::OPEN && static_cast<int32_t>(now - nextBlinkMs_) >= 0) {
     blinkPhase_ = BlinkPhase::HALF_CLOSED;
     blinkFramesRemaining_ = 1;
   }
+  updateGaze(now);
+
   const float phase = static_cast<float>(now % 3000) / 3000.0f * 6.2831853f;
-  int16_t floatY = static_cast<int16_t>(sinf(phase) * 1.0f);
-  int16_t gazeX = 0;
-  if (mode_ == NewoDisplayMode::IDLE) gazeX = static_cast<int16_t>(sinf(phase * 0.55f) * 3.0f);
-  if (mode_ == NewoDisplayMode::THINKING) gazeX = static_cast<int16_t>(sinf(phase * 0.32f) * 5.0f);
-  if (mode_ == NewoDisplayMode::SPEAKING) gazeX = static_cast<int16_t>(sinf(phase * 1.5f) * 2.0f);
+  const int16_t floatY = static_cast<int16_t>(sinf(phase) * (mode_ == NewoDisplayMode::SPEAKING ? 2.0f : 1.0f));
+
+  int16_t leftW = 60;
+  int16_t rightW = 60;
+  int16_t baseHeight = 36;
+  int16_t gap = 22;
+  int16_t verticalOffset = 0;
+
+  switch (mode_) {
+    case NewoDisplayMode::LISTENING:
+      leftW = rightW = 69;
+      baseHeight = 42;
+      gap = 17;
+      break;
+    case NewoDisplayMode::THINKING:
+      leftW = 56;
+      rightW = 62;  // Deliberate slight asymmetry makes the face less mechanical.
+      baseHeight = 35;
+      gap = 22;
+      verticalOffset = -2;
+      break;
+    case NewoDisplayMode::SPEAKING:
+      leftW = rightW = 62;
+      baseHeight = 38;
+      gap = 20;
+      break;
+    case NewoDisplayMode::ERROR:
+      leftW = rightW = 62;
+      baseHeight = 34;
+      gap = 20;
+      verticalOffset = 5;
+      break;
+    default:
+      break;
+  }
+
+  // Curiosity: the outer eye grows when idle/thinking gaze moves strongly to one side.
+  if (mode_ == NewoDisplayMode::IDLE || mode_ == NewoDisplayMode::THINKING) {
+    if (gazeX_ < -7) leftW += 7;
+    if (gazeX_ > 7) rightW += 7;
+  }
+
   int16_t shake = 0;
-  if (mode_ == NewoDisplayMode::ERROR && now - modeStartedMs_ < 420) {
-    shake = static_cast<int16_t>(sinf(static_cast<float>(now - modeStartedMs_) * 0.06f) * 3.0f);
+  if (mode_ == NewoDisplayMode::ERROR && now - modeStartedMs_ < 520) {
+    shake = static_cast<int16_t>(sinf(static_cast<float>(now - modeStartedMs_) * 0.075f) * 4.0f);
   }
-  int16_t leftX = 42 + gazeX + shake, rightX = 137 + gazeX + shake, y = 66 + floatY, w = 61, h = 35;
-  if (mode_ == NewoDisplayMode::LISTENING) { leftX = 35 + gazeX; rightX = 132 + gazeX; w = 73; h = 38; }
-  if (mode_ == NewoDisplayMode::THINKING) y -= 5;
-  if (mode_ == NewoDisplayMode::ERROR) { y += 10; h = 18; }
-  const int16_t baseHeight = h;
+
+  const int16_t totalWidth = leftW + gap + rightW;
+  int16_t leftX = (kEyeCanvasWidth - totalWidth) / 2 + gazeX_ + shake;
+  int16_t rightX = leftX + leftW + gap;
+  int16_t height = baseHeight;
+  int16_t y = (kEyeCanvasHeight - baseHeight) / 2 + gazeY_ + floatY + verticalOffset;
+
   if (blinkPhase_ == BlinkPhase::HALF_CLOSED || blinkPhase_ == BlinkPhase::HALF_OPEN) {
-    h = static_cast<int16_t>(baseHeight * 0.40f);
+    height = static_cast<int16_t>(baseHeight * 0.40f);
   } else if (blinkPhase_ == BlinkPhase::CLOSED) {
-    h = static_cast<int16_t>(baseHeight * 0.07f);
-    if (h < 2) h = 2;
+    height = static_cast<int16_t>(baseHeight * 0.07f);
+    if (height < 2) height = 2;
   }
-  const int16_t localY = y - 40 + (baseHeight - h) / 2;
-  eyeCanvas_.fillRoundRect(leftX - 20, localY, w, h, h / 2, 1);
-  eyeCanvas_.fillRoundRect(rightX - 20, localY, w, h, h / 2, 1);
-  blitMonoCanvasFast(eyeCanvas_, 20, 40, 200, 82);
-  // Advance only after this completed canvas frame has reached the TFT.
+  y += (baseHeight - height) / 2;
+
+  const int16_t radius = height > 3 ? height / 2 : 1;
+  eyeCanvas_.fillRoundRect(leftX, y, leftW, height, radius, 1);
+  eyeCanvas_.fillRoundRect(rightX, y, rightW, height, radius, 1);
+  applyEyeExpression(leftX, rightX, y, leftW, rightW, height);
+  blitMonoCanvasFast(eyeCanvas_, kEyeCanvasX, kEyeCanvasY, kEyeCanvasWidth, kEyeCanvasHeight);
+
+  // Advance only after the completed canvas frame has reached the TFT.
   if (blinkPhase_ != BlinkPhase::OPEN) {
     if (--blinkFramesRemaining_ == 0) {
       if (blinkPhase_ == BlinkPhase::HALF_CLOSED) {
@@ -191,10 +316,11 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
       } else {
         blinkPhase_ = BlinkPhase::OPEN;
         verificationBlink_ = false;
-        nextBlinkMs_ = now + random(2'500, 5'501);
+        nextBlinkMs_ = now + static_cast<uint32_t>(random(2'500, 5'501));
       }
     }
   }
+
   drawStateAnimation(now);
   recordFaceFrame(micros() - frameStartedUs);
 }
@@ -254,7 +380,10 @@ void NewoDisplay::drawStateAnimation(uint32_t now) {
       lastY = y;
     }
   } else if (mode_ == NewoDisplayMode::ERROR) {
-    activityCanvas_.setFont(&FreeSans9pt7b); activityCanvas_.setCursor(44, 17); activityCanvas_.print("!"); activityCanvas_.setFont(nullptr);
+    activityCanvas_.setFont(&FreeSans9pt7b);
+    activityCanvas_.setCursor(44, 17);
+    activityCanvas_.print("!");
+    activityCanvas_.setFont(nullptr);
   }
   blitMonoCanvasFast(activityCanvas_, 72, 160, 96, 23);
 }
@@ -264,7 +393,12 @@ void NewoDisplay::drawFaceResponse() {
   // State responses are deliberately bounded to two left-aligned lines.
   char response[49] = {};
   strncpy(response, text_, sizeof(response) - 1);
-  if (strlen(text_) >= sizeof(response)) { response[44] = '.'; response[45] = '.'; response[46] = '.'; response[47] = '\0'; }
+  if (strlen(text_) >= sizeof(response)) {
+    response[44] = '.';
+    response[45] = '.';
+    response[46] = '.';
+    response[47] = '\0';
+  }
   drawWrapped(response, 204, false, false, 2);
 }
 
@@ -295,14 +429,21 @@ void NewoDisplay::drawMessage() {
   uint8_t words = 0;
   bool inWord = false;
   for (const char* cursor = text_; *cursor; ++cursor) {
-    if (*cursor == '\n') { words = 3; break; }
-    if (*cursor != ' ' && !inWord) { ++words; inWord = true; }
+    if (*cursor == '\n') {
+      words = 3;
+      break;
+    }
+    if (*cursor != ' ' && !inWord) {
+      ++words;
+      inWord = true;
+    }
     if (*cursor == ' ') inWord = false;
   }
   const bool shortMessage = words > 0 && words <= 2 && strlen(text_) <= 14;
   if (shortMessage) {
     display_.setFont(&FreeSans18pt7b);
-    int16_t x1, y1; uint16_t w, h;
+    int16_t x1, y1;
+    uint16_t w, h;
     display_.getTextBounds(text_, 0, 0, &x1, &y1, &w, &h);
     display_.setCursor((kWidth - w) / 2, 132);
     display_.print(text_);
@@ -323,20 +464,24 @@ void NewoDisplay::drawEco() {
     drawTextPage("NEWO", body, true);
   } else if (ecoPage_ == 1) {
     snprintf(body, sizeof(body), "Heap    %luK\nPSRAM   %luK\nWarn    %lu\nError   %lu",
-             static_cast<unsigned long>(telemetry_.heap / 1024), static_cast<unsigned long>(telemetry_.psram / 1024),
-             static_cast<unsigned long>(telemetry_.logs.warnings), static_cast<unsigned long>(telemetry_.logs.errors));
+             static_cast<unsigned long>(telemetry_.heap / 1024),
+             static_cast<unsigned long>(telemetry_.psram / 1024),
+             static_cast<unsigned long>(telemetry_.logs.warnings),
+             static_cast<unsigned long>(telemetry_.logs.errors));
     drawTextPage("HEALTH", body, true);
   } else {
     snprintf(body, sizeof(body), "WiFi    %s\nCloud   %s\nWarn    %lu\nError   %lu",
              telemetry_.wifi ? "OK" : "OFF", telemetry_.cloud ? "OK" : "OFF",
-             static_cast<unsigned long>(telemetry_.logs.warnings), static_cast<unsigned long>(telemetry_.logs.errors));
+             static_cast<unsigned long>(telemetry_.logs.warnings),
+             static_cast<unsigned long>(telemetry_.logs.errors));
     drawTextPage("SERVICES", body, true);
   }
 }
 
 void NewoDisplay::drawCentered(const char* text, int16_t y) {
   display_.setFont(&FreeSans9pt7b);
-  int16_t x1, y1; uint16_t w, h;
+  int16_t x1, y1;
+  uint16_t w, h;
   display_.getTextBounds(text, 0, y, &x1, &y1, &w, &h);
   display_.setCursor((kWidth - w) / 2, y);
   display_.print(text);
@@ -356,36 +501,61 @@ void NewoDisplay::drawWrapped(const char* text, int16_t firstY, bool info, bool 
   auto flush = [&]() {
     if (length == 0 || y > 230) return;
     line[length] = '\0';
-    if (centered) drawCentered(line, y);
-    else { display_.setCursor(kMargin, y); display_.print(line); }
+    if (centered)
+      drawCentered(line, y);
+    else {
+      display_.setCursor(kMargin, y);
+      display_.print(line);
+    }
     display_.setFont(info ? &FreeMono9pt7b : &FreeSans9pt7b);
     y += lineHeight;
     ++lines;
     length = 0;
   };
   while (*cursor && y <= 230 && (!maxLines || lines < maxLines)) {
-    if (*cursor == '\n') { flush(); ++cursor; continue; }
+    if (*cursor == '\n') {
+      flush();
+      ++cursor;
+      continue;
+    }
     while (*cursor == ' ') ++cursor;
     if (!*cursor) break;
-    if (*cursor == '\n') { flush(); ++cursor; continue; }
+    if (*cursor == '\n') {
+      flush();
+      ++cursor;
+      continue;
+    }
     char word[97] = {};
     size_t wordLength = 0;
-    while (cursor[wordLength] && cursor[wordLength] != ' ' && cursor[wordLength] != '\n' && wordLength < sizeof(word) - 1) {
-      word[wordLength] = cursor[wordLength]; ++wordLength;
+    while (cursor[wordLength] && cursor[wordLength] != ' ' && cursor[wordLength] != '\n' &&
+           wordLength < sizeof(word) - 1) {
+      word[wordLength] = cursor[wordLength];
+      ++wordLength;
     }
     word[wordLength] = '\0';
     cursor += wordLength;
     char candidate[97] = {};
     snprintf(candidate, sizeof(candidate), "%s%s%s", line, length ? " " : "", word);
-    int16_t x1, y1; uint16_t width, height;
+    int16_t x1, y1;
+    uint16_t width, height;
     display_.getTextBounds(candidate, 0, 0, &x1, &y1, &width, &height);
-    if (width <= maxWidth) { strncpy(line, candidate, sizeof(line) - 1); length = strlen(line); continue; }
+    if (width <= maxWidth) {
+      strncpy(line, candidate, sizeof(line) - 1);
+      length = strlen(line);
+      continue;
+    }
     if (length) flush();
     // A single long word is split character-by-character to remain in bounds.
     for (size_t index = 0; index < wordLength && y <= 230; ++index) {
-      line[length++] = word[index]; line[length] = '\0';
+      line[length++] = word[index];
+      line[length] = '\0';
       display_.getTextBounds(line, 0, 0, &x1, &y1, &width, &height);
-      if (width > maxWidth) { line[--length] = '\0'; flush(); line[length++] = word[index]; line[length] = '\0'; }
+      if (width > maxWidth) {
+        line[--length] = '\0';
+        flush();
+        line[length++] = word[index];
+        line[length] = '\0';
+      }
     }
   }
   flush();
