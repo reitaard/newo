@@ -59,6 +59,10 @@ constexpr uint32_t CLOUD_STATUS_INTERVAL_MS = 30'000;
 constexpr uint32_t CLOUD_WS_PING_INTERVAL_MS = 15'000;
 constexpr uint32_t CLOUD_WS_PONG_TIMEOUT_MS = 3'000;
 constexpr uint8_t CLOUD_WS_MISSED_PONG_LIMIT = 2;
+// Voice defaults OFF for the first ESP_SR physical bring-up. ARMED is local-only;
+// STREAMING has a finite lifetime and must never retain stale PCM.
+constexpr bool VOICE_DEFAULT_ENABLED = false;
+constexpr uint32_t VOICE_ACTIVE_SESSION_TIMEOUT_MS = 30'000;
 constexpr uint32_t VOICE_WS_RECONNECT_INTERVAL_MS = 5'000;
 constexpr uint8_t VOICE_HEALTH_QUEUE_THRESHOLD = 20;
 constexpr uint32_t VOICE_HEALTH_SEND_WARN_US = 750'000;
