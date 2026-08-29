@@ -717,6 +717,11 @@ async function handleVoiceCommand(ctx) {
   const result = await request.promise;
   if (result.kind === "response") {
     const voice = result.message;
+    if (!isStatus) {
+      return commandReply(ctx, commandMessage("voice", [quote([
+        voice.state === "off" ? bold("Voice OFF") : bold("Voice ON"),
+      ])]), "response", request.requestId);
+    }
     return commandReply(ctx, commandMessage("voice", [quote([
       `State: ${bold(voice.state.toUpperCase())}`,
       `Wake detections: ${bold(voice.wake_count)}`,

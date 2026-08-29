@@ -46,8 +46,13 @@ class NewoCloud {
   uint32_t disconnectCount_ = 0;
   uint32_t errorCount_ = 0;
   bool authenticated_ = false;
-  bool voiceRequestPending_ = false;
-  VoiceRequest voiceRequest_ = {VoiceRequest::Action::OFF, {0}};
+  // Control requests are consumed by the Arduino loop. A small FIFO prevents a
+  // pending streaming cancellation from making a later OFF/toggle disappear.
+  static constexpr uint8_t kVoiceRequestQueueDepth = 4;
+  VoiceRequest voiceRequests_[kVoiceRequestQueueDepth] = {};
+  uint8_t voiceRequestHead_ = 0;
+  uint8_t voiceRequestTail_ = 0;
+  uint8_t voiceRequestCount_ = 0;
   NewoVoiceState voiceState_ = NewoVoiceState::OFF;
   bool voiceConnected_ = false;
   uint32_t voiceWakes_ = 0, voiceSessions_ = 0, voiceFailures_ = 0, voiceTimeouts_ = 0;

@@ -55,26 +55,35 @@ void setup() {
 }
 
 void loop() {
-  static bool voiceRequestWaiting = false;
-  static NewoCloud::VoiceRequest voiceRequest;
+  struct VoiceAck { char requestId[40]; };
+  static VoiceAck pendingVoiceAcks[8] = {};
+  static uint8_t pendingVoiceAckCount = 0;
+  NewoCloud::VoiceRequest voiceRequest;
   newoWiFi.loop();
   newoCloud.loop();
-  if (!voiceRequestWaiting && newoCloud.consumeVoiceRequest(voiceRequest)) {
-    if (voiceRequest.action == NewoCloud::VoiceRequest::Action::ON) newoAudio.setEnabled(true);
-    else if (voiceRequest.action == NewoCloud::VoiceRequest::Action::OFF) newoAudio.setEnabled(false);
-    else if (voiceRequest.action == NewoCloud::VoiceRequest::Action::TOGGLE) {
-      // STREAMING is intentionally considered enabled: toggling always cancels it.
-      newoAudio.setEnabled(newoAudio.state() == NewoVoiceState::OFF);
+  // Consume every queued control request now. In particular, an OFF/toggle is
+  // never held behind a prior request waiting for a streaming task to exit.
+  while (newoCloud.consumeVoiceRequest(voiceRequest)) {
+    bool enable = voiceRequest.action == NewoCloud::VoiceRequest::Action::ON;
+    if (voiceRequest.action == NewoCloud::VoiceRequest::Action::TOGGLE) {
+      // STREAMING is enabled for toggle purposes, so it is cancelled to OFF.
+      enable = newoAudio.state() == NewoVoiceState::OFF;
     }
-    voiceRequestWaiting = true;
+    newoAudio.setEnabled(enable);
+    if (pendingVoiceAckCount < sizeof(pendingVoiceAcks) / sizeof(pendingVoiceAcks[0])) {
+      strlcpy(pendingVoiceAcks[pendingVoiceAckCount++].requestId, voiceRequest.requestId,
+              sizeof(pendingVoiceAcks[0].requestId));
+    }
   }
   newoAudio.loop();
   newoCloud.updateVoiceTelemetry(newoAudio.state(), newoAudio.voiceConnected(), newoAudio.wakeCount(),
                                   newoAudio.sessionCount(), newoAudio.failures(), newoAudio.timeouts());
-  if (voiceRequestWaiting && !newoAudio.transitionPending()) {
-    newoCloud.sendVoiceAck(voiceRequest.requestId, newoAudio.state(), newoAudio.voiceConnected(),
-                           newoAudio.wakeCount(), newoAudio.sessionCount());
-    voiceRequestWaiting = false;
+  if (!newoAudio.transitionPending()) {
+    for (uint8_t i = 0; i < pendingVoiceAckCount; ++i) {
+      newoCloud.sendVoiceAck(pendingVoiceAcks[i].requestId, newoAudio.state(), newoAudio.voiceConnected(),
+                             newoAudio.wakeCount(), newoAudio.sessionCount());
+    }
+    pendingVoiceAckCount = 0;
   }
   newoDisplay.updateTelemetry(newoWiFi.connected(), newoWiFi.rssi(), newoCloud.connected(), millis(),
                               ESP.getFreeHeap(), ESP.getFreePsram(), NewoLog::stats());

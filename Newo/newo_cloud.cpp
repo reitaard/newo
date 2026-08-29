@@ -109,9 +109,10 @@ bool NewoCloud::connected() const {
 }
 
 bool NewoCloud::consumeVoiceRequest(VoiceRequest& request) {
-  if (!voiceRequestPending_) return false;
-  request = voiceRequest_;
-  voiceRequestPending_ = false;
+  if (voiceRequestCount_ == 0) return false;
+  request = voiceRequests_[voiceRequestHead_];
+  voiceRequestHead_ = (voiceRequestHead_ + 1) % kVoiceRequestQueueDepth;
+  --voiceRequestCount_;
   return true;
 }
 
@@ -245,13 +246,20 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
   if (strcmp(type, "voice_control") == 0) {
     const char* requestId = doc["request_id"] | "";
     const char* action = doc["action"] | "";
-    if (!requestId[0] || voiceRequestPending_) return;
-    if (strcmp(action, "on") == 0) voiceRequest_.action = VoiceRequest::Action::ON;
-    else if (strcmp(action, "off") == 0) voiceRequest_.action = VoiceRequest::Action::OFF;
-    else if (strcmp(action, "toggle") == 0) voiceRequest_.action = VoiceRequest::Action::TOGGLE;
+    if (!requestId[0]) return;
+    VoiceRequest request = {};
+    if (strcmp(action, "on") == 0) request.action = VoiceRequest::Action::ON;
+    else if (strcmp(action, "off") == 0) request.action = VoiceRequest::Action::OFF;
+    else if (strcmp(action, "toggle") == 0) request.action = VoiceRequest::Action::TOGGLE;
     else { NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "VOICE_INVALID_ACTION"); return; }
-    strlcpy(voiceRequest_.requestId, requestId, sizeof(voiceRequest_.requestId));
-    voiceRequestPending_ = true;
+    if (voiceRequestCount_ == kVoiceRequestQueueDepth) {
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "VOICE_CONTROL_QUEUE_FULL");
+      return;
+    }
+    strlcpy(request.requestId, requestId, sizeof(request.requestId));
+    voiceRequests_[voiceRequestTail_] = request;
+    voiceRequestTail_ = (voiceRequestTail_ + 1) % kVoiceRequestQueueDepth;
+    ++voiceRequestCount_;
     return;
   }
 

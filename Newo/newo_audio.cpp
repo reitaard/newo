@@ -178,6 +178,8 @@ void NewoAudio::finishStreaming(const char* reason) {
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_STREAM_STOPPED", detail);
   streamTask_ = nullptr;
   transitionPending_ = false;
+  // LISTENING is session-only; recover the normal face before re-arming/OFF.
+  display_.setMode(NewoDisplayMode::IDLE, "", false);
   if (enabled_ && startWakeNet()) return;
   state_ = NewoVoiceState::OFF;
 }
