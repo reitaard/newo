@@ -703,8 +703,8 @@ function completePendingReboot(deviceId) {
   return true;
 }
 
-async function handleVoiceCommand(ctx) {
-  const argument = String(ctx.match ?? "").trim().toLowerCase();
+async function handleVoiceCommand(ctx, forcedArgument = null) {
+  const argument = (forcedArgument ?? String(ctx.match ?? "")).trim().toLowerCase();
   const isStatus = argument === "status";
   const action = argument === "" ? "toggle" : argument;
   if (!isStatus && action !== "on" && action !== "off" && action !== "toggle") {
@@ -811,7 +811,8 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["newo", "n"], handleNewoCommand);
   bot.command("eco", handleEcoCommand);
   // Not advertised in the public command menu; shared middleware enforces allowlists.
-  bot.command("voice", handleVoiceCommand);
+  bot.command(["voice", "v"], handleVoiceCommand);
+  bot.command("vs", (ctx) => handleVoiceCommand(ctx, "status"));
 
   void bot.api.setMyCommands(TELEGRAM_COMMANDS).catch(() => {
     app.log.warn("Failed to register the Telegram command menu");
