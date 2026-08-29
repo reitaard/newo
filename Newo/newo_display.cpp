@@ -134,8 +134,7 @@ void NewoDisplay::render() {
 }
 
 void NewoDisplay::drawFace() {
-  const char* status = statusFor(mode_);
-  if (status[0]) drawCentered(status, 145);
+  // Face states are visual-only: RoboEyes plus the compact activity animation below them.
   if (nextBlinkMs_ == 0) resetFaceMotion(millis());
   nextFaceFrameMs_ = 0;
   drawFaceFrame(millis());
@@ -359,10 +358,7 @@ void NewoDisplay::recordFaceFrame(uint32_t elapsedUs) {
 void NewoDisplay::drawStateAnimation(uint32_t now) {
   activityCanvas_.fillScreen(0);
   const float phase = static_cast<float>(now % 2400) / 2400.0f * 6.2831853f;
-  if (mode_ == NewoDisplayMode::IDLE) {
-    const int16_t width = 20 + static_cast<int16_t>((sinf(phase) + 1.0f) * 13.0f);
-    activityCanvas_.drawFastHLine(48 - width, 12, width * 2, 1);
-  } else if (mode_ == NewoDisplayMode::LISTENING) {
+  if (mode_ == NewoDisplayMode::LISTENING) {
     for (int8_t i = 0; i < 7; ++i) {
       const int16_t height = 5 + static_cast<int16_t>((sinf(phase * 2.0f + i * 0.8f) + 1.0f) * 5.5f);
       activityCanvas_.fillRect(12 + i * 12, 16 - height, 5, height, 1);
