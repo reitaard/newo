@@ -358,7 +358,9 @@ function italic(value) { return `<i>${escapeHtml(value)}</i>`; }
 function boldItalic(value) { return `<b><i>${escapeHtml(value)}</i></b>`; }
 function title(value) { return boldItalic(value); }
 function quote(lines) { return `<blockquote>${lines.join("\n")}</blockquote>`; }
-function commandMessage(name, blocks) { return `${title(`Newo ${name}`)}\n${blocks.join("\n")}`; }
+// Telegram response headers are intentionally generic: no product name, just a
+// lowercase bold/italic command label followed by a semicolon.
+function commandMessage(name, blocks) { return `${title(`${String(name).toLowerCase()}:`)}\n${blocks.join("\n")}`; }
 function statusMessage(name, status) { return commandMessage(name, [quote([`Status: ${bold(status)}`])]); }
 function timeoutMessage(name) { return commandMessage(name, [quote([`Status: ${bold("No reply")}`, `Timeout: ${bold(5)} ${italic("seconds")}`])]); }
 
@@ -601,7 +603,7 @@ function formatLogEntry(entry) {
 }
 
 async function replyLogLines(ctx, name, lines, requestId = null, prefixBlocks = []) {
-  const header = title(`Newo ${name}`);
+  const header = title(`${String(name).toLowerCase()}:`);
   let chunk = [];
   for (const line of lines) {
     const candidate = `${header}\n${[...prefixBlocks, quote([...chunk, line])].join("\n")}`;
@@ -798,7 +800,7 @@ if (env.TELEGRAM_BOT_TOKEN) {
 
   bot.command("start", async (ctx) => {
     const state = getDeviceSnapshot().connected ? "online" : "offline";
-    await commandReply(ctx, `${title("Newo")}\n${quote([`Status: ${bold(state)}`])}`, "response");
+    await commandReply(ctx, `${title("status:")}\n${quote([`Status: ${bold(state)}`])}`, "response");
   });
 
   bot.command(["status", "s"], handleStatusCommand);
