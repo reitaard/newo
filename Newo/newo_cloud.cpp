@@ -236,16 +236,20 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     return;
   }
 
-  if (strcmp(type, "voice_control") == 0 || strcmp(type, "voice_status") == 0) {
+  if (strcmp(type, "voice_status") == 0) {
+    // Status is read-only and must not wait behind a streaming cancellation.
+    sendVoiceAck(doc["request_id"] | "", voiceState_, voiceConnected_, voiceWakes_, voiceSessions_);
+    return;
+  }
+
+  if (strcmp(type, "voice_control") == 0) {
     const char* requestId = doc["request_id"] | "";
+    const char* action = doc["action"] | "";
     if (!requestId[0] || voiceRequestPending_) return;
-    voiceRequest_.action = VoiceRequest::Action::STATUS;
-    if (strcmp(type, "voice_control") == 0) {
-      const char* action = doc["action"] | "";
-      if (strcmp(action, "on") == 0) voiceRequest_.action = VoiceRequest::Action::ON;
-      else if (strcmp(action, "off") == 0) voiceRequest_.action = VoiceRequest::Action::OFF;
-      else { NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "VOICE_INVALID_ACTION"); return; }
-    }
+    if (strcmp(action, "on") == 0) voiceRequest_.action = VoiceRequest::Action::ON;
+    else if (strcmp(action, "off") == 0) voiceRequest_.action = VoiceRequest::Action::OFF;
+    else if (strcmp(action, "toggle") == 0) voiceRequest_.action = VoiceRequest::Action::TOGGLE;
+    else { NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "VOICE_INVALID_ACTION"); return; }
     strlcpy(voiceRequest_.requestId, requestId, sizeof(voiceRequest_.requestId));
     voiceRequestPending_ = true;
     return;

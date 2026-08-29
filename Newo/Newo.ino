@@ -62,6 +62,10 @@ void loop() {
   if (!voiceRequestWaiting && newoCloud.consumeVoiceRequest(voiceRequest)) {
     if (voiceRequest.action == NewoCloud::VoiceRequest::Action::ON) newoAudio.setEnabled(true);
     else if (voiceRequest.action == NewoCloud::VoiceRequest::Action::OFF) newoAudio.setEnabled(false);
+    else if (voiceRequest.action == NewoCloud::VoiceRequest::Action::TOGGLE) {
+      // STREAMING is intentionally considered enabled: toggling always cancels it.
+      newoAudio.setEnabled(newoAudio.state() == NewoVoiceState::OFF);
+    }
     voiceRequestWaiting = true;
   }
   newoAudio.loop();

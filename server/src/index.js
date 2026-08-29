@@ -704,10 +704,11 @@ function completePendingReboot(deviceId) {
 }
 
 async function handleVoiceCommand(ctx) {
-  const action = String(ctx.match ?? "").trim().toLowerCase();
-  const isStatus = action === "";
-  if (!isStatus && action !== "on" && action !== "off") {
-    return commandReply(ctx, commandMessage("voice", [quote(["Usage: /voice [on|off]"])]), "usage");
+  const argument = String(ctx.match ?? "").trim().toLowerCase();
+  const isStatus = argument === "status";
+  const action = argument === "" ? "toggle" : argument;
+  if (!isStatus && action !== "on" && action !== "off" && action !== "toggle") {
+    return commandReply(ctx, commandMessage("voice", [quote(["Usage: /voice [on|off|status]"])]), "usage");
   }
   const request = isStatus
     ? sendDeviceRequest("voice_status", "voice_ack", {}, commandTrace(ctx))
