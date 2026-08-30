@@ -12,7 +12,10 @@ function createHarness(sendDeviceRequest, overrides = {}) {
   let speakerEnabled = overrides.speakerEnabled ?? true;
   const handlers = createPrimaryModeHandlers({
     sendDeviceRequest,
-    commandReply: async (ctx, text, category) => { replies.push({ text, category }); return text; },
+    commandReply: async (ctx, text, category, requestId, options) => {
+      replies.push({ text, category, requestId, options });
+      return text;
+    },
     commandTrace: () => null,
     getDeviceSnapshot: overrides.getDeviceSnapshot ?? (() => ({ connected: true, status: {} })),
     getSpeakerEnabled: () => speakerEnabled,
@@ -43,7 +46,7 @@ test("/voice toggles and returns detailed current status", async () => {
   assert.match(harness.replies[0].text, /Timeouts: <b>0<\/b>/);
 });
 
-test("/speaker toggles persisted automatic replies and returns detailed status", async () => {
+test("/speaker toggles OFF with terse non-spoken confirmation", async () => {
   const harness = createHarness((type, responseType, fields) => {
     assert.equal(type, "speaker_control");
     assert.deepEqual(fields, { action: "set_enabled", enabled: false });
@@ -51,11 +54,20 @@ test("/speaker toggles persisted automatic replies and returns detailed status",
   });
   await harness.handlers.speaker({ match: "" });
   assert.equal(harness.speakerEnabled, false);
-  assert.match(harness.replies[0].text, /Speaker: <b>OFF<\/b>/);
-  assert.match(harness.replies[0].text, /Connection: <b>Disconnected<\/b>/);
-  assert.match(harness.replies[0].text, /Volume: <b>100%<\/b>/);
-  assert.match(harness.replies[0].text, /Buffer: <b>16384 bytes<\/b>/);
-  assert.match(harness.replies[0].text, /Overflows: <b>0<\/b>/);
+  assert.equal(harness.replies[0].text, "Speaker turned off.");
+  assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
+});
+
+test("/speaker toggles ON with terse non-spoken confirmation", async () => {
+  const harness = createHarness((type, responseType, fields) => {
+    assert.equal(type, "speaker_control");
+    assert.deepEqual(fields, { action: "set_enabled", enabled: true });
+    return response({ ...speakerAck, enabled: true, connection: "Ready" });
+  }, { speakerEnabled: false });
+  await harness.handlers.speaker({ match: "" });
+  assert.equal(harness.speakerEnabled, true);
+  assert.equal(harness.replies[0].text, "Speaker turned on.");
+  assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
 });
 
 test("/eco toggles then refreshes detailed device telemetry", async () => {
