@@ -8,14 +8,16 @@ import {
   KokoroTtsBackend,
   speakerAudioFilter,
   speakerCreditBytes,
+  speakerDeliveryState,
   speakerOutstandingBytes,
   splitRealtimeText,
   SPEAKER_AUDIO_FILTER,
   SPEAKER_GAIN_DB,
-  SPEAKER_INITIAL_LEAD_BYTES,
   SPEAKER_LIMITER,
   SPEAKER_MAX_OUTSTANDING_BYTES,
-  SPEAKER_TARGET_OUTSTANDING_BYTES,
+  SPEAKER_NETWORK_INFLIGHT_LIMIT_BYTES,
+  SPEAKER_RECEIVER_BUFFER_TARGET_BYTES,
+  SPEAKER_RECEIVER_CAPACITY_BYTES,
   startTelegramAndSpeech,
   telegramHtmlToSpeech,
 } from "../src/tts.js";
@@ -29,15 +31,24 @@ async function waitFor(predicate, attempts = 200) {
   throw new Error("condition not reached");
 }
 
-function fakeSocket() {
+function fakeSocket({ autoFlow = true } = {}) {
   const listeners = new Map();
   return {
     readyState: 1,
     frames: [],
     closeCount: 0,
+    deliveredBytes: 0,
     on(name, callback) { listeners.set(name, callback); },
     send(data, options, callback) {
       this.frames.push(data);
+      if (autoFlow && Buffer.isBuffer(data)) {
+        this.deliveredBytes += data.length;
+        listeners.get("message")?.(Buffer.from(JSON.stringify({
+          type: "speaker_flow", playback_id: JSON.parse(String(this.frames.find((frame) => !Buffer.isBuffer(frame)))).playback_id,
+          received_bytes: this.deliveredBytes, consumed_bytes: this.deliveredBytes,
+          buffered_bytes: 0, capacity_bytes: 24_576,
+        })), false);
+      }
       (typeof options === "function" ? options : callback)?.();
     },
     emitMessage(value) { listeners.get("message")?.(Buffer.from(JSON.stringify(value)), false); },
@@ -57,15 +68,23 @@ test("Telegram HTML becomes bounded natural speech", () => {
   assert.ok(telegramHtmlToSpeech("word ".repeat(100), 80).length <= 81);
 });
 
-test("speaker flow window preserves 384 ms target and 448 ms ceiling at 24 kHz", () => {
-  assert.equal(SPEAKER_INITIAL_LEAD_BYTES, 18_432);
-  assert.equal(SPEAKER_TARGET_OUTSTANDING_BYTES, 18_432);
+test("delivery-aware flow separates network flight, ESP buffer, and total outstanding", () => {
+  assert.equal(SPEAKER_RECEIVER_CAPACITY_BYTES, 24_576);
+  assert.equal(SPEAKER_RECEIVER_BUFFER_TARGET_BYTES, 14_336);
+  assert.equal(SPEAKER_NETWORK_INFLIGHT_LIMIT_BYTES, 8_192);
   assert.equal(SPEAKER_MAX_OUTSTANDING_BYTES, 21_504);
+  assert.deepEqual(speakerDeliveryState(12_288, 8_192, 2_048, 6_144), {
+    networkInFlightBytes: 4_096,
+    receiverOutstandingBytes: 10_240,
+    committedToReceiverBytes: 10_240,
+  });
+  assert.equal(speakerCreditBytes(0, 0, 0, 0), 8_192, "initial credit is a sliding network window");
+  assert.equal(speakerCreditBytes(8_192, 0, 0, 0), 0, "sent callbacks do not count as ESP delivery");
+  assert.equal(speakerCreditBytes(8_192, 8_192, 0, 8_192), 6_144);
+  assert.equal(speakerCreditBytes(14_336, 8_192, 0, 8_192), 0);
+  assert.equal(speakerCreditBytes(14_336, 14_336, 2_048, 12_288), 2_048);
   assert.equal(speakerOutstandingBytes(18_432, 0), 18_432);
-  assert.equal(speakerCreditBytes(18_432, 0), 0);
-  assert.equal(speakerCreditBytes(18_432, 1_024), 1_024);
-  assert.equal(speakerCreditBytes(21_504, 1_024), 0);
-  assert.throws(() => speakerOutstandingBytes(1_024, 2_048), /invalid speaker flow counters/);
+  assert.throws(() => speakerDeliveryState(1_024, 2_048, 0, 0), /invalid speaker delivery counters/);
 });
 
 test("speaker conditioning adds configurable gain before the limiter", () => {
@@ -319,7 +338,7 @@ test("streaming speaker framing emits PCM before synthesis ends", async () => {
 });
 
 test("speaker failure cancels an active source before the next queued job", async () => {
-  const ws = fakeSocket();
+  const ws = fakeSocket({ autoFlow: false });
   let streamCalls = 0;
   let produced = 0;
   let cancelled = false;
@@ -376,8 +395,8 @@ test("streaming speaker enforces the cumulative byte maximum", async () => {
   runtime.close();
 });
 
-test("receiver credit stops after initial lead and resumes only after ESP consumption", async () => {
-  const ws = fakeSocket();
+test("delivery credit waits for actual ESP receipt and replenishes its reported buffer", async () => {
+  const ws = fakeSocket({ autoFlow: false });
   const runtime = createSpeakerRuntime({
     logger: logger(), enabled: true,
     backend: { async synthesize() { return Buffer.alloc(24_576, 1); }, gainDb: 2, limiter: 0.95 },
@@ -387,13 +406,22 @@ test("receiver credit stops after initial lead and resumes only after ESP consum
   runtime.handleConnection(ws, "newo-01");
   const queued = runtime.speak("flow controlled");
 
-  await waitFor(() => binaryFrames(ws).length === 9);
+  await waitFor(() => binaryFrames(ws).length === 4);
   await tick();
-  assert.equal(binaryFrames(ws).length, 9, "sender must stop at the 18 KiB initial window");
+  assert.equal(binaryFrames(ws).length, 4, "sender must stop at the 8 KiB network window before receipt");
   assert.equal(ws.frames.some((frame) => String(frame).includes("speaker_end")), false);
 
-  for (let consumed = 1_024; consumed <= 6_144; consumed += 1_024) {
-    ws.emitMessage({ type: "speaker_flow", playback_id: queued.playbackId, consumed_bytes: consumed, buffered_bytes: 18_432 - consumed });
+  let received = 0;
+  let consumed = 0;
+  let buffered = 0;
+  for (let step = 0; step < 30 && !ws.frames.some((frame) => String(frame).includes("speaker_end")); step += 1) {
+    const sent = binaryFrames(ws).reduce((sum, frame) => sum + frame.length, 0);
+    if (received < sent) { buffered += sent - received; received = sent; }
+    else if (buffered > 0) { const amount = Math.min(2_048, buffered); buffered -= amount; consumed += amount; }
+    ws.emitMessage({
+      type: "speaker_flow", playback_id: queued.playbackId, received_bytes: received,
+      consumed_bytes: consumed, buffered_bytes: buffered, capacity_bytes: 24_576,
+    });
     await tick();
   }
 
@@ -404,8 +432,134 @@ test("receiver credit stops after initial lead and resumes only after ESP consum
   runtime.close();
 });
 
+test("delivery-aware sliding window survives delayed jittered receiver delivery", async () => {
+  const totalBytes = 144_000;
+  const forwardDelays = [15, 2, 8, 4, 12, 3, 6, 10, 5, 14, 2, 7]; // 20-150 ms at 10x simulation speed.
+  const reverseDelays = [2, 5, 1, 3, 4];
+  const listeners = new Map();
+  const network = [];
+  const acknowledgements = [];
+  let tickNumber = 0;
+  let forwardIndex = 0;
+  let reverseIndex = 0;
+  let lastNetworkDue = 0;
+  let lastAckDue = 0;
+  let playbackId = null;
+  let endBytes = null;
+  let endDelivered = false;
+  let received = 0;
+  let consumed = 0;
+  let buffered = 0;
+  let playbackStarted = false;
+  let lastReportedReceived = 0;
+  let lastReportedConsumed = 0;
+  let lastFlowTick = 0;
+  let maxBuffer = 0;
+  let minActiveBuffer = Number.POSITIVE_INFINITY;
+  let maxNetworkInFlight = 0;
+  let maxQueuedFrames = 0;
+  let overflows = 0;
+  let underruns = 0;
+  const underrunEvents = [];
+
+  const ws = {
+    readyState: 1,
+    frames: [],
+    on(name, callback) { listeners.set(name, callback); },
+    close() { this.readyState = 3; listeners.get("close")?.(); },
+    send(data, options, callback) {
+      this.frames.push(data);
+      if (!Buffer.isBuffer(data)) {
+        const message = JSON.parse(String(data));
+        if (message.type === "speaker_begin") playbackId = message.playback_id;
+        if (message.type === "speaker_end") {
+          endBytes = message.bytes;
+          // speaker_end follows the final PCM frame on the same ordered TCP stream;
+          // it does not pay an independent full-path jitter delay.
+          lastNetworkDue = Math.max(lastNetworkDue, tickNumber + 1);
+          network.push({ due: lastNetworkDue, end: true });
+        }
+      } else {
+        let delay = forwardDelays[forwardIndex++ % forwardDelays.length];
+        if (forwardIndex % 11 === 0) delay += 3; // 30 ms receiver scheduling stall.
+        lastNetworkDue = Math.max(lastNetworkDue, tickNumber + delay);
+        network.push({ due: lastNetworkDue, pcm: data });
+        maxQueuedFrames = Math.max(maxQueuedFrames, network.filter((item) => item.pcm).length);
+      }
+      (typeof options === "function" ? options : callback)?.(); // Accepted immediately, not delivered.
+    },
+  };
+
+  const runtime = createSpeakerRuntime({
+    logger: logger(), enabled: true,
+    backend: { async synthesize() { return Buffer.alloc(totalBytes, 1); }, gainDb: 2, limiter: 0.95 },
+    getDevice: () => ({}), sendControl: () => true, flowTimeoutMs: 1_000,
+  });
+  runtime.handleConnection(ws, "newo-01");
+  const queued = runtime.speak("jitter simulation");
+
+  function scheduleFlow() {
+    const snapshot = {
+      type: "speaker_flow", playback_id: playbackId, received_bytes: received,
+      consumed_bytes: consumed, buffered_bytes: buffered, capacity_bytes: 24_576,
+    };
+    lastAckDue = Math.max(lastAckDue, tickNumber + reverseDelays[reverseIndex++ % reverseDelays.length]);
+    acknowledgements.push({ due: lastAckDue, snapshot });
+    lastReportedReceived = received;
+    lastReportedConsumed = consumed;
+    lastFlowTick = tickNumber;
+  }
+
+  for (; tickNumber < 2_000; tickNumber += 1) {
+    for (const item of network.splice(0, network.filter((entry) => entry.due <= tickNumber).length)) {
+      if (item.end) { endDelivered = true; continue; }
+      if (buffered + item.pcm.length > 24_576) { overflows += 1; continue; }
+      received += item.pcm.length;
+      buffered += item.pcm.length;
+      maxBuffer = Math.max(maxBuffer, buffered);
+      if (received - lastReportedReceived >= 2_048) scheduleFlow();
+    }
+    if (!playbackStarted && buffered >= 12_288) playbackStarted = true;
+    if (playbackStarted) {
+      if (buffered > 0) {
+        const amount = Math.min(480, buffered); // 48,000 bytes/s, 10 ms per simulated tick.
+        buffered -= amount;
+        consumed += amount;
+        if (!endDelivered || consumed < received) minActiveBuffer = Math.min(minActiveBuffer, buffered);
+      } else if (!endDelivered || consumed < received) {
+        underruns += 1;
+        underrunEvents.push({ tickNumber, received, consumed, pending: network.length, acks: acknowledgements.length });
+      }
+      if (consumed - lastReportedConsumed >= 1_024 ||
+          (buffered < 10_240 && tickNumber - lastFlowTick >= 4)) scheduleFlow();
+    }
+    const dueAcks = acknowledgements.filter((entry) => entry.due <= tickNumber);
+    acknowledgements.splice(0, dueAcks.length);
+    for (const ack of dueAcks) listeners.get("message")?.(Buffer.from(JSON.stringify(ack.snapshot)), false);
+    const sent = ws.frames.filter(Buffer.isBuffer).reduce((sum, frame) => sum + frame.length, 0);
+    maxNetworkInFlight = Math.max(maxNetworkInFlight, sent - received);
+    if (endDelivered && endBytes === totalBytes && received === totalBytes && consumed === totalBytes) {
+      runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: totalBytes });
+      break;
+    }
+    await tick();
+  }
+
+  assert.equal((await queued.completion).kind, "complete");
+  assert.equal(received, totalBytes);
+  assert.equal(consumed, totalBytes);
+  assert.equal(endBytes, totalBytes);
+  assert.equal(overflows, 0);
+  assert.equal(underruns, 0, `min=${minActiveBuffer} max=${maxBuffer} inflight=${maxNetworkInFlight} queued=${maxQueuedFrames} events=${JSON.stringify(underrunEvents)}`);
+  assert.ok(minActiveBuffer > 0, `receiver starved: min=${minActiveBuffer}`);
+  assert.ok(maxBuffer <= 24_576);
+  assert.ok(maxNetworkInFlight <= 8_192, `network flight exceeded: ${maxNetworkInFlight}`);
+  assert.ok(maxQueuedFrames >= 3, "sender regressed to stop-and-wait delivery");
+  runtime.close();
+});
+
 test("speaker runtime fails rather than guessing when receiver flow stops", async () => {
-  const ws = fakeSocket();
+  const ws = fakeSocket({ autoFlow: false });
   const runtime = createSpeakerRuntime({
     logger: logger(), enabled: true,
     backend: { async synthesize() { return Buffer.alloc(24_576, 1); }, gainDb: 2, limiter: 0.95 },
@@ -415,7 +569,7 @@ test("speaker runtime fails rather than guessing when receiver flow stops", asyn
   runtime.handleConnection(ws, "newo-01");
   const queued = runtime.speak("no receiver credit");
   await assert.rejects(queued.completion, /flow_timeout/);
-  assert.equal(binaryFrames(ws).length, 9);
+  assert.equal(binaryFrames(ws).length, 4);
   runtime.close();
 });
 

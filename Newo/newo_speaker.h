@@ -109,12 +109,16 @@ class NewoSpeaker {
   const char* volatile failureReason_ = nullptr;
   bool resultReady_ = false;
   volatile bool playbackStartedEventReady_ = false;
+  volatile bool playbackStarted_ = false;
   PlaybackStarted playbackStartedEvent_ = {};
   bool playbackStateApplied_ = false;
   volatile uint32_t minimumTaskStackBytes_ = UINT32_MAX;
   volatile uint32_t i2sSentEventCount_ = 0;
-  uint32_t lastFlowSentBytes_ = 0;
+  uint32_t lastFlowSentReceivedBytes_ = 0;
+  uint32_t lastFlowSentConsumedBytes_ = 0;
+  uint32_t lastFlowReportMs_ = 0;
   uint32_t flowReportCount_ = 0;
+  uint32_t receivedFlowReportCount_ = 0;
   uint32_t i2sDrainMs_ = 0;
   uint32_t underrunCount_ = 0;
   uint32_t overflowCount_ = 0;

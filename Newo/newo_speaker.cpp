@@ -194,8 +194,11 @@ bool NewoSpeaker::startPlayback(const Request& request) {
   failureReason_ = nullptr;
   minimumTaskStackBytes_ = UINT32_MAX;
   i2sSentEventCount_ = 0;
-  lastFlowSentBytes_ = 0;
+  lastFlowSentReceivedBytes_ = 0;
+  lastFlowSentConsumedBytes_ = 0;
+  lastFlowReportMs_ = millis();
   flowReportCount_ = 0;
+  receivedFlowReportCount_ = 0;
   i2sDrainMs_ = 0;
   underrunCount_ = 0;
   overflowCount_ = 0;
@@ -204,6 +207,7 @@ bool NewoSpeaker::startPlayback(const Request& request) {
   playbackDurationMs_ = 0;
   playbackStateApplied_ = true;
   playbackStartedEventReady_ = false;
+  playbackStarted_ = false;
   display_.setSpeaking(true);
   if (xTaskCreatePinnedToCore(taskEntry, "newo-speaker", 8192, this, 2, &task_, 1) != pdPASS) {
     task_ = nullptr;
@@ -283,7 +287,7 @@ void NewoSpeaker::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
     if (firstPcmReceivedMs_ == 0) firstPcmReceivedMs_ = millis();
     lastPcmReceivedMs_ = millis();
     // Never wait in the WebSocket callback. Receiver-driven credit on the VPS
-    // keeps unconsumed PCM bounded well below this fixed 16 KiB StreamBuffer.
+    // keeps delivered PCM bounded below this fixed 24 KiB StreamBuffer.
     if (xStreamBufferSend(buffer_, payload, length, 0) != length) {
       ++overflowCount_;
       fail("buffer_overflow");
@@ -308,19 +312,26 @@ void NewoSpeaker::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
 
 void NewoSpeaker::sendFlowReport(bool force) {
   if (!connected_ || !playing() || !buffer_) return;
+  const uint32_t received = receivedBytes_;
   const uint32_t consumed = consumedBytes_;
-  if (consumed <= lastFlowSentBytes_) return;
-  if (!force && consumed - lastFlowSentBytes_ < NewoConfig::SPEAKER_FLOW_REPORT_BYTES) return;
+  const bool receiveProgress = received > lastFlowSentReceivedBytes_;
+  const bool consumeProgress = consumed > lastFlowSentConsumedBytes_;
+  if (!force && !receiveProgress && !consumeProgress) return;
 
   JsonDocument doc;
   doc["type"] = "speaker_flow";
   doc["playback_id"] = request_.playbackId;
+  doc["received_bytes"] = received;
   doc["consumed_bytes"] = consumed;
   doc["buffered_bytes"] = static_cast<uint32_t>(xStreamBufferBytesAvailable(buffer_));
+  doc["capacity_bytes"] = static_cast<uint32_t>(NewoConfig::SPEAKER_BUFFER_BYTES);
   String body;
   serializeJson(doc, body);
   webSocket_.sendTXT(body);
-  lastFlowSentBytes_ = consumed;
+  if (receiveProgress) ++receivedFlowReportCount_;
+  lastFlowSentReceivedBytes_ = received;
+  lastFlowSentConsumedBytes_ = consumed;
+  lastFlowReportMs_ = millis();
   ++flowReportCount_;
 }
 
@@ -359,6 +370,7 @@ void NewoSpeaker::playbackTask() {
         if (available >= NewoConfig::SPEAKER_PREBUFFER_BYTES ||
             (allPcmReceived && available >= sizeof(int16_t))) {
           playbackStarted = true;
+          playbackStarted_ = true;
           playbackStartedMs = millis();
           minimumBufferedBytes_ = static_cast<uint32_t>(available);
           strlcpy(playbackStartedEvent_.playbackId, request_.playbackId,
@@ -444,6 +456,7 @@ void NewoSpeaker::playbackTask() {
   result_.success = !failed_ && endReceived_ && receivedBytes_ == request_.bytes &&
                     consumedBytes_ == request_.bytes;
   strlcpy(result_.error, result_.success ? "" : (failureReason_ ? failureReason_ : "unknown"), sizeof(result_.error));
+  playbackStarted_ = false;
   taskFinished_ = true;
   vTaskDelete(nullptr);
 }
@@ -460,11 +473,17 @@ void NewoSpeaker::loop(bool cloudReady) {
   if (started_) webSocket_.loop();
 
   if (playing() && connected_ && buffer_) {
+    const uint32_t received = receivedBytes_;
     const uint32_t consumed = consumedBytes_;
-    const bool finalProgress = endReceived_ && consumed == request_.bytes;
-    if (consumed > lastFlowSentBytes_ &&
-        (consumed - lastFlowSentBytes_ >= NewoConfig::SPEAKER_FLOW_REPORT_BYTES || finalProgress)) {
-      sendFlowReport(finalProgress);
+    const uint32_t buffered = static_cast<uint32_t>(xStreamBufferBytesAvailable(buffer_));
+    const bool receiveProgress = received - lastFlowSentReceivedBytes_ >= NewoConfig::SPEAKER_RECEIVE_REPORT_BYTES;
+    const bool consumeProgress = consumed - lastFlowSentConsumedBytes_ >= NewoConfig::SPEAKER_CONSUME_REPORT_BYTES;
+    const bool lowWaterHeartbeat = playbackStarted_ && buffered < NewoConfig::SPEAKER_LOW_WATER_BYTES &&
+        millis() - lastFlowReportMs_ >= NewoConfig::SPEAKER_LOW_WATER_REPORT_INTERVAL_MS;
+    const bool finalProgress = endReceived_ && consumed == request_.bytes &&
+        (received != lastFlowSentReceivedBytes_ || consumed != lastFlowSentConsumedBytes_);
+    if (receiveProgress || consumeProgress || lowWaterHeartbeat || finalProgress) {
+      sendFlowReport(lowWaterHeartbeat || finalProgress);
     }
   }
 
@@ -486,12 +505,13 @@ void NewoSpeaker::loop(bool cloudReady) {
              static_cast<unsigned long>(minimumTaskStackBytes_));
     NewoLog::log(underrunCount_ == 0 ? NewoLog::Level::INFO : NewoLog::Level::WARN,
                  NewoLog::Subsystem::AUDIO, "SPEAKER_DIAGNOSTICS", diagnostics);
-    char bufferDiagnostics[96];
-    snprintf(bufferDiagnostics, sizeof(bufferDiagnostics), "overflows=%lu max_buffer=%lu capacity=%u chunk=%u flow_reports=%lu",
+    char bufferDiagnostics[128];
+    snprintf(bufferDiagnostics, sizeof(bufferDiagnostics), "overflows=%lu max_buffer=%lu capacity=%u chunk=%u flow_reports=%lu rx_reports=%lu",
              static_cast<unsigned long>(overflowCount_), static_cast<unsigned long>(maximumBufferedBytes_),
              static_cast<unsigned>(NewoConfig::SPEAKER_BUFFER_BYTES),
              static_cast<unsigned>(NewoConfig::SPEAKER_CHUNK_BYTES),
-             static_cast<unsigned long>(flowReportCount_));
+             static_cast<unsigned long>(flowReportCount_),
+             static_cast<unsigned long>(receivedFlowReportCount_));
     NewoLog::log(overflowCount_ == 0 ? NewoLog::Level::INFO : NewoLog::Level::ERROR,
                  NewoLog::Subsystem::AUDIO, "SPEAKER_BUFFER", bufferDiagnostics);
     NewoLog::log(result_.success ? NewoLog::Level::INFO : NewoLog::Level::ERROR,
