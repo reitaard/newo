@@ -6,6 +6,7 @@
 #include "newo_log.h"
 
 enum class NewoDisplayMode : uint8_t { IDLE, LISTENING, THINKING, SPEAKING, ERROR, MESSAGE, ECO };
+enum class NewoFaceStyle : uint8_t { DEFAULT, HAPPY, ANGRY, TIRED, CURIOUS, CONFUSED, LAUGH, SWEAT, CYCLOPS };
 
 class NewoDisplay {
  public:
@@ -13,6 +14,7 @@ class NewoDisplay {
   void begin();
   void loop();
   bool setMode(NewoDisplayMode mode, const char* text = nullptr, bool temporary = false);
+  bool setFaceStyle(NewoFaceStyle style);
   void toggleEco();
   bool ecoEnabled() const { return ecoEnabled_; }
   void updateTelemetry(bool wifiConnected, int32_t rssi, bool cloudConnected, uint32_t uptimeMs,
@@ -43,6 +45,7 @@ class NewoDisplay {
   uint16_t monoLineBuffer_[200] = {};  // One RGB565 scanline; no full-color framebuffer.
   NewoDisplayMode mode_ = NewoDisplayMode::IDLE;
   NewoDisplayMode persistentMode_ = NewoDisplayMode::IDLE;
+  NewoFaceStyle faceStyle_ = NewoFaceStyle::DEFAULT;
   char text_[97] = {};
   char persistentText_[97] = {};
   bool ecoEnabled_ = false;
