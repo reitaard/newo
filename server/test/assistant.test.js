@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createAssistantRuntime } from "../src/assistant.js";
+import { readFile } from "node:fs/promises";
+import { ASSISTANT_SYSTEM_PROMPT, createAssistantRuntime } from "../src/assistant.js";
 import { createAssistantTurnRuntime } from "../src/assistant-turn.js";
 
 const turn = { deviceId: "newo-01", streamId: "stream-1", text: "hello Newo" };
@@ -22,6 +23,23 @@ test("assistant sends one bounded OpenAI-compatible quick-chat request", async (
   assert.equal(request.model, "helix-qwen3-0.6b");
   assert.equal(request.messages.at(-1).content, turn.text);
   assert.equal(request.reasoning_effort, "none");
+});
+
+test("assistant identifies Newo as pronounced Neo", async () => {
+  let request;
+  const runtime = createAssistantRuntime({
+    enabled: true, baseUrl: "http://local", model: "model", logger: quietLogger,
+    fetchImpl: async (_url, options) => { request = JSON.parse(options.body); return jsonResponse({ choices: [{ message: { content: "My name is Neo." } }] }); },
+  });
+  assert.equal((await runtime.respond({ ...turn, text: "What is your name?" })).text, "My name is Neo.");
+  assert.match(ASSISTANT_SYSTEM_PROMPT, /Newo, pronounced Neo/);
+  assert.match(request.messages[0].content, /refer to your name naturally as Neo/);
+});
+
+test("production hotwords only bias the spoken name Neo", async () => {
+  const hotwords = await readFile(new URL("../config/newo-hotwords.txt", import.meta.url), "utf8");
+  assert.equal(hotwords, "NEO\n");
+  assert.doesNotMatch(hotwords, /\bNEWO\b|\bHELLO\b|\bCHECK\b|ONE TWO THREE/);
 });
 
 test("assistant timeout and malformed or empty responses settle cleanly", async () => {
@@ -64,6 +82,29 @@ test("assistant disabled and overlapping device turns never create speaker work"
   release();
   await first.completion;
   assert.deepEqual(spoken, ["ready"]);
+});
+
+test("assistant telemetry retains only the latest turn and exposes timeout state", async () => {
+  const outcomes = [
+    { kind: "response", text: "Ready.", timings: { llm_request_ms: 17 } },
+    { kind: "timeout" },
+  ];
+  const assistant = {
+    async respond() { return outcomes.shift(); }, abortDevice() {}, close() {},
+    getTelemetry() { return { enabled: true, model: "helix-qwen3-0.6b", qwen: "online", active: false }; },
+  };
+  const speakerRuntime = { speak() { return { kind: "queued", playbackId: "p", completion: Promise.resolve() }; } };
+  const turns = createAssistantTurnRuntime({ assistant, speakerRuntime, isPersistentSpeakerEnabled: () => true, maxReplyChars: 240, logger: quietLogger });
+  assert.deepEqual(turns.getTelemetry().latest, { result: "n/a", llmMs: null, streamId: null, at: null, ttsQueuedMs: null, totalMs: null, asrFinalMs: null });
+  await turns.handleFinalTranscript({ ...turn, streamId: "first", asrFinalMs: 321 }).completion;
+  assert.deepEqual(turns.getTelemetry().latest.result, "complete");
+  assert.equal(turns.getTelemetry().latest.llmMs, 17);
+  assert.equal(turns.getTelemetry().latest.asrFinalMs, 321);
+  await turns.handleFinalTranscript({ ...turn, streamId: "second" }).completion;
+  const telemetry = turns.getTelemetry();
+  assert.equal(telemetry.status, "error");
+  assert.equal(telemetry.latest.result, "timeout");
+  assert.equal(telemetry.latest.streamId, "second");
 });
 
 test("a valid answer reaches speaker once and speaker failure settles the turn", async () => {

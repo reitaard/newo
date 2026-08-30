@@ -22,6 +22,7 @@ function createHarness(sendDeviceRequest, overrides = {}) {
     setSpeakerAccepting: (enabled) => { speakerEnabled = enabled; },
     persistSpeakerEnabled: async (enabled) => { speakerEnabled = enabled; return enabled; },
     speakerInfo: { ttsEnabled: true, backend: "kokoro", format: "24 kHz PCM16", bufferBytes: 24_576 },
+    getAssistantInfo: overrides.getAssistantInfo ?? (() => ({ status: "ready", model: "helix-qwen3-0.6b", qwen: "online", speakerEnabled, latest: { result: "n/a", llmMs: null, asrFinalMs: null, ttsQueuedMs: null, totalMs: null } })),
   });
   return { handlers, replies, get speakerEnabled() { return speakerEnabled; } };
 }
@@ -44,6 +45,40 @@ test("/voice toggles and returns detailed current status", async () => {
   assert.match(harness.replies[0].text, /WakeNet: <b>Ready<\/b>/);
   assert.match(harness.replies[0].text, /Sessions: <b>12<\/b>/);
   assert.match(harness.replies[0].text, /Timeouts: <b>0<\/b>/);
+});
+
+test("/vs reads bounded assistant telemetry without invoking chat", async () => {
+  let telemetryReads = 0;
+  const harness = createHarness((type) => {
+    assert.equal(type, "voice_status");
+    return response({ state: "armed", voice_connected: true, wake_count: 2, session_count: 3, failures: 0, timeouts: 0 });
+  }, {
+    getAssistantInfo: () => {
+      telemetryReads += 1;
+      return { status: "error", model: "helix-qwen3-0.6b", qwen: "offline", speakerEnabled: true,
+        latest: { result: "timeout", llmMs: 143, asrFinalMs: null, ttsQueuedMs: null, totalMs: null } };
+    },
+  });
+  await harness.handlers.voiceStatus({ match: "" });
+  assert.equal(telemetryReads, 1);
+  assert.match(harness.replies[0].text, /Assistant: <b>ERROR<\/b>/);
+  assert.match(harness.replies[0].text, /LLM: <b>helix-qwen3-0\.6b<\/b>/);
+  assert.match(harness.replies[0].text, /Qwen: <b>OFFLINE<\/b>/);
+  assert.match(harness.replies[0].text, /Last LLM: <b>143 ms<\/b>/);
+  assert.match(harness.replies[0].text, /Last turn: <b>timeout<\/b>/);
+  assert.match(harness.replies[0].text, /ASR final: <b>n\/a<\/b>/);
+});
+
+test("/vs represents a disabled assistant with clean never values", async () => {
+  const harness = createHarness(() => response({ state: "off", voice_connected: false, wake_count: 0, session_count: 0, failures: 0, timeouts: 0 }), {
+    getAssistantInfo: () => ({ status: "disabled", model: null, qwen: "disabled", speakerEnabled: false,
+      latest: { result: "n/a", llmMs: null, asrFinalMs: null, ttsQueuedMs: null, totalMs: null } }),
+  });
+  await harness.handlers.voiceStatus({ match: "" });
+  assert.match(harness.replies[0].text, /Assistant: <b>DISABLED<\/b>/);
+  assert.match(harness.replies[0].text, /LLM: <b>n\/a<\/b>/);
+  assert.match(harness.replies[0].text, /Last turn: <b>n\/a<\/b>/);
+  assert.match(harness.replies[0].text, /Speaker: <b>OFF<\/b>/);
 });
 
 test("/speaker toggles OFF with terse non-spoken confirmation", async () => {

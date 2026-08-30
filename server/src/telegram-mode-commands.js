@@ -25,12 +25,24 @@ function bytes(value) {
   return `${Math.round(value / 1024)} KB`;
 }
 
-export function formatVoiceStatus(voice) {
+function timing(value) { return Number.isFinite(value) && value >= 0 ? `${Math.round(value)} ms` : "n/a"; }
+
+export function formatVoiceStatus(voice, assistant = {}) {
   const state = String(voice.state ?? "off").toUpperCase();
   const wakeNet = state === "ARMED" ? "Ready" : state === "STREAMING" ? "Streaming" : "Inactive";
+  const latest = assistant.latest ?? {};
   return message("voice", [
     `Voice: ${bold(state)}`,
     `WakeNet: ${bold(wakeNet)}`,
+    `Assistant: ${bold(String(assistant.status ?? "disabled").toUpperCase())}`,
+    `LLM: ${bold(assistant.model ?? "n/a")}`,
+    `Qwen: ${bold(String(assistant.qwen ?? "n/a").toUpperCase())}`,
+    `Last LLM: ${bold(timing(latest.llmMs))}`,
+    `Last turn: ${bold(latest.result ?? "n/a")}`,
+    `ASR final: ${bold(timing(latest.asrFinalMs))}`,
+    `TTS queued: ${bold(timing(latest.ttsQueuedMs))}`,
+    `Total: ${bold(timing(latest.totalMs))}`,
+    `Speaker: ${bold(assistant.speakerEnabled ? "ON" : "OFF")}`,
     `Cloud voice: ${bold(voice.voice_connected ? "Connected" : "Disconnected")}`,
     `Wake count: ${bold(voice.wake_count ?? 0)}`,
     `Sessions: ${bold(voice.session_count ?? 0)}`,
@@ -100,6 +112,7 @@ export function createPrimaryModeHandlers({
   setSpeakerAccepting,
   persistSpeakerEnabled,
   speakerInfo,
+  getAssistantInfo = () => ({}),
 }) {
   const unavailable = (name, status) => message(name, [`Status: ${bold(status)}`]);
 
@@ -125,7 +138,7 @@ export function createPrimaryModeHandlers({
     const request = sendDeviceRequest("voice_status", "voice_ack", {}, commandTrace(ctx));
     if (request.kind !== "sent") return commandReply(ctx, unavailable("voice", "offline"), "offline");
     const result = await request.promise;
-    if (result.kind === "response") return commandReply(ctx, formatVoiceStatus(result.message), "response", request.requestId);
+    if (result.kind === "response") return commandReply(ctx, formatVoiceStatus(result.message, getAssistantInfo()), "response", request.requestId);
     return commandReply(ctx, unavailable("voice", result.kind === "timeout" ? "No reply" : "offline"), result.kind, request.requestId);
   }
 

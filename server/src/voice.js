@@ -338,7 +338,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
               if (event.type === "final" && !assistantFinalDelivered && typeof config.onFinalTranscript === "function") {
                 assistantFinalDelivered = true;
                 void Promise.resolve()
-                  .then(() => config.onFinalTranscript({ deviceId, streamId, text: event.text }))
+                  .then(() => config.onFinalTranscript({ deviceId, streamId, text: event.text, asrFinalMs: finalMs }))
                   .catch((error) => logger.warn({ device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Voice final callback failed"));
               }
             },

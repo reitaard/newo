@@ -580,6 +580,7 @@ const primaryModeHandlers = createPrimaryModeHandlers({
     format: `${speakerRuntime.format.sampleRate / 1_000} kHz PCM${speakerRuntime.format.bitsPerSample}`,
     bufferBytes: 24_576,
   },
+  getAssistantInfo: () => ({ ...assistantTurnRuntime.getTelemetry(), speakerEnabled: automaticSpeakerEnabled }),
 });
 
 if (env.TELEGRAM_BOT_TOKEN) {
@@ -739,6 +740,9 @@ process.once("SIGINT", () => handleShutdownSignal("SIGINT"));
 process.once("SIGTERM", () => handleShutdownSignal("SIGTERM"));
 
 await app.listen({ host: env.HOST, port: env.PORT });
+// Probe the local model once without generating text. /vs only reads this
+// bounded snapshot and never waits on Qwen itself.
+void assistantRuntime.refreshHealth();
 app.log.info({
   bind: `${env.HOST}:${env.PORT}`,
   public_base_url: env.PUBLIC_BASE_URL,
