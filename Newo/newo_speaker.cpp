@@ -169,7 +169,7 @@ void NewoSpeaker::releaseResources() {
 
 void NewoSpeaker::stopConnection(const char* reason) {
   if (playing()) fail(reason && reason[0] ? reason : "speaker_disabled");
-  if (connected_) webSocket_.disconnect();
+  if (started_ || connected_) webSocket_.disconnect();
   connected_ = false;
   started_ = false;
   if (!playing()) releaseResources();
@@ -222,7 +222,7 @@ const char* NewoSpeaker::lastPlayback() const {
 }
 
 bool NewoSpeaker::startPlayback(const Request& request) {
-  if (!connected_ || !buffer_ || task_ || decoderTask_ || resultReady_) return false;
+  if (!connected_ || !buffer_ || task_ || decoderTask_ || taskFinished_ || resultReady_) return false;
   if (!newoValidSpeakerBegin(request.sampleRate, request.channels, request.bitsPerSample,
                              request.streaming, request.bytes, request.maxBytes,
                              NewoConfig::SPEAKER_SAMPLE_RATE,
@@ -472,7 +472,7 @@ void NewoSpeaker::handleText(const uint8_t* payload, size_t length) {
     }
     return;
   }
-  if (strcmp(type, "speaker_end") == 0 && playing()) {
+  if (strcmp(type, "speaker_end") == 0 && playing() && !taskFinished_) {
     const char* playbackId = doc["playback_id"] | "";
     const uint32_t bytes = doc["bytes"] | 0;
     const NewoSpeakerEndValidation validation = newoValidateSpeakerEnd(
@@ -486,6 +486,8 @@ void NewoSpeaker::handleText(const uint8_t* payload, size_t length) {
 
 void NewoSpeaker::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
   if (type == WStype_CONNECTED) {
+    // A late TLS/WebSocket completion must not resurrect a disabled speaker.
+    if (!enabled_ && !temporaryRequested_) { webSocket_.disconnect(); started_ = false; return; }
     connected_ = true;
     started_ = true;
     connectedMemory_ = memorySnapshot();
@@ -494,6 +496,9 @@ void NewoSpeaker::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
     return;
   }
   if (type == WStype_BIN) {
+    // The loop publishes completion after worker cleanup; late frames belong to
+    // that finished playback and must not poison its already-final result.
+    if (taskFinished_) return;
     if (!playing()) { fail("invalid_audio"); return; }
     if (request_.codec == Codec::OPUS) {
       const uint32_t callbackStartedUs = micros();
