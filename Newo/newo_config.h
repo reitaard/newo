@@ -4,7 +4,7 @@
 
 namespace NewoConfig {
 
-constexpr char FIRMWARE_VERSION[] = "0.4.1-dev";
+constexpr char FIRMWARE_VERSION[] = "0.4.2-dev";
 constexpr char PROVISIONING_DEVICE_NAME[] = "PROV_NEWO";
 
 constexpr char CLOUD_HOST[] = "newo.reitaard.de";
@@ -54,9 +54,23 @@ constexpr uint32_t SPEAKER_PCM_BYTES_PER_SECOND = SPEAKER_SAMPLE_RATE * sizeof(i
 constexpr size_t SPEAKER_CHUNK_BYTES = 2'048;
 constexpr size_t SPEAKER_PREBUFFER_BYTES = 12'288;  // 256 ms mono PCM before audible output.
 constexpr size_t SPEAKER_BUFFER_BYTES = 24'576;  // 512 ms mono PCM16, strictly bounded.
+
+// Experimental WAN transport: each WebSocket binary frame carries one raw Opus
+// packet inside an 8-byte Newo envelope (magic + sequence + valid PCM bytes).
+// The final packet may be padded for Opus but only valid PCM bytes enter the
+// decoded StreamBuffer, so completion still tracks the original speech exactly.
+constexpr uint16_t SPEAKER_OPUS_BITRATE = 24'000;
+constexpr uint16_t SPEAKER_OPUS_FRAME_MS = 40;
+constexpr size_t SPEAKER_OPUS_FRAME_SAMPLES = SPEAKER_SAMPLE_RATE * SPEAKER_OPUS_FRAME_MS / 1'000;
+constexpr size_t SPEAKER_OPUS_FRAME_PCM_BYTES = SPEAKER_OPUS_FRAME_SAMPLES * sizeof(int16_t);
+constexpr size_t SPEAKER_OPUS_PACKET_HEADER_BYTES = 8;
+static_assert(SPEAKER_OPUS_FRAME_SAMPLES == 960, "speaker Opus frame samples changed");
+static_assert(SPEAKER_OPUS_FRAME_PCM_BYTES == 1'920, "speaker Opus frame bytes changed");
+
 // Delivery-aware flow reports are emitted from loop(), never the WebSocket
-// callback or playback task. Receive reports follow each 2 KiB PCM frame;
-// consumption stays at ~21 ms resolution, with a bounded low-water heartbeat.
+// callback or playback task. Counters remain decoded/original PCM bytes for
+// both PCM and Opus transports, so the existing receiver-credit model stays
+// physically meaningful while wire bandwidth drops sharply with Opus.
 constexpr size_t SPEAKER_RECEIVE_REPORT_BYTES = 2'048;
 constexpr size_t SPEAKER_CONSUME_REPORT_BYTES = 1'024;
 constexpr size_t SPEAKER_LOW_WATER_BYTES = 10'240;
