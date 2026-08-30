@@ -57,9 +57,13 @@ function collectProcessOutput(child, maxBytes, label) {
 export const SPEAKER_GAIN_DB = 6;
 export const SPEAKER_LIMITER = 0.95;
 export const SPEAKER_LIMITER_ATTACK_MS = 5;
-export const SPEAKER_INITIAL_LEAD_BYTES = 8_192;
-export const SPEAKER_TARGET_OUTSTANDING_BYTES = 8_192;
-export const SPEAKER_MAX_OUTSTANDING_BYTES = 12_288;
+// Keep enough receiver credit to cover the measured TLS/WebSocket/display service
+// latency while remaining strictly below the ESP's fixed 16 KiB StreamBuffer.
+// 12 KiB = 384 ms of mono PCM16 at 16 kHz; the 14 KiB hard ceiling leaves 2 KiB
+// of physical receiver headroom and still prevents catch-up bursts/overflow.
+export const SPEAKER_INITIAL_LEAD_BYTES = 12_288;
+export const SPEAKER_TARGET_OUTSTANDING_BYTES = 12_288;
+export const SPEAKER_MAX_OUTSTANDING_BYTES = 14_336;
 export const SPEAKER_FLOW_TIMEOUT_MS = 3_000;
 
 export function speakerAudioFilter(gainDb = SPEAKER_GAIN_DB, limiter = SPEAKER_LIMITER) {
