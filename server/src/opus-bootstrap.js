@@ -1,4 +1,7 @@
-// Optional transparent Opus transport for Newo's existing speaker runtime.
+// DEPRECATED prototype / rollback only. Native codec-aware transport now lives
+// in opus-transport.js and normal production should use SPEAKER_CODEC=opus with
+// NODE_OPTIONS="". Keep this preload only to roll back a native deployment.
+// Optional transparent Opus transport for the pre-native speaker runtime.
 // Enable only after flashing Opus-capable firmware:
 //   SPEAKER_CODEC=opus NODE_OPTIONS="--import ./src/opus-bootstrap.js"
 //
