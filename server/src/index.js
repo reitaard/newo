@@ -259,10 +259,10 @@ app.get("/health", async () => {
 
 const TELEGRAM_COMMANDS = [];
 function commandTrace(ctx) { return ctx.newoTrace ?? null; }
-async function commandReply(ctx, text, category = "reply", requestId = null) {
+async function commandReply(ctx, text, category = "reply", requestId = null, options = {}) {
   const trace = commandTrace(ctx);
   if (trace) { trace.replyCategory = category; trace.requestId = requestId; }
-  return ctx.reply(text, { parse_mode: "HTML" });
+  return ctx.reply(text, { parse_mode: "HTML", ...options });
 }
 
 function showDisplay(text) {
@@ -276,20 +276,17 @@ async function handleNewoCommand(ctx) {
   return commandReply(ctx, commandMessage("newo", [quote(["Reserved for the Newo agent."])]), "reserved");
 }
 
-// Telegram recognizes only the `/face` token in ordinary text. Its bot-command
-// URI makes the complete command (including the style argument) tappable.
-function faceCommandLink(style) {
-  const command = `/face ${style}`;
-  return `<a href="tg://bot_command?command=${encodeURIComponent(command)}">${escapeHtml(command)}</a>`;
+function faceKeyboard() {
+  return { reply_markup: { inline_keyboard: FACE_STYLES.map((style) => [{ text: `/face ${style}`, callback_data: `face:${style}` }]) } };
 }
 
-async function handleFaceCommand(ctx) {
-  const input = String(ctx.match ?? "").trim().toLowerCase();
+async function handleFaceCommand(ctx, selectedInput = null) {
+  const input = selectedInput ?? String(ctx.match ?? "").trim().toLowerCase();
   if (!input) {
-    return commandReply(ctx, commandMessage("face", [quote(FACE_STYLES.map(faceCommandLink))]), "usage");
+    return commandReply(ctx, commandMessage("face", [quote(FACE_STYLES.map((style) => `/face ${style}`))]), "usage", null, faceKeyboard());
   }
   if (!FACE_STYLES.includes(input)) {
-    return commandReply(ctx, commandMessage("face", [quote(["Choose one:", ...FACE_STYLES.map(faceCommandLink)])]), "usage");
+    return commandReply(ctx, commandMessage("face", [quote(["Choose one:", ...FACE_STYLES.map((style) => `/face ${style}`)])]), "usage", null, faceKeyboard());
   }
   const request = sendDeviceRequest("display_set", "display_ack", { mode: input, text: "" }, commandTrace(ctx));
   if (request.kind === "offline") return commandReply(ctx, statusMessage("face", "offline"), "offline");
@@ -521,6 +518,11 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["reboot", "r"], handleRebootCommand);
   bot.command("newo", handleNewoCommand);
   bot.command(["face", "f"], handleFaceCommand);
+  bot.callbackQuery(/^face:([a-z]+)$/, async (ctx) => {
+    const style = ctx.match[1];
+    await ctx.answerCallbackQuery();
+    await handleFaceCommand(ctx, style);
+  });
   bot.command("eco", handleEcoCommand);
   bot.command(["voice", "v"], handleVoiceCommand);
   bot.command("vs", (ctx) => handleVoiceCommand(ctx, "status"));
