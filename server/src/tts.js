@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { OpusPlaybackTransport, OPUS_TRANSPORT } from "./opus-transport.js";
 
 const HTML_ENTITIES = new Map([
   ["amp", "&"], ["lt", "<"], ["gt", ">"], ["quot", '"'], ["apos", "'"], ["nbsp", " "],
@@ -564,6 +565,7 @@ export function createSpeakerRuntime({
     jobs.delete(job.id);
     allJobs.delete(job);
     if (result.kind !== "complete") void job.cancelSource?.();
+    void job.transport?.free();
     if (job.temporary && !isPersistentEnabled()) closeConnection("temporary playback complete");
     result.kind === "complete" ? job.resolve(result) : job.reject(new Error(result.error ?? result.kind));
   }
@@ -649,6 +651,11 @@ export function createSpeakerRuntime({
     let message;
     try { message = JSON.parse(Buffer.isBuffer(data) ? data.toString("utf8") : String(data)); }
     catch { return false; }
+    if (message?.type === "speaker_ready") {
+      current.codecs = new Set(Array.isArray(message.codecs) ? message.codecs.map((codec) => String(codec).toLowerCase()) : []);
+      logger.info({ device_id: current.deviceId, codecs: [...current.codecs] }, "Speaker codecs negotiated");
+      return true;
+    }
     return message?.type === "speaker_flow" ? handleFlow(current, message) : false;
   }
   function recordOutstanding(job) {
@@ -669,7 +676,7 @@ export function createSpeakerRuntime({
     job.bytesSent += chunk.length;
     job.statistics.add(chunk);
     recordOutstanding(job);
-    await sendFrame(current.ws, chunk, { binary: true });
+    await job.transport.sendPcm((data, options) => sendFrame(current.ws, data, options), chunk);
     recordOutstanding(job);
     if (job.firstPcmSentAt === null) {
       job.firstPcmSentAt = performance.now();
@@ -714,8 +721,10 @@ export function createSpeakerRuntime({
       job.backendMetrics = source.metrics;
       beginJob(job);
       const begin = { type: "speaker_begin", playback_id: job.id, sample_rate: format.sampleRate, channels: 1, bits_per_sample: 16, streaming: true, max_bytes: maxStreamBytes };
+      job.transport = new OpusPlaybackTransport({ playbackId: job.id, enabled: String(process.env.SPEAKER_CODEC ?? "pcm").toLowerCase() === "opus" && OpusPlaybackTransport.supported(current.codecs) });
+      await job.transport.begin();
       job.beginSentAt = performance.now();
-      await sendFrame(current.ws, JSON.stringify(begin));
+      await sendFrame(current.ws, JSON.stringify(job.transport.beginMessage(begin)));
       logger.info({ device_id: current.deviceId, playback_id: job.id, streaming: true, max_pcm_bytes: maxStreamBytes }, "Speaker begin sent");
       await sendWithFlow(job, current, first.value);
       while (true) {
@@ -727,6 +736,7 @@ export function createSpeakerRuntime({
       job.ttsCompletedAt = source.metrics.completedAt ?? performance.now();
       job.audio = job.statistics.result(backend.limiter ?? SPEAKER_LIMITER);
       job.endSent = true;
+      await job.transport.finish((data, options) => sendFrame(current.ws, data, options));
       await sendFrame(current.ws, JSON.stringify({ type: "speaker_end", playback_id: job.id, bytes: job.bytesSent }));
       logStreamComplete(job, current);
       return job.completion;
@@ -739,18 +749,29 @@ export function createSpeakerRuntime({
   async function streamKnown(job, current, pcm) {
     job.pcmBytes = pcm.length;
     beginJob(job);
+    const begin = { type: "speaker_begin", playback_id: job.id, sample_rate: format.sampleRate, channels: 1, bits_per_sample: 16, bytes: pcm.length };
+    job.transport = new OpusPlaybackTransport({ playbackId: job.id, enabled: String(process.env.SPEAKER_CODEC ?? "pcm").toLowerCase() === "opus" && OpusPlaybackTransport.supported(current.codecs) });
+    await job.transport.begin();
     job.beginSentAt = performance.now();
-    await sendFrame(current.ws, JSON.stringify({ type: "speaker_begin", playback_id: job.id, sample_rate: format.sampleRate, channels: 1, bits_per_sample: 16, bytes: pcm.length }));
+    await sendFrame(current.ws, JSON.stringify(job.transport.beginMessage(begin)));
     logger.info({ device_id: current.deviceId, playback_id: job.id, pcm_bytes: pcm.length, streaming: false }, "Speaker begin sent");
     await sendWithFlow(job, current, pcm);
     job.audio = job.statistics.result(backend.limiter ?? SPEAKER_LIMITER);
     job.endSent = true;
+    await job.transport.finish((data, options) => sendFrame(current.ws, data, options));
     await sendFrame(current.ws, JSON.stringify({ type: "speaker_end", playback_id: job.id, bytes: job.bytesSent }));
     logStreamComplete(job, current);
     return job.completion;
   }
   function logStreamComplete(job, current) {
     const audio = job.audio;
+    if (job.transport?.enabled) {
+      const wire = job.transport.stats;
+      logger.info({ event: "SPEAKER_OPUS_WIRE", playback_id: job.id, raw_pcm_bytes: wire.rawPcmBytes,
+        opus_payload_bytes: wire.opusPayloadBytes, wire_bytes: wire.wireBytes, packets: wire.packets,
+        frame_ms: OPUS_TRANSPORT.frameMs, bitrate: OPUS_TRANSPORT.bitrate,
+        compression_ratio: wire.wireBytes ? Number((wire.rawPcmBytes / wire.wireBytes).toFixed(2)) : null }, "SPEAKER_OPUS_WIRE");
+    }
     logger.info({
       event: "SPEAKER_AUDIO", playback_id: job.id,
       peak_dbfs: Number.isFinite(audio.peakDbfs) ? Number(audio.peakDbfs.toFixed(1)) : "-inf",
@@ -817,7 +838,7 @@ export function createSpeakerRuntime({
   }
   function handleConnection(ws, deviceId) {
     if (connection?.ws && connection.ws !== ws && connection.ws.readyState === 1) connection.ws.close(4001, "replaced by new connection");
-    const current = { ws, deviceId, connectedAt: performance.now() };
+    const current = { ws, deviceId, connectedAt: performance.now(), codecs: new Set() };
     connection = current;
     ws.on?.("message", (data, isBinary) => { handleSocketMessage(current, data, isBinary); });
     ws.on?.("close", () => {
