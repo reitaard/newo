@@ -29,11 +29,11 @@ function timing(value) { return Number.isFinite(value) && value >= 0 ? `${Math.r
 
 export function formatVoiceStatus(voice, assistant = {}) {
   const state = String(voice.state ?? "off").toUpperCase();
-  const wakeNet = state === "ARMED" ? "Ready" : state === "STREAMING" ? "Streaming" : "Inactive";
   const latest = assistant.latest ?? {};
   return message("voice", [
     `Voice: ${bold(state)}`,
-    `WakeNet: ${bold(wakeNet)}`,
+    `Trigger: ${bold("Manual (/v)")}`,
+    `Wake word: ${bold("Deferred")}`,
     `Assistant: ${bold(String(assistant.status ?? "disabled").toUpperCase())}`,
     `LLM: ${bold(assistant.model ?? "n/a")}`,
     `Qwen: ${bold(String(assistant.qwen ?? "n/a").toUpperCase())}`,
@@ -127,10 +127,11 @@ export function createPrimaryModeHandlers({
 
   async function voice(ctx) {
     if (String(ctx.match ?? "").trim()) return commandReply(ctx, message("voice", ["Usage: /voice"]), "usage");
-    const request = sendDeviceRequest("voice_control", "voice_ack", { action: "toggle" }, commandTrace(ctx));
+    const request = sendDeviceRequest("voice_control", "voice_ack", { action: "manual_toggle" }, commandTrace(ctx));
     if (request.kind !== "sent") return commandReply(ctx, unavailable("voice", "offline"), "offline");
     const result = await request.promise;
-    if (result.kind === "response") return commandReply(ctx, formatVoiceStatus(result.message), "response", request.requestId);
+    if (result.kind === "response" && result.message.applied === false) return commandReply(ctx, unavailable("voice", "busy"), "busy", request.requestId);
+    if (result.kind === "response") return commandReply(ctx, formatVoiceStatus(result.message, getAssistantInfo()), "response", request.requestId);
     return commandReply(ctx, unavailable("voice", result.kind === "timeout" ? "No reply" : "offline"), result.kind, request.requestId);
   }
 

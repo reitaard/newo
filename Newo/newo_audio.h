@@ -18,6 +18,9 @@ class NewoAudio {
   void begin();
   void loop();
   bool setEnabled(bool enabled);
+  // Starts one direct microphone session, or cancels it when already streaming.
+  // It intentionally does not enable or re-arm WakeNet.
+  bool manualToggle();
   // Temporarily releases WakeNet while preserving the user's OFF/ARMED choice.
   // Returns false only when an active STREAMING session makes playback unsafe.
   bool setPlaybackActive(bool active);
@@ -37,7 +40,7 @@ class NewoAudio {
   void stopWakeNet();
   bool configureI2s();
   void releaseI2s();
-  void beginStreaming();
+  bool beginStreaming(bool rearmAfterStream);
   void finishStreaming(const char* reason);
   void handleVoiceEvent(WStype_t type, uint8_t* payload, size_t length);
 
@@ -57,6 +60,7 @@ class NewoAudio {
   bool i2sRunning_ = false;
   bool transitionPending_ = false;
   bool playbackSuppressed_ = false;
+  bool rearmAfterStream_ = false;
   const char* volatile streamEndReason_ = nullptr;
   uint32_t streamStartedMs_ = 0;
   uint32_t wakeCount_ = 0;

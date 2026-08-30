@@ -23,7 +23,7 @@ These are separate layers. `server/config/newo-hotwords.txt` biases Sherpa trans
 
 The actual wake phrase is embedded in the WakeNet model stored in the ESP-SR `model` flash partition. Therefore source code alone cannot prove that the currently flashed board recognizes `Neo`.
 
-The existing production firmware still contains the OFF/ARMED/STREAMING WakeNet lifecycle. Until the manual-toggle change is implemented, `/voice` toggles OFF to ARMED and WakeNet is still the trigger that advances ARMED to STREAMING. The manual-trigger milestone below is a planned change, not a statement about the currently deployed firmware.
+The firmware retains the OFF/ARMED/STREAMING WakeNet lifecycle as future infrastructure. The current production trigger is manual: `/voice` (`/v`) starts a one-turn OFF → STREAMING session directly and returns to OFF; it does not require or re-arm WakeNet.
 
 ## Current upstream ESP-SR findings
 
@@ -69,9 +69,9 @@ Espressif also offers an offline commercial customization service. Their documen
 
 This is unnecessary for the current prototype.
 
-## Planned manual-toggle milestone
+## Current manual-toggle milestone
 
-The immediate goal is a simple one-turn chat flow with **no wake-word dependency**.
+The current production flow is a simple one-turn chat with **no wake-word dependency**.
 
 Target behavior for Telegram `/voice` and `/v`:
 

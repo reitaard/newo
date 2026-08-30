@@ -4,7 +4,7 @@
 
 namespace NewoConfig {
 
-constexpr char FIRMWARE_VERSION[] = "0.4.3-dev";
+constexpr char FIRMWARE_VERSION[] = "0.4.4-dev";
 constexpr char PROVISIONING_DEVICE_NAME[] = "PROV_NEWO";
 
 constexpr char CLOUD_HOST[] = "newo.reitaard.de";

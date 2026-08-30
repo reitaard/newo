@@ -156,7 +156,7 @@ void NewoCloud::updateVoiceTelemetry(NewoVoiceState state, bool connected, uint3
 
 void NewoCloud::sendVoiceAck(const char* requestId, NewoVoiceState state, bool voiceConnected,
                              uint32_t wakes, uint32_t sessions, uint32_t failures,
-                             uint32_t timeouts) {
+                             uint32_t timeouts, bool applied) {
   if (!connected_ || !requestId || !requestId[0]) return;
   JsonDocument doc;
   doc["type"] = "voice_ack";
@@ -167,6 +167,7 @@ void NewoCloud::sendVoiceAck(const char* requestId, NewoVoiceState state, bool v
   doc["session_count"] = sessions;
   doc["failures"] = failures;
   doc["timeouts"] = timeouts;
+  doc["applied"] = applied;
   String body; serializeJson(doc, body); webSocket_.sendTXT(body);
 }
 
@@ -337,6 +338,7 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     if (strcmp(action, "on") == 0) request.action = VoiceRequest::Action::ON;
     else if (strcmp(action, "off") == 0) request.action = VoiceRequest::Action::OFF;
     else if (strcmp(action, "toggle") == 0) request.action = VoiceRequest::Action::TOGGLE;
+    else if (strcmp(action, "manual_toggle") == 0) request.action = VoiceRequest::Action::MANUAL_TOGGLE;
     else {
       NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "VOICE_INVALID_ACTION");
       return;
