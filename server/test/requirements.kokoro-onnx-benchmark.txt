@@ -1,0 +1,7 @@
+# Standalone, non-production ONNX Kokoro benchmark dependencies.
+# The models and am_michael voice remain in ignored server/data/kokoro-onnx/.
+onnxruntime==1.29.0
+misaki[en]==0.9.4
+numpy==2.2.6
+psutil==7.2.2
+requests==2.34.2

@@ -18,8 +18,10 @@ Newo/newo_secrets.h
 !.env.example
 !**/.env.example
 
-# Node dependencies
+# Node and local Python dependencies
 node_modules/
+server/.venv-kokoro-onnx/
+server/test/__pycache__/
 
 # Downloaded ASR models and development voice captures
 server/models/
