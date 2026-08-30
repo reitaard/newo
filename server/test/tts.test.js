@@ -99,6 +99,9 @@ test("realtime text segmentation makes the first phrase a natural latency-aware 
   assert.deepEqual(splitRealtimeText("Face curious."), ["Face curious."]);
   assert.deepEqual(splitRealtimeText("Hello, I'm Newo. This is a realtime voice latency test."), ["Hello, I'm Newo.", "This is a realtime voice latency test."]);
   assert.deepEqual(splitRealtimeText("One two three four five six seven eight", { firstSegmentTargetChars: 20 }), ["One two three four", "five six seven eight"]);
+  assert.ok(splitRealtimeText("Yes. The connection is now working correctly.")[0].length >= 14, "do not emit a tiny acknowledgement");
+  const unpunctuated = splitRealtimeText("one ".repeat(80).trim(), { maximumSegmentChars: 40, firstSegmentTargetChars: 20 });
+  assert.ok(unpunctuated.every((segment) => segment.length <= 40), "all requests remain bounded");
   const long = splitRealtimeText("Newo is online and connected to the cloud. Speaker output is enabled and healthy. The remaining status follows shortly.");
   assert.ok(long.length >= 2);
   assert.equal(long.join(" "), "Newo is online and connected to the cloud. Speaker output is enabled and healthy. The remaining status follows shortly.");

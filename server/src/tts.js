@@ -177,35 +177,48 @@ async function readWithTimeout(reader, timeoutMs, controller) {
   }
 }
 
-export function splitRealtimeText(text, { firstSegmentTargetChars = 28, maximumSegmentChars = 90 } = {}) {
+export function splitRealtimeText(text, { firstSegmentTargetChars = 28, minimumOpeningChars = 14, maximumSegmentChars = 90 } = {}) {
   const input = String(text).trim();
   if (!input) return [];
-  if (!Number.isInteger(firstSegmentTargetChars) || firstSegmentTargetChars < 12 ||
+  if (!Number.isInteger(firstSegmentTargetChars) || firstSegmentTargetChars < minimumOpeningChars ||
+      !Number.isInteger(minimumOpeningChars) || minimumOpeningChars < 12 ||
       !Number.isInteger(maximumSegmentChars) || maximumSegmentChars < firstSegmentTargetChars) {
     throw new Error("invalid realtime segmentation policy");
   }
-  // The first phrase is latency-critical: prefer its last natural boundary in
-  // the target window, then use whitespace only when no clause boundary exists.
-  const firstCut = (value) => {
-    if (value.length <= firstSegmentTargetChars) return value.length;
-    const prefix = value.slice(0, firstSegmentTargetChars + 1);
+  const cutAtBoundary = (value, target) => {
+    if (value.length <= target) return value.length;
+    const prefix = value.slice(0, target + 1);
     for (const boundary of [/[.!?][\"']?(?=\s|$)/g, /[,;:](?=\s|$)/g, /\s/g]) {
       const matches = [...prefix.matchAll(boundary)];
       if (matches.length) return matches.at(-1).index + matches.at(-1)[0].length;
     }
-    const next = value.slice(firstSegmentTargetChars).search(/\s/);
-    return next < 0 ? value.length : firstSegmentTargetChars + next;
+    const nextSpace = value.slice(target).search(/\s/);
+    return nextSpace < 0 ? Math.min(target, value.length) : target + nextSpace;
+  };
+  const bounded = (value, maximum) => {
+    const parts = [];
+    let rest = value.trim();
+    while (rest.length > maximum) {
+      const cut = cutAtBoundary(rest, maximum);
+      parts.push(rest.slice(0, cut).trim());
+      rest = rest.slice(cut).trim();
+    }
+    if (rest) parts.push(rest);
+    return parts;
   };
   const segments = [];
   let remainder = input;
-  const cut = firstCut(remainder);
-  if (cut < remainder.length) {
-    segments.push(remainder.slice(0, cut).trim());
-    remainder = remainder.slice(cut).trim();
+  let firstCut = cutAtBoundary(remainder, firstSegmentTargetChars);
+  // Avoid isolated acknowledgements such as "Yes." while still starting early.
+  if (firstCut < minimumOpeningChars && remainder.length > minimumOpeningChars) {
+    const openingWords = [...remainder.slice(0, firstSegmentTargetChars + 1).matchAll(/\s/g)];
+    const lastWordBoundary = openingWords.at(-1);
+    firstCut = lastWordBoundary ? lastWordBoundary.index : cutAtBoundary(remainder, firstSegmentTargetChars);
   }
+  if (firstCut < remainder.length) { segments.push(remainder.slice(0, firstCut).trim()); remainder = remainder.slice(firstCut).trim(); }
   const sentences = remainder.match(/[^.!?]+[.!?]+(?:[\"'](?=\s|$))?|[^.!?]+$/g)?.map((part) => part.trim()).filter(Boolean) ?? [remainder];
   let current = "";
-  for (const sentence of sentences) {
+  for (const sentence of sentences.flatMap((part) => bounded(part, maximumSegmentChars))) {
     const candidate = current ? `${current} ${sentence}` : sentence;
     if (current && candidate.length > maximumSegmentChars) { segments.push(current); current = sentence; }
     else current = candidate;
