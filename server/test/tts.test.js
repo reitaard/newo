@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createSpeakerRuntime, telegramHtmlToSpeech } from "../src/tts.js";
+import { createSpeakerRuntime, speakerChunkDueMs, telegramHtmlToSpeech } from "../src/tts.js";
 
 test("Telegram HTML becomes bounded natural speech", () => {
   assert.equal(
@@ -11,6 +11,14 @@ test("Telegram HTML becomes bounded natural speech", () => {
   assert.equal(telegramHtmlToSpeech("<b>A &amp; B</b> &lt;ready&gt;"), "A & B <ready>");
   assert.equal(telegramHtmlToSpeech("invalid &#99999999; entity"), "invalid &#99999999; entity");
   assert.ok(telegramHtmlToSpeech("word ".repeat(100), 80).length <= 81);
+});
+
+test("speaker pacing uses a 128 ms lead and an absolute PCM timeline", () => {
+  assert.equal(speakerChunkDueMs(2_048, 4_096, 32_000), 0);
+  assert.equal(speakerChunkDueMs(4_096, 4_096, 32_000), 0);
+  assert.equal(speakerChunkDueMs(6_144, 4_096, 32_000), 64);
+  assert.equal(speakerChunkDueMs(8_192, 4_096, 32_000), 128);
+  assert.throws(() => speakerChunkDueMs(2_048, 4_096, 0), /invalid PCM byte rate/);
 });
 
 test("speaker runtime bounds queued jobs", () => {

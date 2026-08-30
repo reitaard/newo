@@ -81,6 +81,11 @@ export class EspeakTtsBackend {
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+export function speakerChunkDueMs(bytesSent, leadBytes, bytesPerSecond) {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) throw new Error("invalid PCM byte rate");
+  return Math.max(0, (bytesSent - leadBytes) * 1_000 / bytesPerSecond);
+}
+
 export function createSpeakerRuntime({ logger, backend, enabled, getDevice, sendControl, format = { sampleRate: 16_000, channels: 1, bitsPerSample: 16 }, chunkBytes = 2_048, maxTextChars = 300, connectionTimeoutMs = 9_000, resultTimeoutMs = 75_000, maxPendingJobs = 4 }) {
   const jobs = new Map();
   const allJobs = new Set();
@@ -162,21 +167,25 @@ export function createSpeakerRuntime({ logger, backend, enabled, getDevice, send
     clearTimeout(job.connectionTimer);
     job.resultTimer = setTimeout(() => settle(job, { kind: "timeout", error: "speaker playback timeout" }), resultTimeoutMs);
     job.resultTimer.unref();
+    const bytesPerSecond = format.sampleRate * format.channels * (format.bitsPerSample / 8);
+    const leadBytes = Math.min(4_096, job.pcm.length);
     logger.info({ device_id: deviceId, playback_id: playbackId, pcm_bytes: job.pcm.length, format }, "Speaker stream connected");
-    logger.info({ device_id: deviceId, playback_id: playbackId, pcm_bytes: job.pcm.length, chunk_bytes: chunkBytes }, "Speaker PCM stream started");
+    logger.info({ device_id: deviceId, playback_id: playbackId, pcm_bytes: job.pcm.length, chunk_bytes: chunkBytes, lead_bytes: leadBytes, bytes_per_second: bytesPerSecond }, "Speaker PCM stream started");
+    const streamStartedAt = performance.now();
     try {
       for (let offset = 0; offset < job.pcm.length; offset += chunkBytes) {
         if (ws.readyState !== 1) throw new Error("speaker disconnected");
         const chunk = job.pcm.subarray(offset, Math.min(offset + chunkBytes, job.pcm.length));
+        const dueAt = streamStartedAt + speakerChunkDueMs(offset + chunk.length, leadBytes, bytesPerSecond);
+        const waitMs = dueAt - performance.now();
+        if (waitMs > 0) await delay(waitMs);
         await new Promise((resolve, reject) => ws.send(chunk, { binary: true }, (error) => error ? reject(error) : resolve()));
-        // 2,048 mono PCM16 bytes are 64 ms. Gentle pacing bounds receiver memory.
-        if (offset + chunk.length < job.pcm.length) await delay(68);
       }
       if (ws.readyState === 1) {
         await new Promise((resolve, reject) => ws.send(JSON.stringify({ type: "speaker_end", playback_id: playbackId, bytes: job.pcm.length }), (error) => error ? reject(error) : resolve()));
         ws.close(1000, "stream complete");
       }
-      logger.info({ device_id: deviceId, playback_id: playbackId, bytes: job.pcm.length }, "Speaker PCM stream sent");
+      logger.info({ device_id: deviceId, playback_id: playbackId, bytes: job.pcm.length, stream_ms: Math.round(performance.now() - streamStartedAt) }, "Speaker PCM stream sent");
     } catch (error) {
       settle(job, { kind: "error", error: error?.message ?? "speaker stream failed" });
       logger.warn({ device_id: deviceId, playback_id: playbackId, error_message: error?.message ?? "unknown" }, "Speaker stream failed");

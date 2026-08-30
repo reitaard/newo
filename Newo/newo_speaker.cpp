@@ -24,7 +24,7 @@ void NewoSpeaker::begin() {
   webSocket_.onEvent([this](WStype_t type, uint8_t* payload, size_t length) {
     handleEvent(type, payload, length);
   });
-  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "SPEAKER_READY", "volume=12.5%");
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "SPEAKER_READY", "volume=50% prebuffer=4096");
 }
 
 bool NewoSpeaker::play(const Request& request) {
@@ -45,6 +45,9 @@ bool NewoSpeaker::play(const Request& request) {
   receivedBytes_ = 0;
   failureReason_ = nullptr;
   minimumTaskStackBytes_ = UINT32_MAX;
+  underrunCount_ = 0;
+  minimumBufferedBytes_ = UINT32_MAX;
+  playbackDurationMs_ = 0;
   playbackStateApplied_ = true;
   display_.setSpeaking(true);
   if (xTaskCreatePinnedToCore(taskEntry, "newo-speaker", 8192, this, 2, &task_, 1) != pdPASS) {
@@ -116,12 +119,28 @@ void NewoSpeaker::playbackTask() {
 
     const uint32_t timeoutMs = 15'000 + (request_.bytes * 1'000UL / NewoConfig::SPEAKER_PCM_BYTES_PER_SECOND);
     const uint32_t startedMs = millis();
+    uint32_t playbackStartedMs = 0;
+    bool playbackStarted = false;
+    bool underrunActive = false;
     while (!failed_) {
       webSocket_.loop();
       const uint32_t stackBytes = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
       if (stackBytes < minimumTaskStackBytes_) minimumTaskStackBytes_ = stackBytes;
       size_t available = xStreamBufferBytesAvailable(buffer_);
-      if (available >= sizeof(int16_t)) {
+
+      if (!playbackStarted) {
+        const bool allPcmReceived = receivedBytes_ == request_.bytes;
+        if (available >= NewoConfig::SPEAKER_PREBUFFER_BYTES ||
+            (allPcmReceived && available >= sizeof(int16_t))) {
+          playbackStarted = true;
+          playbackStartedMs = millis();
+          minimumBufferedBytes_ = static_cast<uint32_t>(available);
+        }
+      }
+
+      if (playbackStarted && available >= sizeof(int16_t)) {
+        underrunActive = false;
+        if (available < minimumBufferedBytes_) minimumBufferedBytes_ = static_cast<uint32_t>(available);
         const size_t evenAvailable = available & ~static_cast<size_t>(1);
         const size_t wanted = min(evenAvailable, sizeof(monoWorking_));
         const size_t count = xStreamBufferReceive(buffer_, monoWorking_, wanted, 0);
@@ -129,7 +148,7 @@ void NewoSpeaker::playbackTask() {
         const size_t samples = count / sizeof(int16_t);
         if (samples > kWorkingSamples) { fail("working_overflow"); continue; }
         for (size_t i = 0; i < samples; ++i) {
-          // Begin at one eighth full-scale for the first MAX98357A test.
+          // Start at half full-scale for MAX98357A physical testing.
           const int16_t sample = monoWorking_[i] / NewoConfig::SPEAKER_DIGITAL_DIVISOR;
           stereoWorking_[i * 2] = sample;
           stereoWorking_[i * 2 + 1] = sample;
@@ -139,6 +158,10 @@ void NewoSpeaker::playbackTask() {
             i2s_.write(stereoWorking_, stereoBytes) != stereoBytes) {
           fail("i2s_write_failed");
         }
+      } else if (playbackStarted && receivedBytes_ < request_.bytes && !underrunActive) {
+        ++underrunCount_;
+        minimumBufferedBytes_ = 0;
+        underrunActive = true;
       }
       if (endReceived_ && xStreamBufferBytesAvailable(buffer_) == 0) {
         if (receivedBytes_ != request_.bytes) fail("truncated");
@@ -149,6 +172,7 @@ void NewoSpeaker::playbackTask() {
     }
     webSocket_.disconnect();
     i2s_.end();
+    if (playbackStarted) playbackDurationMs_ = millis() - playbackStartedMs;
   }
 #endif
   const uint32_t finalStackBytes = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
@@ -169,12 +193,17 @@ void NewoSpeaker::loop() {
     playbackStateApplied_ = false;
   }
   resultReady_ = true;
-  char detail[80];
-  snprintf(detail, sizeof(detail), "bytes=%lu result=%s stack_low=%lu",
-           static_cast<unsigned long>(result_.bytes), result_.success ? "complete" : result_.error,
+  char diagnostics[96];
+  snprintf(diagnostics, sizeof(diagnostics), "rx=%lu duration_ms=%lu underruns=%lu min_buffer=%lu stack_low=%lu",
+           static_cast<unsigned long>(result_.bytes), static_cast<unsigned long>(playbackDurationMs_),
+           static_cast<unsigned long>(underrunCount_),
+           static_cast<unsigned long>(minimumBufferedBytes_ == UINT32_MAX ? 0 : minimumBufferedBytes_),
            static_cast<unsigned long>(minimumTaskStackBytes_));
+  NewoLog::log(underrunCount_ == 0 ? NewoLog::Level::INFO : NewoLog::Level::WARN,
+               NewoLog::Subsystem::AUDIO, "SPEAKER_DIAGNOSTICS", diagnostics);
   NewoLog::log(result_.success ? NewoLog::Level::INFO : NewoLog::Level::ERROR,
-               NewoLog::Subsystem::AUDIO, result_.success ? "SPEAKER_COMPLETE" : "SPEAKER_FAILED", detail);
+               NewoLog::Subsystem::AUDIO, result_.success ? "SPEAKER_COMPLETE" : "SPEAKER_FAILED",
+               result_.success ? "" : result_.error);
 }
 
 bool NewoSpeaker::consumeResult(Result& result) {

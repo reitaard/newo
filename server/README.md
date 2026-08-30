@@ -55,7 +55,7 @@ Enable it in `.env` with `TTS_ENABLED=true`, `TTS_BACKEND=espeak`, `TTS_VOICE=en
 
 The VPS sends only `{type:"speaker_play", playback_id, sample_rate, channels, bits_per_sample, bytes}` over `/device`. Newo opens `/speaker` with the normal device headers plus `X-Newo-Playback-Id`. The server sends paced 2,048-byte binary PCM frames followed by `{type:"speaker_end", playback_id, bytes}` and Newo reports `speaker_complete` or `speaker_error` on `/device`. PCM never travels on the control socket.
 
-Firmware keeps an 8,192-byte (256 ms) mono stream buffer, duplicates samples into stereo I2S slots, and starts at 12.5% digital amplitude. Its dedicated TX pins are BCLK GPIO21, LRC GPIO47, and DOUT GPIO14. During actual playback it temporarily releases WakeNet and shows the existing SPEAKING animation; afterward it restores the unchanged OFF/ARMED choice and prior display state.
+Firmware keeps an 8,192-byte (256 ms) mono stream buffer, prebuffers 4,096 bytes (128 ms), duplicates samples into stereo I2S slots, and starts at 50% digital amplitude. The server sends the initial prebuffer immediately, then uses an absolute monotonic 32,000-byte/second PCM timeline without cumulative timer drift. Its dedicated TX pins are BCLK GPIO21, LRC GPIO47, and DOUT GPIO14. During actual playback it temporarily releases WakeNet and shows the existing SPEAKING animation; afterward it restores the unchanged OFF/ARMED choice and prior display state.
 
 The first cloud bring-up only needs:
 

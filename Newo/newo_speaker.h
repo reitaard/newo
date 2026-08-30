@@ -58,6 +58,9 @@ class NewoSpeaker {
   bool resultReady_ = false;
   bool playbackStateApplied_ = false;
   volatile uint32_t minimumTaskStackBytes_ = UINT32_MAX;
+  uint32_t underrunCount_ = 0;
+  uint32_t minimumBufferedBytes_ = UINT32_MAX;
+  uint32_t playbackDurationMs_ = 0;
 
   // Fixed object-owned conversion workspace: no large PCM arrays live on the
   // playback task stack. 512 mono bytes expand to exactly 1,024 stereo bytes.
