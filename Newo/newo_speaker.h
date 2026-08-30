@@ -4,6 +4,7 @@
 #include <ESP_I2S.h>
 #include <WebSocketsClient.h>
 #include <freertos/stream_buffer.h>
+#include <opus.h>
 
 #include "newo_audio.h"
 #include "newo_display.h"
@@ -11,7 +12,8 @@
 #include "newo_wifi.h"
 
 // Dedicated MAX98357A output. The authenticated /speaker WebSocket is persistent
-// only while Speaker is enabled; I2S remains playback-scoped.
+// only while Speaker is enabled; I2S remains playback-scoped. PCM remains the
+// compatibility transport; Opus is decoded into the same bounded PCM buffer.
 class NewoSpeaker {
  public:
   struct Result {
@@ -48,13 +50,18 @@ class NewoSpeaker {
   uint32_t lastOverflows() const { return overflowCount_; }
 
  private:
+  enum class Codec : uint8_t { PCM, OPUS };
+
   struct Request {
     char playbackId[40];
     uint32_t sampleRate;
     uint32_t bytes;
     uint32_t maxBytes;
+    uint16_t opusFrameMs;
+    uint16_t opusFramePcmBytes;
     uint8_t channels;
     uint8_t bitsPerSample;
+    Codec codec = Codec::PCM;
     bool streaming;
   };
   struct MemorySnapshot {
@@ -68,11 +75,13 @@ class NewoSpeaker {
   void playbackTask();
   void handleEvent(WStype_t type, uint8_t* payload, size_t length);
   void handleText(const uint8_t* payload, size_t length);
+  bool handleOpusPacket(const uint8_t* payload, size_t length);
   bool startPlayback(const Request& request);
   bool allocateBuffer();
   void startConnection();
   void stopConnection(const char* reason);
   void releaseResources();
+  void releaseOpusDecoder();
   void sendFlowReport(bool force = false);
   void logMemory(const char* stage, const MemorySnapshot& snapshot, const MemorySnapshot* comparison = nullptr);
   MemorySnapshot memorySnapshot() const;
@@ -125,6 +134,17 @@ class NewoSpeaker {
   uint32_t minimumBufferedBytes_ = UINT32_MAX;
   uint32_t maximumBufferedBytes_ = 0;
   uint32_t playbackDurationMs_ = 0;
+
+  OpusDecoder* opusDecoder_ = nullptr;
+  uint16_t expectedOpusSequence_ = 0;
+  bool opusSawPartialFrame_ = false;
+  uint32_t opusPacketsReceived_ = 0;
+  uint32_t opusBytesReceived_ = 0;
+  uint32_t opusDecodeCount_ = 0;
+  uint32_t opusDecoderErrors_ = 0;
+  uint64_t opusDecodeTotalUs_ = 0;
+  uint32_t opusDecodeWorstUs_ = 0;
+
   volatile uint8_t volume_ = 100;
   volatile bool muted_ = false;
   enum class LastPlayback : uint8_t { NONE, COMPLETE, FAILED };
@@ -136,6 +156,8 @@ class NewoSpeaker {
   static constexpr size_t kWorkingSamples = kMonoWorkingBytes / sizeof(int16_t);
   int16_t monoWorking_[kWorkingSamples] = {};
   int16_t stereoWorking_[kWorkingSamples * 2] = {};
+  int16_t opusDecoded_[960] = {};  // 40 ms at 24 kHz mono.
   static_assert(sizeof(monoWorking_) == 512, "speaker mono workspace changed");
   static_assert(sizeof(stereoWorking_) == 1024, "speaker stereo workspace changed");
+  static_assert(sizeof(opusDecoded_) == 1920, "speaker Opus workspace changed");
 };
