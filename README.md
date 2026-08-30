@@ -45,9 +45,9 @@ Caddy proxies the public endpoint to the Node service on loopback `127.0.0.1:878
 
 ## Local wake-word voice lifecycle
 
-Voice defaults **OFF** so an initial flash is safe without the INMP441 attached. `/voice on` changes the device to **ARMED**: official Arduino-ESP32 3.3.11 ESP_SR WakeNet listens locally through the shipped English model, and sends **no microphone PCM and opens no `/voice` socket**. `/device` remains the sole persistent cloud WebSocket.
+Voice defaults **OFF** so an initial flash is safe without the INMP441 attached. Telegram `/voice` (alias `/v`) toggles OFF to ARMED and toggles ARMED or STREAMING to OFF; `/vs` remains the detailed read-only status alias. In **ARMED**, official Arduino-ESP32 3.3.11 ESP_SR WakeNet listens locally through the shipped English model, sends **no microphone PCM**, and opens no `/voice` socket. `/device` remains the sole persistent cloud WebSocket.
 
-A local wake changes the lifecycle to **STREAMING**: ESP_SR is stopped and releases I2S before the temporary voice task acquires it, opens authenticated certificate-validated `wss://newo.reitaard.de/voice`, and sends direct 20 ms 16 kHz mono PCM16 frames. A final transcript, disconnect, send failure, timeout, or `/voice off` closes `/voice`, releases I2S/task resources, restores WakeNet, and returns to ARMED (or OFF). There is no permanent PCM queue or cloud sender task; transport stalls fail the utterance rather than accumulating stale audio.
+A local wake changes the lifecycle to **STREAMING**: ESP_SR is stopped and releases I2S before the temporary voice task acquires it, opens authenticated certificate-validated `wss://newo.reitaard.de/voice`, and sends direct 20 ms 16 kHz mono PCM16 frames. A final transcript, disconnect, send failure, timeout, or a `/voice` toggle while STREAMING closes `/voice`, releases I2S/task resources, restores WakeNet, and returns to ARMED (or OFF). There is no permanent PCM queue or cloud sender task; transport stalls fail the utterance rather than accumulating stale audio.
 
 Proposed wiring for the generic ESP32-S3 Dev Module (confirm against the physical board schematic before flashing):
 
@@ -88,9 +88,11 @@ See [`docs/architecture.md`](docs/architecture.md), [`docs/phase-1.md`](docs/pha
 
 ## Build
 
-Speaker output uses a dedicated MAX98357A I2S TX instance: BCLK GPIO21, LRC GPIO47, and DOUT GPIO14. The microphone remains on BCLK GPIO4, WS GPIO5, and SD GPIO6. Playback is mono 16 kHz PCM16 LE duplicated to stereo slots with a bounded 16 KiB buffer, an unchanged 4 KiB audible prebuffer, and 100% digital amplitude protected by VPS-side speech filtering and peak limiting.
+Speaker output uses a dedicated MAX98357A I2S TX instance: BCLK GPIO21, LRC GPIO47, and DOUT GPIO14. The microphone remains on BCLK GPIO4, WS GPIO5, and SD GPIO6. Playback is mono 16 kHz PCM16 LE duplicated to stereo slots with a bounded 16 KiB buffer, an unchanged 4 KiB audible prebuffer, and 100% digital amplitude. VPS conditioning is one-pass: 110 Hz high-pass, configurable +6 dB software gain, then a 0.95 peak limiter with auto-gain disabled.
 
-Open `Newo/Newo.ino`. Build with Arduino-ESP32 3.3.11 and `esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=esp_sr_16,UploadSpeed=921600`. The ESP_SR partition is mandatory because its official model is stored in the model partition. Arduino-ESP32 builds `srmodels.bin` but its ordinary upload recipe does not write it; use `Newo/flash_esp_sr.sh <serial-port>` to flash both the application and the official model partition. Hidden allowlisted Telegram controls wait for correlated `/device` acknowledgements: `/voice` toggles OFF/ARMED (and stops STREAMING), `/voice on` and `/voice off` explicitly set it, and `/voice status` reads it.
+Speaker ON keeps one authenticated `/speaker` WSS connected after `/device` and reuses it with `speaker_begin` / binary PCM / `speaker_end` framing. Speaker OFF stops playback, restores WakeNet/display state, closes the WSS, and releases its dynamic StreamBuffer and TLS/network resources. The mode, volume, and mute settings are persisted in ESP32 NVS; automatic-reply mode is also persisted on the VPS. Manual `/speak` while OFF uses a temporary stream and leaves Speaker OFF.
+
+Open `Newo/Newo.ino`. Build with Arduino-ESP32 3.3.11 and `esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=esp_sr_16,UploadSpeed=921600`. The ESP_SR partition is mandatory because its official model is stored in the model partition. Arduino-ESP32 builds `srmodels.bin` but its ordinary upload recipe does not write it; use `Newo/flash_esp_sr.sh <serial-port>` to flash both the application and the official model partition. Hidden allowlisted Telegram controls wait for correlated `/device` acknowledgements. `/voice`, `/speaker`, and `/eco` are primary toggles with detailed replies; `/volume [0-100]` reads or updates the NVS-persisted runtime speaker gain, `/mute` toggles persisted mute, and `/speak <text>` remains a manual TTS playback command independent of the automatic `/speaker` toggle.
 
 ## Repository rule
 

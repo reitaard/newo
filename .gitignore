@@ -24,6 +24,7 @@ node_modules/
 # Downloaded ASR models and development voice captures
 server/models/
 server/voice-captures/
+server/data/
 
 # OS files
 .DS_Store

@@ -54,22 +54,59 @@ function collectProcessOutput(child, maxBytes, label) {
   });
 }
 
-// One-pass, low-latency speech conditioning: remove inaudible small-speaker bass
-// and catch peaks without the alimiter auto-gain raising the noise floor.
-export const SPEAKER_AUDIO_FILTER = "highpass=f=110,alimiter=limit=0.92:attack=5:release=50:level=false:latency=true";
+export const SPEAKER_GAIN_DB = 6;
+export const SPEAKER_LIMITER = 0.95;
+export const SPEAKER_LIMITER_ATTACK_MS = 5;
 export const SPEAKER_INITIAL_LEAD_BYTES = 8_192;
+
+export function speakerAudioFilter(gainDb = SPEAKER_GAIN_DB, limiter = SPEAKER_LIMITER) {
+  if (!Number.isFinite(gainDb) || gainDb < -12 || gainDb > 18) throw new Error("invalid speaker gain");
+  if (!Number.isFinite(limiter) || limiter <= 0 || limiter > 1) throw new Error("invalid speaker limiter");
+  return `highpass=f=110,volume=${gainDb}dB:precision=float,alimiter=limit=${limiter}:attack=${SPEAKER_LIMITER_ATTACK_MS}:release=50:level=false:latency=true`;
+}
+
+export const SPEAKER_AUDIO_FILTER = speakerAudioFilter();
+
+export function analyzePcm16(pcm, limiter = SPEAKER_LIMITER) {
+  if (!Buffer.isBuffer(pcm) || pcm.length === 0 || (pcm.length & 1)) throw new Error("invalid PCM16 audio");
+  let peak = 0;
+  let sumSquares = 0;
+  const samples = pcm.length / 2;
+  for (let offset = 0; offset < pcm.length; offset += 2) {
+    const sample = pcm.readInt16LE(offset);
+    const magnitude = Math.abs(sample);
+    if (magnitude > peak) peak = magnitude;
+    sumSquares += sample * sample;
+  }
+  const rms = Math.sqrt(sumSquares / samples);
+  const dbfs = (value) => value > 0 ? 20 * Math.log10(value / 32_768) : Number.NEGATIVE_INFINITY;
+  const peakRatio = peak / 32_768;
+  return {
+    peak,
+    peakDbfs: dbfs(peak),
+    rmsDbfs: dbfs(rms),
+    limiterReached: peakRatio >= limiter - (2 / 32_768),
+    clipped: peak >= 32_767,
+    bytes: pcm.length,
+  };
+}
 
 /** Replaceable backend boundary. Implementations return raw PCM in the requested format. */
 export class EspeakTtsBackend {
-  constructor({ voice = "en", rate = 155, maxPcmBytes = 1_920_000 } = {}) {
+  constructor({ voice = "en", rate = 155, maxPcmBytes = 1_920_000, gainDb = SPEAKER_GAIN_DB, limiter = SPEAKER_LIMITER } = {}) {
     this.voice = voice;
     this.rate = rate;
     this.maxPcmBytes = maxPcmBytes;
+    this.gainDb = gainDb;
+    this.limiter = limiter;
+    this.filter = speakerAudioFilter(gainDb, limiter);
   }
 
   async synthesize(text, format) {
     const espeak = spawn("espeak-ng", ["--stdout", "-v", this.voice, "-s", String(this.rate), text], { stdio: ["ignore", "pipe", "pipe"] });
-    const ffmpeg = spawn("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-af", SPEAKER_AUDIO_FILTER, "-f", "s16le", "-acodec", "pcm_s16le", "-ac", String(format.channels), "-ar", String(format.sampleRate), "pipe:1"], { stdio: ["pipe", "pipe", "pipe"] });
+    // Resample before conditioning so output resampling cannot create peaks after the limiter.
+    const filter = `aresample=${format.sampleRate},${this.filter}`;
+    const ffmpeg = spawn("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-af", filter, "-f", "s16le", "-acodec", "pcm_s16le", "-ac", String(format.channels), "-ar", String(format.sampleRate), "pipe:1"], { stdio: ["pipe", "pipe", "pipe"] });
     espeak.stdout.pipe(ffmpeg.stdin);
     const espeakError = new Promise((_, reject) => {
       let stderr = "";
@@ -77,8 +114,7 @@ export class EspeakTtsBackend {
       espeak.once("error", reject);
       espeak.once("close", (code) => { if (code !== 0) reject(new Error(`espeak-ng exited ${code}: ${stderr.trim()}`)); });
     });
-    const pcmPromise = collectProcessOutput(ffmpeg, this.maxPcmBytes, "ffmpeg");
-    const pcm = await Promise.race([pcmPromise, espeakError]);
+    const pcm = await Promise.race([collectProcessOutput(ffmpeg, this.maxPcmBytes, "ffmpeg"), espeakError]);
     if (pcm.length === 0 || pcm.length % 2 !== 0) throw new Error("TTS returned invalid PCM16 audio");
     return pcm;
   }
@@ -91,59 +127,129 @@ export function speakerChunkDueMs(bytesSent, leadBytes, bytesPerSecond) {
   return Math.max(0, (bytesSent - leadBytes) * 1_000 / bytesPerSecond);
 }
 
-export function createSpeakerRuntime({ logger, backend, enabled, getDevice, sendControl, format = { sampleRate: 16_000, channels: 1, bitsPerSample: 16 }, chunkBytes = 1_024, maxTextChars = 300, connectionTimeoutMs = 9_000, resultTimeoutMs = 75_000, maxPendingJobs = 4 }) {
+export function createSpeakerRuntime({ logger, backend, enabled, getDevice, sendControl, isPersistentEnabled = () => true, format = { sampleRate: 16_000, channels: 1, bitsPerSample: 16 }, chunkBytes = 1_024, maxTextChars = 300, connectionTimeoutMs = 9_000, resultTimeoutMs = 75_000, maxPendingJobs = 4 }) {
   const jobs = new Map();
   const allJobs = new Set();
+  const connectionWaiters = new Set();
+  let connection = null;
   let queue = Promise.resolve();
   let closing = false;
+
+  function closeConnection(reason = "speaker disabled") {
+    const current = connection;
+    if (!current) return;
+    connection = null;
+    if (current.ws.readyState === 1) current.ws.close(1000, reason);
+  }
 
   function settle(job, result) {
     if (job.settled) return;
     job.settled = true;
-    clearTimeout(job.connectionTimer);
     clearTimeout(job.resultTimer);
     jobs.delete(job.id);
     allJobs.delete(job);
+    if (job.temporary && !isPersistentEnabled()) closeConnection("temporary playback complete");
     result.kind === "complete" ? job.resolve(result) : job.reject(new Error(result.error ?? result.kind));
   }
 
-  function controlMessage(job) {
-    return { type: "speaker_play", playback_id: job.id, sample_rate: format.sampleRate, channels: format.channels, bits_per_sample: format.bitsPerSample, bytes: job.pcm.length };
+  function waitForConnection(timeoutMs = connectionTimeoutMs) {
+    if (connection?.ws.readyState === 1) return Promise.resolve(connection);
+    return new Promise((resolve, reject) => {
+      const waiter = { resolve, reject, timer: null };
+      waiter.timer = setTimeout(() => {
+        connectionWaiters.delete(waiter);
+        reject(new Error("speaker connection timeout"));
+      }, timeoutMs);
+      waiter.timer.unref();
+      connectionWaiters.add(waiter);
+    });
   }
 
-  async function issueControl(job, device, reason) {
-    const sent = await sendControl(controlMessage(job), device);
-    if (sent) {
-      job.controlDevice = device;
-      logger.info({ playback_id: job.id, bytes: job.pcm.length, reason }, "Speaker play control sent");
-    } else {
-      logger.warn({ playback_id: job.id, bytes: job.pcm.length, reason }, "Speaker play control send failed");
+  function resolveConnectionWaiters(current) {
+    for (const waiter of connectionWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.resolve(current);
     }
-    return sent;
+    connectionWaiters.clear();
+  }
+
+  async function requestTemporaryConnection(job) {
+    if (connection?.ws.readyState === 1) return connection;
+    const device = getDevice();
+    if (!device) throw new Error("speaker unavailable");
+    const sent = await sendControl({ type: "speaker_control", action: "temporary_connect" }, device);
+    if (!sent) throw new Error("temporary speaker connection request failed");
+    logger.info({ playback_id: job.id }, "Temporary speaker connection requested");
+    return waitForConnection();
+  }
+
+  function sendFrame(ws, data, options) {
+    return new Promise((resolve, reject) => {
+      try { ws.send(data, options, (error) => error ? reject(error) : resolve()); }
+      catch (error) { reject(error); }
+    });
+  }
+
+  async function stream(job, current) {
+    if (connection !== current || current.ws.readyState !== 1) throw new Error("speaker disconnected");
+    const ws = current.ws;
+    jobs.set(job.id, job);
+    job.resultTimer = setTimeout(() => settle(job, { kind: "timeout", error: "speaker playback timeout" }), resultTimeoutMs);
+    job.resultTimer.unref();
+    const begin = { type: "speaker_begin", playback_id: job.id, sample_rate: format.sampleRate, channels: format.channels, bits_per_sample: format.bitsPerSample, bytes: job.pcm.length };
+    job.beginSentAt = performance.now();
+    await sendFrame(ws, JSON.stringify(begin));
+    logger.info({ device_id: current.deviceId, playback_id: job.id, pcm_bytes: job.pcm.length }, "Speaker begin sent");
+
+    const bytesPerSecond = format.sampleRate * format.channels * (format.bitsPerSample / 8);
+    const leadBytes = Math.min(SPEAKER_INITIAL_LEAD_BYTES, job.pcm.length);
+    const streamStartedAt = performance.now();
+    for (let offset = 0; offset < job.pcm.length; offset += chunkBytes) {
+      if (job.settled || connection !== current || ws.readyState !== 1) throw new Error("speaker disconnected");
+      const chunk = job.pcm.subarray(offset, Math.min(offset + chunkBytes, job.pcm.length));
+      const dueAt = streamStartedAt + speakerChunkDueMs(offset + chunk.length, leadBytes, bytesPerSecond);
+      const waitMs = dueAt - performance.now();
+      if (waitMs > 0) await delay(waitMs);
+      await sendFrame(ws, chunk, { binary: true });
+      if (job.firstPcmSentAt === null) {
+        job.firstPcmSentAt = performance.now();
+        logger.info({ playback_id: job.id, ready_to_first_pcm_ms: Math.round(job.firstPcmSentAt - job.readyAt) }, "Speaker first PCM sent");
+      }
+    }
+    await sendFrame(ws, JSON.stringify({ type: "speaker_end", playback_id: job.id, bytes: job.pcm.length }));
+    logger.info({ device_id: current.deviceId, playback_id: job.id, bytes: job.pcm.length, stream_ms: Math.round(performance.now() - streamStartedAt) }, "Speaker PCM stream sent");
+    return job.completion;
   }
 
   async function run(job) {
     if (job.settled || closing) return;
     if (!getDevice()) throw new Error("speaker unavailable");
     logger.info({ playback_id: job.id, text_chars: job.text.length }, "Speaker TTS synthesis started");
+    const connectionPromise = job.temporary ? requestTemporaryConnection(job) : waitForConnection();
+    connectionPromise.catch(() => {});
+    const synthesisStartedAt = performance.now();
+    job.synthesisStartedAt = synthesisStartedAt;
     const pcm = await backend.synthesize(job.text, format);
-    logger.info({ playback_id: job.id, pcm_bytes: pcm.length, format }, "Speaker TTS synthesis completed");
-    const device = getDevice();
-    if (!device) throw new Error("speaker unavailable");
+    job.ttsCompletedAt = performance.now();
     job.pcm = pcm;
-    jobs.set(job.id, job);
-    job.connectionTimer = setTimeout(() => {
-      settle(job, { kind: "connection_timeout", error: "speaker connection timeout" });
-      logger.warn({ playback_id: job.id, pcm_bytes: pcm.length, timeout_ms: connectionTimeoutMs }, "Speaker stream did not connect");
-    }, connectionTimeoutMs);
-    job.connectionTimer.unref();
-    // A control send can race a /device reconnect. Keep the short connection
-    // timer alive so handleDeviceConnected can retry on the replacement socket.
-    await issueControl(job, device, "initial");
-    return job.completion;
+    const audio = analyzePcm16(pcm, backend.limiter ?? SPEAKER_LIMITER);
+    logger.info({
+      event: "SPEAKER_AUDIO", playback_id: job.id,
+      peak_dbfs: Number.isFinite(audio.peakDbfs) ? Number(audio.peakDbfs.toFixed(1)) : "-inf",
+      rms_dbfs: Number.isFinite(audio.rmsDbfs) ? Number(audio.rmsDbfs.toFixed(1)) : "-inf",
+      gain_db: backend.gainDb ?? SPEAKER_GAIN_DB,
+      limiter: backend.limiter ?? SPEAKER_LIMITER,
+      limiter_reached: audio.limiterReached,
+      clipped: audio.clipped,
+      bytes: pcm.length,
+    }, "SPEAKER_AUDIO");
+    logger.info({ playback_id: job.id, pcm_bytes: pcm.length, tts_ms: Math.round(job.ttsCompletedAt - synthesisStartedAt), format }, "Speaker TTS synthesis completed");
+    const current = await connectionPromise;
+    job.readyAt = performance.now();
+    return stream(job, current);
   }
 
-  function speak(html, { maxChars = maxTextChars } = {}) {
+  function speak(html, { maxChars = maxTextChars, temporary = false } = {}) {
     if (!enabled || closing) return { kind: "disabled" };
     if (allJobs.size >= maxPendingJobs) return { kind: "busy" };
     const text = telegramHtmlToSpeech(html, maxChars);
@@ -153,11 +259,10 @@ export function createSpeakerRuntime({ logger, backend, enabled, getDevice, send
     let resolve;
     let reject;
     const completion = new Promise((res, rej) => { resolve = res; reject = rej; });
-    // Callers may intentionally fire-and-forget; keep rejection handled here.
     completion.catch(() => {});
-    const job = { id, text, pcm: null, socketClaimed: false, settled: false, connectionTimer: null, resultTimer: null, controlDevice: null, controlSending: false, resolve, reject, completion };
+    const job = { id, text, pcm: null, temporary, settled: false, resultTimer: null, queuedAt: performance.now(), synthesisStartedAt: null, ttsCompletedAt: null, readyAt: null, beginSentAt: null, firstPcmSentAt: null, resolve, reject, completion };
     allJobs.add(job);
-    logger.info({ playback_id: id, text_chars: text.length }, "Speaker job queued");
+    logger.info({ playback_id: id, text_chars: text.length, temporary }, "Speaker job queued");
     queue = queue.catch(() => {}).then(() => run(job)).catch((error) => {
       settle(job, { kind: "error", error: error?.message ?? "TTS failed" });
       logger.warn({ playback_id: id, error_message: error?.message ?? "unknown" }, "Speaker/TTS job failed");
@@ -165,53 +270,41 @@ export function createSpeakerRuntime({ logger, backend, enabled, getDevice, send
     return { kind: "queued", playbackId: id, text, completion };
   }
 
-  async function handleConnection(ws, deviceId, playbackId) {
-    const job = jobs.get(playbackId);
-    if (!job || job.socketClaimed || !job.pcm) { ws.close(4004, "unknown playback"); return; }
-    job.socketClaimed = true;
-    clearTimeout(job.connectionTimer);
-    job.resultTimer = setTimeout(() => settle(job, { kind: "timeout", error: "speaker playback timeout" }), resultTimeoutMs);
-    job.resultTimer.unref();
-    const bytesPerSecond = format.sampleRate * format.channels * (format.bitsPerSample / 8);
-    const leadBytes = Math.min(SPEAKER_INITIAL_LEAD_BYTES, job.pcm.length);
-    logger.info({ device_id: deviceId, playback_id: playbackId, pcm_bytes: job.pcm.length, format }, "Speaker stream connected");
-    logger.info({ device_id: deviceId, playback_id: playbackId, pcm_bytes: job.pcm.length, chunk_bytes: chunkBytes, lead_bytes: leadBytes, bytes_per_second: bytesPerSecond }, "Speaker PCM stream started");
-    const streamStartedAt = performance.now();
-    try {
-      for (let offset = 0; offset < job.pcm.length; offset += chunkBytes) {
-        if (ws.readyState !== 1) throw new Error("speaker disconnected");
-        const chunk = job.pcm.subarray(offset, Math.min(offset + chunkBytes, job.pcm.length));
-        const dueAt = streamStartedAt + speakerChunkDueMs(offset + chunk.length, leadBytes, bytesPerSecond);
-        const waitMs = dueAt - performance.now();
-        if (waitMs > 0) await delay(waitMs);
-        await new Promise((resolve, reject) => ws.send(chunk, { binary: true }, (error) => error ? reject(error) : resolve()));
-      }
-      if (ws.readyState === 1) {
-        await new Promise((resolve, reject) => ws.send(JSON.stringify({ type: "speaker_end", playback_id: playbackId, bytes: job.pcm.length }), (error) => error ? reject(error) : resolve()));
-        ws.close(1000, "stream complete");
-      }
-      logger.info({ device_id: deviceId, playback_id: playbackId, bytes: job.pcm.length, stream_ms: Math.round(performance.now() - streamStartedAt) }, "Speaker PCM stream sent");
-    } catch (error) {
-      settle(job, { kind: "error", error: error?.message ?? "speaker stream failed" });
-      logger.warn({ device_id: deviceId, playback_id: playbackId, error_message: error?.message ?? "unknown" }, "Speaker stream failed");
-      if (ws.readyState === 1) ws.close(1011, "speaker stream failed");
-    }
+  function handleConnection(ws, deviceId) {
+    if (connection?.ws && connection.ws !== ws && connection.ws.readyState === 1) connection.ws.close(4001, "replaced by new connection");
+    const current = { ws, deviceId, connectedAt: performance.now() };
+    connection = current;
+    ws.on?.("close", () => {
+      if (connection === current) connection = null;
+      logger.info({ device_id: deviceId }, "Persistent speaker stream disconnected");
+    });
+    ws.on?.("error", () => logger.warn({ device_id: deviceId }, "Persistent speaker WebSocket error"));
+    resolveConnectionWaiters(current);
+    logger.info({ device_id: deviceId }, "Persistent speaker stream ready");
   }
 
   async function handleDeviceConnected(deviceId, device) {
-    for (const job of jobs.values()) {
-      if (job.settled || job.socketClaimed || job.controlSending || job.controlDevice === device) continue;
-      job.controlSending = true;
-      try {
-        if (!await issueControl(job, device, "device_reconnected")) {
-          logger.warn({ device_id: deviceId, playback_id: job.id }, "Speaker control retry failed");
-        }
-      } catch (error) {
-        logger.warn({ device_id: deviceId, playback_id: job.id, error_message: error?.message ?? "unknown" }, "Speaker control retry failed");
-      } finally {
-        job.controlSending = false;
-      }
+    for (const job of allJobs) {
+      if (!job.temporary || job.settled || connection?.ws.readyState === 1) continue;
+      try { await sendControl({ type: "speaker_control", action: "temporary_connect" }, device); }
+      catch (error) { logger.warn({ device_id: deviceId, playback_id: job.id, error_message: error?.message ?? "unknown" }, "Temporary speaker reconnect request failed"); }
     }
+  }
+
+  function handlePlaybackStarted(deviceId, message) {
+    const job = jobs.get(message.playback_id);
+    if (!job || job.firstPcmSentAt === null) return false;
+    const firstPcmToPlayMs = message.first_pcm_to_play_ms;
+    const metrics = {
+      device_id: deviceId,
+      playback_id: job.id,
+      tts_ms: Math.round(job.ttsCompletedAt - job.synthesisStartedAt),
+      ready_to_first_pcm_ms: Math.round(job.firstPcmSentAt - job.readyAt),
+      first_pcm_to_play_ms: firstPcmToPlayMs,
+      total_start_latency_ms: Math.round(job.firstPcmSentAt - job.queuedAt + firstPcmToPlayMs),
+    };
+    logger.info(metrics, "SPEAKER_LATENCY");
+    return true;
   }
 
   function handleResult(deviceId, message) {
@@ -223,10 +316,20 @@ export function createSpeakerRuntime({ logger, backend, enabled, getDevice, send
     return true;
   }
 
-  function close() {
-    closing = true;
-    for (const job of [...allJobs]) settle(job, { kind: "shutdown", error: "server shutting down" });
+  function setPersistentEnabled(persistentEnabled) {
+    if (persistentEnabled) return;
+    for (const job of [...allJobs]) {
+      if (!job.temporary) settle(job, { kind: "disabled", error: "speaker disabled" });
+    }
   }
 
-  return { speak, handleConnection, handleDeviceConnected, handleResult, close, format };
+  function close() {
+    closing = true;
+    for (const waiter of connectionWaiters) { clearTimeout(waiter.timer); waiter.reject(new Error("server shutting down")); }
+    connectionWaiters.clear();
+    for (const job of [...allJobs]) settle(job, { kind: "shutdown", error: "server shutting down" });
+    closeConnection("server shutting down");
+  }
+
+  return { speak, handleConnection, handleDeviceConnected, handlePlaybackStarted, handleResult, setPersistentEnabled, close, isReady: () => connection?.ws.readyState === 1, format };
 }

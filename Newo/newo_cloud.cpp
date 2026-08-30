@@ -102,12 +102,21 @@ bool NewoCloud::consumeVoiceRequest(VoiceRequest& request) {
   return true;
 }
 
-bool NewoCloud::consumeSpeakerRequest(SpeakerRequest& request) {
-  if (speakerRequestCount_ == 0) return false;
-  request = speakerRequests_[speakerRequestHead_];
-  speakerRequestHead_ = (speakerRequestHead_ + 1) % kSpeakerRequestQueueDepth;
-  --speakerRequestCount_;
+bool NewoCloud::consumeSpeakerControlRequest(SpeakerControlRequest& request) {
+  if (speakerControlRequestCount_ == 0) return false;
+  request = speakerControlRequests_[speakerControlRequestHead_];
+  speakerControlRequestHead_ = (speakerControlRequestHead_ + 1) % kSpeakerControlQueueDepth;
+  --speakerControlRequestCount_;
   return true;
+}
+
+void NewoCloud::sendSpeakerStarted(const char* playbackId, uint32_t firstPcmToPlayMs) {
+  if (!connected_ || !playbackId || !playbackId[0]) return;
+  JsonDocument doc;
+  doc["type"] = "speaker_started";
+  doc["playback_id"] = playbackId;
+  doc["first_pcm_to_play_ms"] = firstPcmToPlayMs;
+  String body; serializeJson(doc, body); webSocket_.sendTXT(body);
 }
 
 void NewoCloud::sendSpeakerResult(const char* playbackId, bool success, uint32_t bytes, const char* error) {
@@ -120,6 +129,25 @@ void NewoCloud::sendSpeakerResult(const char* playbackId, bool success, uint32_t
   String body; serializeJson(doc, body); webSocket_.sendTXT(body);
 }
 
+void NewoCloud::sendSpeakerAck(const char* requestId, bool enabled, const char* connection,
+                               uint8_t volume, bool muted, bool applied, const char* lastPlayback,
+                               uint32_t underruns, uint32_t overflows) {
+  if (!connected_ || !requestId || !requestId[0]) return;
+  JsonDocument doc;
+  doc["type"] = "speaker_ack";
+  doc["request_id"] = requestId;
+  doc["enabled"] = enabled;
+  doc["connection"] = connection;
+  doc["volume"] = volume;
+  doc["muted"] = muted;
+  doc["applied"] = applied;
+  doc["last_playback"] = lastPlayback;
+  doc["underruns"] = underruns;
+  doc["overflows"] = overflows;
+  doc["buffer_bytes"] = NewoConfig::SPEAKER_BUFFER_BYTES;
+  String body; serializeJson(doc, body); webSocket_.sendTXT(body);
+}
+
 void NewoCloud::updateVoiceTelemetry(NewoVoiceState state, bool connected, uint32_t wakes,
                                       uint32_t sessions, uint32_t failures, uint32_t timeouts) {
   voiceState_ = state; voiceConnected_ = connected; voiceWakes_ = wakes;
@@ -127,7 +155,8 @@ void NewoCloud::updateVoiceTelemetry(NewoVoiceState state, bool connected, uint3
 }
 
 void NewoCloud::sendVoiceAck(const char* requestId, NewoVoiceState state, bool voiceConnected,
-                             uint32_t wakes, uint32_t sessions) {
+                             uint32_t wakes, uint32_t sessions, uint32_t failures,
+                             uint32_t timeouts) {
   if (!connected_ || !requestId || !requestId[0]) return;
   JsonDocument doc;
   doc["type"] = "voice_ack";
@@ -136,6 +165,8 @@ void NewoCloud::sendVoiceAck(const char* requestId, NewoVoiceState state, bool v
   doc["voice_connected"] = voiceConnected;
   doc["wake_count"] = wakes;
   doc["session_count"] = sessions;
+  doc["failures"] = failures;
+  doc["timeouts"] = timeouts;
   String body; serializeJson(doc, body); webSocket_.sendTXT(body);
 }
 
@@ -260,26 +291,41 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     return;
   }
 
-  if (strcmp(type, "speaker_play") == 0) {
-    const char* playbackId = doc["playback_id"] | "";
-    SpeakerRequest request = {};
-    strlcpy(request.playbackId, playbackId, sizeof(request.playbackId));
-    request.sampleRate = doc["sample_rate"] | 0;
-    request.channels = doc["channels"] | 0;
-    request.bitsPerSample = doc["bits_per_sample"] | 0;
-    request.bytes = doc["bytes"] | 0;
-    if (strlen(playbackId) != 36 || !request.bytes || speakerRequestCount_ == kSpeakerRequestQueueDepth) {
-      sendSpeakerResult(playbackId, false, 0, speakerRequestCount_ == kSpeakerRequestQueueDepth ? "busy" : "invalid_request");
+  if (strcmp(type, "speaker_status") == 0 || strcmp(type, "speaker_control") == 0) {
+    const char* requestId = doc["request_id"] | "";
+    const char* action = strcmp(type, "speaker_status") == 0 ? "status" : (doc["action"] | "");
+    SpeakerControlRequest request = {};
+    if (strcmp(action, "status") == 0 && requestId[0]) request.action = SpeakerControlRequest::Action::STATUS;
+    else if (strcmp(action, "set_volume") == 0 && requestId[0]) {
+      const int volume = doc["volume"] | -1;
+      if (volume < 0 || volume > 100) return;
+      request.action = SpeakerControlRequest::Action::SET_VOLUME;
+      request.volume = static_cast<uint8_t>(volume);
+    } else if (strcmp(action, "toggle_mute") == 0 && requestId[0]) {
+      request.action = SpeakerControlRequest::Action::TOGGLE_MUTE;
+    } else if (strcmp(action, "set_enabled") == 0 && requestId[0] && doc["enabled"].is<bool>()) {
+      request.action = SpeakerControlRequest::Action::SET_ENABLED;
+      request.enabled = doc["enabled"].as<bool>();
+    } else if (strcmp(action, "temporary_connect") == 0) {
+      request.action = SpeakerControlRequest::Action::TEMPORARY_CONNECT;
+    } else {
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "SPEAKER_INVALID_ACTION");
       return;
     }
-    speakerRequests_[speakerRequestTail_] = request;
-    speakerRequestTail_ = (speakerRequestTail_ + 1) % kSpeakerRequestQueueDepth;
-    ++speakerRequestCount_;
+    if (speakerControlRequestCount_ == kSpeakerControlQueueDepth) {
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "SPEAKER_CONTROL_QUEUE_FULL");
+      return;
+    }
+    strlcpy(request.requestId, requestId, sizeof(request.requestId));
+    speakerControlRequests_[speakerControlRequestTail_] = request;
+    speakerControlRequestTail_ = (speakerControlRequestTail_ + 1) % kSpeakerControlQueueDepth;
+    ++speakerControlRequestCount_;
     return;
   }
 
   if (strcmp(type, "voice_status") == 0) {
-    sendVoiceAck(doc["request_id"] | "", voiceState_, voiceConnected_, voiceWakes_, voiceSessions_);
+    sendVoiceAck(doc["request_id"] | "", voiceState_, voiceConnected_, voiceWakes_, voiceSessions_,
+                 voiceFailures_, voiceTimeouts_);
     return;
   }
 

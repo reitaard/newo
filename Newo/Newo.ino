@@ -14,7 +14,7 @@ NewoWiFi newoWiFi(newoStorage);
 NewoDisplay newoDisplay;
 NewoCloud newoCloud(newoWiFi, newoDisplay);
 NewoAudio newoAudio(newoWiFi, newoDisplay);
-NewoSpeaker newoSpeaker(newoWiFi, newoDisplay, newoAudio);
+NewoSpeaker newoSpeaker(newoWiFi, newoDisplay, newoAudio, newoStorage);
 
 void printHardwareInfo() {
   Serial.println();
@@ -59,10 +59,14 @@ void setup() {
 
 void loop() {
   struct VoiceAck { char requestId[40]; };
+  struct SpeakerAck { char requestId[40]; bool targetEnabled; bool applied; uint32_t startedMs; };
   static VoiceAck pendingVoiceAcks[8] = {};
   static uint8_t pendingVoiceAckCount = 0;
+  static SpeakerAck pendingSpeakerAcks[4] = {};
+  static uint8_t pendingSpeakerAckCount = 0;
   NewoCloud::VoiceRequest voiceRequest;
-  NewoCloud::SpeakerRequest speakerRequest;
+  NewoCloud::SpeakerControlRequest speakerControlRequest;
+  NewoSpeaker::PlaybackStarted speakerStarted;
   NewoSpeaker::Result speakerResult;
   newoWiFi.loop();
   newoCloud.loop();
@@ -80,17 +84,55 @@ void loop() {
               sizeof(pendingVoiceAcks[0].requestId));
     }
   }
-  while (newoCloud.consumeSpeakerRequest(speakerRequest)) {
-    NewoSpeaker::Request request = {};
-    strlcpy(request.playbackId, speakerRequest.playbackId, sizeof(request.playbackId));
-    request.sampleRate = speakerRequest.sampleRate;
-    request.channels = speakerRequest.channels;
-    request.bitsPerSample = speakerRequest.bitsPerSample;
-    request.bytes = speakerRequest.bytes;
-    if (!newoSpeaker.play(request)) newoCloud.sendSpeakerResult(request.playbackId, false, 0, "busy_or_invalid");
+  while (newoCloud.consumeSpeakerControlRequest(speakerControlRequest)) {
+    bool applied = true;
+    bool deferAck = false;
+    if (speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::SET_VOLUME) {
+      applied = newoSpeaker.setVolume(speakerControlRequest.volume);
+    } else if (speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::TOGGLE_MUTE) {
+      applied = newoSpeaker.setMuted(!newoSpeaker.muted());
+    } else if (speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::SET_ENABLED) {
+      applied = newoSpeaker.setEnabled(speakerControlRequest.enabled);
+      const bool complete = speakerControlRequest.enabled ? newoSpeaker.ready() : newoSpeaker.released();
+      if (applied && !complete) {
+        if (pendingSpeakerAckCount < sizeof(pendingSpeakerAcks) / sizeof(pendingSpeakerAcks[0])) {
+          SpeakerAck& pending = pendingSpeakerAcks[pendingSpeakerAckCount++];
+          strlcpy(pending.requestId, speakerControlRequest.requestId, sizeof(pending.requestId));
+          pending.targetEnabled = speakerControlRequest.enabled;
+          pending.applied = true;
+          pending.startedMs = millis();
+          deferAck = true;
+        } else {
+          applied = false;
+        }
+      }
+    } else if (speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::TEMPORARY_CONNECT) {
+      applied = newoSpeaker.requestTemporaryConnection();
+      deferAck = true;  // The uncorrelated manual-test request needs no /device acknowledgement.
+    }
+    if (!deferAck) {
+      newoCloud.sendSpeakerAck(speakerControlRequest.requestId, newoSpeaker.enabled(),
+                               newoSpeaker.connectionStatus(), newoSpeaker.volume(), newoSpeaker.muted(),
+                               applied, newoSpeaker.lastPlayback(), newoSpeaker.lastUnderruns(),
+                               newoSpeaker.lastOverflows());
+    }
   }
   newoAudio.loop();
-  newoSpeaker.loop();
+  newoSpeaker.loop(newoCloud.connected());
+  for (uint8_t i = 0; i < pendingSpeakerAckCount;) {
+    SpeakerAck& pending = pendingSpeakerAcks[i];
+    const bool complete = pending.targetEnabled ? newoSpeaker.ready() : newoSpeaker.released();
+    const bool timedOut = millis() - pending.startedMs >= 6'500;
+    if (!complete && !timedOut) { ++i; continue; }
+    newoCloud.sendSpeakerAck(pending.requestId, newoSpeaker.enabled(), newoSpeaker.connectionStatus(),
+                             newoSpeaker.volume(), newoSpeaker.muted(), pending.applied && complete,
+                             newoSpeaker.lastPlayback(), newoSpeaker.lastUnderruns(),
+                             newoSpeaker.lastOverflows());
+    pendingSpeakerAcks[i] = pendingSpeakerAcks[--pendingSpeakerAckCount];
+  }
+  while (newoSpeaker.consumePlaybackStarted(speakerStarted)) {
+    newoCloud.sendSpeakerStarted(speakerStarted.playbackId, speakerStarted.firstPcmToPlayMs);
+  }
   while (newoSpeaker.consumeResult(speakerResult)) {
     newoCloud.sendSpeakerResult(speakerResult.playbackId, speakerResult.success,
                                 speakerResult.bytes, speakerResult.error);
@@ -100,7 +142,8 @@ void loop() {
   if (!newoAudio.transitionPending()) {
     for (uint8_t i = 0; i < pendingVoiceAckCount; ++i) {
       newoCloud.sendVoiceAck(pendingVoiceAcks[i].requestId, newoAudio.state(), newoAudio.voiceConnected(),
-                             newoAudio.wakeCount(), newoAudio.sessionCount());
+                             newoAudio.wakeCount(), newoAudio.sessionCount(), newoAudio.failures(),
+                             newoAudio.timeouts());
     }
     pendingVoiceAckCount = 0;
   }

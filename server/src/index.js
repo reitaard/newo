@@ -6,7 +6,9 @@ import { Bot, webhookCallback } from "grammy";
 import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 
+import { createRuntimeStateStore } from "./runtime-state.js";
 import { createSpeakerRuntime, EspeakTtsBackend } from "./tts.js";
+import { createPrimaryModeHandlers } from "./telegram-mode-commands.js";
 import { createVoiceRuntime, NullAsrBackend, WorkerAsrBackend } from "./voice.js";
 
 try {
@@ -51,8 +53,10 @@ const EnvSchema = z.object({
   TTS_BACKEND: z.preprocess(emptyToUndefined, z.enum(["espeak"]).default("espeak")),
   TTS_VOICE: z.preprocess(emptyToUndefined, z.string().min(1).default("en")),
   TTS_RATE: z.preprocess(emptyToUndefined, z.coerce.number().int().min(80).max(450).default(155)),
+  TTS_GAIN_DB: z.preprocess(emptyToUndefined, z.coerce.number().min(-12).max(18).default(6)),
   TTS_MAX_TEXT_CHARS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(20).max(500).default(300)),
   TTS_MAX_PCM_BYTES: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().max(1_920_000).default(1_920_000)),
+  RUNTIME_STATE_FILE: z.preprocess(emptyToUndefined, z.string().default("data/runtime-state.json")),
 });
 
 const env = EnvSchema.parse(process.env);
@@ -104,12 +108,15 @@ const FACE_STYLES = ["default", "happy", "angry", "tired", "curious", "confused"
 let bot = null;
 let pendingReboot = null;
 let shuttingDown = false;
+const runtimeState = createRuntimeStateStore({ filePath: env.RUNTIME_STATE_FILE, logger: app.log });
+let automaticSpeakerEnabled = runtimeState.speakerEnabled;
 
 const speakerRuntime = createSpeakerRuntime({
   logger: app.log,
   enabled: env.TTS_ENABLED,
-  backend: new EspeakTtsBackend({ voice: env.TTS_VOICE, rate: env.TTS_RATE, maxPcmBytes: env.TTS_MAX_PCM_BYTES }),
+  backend: new EspeakTtsBackend({ voice: env.TTS_VOICE, rate: env.TTS_RATE, gainDb: env.TTS_GAIN_DB, maxPcmBytes: env.TTS_MAX_PCM_BYTES }),
   getDevice: () => getConnectedDeviceState(),
+  isPersistentEnabled: () => automaticSpeakerEnabled,
   sendControl(message, device) {
     if (!device || devices.get(env.NEWO_DEVICE_ID) !== device || device.ws.readyState !== WebSocket.OPEN) return false;
     return new Promise((resolve) => {
@@ -128,7 +135,7 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("pong"), request_id: z.string().optional(), uptime_ms: z.number().nonnegative().optional(), rssi: z.number().optional(), ssid: z.string().optional() }).passthrough(),
   z.object({ type: z.literal("status"), request_id: z.string().optional(), uptime_ms: z.number().nonnegative().optional(), rssi: z.number().optional(), ssid: z.string().optional(), free_heap: z.number().nonnegative().optional(), free_psram: z.number().nonnegative().optional() }).passthrough(),
   z.object({ type: z.literal("reboot_ack"), request_id: z.string().optional() }).passthrough(),
-  z.object({ type: z.literal("voice_ack"), request_id: z.string(), state: z.enum(["off", "armed", "streaming"]), voice_connected: z.boolean(), wake_count: z.number().nonnegative(), session_count: z.number().nonnegative() }).passthrough(),
+  z.object({ type: z.literal("voice_ack"), request_id: z.string(), state: z.enum(["off", "armed", "streaming"]), voice_connected: z.boolean(), wake_count: z.number().nonnegative(), session_count: z.number().nonnegative(), failures: z.number().nonnegative().optional(), timeouts: z.number().nonnegative().optional() }).passthrough(),
   z.object({
     type: z.literal("health"), request_id: z.string(), firmware: z.string(), uptime_ms: z.number().nonnegative(), reset_reason: z.number().int(), ssid: z.string().optional(), rssi: z.number().optional(), cloud_connected: z.boolean(), free_heap: z.number().nonnegative(), min_free_heap: z.number().nonnegative(), free_psram: z.number().nonnegative(), largest_free_internal_block: z.number().nonnegative().optional(),
     voice: z.object({ state: z.enum(["off", "armed", "streaming"]), connected: z.boolean(), wakes: z.number(), sessions: z.number(), failures: z.number(), timeouts: z.number() }).optional(),
@@ -137,6 +144,8 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
     logs: z.object({ stored: z.number().int(), capacity: z.number().int(), warnings: z.number(), errors: z.number() }),
   }),
   z.object({ type: z.literal("display_ack"), request_id: z.string().optional(), mode: z.string().max(16) }).passthrough(),
+  z.object({ type: z.literal("speaker_ack"), request_id: z.string(), enabled: z.boolean(), connection: z.enum(["Ready", "Connecting", "Disconnected"]), volume: z.number().int().min(0).max(100), muted: z.boolean(), applied: z.boolean(), last_playback: z.enum(["None", "Playing", "Complete", "Failed"]), underruns: z.number().int().nonnegative(), overflows: z.number().int().nonnegative(), buffer_bytes: z.number().int().positive() }).passthrough(),
+  z.object({ type: z.literal("speaker_started"), playback_id: z.string().uuid(), first_pcm_to_play_ms: z.number().int().nonnegative() }).passthrough(),
   z.object({ type: z.literal("speaker_complete"), playback_id: z.string().uuid(), bytes: z.number().int().nonnegative() }).passthrough(),
   z.object({ type: z.literal("speaker_error"), playback_id: z.string().uuid(), bytes: z.number().int().nonnegative(), error: z.string().max(48) }).passthrough(),
   z.object({ type: z.literal("logs"), request_id: z.string(), firmware: z.string(), uptime_ms: z.number().nonnegative(), warnings: z.number().nonnegative(), errors: z.number().nonnegative(), error: z.string().optional(), entries: z.array(z.object({ seq: z.number(), first_ms: z.number(), last_ms: z.number(), repeat: z.number().int().positive(), level: z.enum(["info", "warn", "error"]), subsystem: z.string(), code: z.string(), detail: z.string().max(96) })).max(40) }),
@@ -293,7 +302,7 @@ async function commandReply(ctx, text, category = "reply", requestId = null, opt
   const { newoSpeak = true, newoSpeakMaxChars, ...telegramOptions } = options;
   const message = await ctx.reply(text, { parse_mode: "HTML", ...telegramOptions });
   // Telegram is primary: synthesis/playback starts only after its reply and is never awaited.
-  if (newoSpeak && (!trace || !trace.speechQueued)) {
+  if (newoSpeak && automaticSpeakerEnabled && (!trace || !trace.speechQueued)) {
     if (trace) trace.speechQueued = true;
     const speech = speakerRuntime.speak(text, { maxChars: newoSpeakMaxChars });
     if (speech.kind === "queued") void speech.completion.catch((error) => app.log.warn({ playback_id: speech.playbackId, error_message: error.message }, "Asynchronous Telegram speech failed"));
@@ -327,14 +336,6 @@ async function handleFaceCommand(ctx, selectedInput = null) {
   const result = await request.promise;
   if (result.kind === "response") return commandReply(ctx, commandMessage("face", [quote([`Face: ${bold(input)}`])]), "response", request.requestId);
   return commandReply(ctx, commandMessage("face", [quote(["Face update was not acknowledged."])]), result.kind, request.requestId);
-}
-
-async function handleEcoCommand(ctx) {
-  const request = sendDeviceRequest("eco_toggle", "display_ack", {}, commandTrace(ctx));
-  if (request.kind === "offline") return commandReply(ctx, statusMessage("eco", "offline"), "offline");
-  const result = await request.promise;
-  if (result.kind === "response") return commandReply(ctx, commandMessage("eco", [quote([result.message.mode === "eco_on" ? "ECO ON" : "ECO OFF"])]), "response", request.requestId);
-  return commandReply(ctx, commandMessage("eco", [quote(["ECO toggle was not acknowledged."])]), result.kind, request.requestId);
 }
 
 async function handleStatusCommand(ctx) {
@@ -487,25 +488,10 @@ function completePendingReboot(deviceId) {
   void Promise.resolve().then(() => bot?.api.deleteMessage(tracker.chatId, tracker.messageId)).catch(() => app.log.warn({ chat_id: tracker.chatId }, "Failed to delete Telegram reboot message")).then(() => bot?.api.sendMessage(tracker.chatId, statusMessage("reboot", "Back online"), { parse_mode: "HTML" })).catch(() => app.log.warn({ chat_id: tracker.chatId }, "Failed to send Telegram reboot completion message"));
   return true;
 }
-async function handleVoiceCommand(ctx, forcedArgument = null) {
-  const argument = (forcedArgument ?? String(ctx.match ?? "")).trim().toLowerCase();
-  const isStatus = argument === "status";
-  const action = argument === "" ? "toggle" : argument;
-  if (!isStatus && action !== "on" && action !== "off" && action !== "toggle") return commandReply(ctx, commandMessage("voice", [quote(["Usage: /voice [on|off|status]"])]), "usage");
-  const request = isStatus ? sendDeviceRequest("voice_status", "voice_ack", {}, commandTrace(ctx)) : sendDeviceRequest("voice_control", "voice_ack", { action }, commandTrace(ctx));
-  if (request.kind === "offline") return commandReply(ctx, statusMessage("voice", "offline"), "offline");
-  const result = await request.promise;
-  if (result.kind === "response") {
-    const voice = result.message;
-    if (!isStatus) return commandReply(ctx, commandMessage("voice", [quote([voice.state === "off" ? bold("Voice OFF") : bold("Voice ON")])]), "response", request.requestId);
-    return commandReply(ctx, commandMessage("voice", [quote([`State: ${bold(voice.state.toUpperCase())}`, `Wake detections: ${bold(voice.wake_count)}`, `Sessions: ${bold(voice.session_count)}`])]), "response", request.requestId);
-  }
-  return commandReply(ctx, result.kind === "timeout" ? timeoutMessage("voice") : statusMessage("voice", "offline"), result.kind, request.requestId);
-}
 async function handleSpeakCommand(ctx) {
   const text = String(ctx.match ?? "").trim();
   if (!text || text.length > 150) return commandReply(ctx, commandMessage("speak", [quote(["Usage: /speak <1-150 characters>"])]), "usage", null, { newoSpeak: false });
-  const speech = speakerRuntime.speak(text, { maxChars: 150 });
+  const speech = speakerRuntime.speak(text, { maxChars: 150, temporary: !automaticSpeakerEnabled });
   if (speech.kind !== "queued") return commandReply(ctx, statusMessage("speak", speech.kind === "offline" ? "offline" : "unavailable"), speech.kind, null, { newoSpeak: false });
   await commandReply(ctx, commandMessage("speak", [quote(["Playback queued."])]), "queued", null, { newoSpeak: false });
   void speech.completion.then(
@@ -527,6 +513,25 @@ async function handleRebootCommand(ctx) {
   if (result.kind === "timeout") return commandReply(ctx, statusMessage("reboot", "Restart was not acknowledged"), "timeout", request.requestId);
   return commandReply(ctx, getConnectedDeviceState() ? statusMessage("reboot", "Restart was not acknowledged") : statusMessage("reboot", "offline"), "unavailable", request.requestId);
 }
+
+const primaryModeHandlers = createPrimaryModeHandlers({
+  sendDeviceRequest,
+  commandReply,
+  commandTrace,
+  getDeviceSnapshot,
+  getSpeakerEnabled: () => automaticSpeakerEnabled,
+  setSpeakerAccepting: (enabled) => {
+    automaticSpeakerEnabled = enabled;
+    speakerRuntime.setPersistentEnabled(enabled);
+  },
+  persistSpeakerEnabled: (enabled) => runtimeState.setSpeakerEnabled(enabled),
+  speakerInfo: {
+    ttsEnabled: env.TTS_ENABLED,
+    backend: env.TTS_BACKEND,
+    format: `${speakerRuntime.format.sampleRate / 1_000} kHz PCM${speakerRuntime.format.bitsPerSample}`,
+    bufferBytes: 16_384,
+  },
+});
 
 if (env.TELEGRAM_BOT_TOKEN) {
   bot = new Bot(env.TELEGRAM_BOT_TOKEN);
@@ -562,14 +567,17 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command("e", (ctx) => handleLogsCommand(ctx, true));
   bot.command(["ping", "p"], handlePingCommand);
   bot.command(["reboot", "r"], handleRebootCommand);
-  bot.command("newo", handleNewoCommand);
+  bot.command(["newo", "n"], handleNewoCommand);
   bot.command(["face", "f"], handleFaceCommand);
   for (const style of FACE_STYLES) bot.command(`face_${style}`, (ctx) => handleFaceCommand(ctx, style));
-  bot.command("eco", handleEcoCommand);
-  bot.command(["voice", "v"], handleVoiceCommand);
-  bot.command("vs", (ctx) => handleVoiceCommand(ctx, "status"));
+  bot.command("eco", primaryModeHandlers.eco);
+  bot.command(["voice", "v"], primaryModeHandlers.voice);
+  bot.command("vs", primaryModeHandlers.voiceStatus);
+  bot.command("speaker", primaryModeHandlers.speaker);
+  bot.command("volume", primaryModeHandlers.volume);
+  bot.command("mute", primaryModeHandlers.mute);
   // Hidden physical bring-up command; deliberately omitted from setMyCommands.
-  bot.command("speak", handleSpeakCommand);
+  bot.command(["speak", "sp"], handleSpeakCommand);
   void bot.api.setMyCommands(TELEGRAM_COMMANDS).catch(() => app.log.warn("Failed to register the Telegram command menu"));
   app.post("/telegram/webhook", webhookCallback(bot, "fastify", { secretToken: env.TELEGRAM_WEBHOOK_SECRET, onTimeout: "return", timeoutMilliseconds: 9_000 }));
 }
@@ -583,18 +591,17 @@ app.server.on("upgrade", (request, socket, head) => {
   const authorization = request.headers.authorization;
   const presentedSecret = typeof authorization === "string" && authorization.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : undefined;
   if (!safeEqual(deviceId, env.NEWO_DEVICE_ID) || !safeEqual(presentedSecret, env.NEWO_DEVICE_SECRET)) { app.log.warn({ device_id: deviceId ?? null, path: pathname }, "Rejected unauthenticated Newo WebSocket"); rejectUpgrade(socket, 401, "Unauthorized"); return; }
-  const playbackId = request.headers["x-newo-playback-id"];
-  if (pathname === "/speaker" && (typeof playbackId !== "string" || !/^[0-9a-f-]{36}$/i.test(playbackId))) { rejectUpgrade(socket, 400, "Bad Request"); return; }
   const server = pathname === "/voice" ? voiceWss : pathname === "/speaker" ? speakerWss : wss;
-  server.handleUpgrade(request, socket, head, (ws) => server.emit("connection", ws, request, deviceId, playbackId));
+  server.handleUpgrade(request, socket, head, (ws) => server.emit("connection", ws, request, deviceId));
 });
 
 voiceWss.on("connection", (ws, request, deviceId) => {
   void voiceRuntime.handleConnection(ws, deviceId).catch((error) => { app.log.error({ device_id: deviceId, error_message: error?.message ?? "unknown" }, "Voice connection setup failed"); ws.close(1011, "voice setup failed"); });
 });
 
-speakerWss.on("connection", (ws, request, deviceId, playbackId) => {
-  void speakerRuntime.handleConnection(ws, deviceId, playbackId).catch((error) => { app.log.warn({ device_id: deviceId, playback_id: playbackId, error_message: error?.message ?? "unknown" }, "Speaker connection setup failed"); ws.close(1011, "speaker setup failed"); });
+speakerWss.on("connection", (ws, request, deviceId) => {
+  try { speakerRuntime.handleConnection(ws, deviceId); }
+  catch (error) { app.log.warn({ device_id: deviceId, error_message: error?.message ?? "unknown" }, "Speaker connection setup failed"); ws.close(1011, "speaker setup failed"); }
 });
 
 wss.on("connection", (ws, request, deviceId) => {
@@ -623,6 +630,7 @@ wss.on("connection", (ws, request, deviceId) => {
     if (message.type === "hello") state.hello = { device: message.device, firmware: message.firmware ?? null, chip: message.chip ?? null, received_at: state.lastSeen };
     if (message.type === "status" || message.type === "pong") state.status = { ...(state.status ?? {}), ...message, received_at: state.lastSeen };
     resolvePendingResponse(deviceId, ws, message);
+    if (message.type === "speaker_started") speakerRuntime.handlePlaybackStarted(deviceId, message);
     if (message.type === "speaker_complete" || message.type === "speaker_error") speakerRuntime.handleResult(deviceId, message);
     app.log.info({ device_id: deviceId, type: message.type }, "Device message received");
   });
@@ -635,6 +643,8 @@ wss.on("connection", (ws, request, deviceId) => {
   ws.on("error", () => app.log.warn({ device_id: deviceId }, "Newo WebSocket error"));
   ws.send(JSON.stringify({ type: "hello_ack", device: deviceId, server_time: new Date().toISOString() }));
   void speakerRuntime.handleDeviceConnected(deviceId, state);
+  const speakerSync = sendDeviceRequest("speaker_control", "speaker_ack", { action: "set_enabled", enabled: automaticSpeakerEnabled });
+  if (speakerSync.kind === "sent") void speakerSync.promise.then((result) => app.log.info({ device_id: deviceId, enabled: automaticSpeakerEnabled, result: result.kind }, "Speaker mode synchronized"));
 });
 
 const heartbeatTimer = setInterval(() => {
@@ -687,6 +697,7 @@ app.log.info({
   speaker_format: `${speakerRuntime.format.channels}ch ${speakerRuntime.format.sampleRate}Hz ${speakerRuntime.format.bitsPerSample}-bit PCM LE`,
   tts_enabled: env.TTS_ENABLED,
   tts_backend: env.TTS_BACKEND,
+  tts_gain_db: env.TTS_GAIN_DB,
   voice_format: `${env.VOICE_CHANNELS}ch ${env.VOICE_SAMPLE_RATE}Hz ${env.VOICE_BITS_PER_SAMPLE}-bit PCM LE`,
   voice_wav_capture_enabled: env.VOICE_SAVE_WAV,
   voice_asr_backend: env.VOICE_ASR_BACKEND,

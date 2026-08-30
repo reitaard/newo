@@ -9,6 +9,9 @@
 namespace {
 constexpr char kNamespace[] = "newo-wifi";
 constexpr char kNetworksKey[] = "networks";
+constexpr char kSpeakerVolumeKey[] = "speaker-vol";
+constexpr char kSpeakerMutedKey[] = "speaker-mute";
+constexpr char kSpeakerEnabledKey[] = "speaker-on";
 }
 
 bool NewoStorage::begin() {
@@ -22,6 +25,10 @@ bool NewoStorage::begin() {
   }
 
   started_ = true;
+  speakerVolume_ = preferences_.getUChar(kSpeakerVolumeKey, 100);
+  if (speakerVolume_ > 100) speakerVolume_ = 100;
+  speakerMuted_ = preferences_.getBool(kSpeakerMutedKey, false);
+  speakerEnabled_ = preferences_.getBool(kSpeakerEnabledKey, true);
   return loadNetworks();
 }
 
@@ -103,6 +110,28 @@ bool NewoStorage::saveNetworks(const std::vector<NewoWifiCredential>& networks) 
     return false;
   }
 
+  return true;
+}
+
+bool NewoStorage::setSpeakerVolume(uint8_t volume) {
+  if (!started_ || volume > 100) return false;
+  if (volume == speakerVolume_) return true;
+  if (preferences_.putUChar(kSpeakerVolumeKey, volume) != sizeof(volume)) return false;
+  speakerVolume_ = volume;
+  return true;
+}
+
+bool NewoStorage::setSpeakerMuted(bool muted) {
+  if (!started_ || muted == speakerMuted_) return started_;
+  if (preferences_.putBool(kSpeakerMutedKey, muted) != sizeof(muted)) return false;
+  speakerMuted_ = muted;
+  return true;
+}
+
+bool NewoStorage::setSpeakerEnabled(bool enabled) {
+  if (!started_ || enabled == speakerEnabled_) return started_;
+  if (preferences_.putBool(kSpeakerEnabledKey, enabled) != sizeof(enabled)) return false;
+  speakerEnabled_ = enabled;
   return true;
 }
 
