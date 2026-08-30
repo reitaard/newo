@@ -7,7 +7,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 
 import { createRuntimeStateStore } from "./runtime-state.js";
-import { createSpeakerRuntime, EspeakTtsBackend, KokoroTtsBackend, ESPEAK_GAIN_DB, SPEAKER_GAIN_DB } from "./tts.js";
+import { createSpeakerRuntime, EspeakTtsBackend, KokoroTtsBackend, startTelegramAndSpeech, ESPEAK_GAIN_DB, SPEAKER_GAIN_DB } from "./tts.js";
 import { createPrimaryModeHandlers } from "./telegram-mode-commands.js";
 import { createVoiceRuntime, NullAsrBackend, WorkerAsrBackend } from "./voice.js";
 
@@ -52,6 +52,7 @@ const EnvSchema = z.object({
   TTS_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
   TTS_BACKEND: z.preprocess(emptyToUndefined, z.enum(["kokoro", "espeak"]).default("kokoro")),
   TTS_VOICE: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  TTS_SPEED: z.preprocess(emptyToUndefined, z.coerce.number().min(0.25).max(4).default(1)),
   TTS_SAMPLE_RATE: z.preprocess(emptyToUndefined, z.coerce.number().int().refine((value) => value === 24_000, "speaker output must be 24000 Hz").default(24_000)),
   TTS_RATE: z.preprocess(emptyToUndefined, z.coerce.number().int().min(80).max(450).default(155)),
   TTS_GAIN_DB: z.preprocess(emptyToUndefined, z.coerce.number().min(-12).max(18).optional()),
@@ -59,6 +60,8 @@ const EnvSchema = z.object({
   TTS_MAX_PCM_BYTES: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().max(2_880_000).default(2_880_000)),
   KOKORO_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://127.0.0.1:8010")),
   KOKORO_REQUEST_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(120_000).default(30_000)),
+  KOKORO_STREAM_NO_PROGRESS_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(30_000).default(10_000)),
+  KOKORO_STREAM_ABSOLUTE_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(10_000).max(75_000).default(70_000)),
   RUNTIME_STATE_FILE: z.preprocess(emptyToUndefined, z.string().default("data/runtime-state.json")),
 });
 
@@ -114,11 +117,14 @@ let shuttingDown = false;
 const runtimeState = createRuntimeStateStore({ filePath: env.RUNTIME_STATE_FILE, logger: app.log });
 let automaticSpeakerEnabled = runtimeState.speakerEnabled;
 
-const ttsVoice = env.TTS_VOICE ?? (env.TTS_BACKEND === "kokoro" ? "bf_emma" : "en");
+const ttsVoice = env.TTS_VOICE ?? (env.TTS_BACKEND === "kokoro" ? "am_michael" : "en");
 const ttsGainDb = env.TTS_GAIN_DB ?? (env.TTS_BACKEND === "kokoro" ? SPEAKER_GAIN_DB : ESPEAK_GAIN_DB);
 const ttsBackend = env.TTS_BACKEND === "kokoro"
   ? new KokoroTtsBackend({
-    baseUrl: env.KOKORO_BASE_URL, voice: ttsVoice, requestTimeoutMs: env.KOKORO_REQUEST_TIMEOUT_MS,
+    baseUrl: env.KOKORO_BASE_URL, voice: ttsVoice, speed: env.TTS_SPEED,
+    requestTimeoutMs: env.KOKORO_REQUEST_TIMEOUT_MS,
+    streamNoProgressMs: env.KOKORO_STREAM_NO_PROGRESS_MS,
+    streamAbsoluteMs: env.KOKORO_STREAM_ABSOLUTE_MS,
     gainDb: ttsGainDb, maxPcmBytes: env.TTS_MAX_PCM_BYTES, logger: app.log,
   })
   : new EspeakTtsBackend({ voice: ttsVoice, rate: env.TTS_RATE, gainDb: ttsGainDb, maxPcmBytes: env.TTS_MAX_PCM_BYTES });
@@ -313,14 +319,18 @@ async function commandReply(ctx, text, category = "reply", requestId = null, opt
   const trace = commandTrace(ctx);
   if (trace) { trace.replyCategory = category; trace.requestId = requestId; }
   const { newoSpeak = true, newoSpeakMaxChars, ...telegramOptions } = options;
-  const message = await ctx.reply(text, { parse_mode: "HTML", ...telegramOptions });
-  // Telegram is primary: synthesis/playback starts only after its reply and is never awaited.
-  if (newoSpeak && automaticSpeakerEnabled && (!trace || !trace.speechQueued)) {
-    if (trace) trace.speechQueued = true;
-    const speech = speakerRuntime.speak(text, { maxChars: newoSpeakMaxChars });
-    if (speech.kind === "queued") void speech.completion.catch((error) => app.log.warn({ playback_id: speech.playbackId, error_message: error.message }, "Asynchronous Telegram speech failed"));
-  }
-  return message;
+  const replyReadyAt = performance.now();
+  // Start Telegram first, then immediately start independent TTS without waiting
+  // for Telegram's network request. Neither failure path is allowed to poison the other.
+  return startTelegramAndSpeech(
+    () => ctx.reply(text, { parse_mode: "HTML", ...telegramOptions }),
+    () => {
+      if (!newoSpeak || !automaticSpeakerEnabled || (trace && trace.speechQueued)) return;
+      if (trace) trace.speechQueued = true;
+      const speech = speakerRuntime.speak(text, { maxChars: newoSpeakMaxChars, replyReadyAt });
+      if (speech.kind === "queued") void speech.completion.catch((error) => app.log.warn({ playback_id: speech.playbackId, error_message: error.message }, "Asynchronous Telegram speech failed"));
+    },
+  );
 }
 
 function showDisplay(text) {
@@ -711,6 +721,7 @@ app.log.info({
   tts_enabled: env.TTS_ENABLED,
   tts_backend: env.TTS_BACKEND,
   tts_voice: ttsVoice,
+  tts_speed: env.TTS_SPEED,
   tts_gain_db: ttsGainDb,
   voice_format: `${env.VOICE_CHANNELS}ch ${env.VOICE_SAMPLE_RATE}Hz ${env.VOICE_BITS_PER_SAMPLE}-bit PCM LE`,
   voice_wav_capture_enabled: env.VOICE_SAVE_WAV,

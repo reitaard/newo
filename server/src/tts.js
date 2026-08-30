@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
@@ -58,13 +59,13 @@ export const SPEAKER_GAIN_DB = 2;
 export const ESPEAK_GAIN_DB = 6;
 export const SPEAKER_LIMITER = 0.95;
 export const SPEAKER_LIMITER_ATTACK_MS = 5;
-// Preserve the stable receiver-credit windows by time at 24 kHz mono PCM16.
-// 18 KiB = 384 ms; the 21 KiB hard ceiling = 448 ms and leaves 3 KiB / 64 ms
-// of physical headroom in the ESP's fixed 24 KiB StreamBuffer.
 export const SPEAKER_INITIAL_LEAD_BYTES = 18_432;
 export const SPEAKER_TARGET_OUTSTANDING_BYTES = 18_432;
 export const SPEAKER_MAX_OUTSTANDING_BYTES = 21_504;
 export const SPEAKER_FLOW_TIMEOUT_MS = 3_000;
+export const SPEAKER_STREAM_MAX_BYTES = 2_880_000;
+export const SPEAKER_STREAM_NO_PROGRESS_MS = 10_000;
+export const SPEAKER_STREAM_ABSOLUTE_MS = 70_000;
 
 export function speakerAudioFilter(gainDb = SPEAKER_GAIN_DB, limiter = SPEAKER_LIMITER) {
   if (!Number.isFinite(gainDb) || gainDb < -12 || gainDb > 18) throw new Error("invalid speaker gain");
@@ -74,50 +75,64 @@ export function speakerAudioFilter(gainDb = SPEAKER_GAIN_DB, limiter = SPEAKER_L
 
 export const SPEAKER_AUDIO_FILTER = speakerAudioFilter();
 
-export function analyzePcm16(pcm, limiter = SPEAKER_LIMITER) {
-  if (!Buffer.isBuffer(pcm) || pcm.length === 0 || (pcm.length & 1)) throw new Error("invalid PCM16 audio");
+function pcmStatistics() {
   let peak = 0;
   let sumSquares = 0;
-  const samples = pcm.length / 2;
-  for (let offset = 0; offset < pcm.length; offset += 2) {
-    const sample = pcm.readInt16LE(offset);
-    const magnitude = Math.abs(sample);
-    if (magnitude > peak) peak = magnitude;
-    sumSquares += sample * sample;
-  }
-  const rms = Math.sqrt(sumSquares / samples);
-  const dbfs = (value) => value > 0 ? 20 * Math.log10(value / 32_768) : Number.NEGATIVE_INFINITY;
-  const peakRatio = peak / 32_768;
+  let samples = 0;
   return {
-    peak,
-    peakDbfs: dbfs(peak),
-    rmsDbfs: dbfs(rms),
-    limiterReached: peakRatio >= limiter - (2 / 32_768),
-    clipped: peak >= 32_767,
-    bytes: pcm.length,
+    add(pcm) {
+      if (!Buffer.isBuffer(pcm) || (pcm.length & 1)) throw new Error("invalid PCM16 audio");
+      for (let offset = 0; offset < pcm.length; offset += 2) {
+        const sample = pcm.readInt16LE(offset);
+        peak = Math.max(peak, Math.abs(sample));
+        sumSquares += sample * sample;
+        samples += 1;
+      }
+    },
+    result(limiter = SPEAKER_LIMITER) {
+      if (samples === 0) throw new Error("invalid PCM16 audio");
+      const dbfs = (value) => value > 0 ? 20 * Math.log10(value / 32_768) : Number.NEGATIVE_INFINITY;
+      return {
+        peak, peakDbfs: dbfs(peak), rmsDbfs: dbfs(Math.sqrt(sumSquares / samples)),
+        limiterReached: peak / 32_768 >= limiter - (2 / 32_768), clipped: peak >= 32_767,
+        bytes: samples * 2,
+      };
+    },
   };
 }
 
+export function analyzePcm16(pcm, limiter = SPEAKER_LIMITER) {
+  if (!Buffer.isBuffer(pcm) || pcm.length === 0 || (pcm.length & 1)) throw new Error("invalid PCM16 audio");
+  const statistics = pcmStatistics();
+  statistics.add(pcm);
+  return statistics.result(limiter);
+}
+
 export async function conditionPcm16(pcm, format, {
-  gainDb = SPEAKER_GAIN_DB,
-  limiter = SPEAKER_LIMITER,
-  maxPcmBytes = 2_880_000,
+  gainDb = SPEAKER_GAIN_DB, limiter = SPEAKER_LIMITER, maxPcmBytes = SPEAKER_STREAM_MAX_BYTES,
 } = {}) {
   if (!Buffer.isBuffer(pcm) || pcm.length === 0 || (pcm.length & 1)) throw new Error("invalid PCM16 audio");
-  if (format?.channels !== 1 || format?.bitsPerSample !== 16 || !Number.isInteger(format?.sampleRate) || format.sampleRate <= 0) {
-    throw new Error("invalid speaker PCM format");
-  }
-  const filter = speakerAudioFilter(gainDb, limiter);
-  const ffmpeg = spawn("ffmpeg", [
-    "-hide_banner", "-loglevel", "error", "-f", "s16le", "-ac", "1", "-ar", String(format.sampleRate),
-    "-i", "pipe:0", "-af", filter, "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1",
-    "-ar", String(format.sampleRate), "pipe:1",
-  ], { stdio: ["pipe", "pipe", "pipe"] });
-  ffmpeg.stdin.on("error", () => {});
+  validateFormat(format);
+  const ffmpeg = createConditioner(format, gainDb, limiter);
   ffmpeg.stdin.end(pcm);
   const conditioned = await collectProcessOutput(ffmpeg, maxPcmBytes, "ffmpeg");
   if (conditioned.length === 0 || (conditioned.length & 1)) throw new Error("ffmpeg returned invalid PCM16 audio");
   return conditioned;
+}
+
+function validateFormat(format) {
+  if (format?.sampleRate !== 24_000 || format?.channels !== 1 || format?.bitsPerSample !== 16) {
+    throw new Error("Kokoro requires mono 24000 Hz PCM16 output");
+  }
+}
+
+function createConditioner(format, gainDb, limiter) {
+  return spawn("ffmpeg", [
+    "-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay",
+    "-probesize", "32", "-analyzeduration", "0", "-f", "s16le", "-ac", "1", "-ar", String(format.sampleRate),
+    "-i", "pipe:0", "-af", speakerAudioFilter(gainDb, limiter), "-flush_packets", "1",
+    "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", String(format.sampleRate), "pipe:1",
+  ], { stdio: ["pipe", "pipe", "pipe"] });
 }
 
 async function collectResponseBody(response, maxBytes, label) {
@@ -135,70 +150,253 @@ async function collectResponseBody(response, maxBytes, label) {
   return Buffer.concat(chunks);
 }
 
-/** OpenAI-compatible local Kokoro backend. Always requests raw mono 24 kHz s16le PCM. */
+function timeoutError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
+}
+
+async function readWithTimeout(reader, timeoutMs, controller) {
+  let timer;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = timeoutError("kokoro_stream_timeout");
+          controller.abort(error);
+          reject(error);
+        }, timeoutMs);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function splitRealtimeText(text, { minimumFirstChars = 35, maximumSegmentChars = 90 } = {}) {
+  const input = String(text).trim();
+  if (!input) return [];
+  const sentences = input.match(/[^.!?]+[.!?]+(?:[\"'](?=\s|$))?|[^.!?]+$/g)?.map((part) => part.trim()).filter(Boolean) ?? [input];
+  const segments = [];
+  let current = "";
+  for (const sentence of sentences) {
+    const candidate = current ? `${current} ${sentence}` : sentence;
+    if (current.length >= minimumFirstChars && candidate.length > maximumSegmentChars) {
+      segments.push(current);
+      current = sentence;
+    } else current = candidate;
+  }
+  if (current) {
+    if (segments.length && current.length < minimumFirstChars) segments[segments.length - 1] += ` ${current}`;
+    else segments.push(current);
+  }
+  return segments;
+}
+
+/** Local OpenTTSGroup Kokoro realtime backend. Upstream PCM is raw mono 24 kHz s16le. */
 export class KokoroTtsBackend {
   constructor({
-    baseUrl = "http://127.0.0.1:8010",
-    voice = "bf_emma",
-    requestTimeoutMs = 30_000,
-    maxPcmBytes = 2_880_000,
-    gainDb = SPEAKER_GAIN_DB,
-    limiter = SPEAKER_LIMITER,
-    logger = null,
-    conditioner = conditionPcm16,
+    baseUrl = "http://127.0.0.1:8010", voice = "am_michael", speed = 1,
+    requestTimeoutMs = 30_000, streamNoProgressMs = SPEAKER_STREAM_NO_PROGRESS_MS,
+    streamAbsoluteMs = SPEAKER_STREAM_ABSOLUTE_MS, maxPcmBytes = SPEAKER_STREAM_MAX_BYTES,
+    gainDb = SPEAKER_GAIN_DB, limiter = SPEAKER_LIMITER, logger = null,
   } = {}) {
+    if (!Number.isFinite(speed) || speed < 0.25 || speed > 4) throw new Error("invalid Kokoro speed");
     this.baseUrl = String(baseUrl).replace(/\/+$/, "");
     this.voice = voice;
+    this.speed = speed;
     this.requestTimeoutMs = requestTimeoutMs;
+    this.streamNoProgressMs = streamNoProgressMs;
+    this.streamAbsoluteMs = streamAbsoluteMs;
     this.maxPcmBytes = maxPcmBytes;
     this.gainDb = gainDb;
     this.limiter = limiter;
     this.logger = logger;
-    this.conditioner = conditioner;
   }
 
-  async synthesize(text, format) {
-    if (format?.sampleRate !== 24_000 || format?.channels !== 1 || format?.bitsPerSample !== 16) {
-      throw new Error("Kokoro requires mono 24000 Hz PCM16 output");
-    }
-    const startedAt = performance.now();
+  async streamSegment(text, format) {
+    validateFormat(format);
+    const controller = new AbortController();
+    const metrics = {
+      requestStartedAt: performance.now(), responseHeadersAt: null, firstAudioByteAt: null,
+      conditionerFirstOutputAt: null, completedAt: null, rawPcmBytes: 0, conditionedPcmBytes: 0,
+    };
+    const absoluteTimer = setTimeout(() => controller.abort(timeoutError("kokoro_stream_timeout")), this.streamAbsoluteMs);
+    const requestTimer = setTimeout(() => controller.abort(timeoutError("kokoro_request_timeout")), this.requestTimeoutMs);
+    absoluteTimer.unref();
+    requestTimer.unref();
     let response;
     try {
-      response = await fetch(`${this.baseUrl}/v1/audio/speech`, {
+      response = await fetch(`${this.baseUrl}/v1/audio/realtime`, {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/octet-stream" },
-        body: JSON.stringify({ model: "kokoro", input: text, voice: this.voice, response_format: "pcm", speed: 1.0 }),
-        signal: AbortSignal.timeout(this.requestTimeoutMs),
+        body: JSON.stringify({ model: "kokoro", input: text, voice: this.voice, response_format: "pcm", speed: this.speed }),
+        signal: controller.signal,
       });
     } catch (error) {
-      if (error?.name === "TimeoutError") throw new Error(`Kokoro request timed out after ${this.requestTimeoutMs} ms`);
+      clearTimeout(requestTimer);
+      clearTimeout(absoluteTimer);
+      if (controller.signal.aborted || error?.name === "TimeoutError" || error?.name === "AbortError") {
+        throw timeoutError(controller.signal.reason?.code ?? "kokoro_request_timeout");
+      }
       throw new Error(`Kokoro unavailable: ${error?.message ?? "request failed"}`);
     }
+    clearTimeout(requestTimer);
+    metrics.responseHeadersAt = performance.now();
     if (!response.ok) {
+      clearTimeout(absoluteTimer);
       const detail = (await collectResponseBody(response, 2_000, "Kokoro error")).toString("utf8").trim();
       throw new Error(`Kokoro request failed (${response.status})${detail ? `: ${detail}` : ""}`);
     }
     const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
-    if (contentType !== "application/octet-stream") throw new Error(`Kokoro returned non-PCM content type: ${contentType ?? "missing"}`);
-    let rawPcm;
-    try {
-      rawPcm = await collectResponseBody(response, this.maxPcmBytes, "Kokoro");
-    } catch (error) {
-      if (error?.name === "AbortError" || error?.name === "TimeoutError") throw new Error(`Kokoro request timed out after ${this.requestTimeoutMs} ms`);
-      throw error;
+    if (contentType !== "application/octet-stream") {
+      clearTimeout(absoluteTimer);
+      await response.body?.cancel?.().catch(() => {});
+      throw new Error(`Kokoro returned non-PCM content type: ${contentType ?? "missing"}`);
     }
-    if (rawPcm.length === 0 || (rawPcm.length & 1)) throw new Error("Kokoro returned invalid PCM16 audio");
-    const inferenceMs = Math.round(performance.now() - startedAt);
-    this.logger?.info({ voice: this.voice, inference_ms: inferenceMs, raw_pcm_bytes: rawPcm.length }, "Kokoro synthesis completed");
-    return this.conditioner(rawPcm, format, {
-      gainDb: this.gainDb, limiter: this.limiter, maxPcmBytes: this.maxPcmBytes,
-    });
+    if (!response.body) {
+      clearTimeout(absoluteTimer);
+      throw new Error("Kokoro returned no PCM body");
+    }
+
+    const backend = this;
+    async function* conditionedAudio() {
+      const ffmpeg = createConditioner(format, backend.gainDb, backend.limiter);
+      let stderr = "";
+      let inputCarry = Buffer.alloc(0);
+      let outputCarry = Buffer.alloc(0);
+      let pumpError = null;
+      ffmpeg.stdin.on("error", () => {});
+      ffmpeg.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-2_000); });
+      const closePromise = once(ffmpeg, "close").then(([code]) => {
+        if (code !== 0 && !pumpError) throw new Error(`ffmpeg exited ${code}: ${stderr.trim()}`);
+      });
+      const reader = response.body.getReader();
+      const pump = (async () => {
+        try {
+          while (true) {
+            const { done, value } = await readWithTimeout(reader, backend.streamNoProgressMs, controller);
+            if (done) break;
+            let chunk = Buffer.from(value);
+            if (metrics.firstAudioByteAt === null) metrics.firstAudioByteAt = performance.now();
+            metrics.rawPcmBytes += chunk.length;
+            if (metrics.rawPcmBytes > backend.maxPcmBytes) throw new Error("Kokoro output exceeded limit");
+            if (inputCarry.length) { chunk = Buffer.concat([inputCarry, chunk]); inputCarry = Buffer.alloc(0); }
+            if (chunk.length & 1) { inputCarry = chunk.subarray(chunk.length - 1); chunk = chunk.subarray(0, chunk.length - 1); }
+            if (chunk.length && !ffmpeg.stdin.write(chunk)) await once(ffmpeg.stdin, "drain");
+          }
+          if (inputCarry.length) throw new Error("invalid_pcm");
+          ffmpeg.stdin.end();
+        } catch (error) {
+          pumpError = controller.signal.aborted
+            ? timeoutError(controller.signal.reason?.code ?? "kokoro_stream_timeout")
+            : error;
+          ffmpeg.kill("SIGKILL");
+          throw pumpError;
+        }
+      })();
+      pump.catch(() => {});
+      try {
+        for await (const value of ffmpeg.stdout) {
+          let chunk = Buffer.from(value);
+          if (outputCarry.length) { chunk = Buffer.concat([outputCarry, chunk]); outputCarry = Buffer.alloc(0); }
+          if (chunk.length & 1) { outputCarry = chunk.subarray(chunk.length - 1); chunk = chunk.subarray(0, chunk.length - 1); }
+          if (!chunk.length) continue;
+          if (metrics.conditionerFirstOutputAt === null) metrics.conditionerFirstOutputAt = performance.now();
+          metrics.conditionedPcmBytes += chunk.length;
+          if (metrics.conditionedPcmBytes > backend.maxPcmBytes) throw new Error("conditioned PCM exceeded limit");
+          yield chunk;
+        }
+        await pump;
+        await closePromise;
+        if (outputCarry.length || metrics.conditionedPcmBytes === 0) throw new Error("invalid_pcm");
+        metrics.completedAt = performance.now();
+        backend.logger?.info({
+          voice: backend.voice, speed: backend.speed, raw_pcm_bytes: metrics.rawPcmBytes,
+          pcm_bytes: metrics.conditionedPcmBytes,
+          first_audio_byte_ms: Math.round(metrics.firstAudioByteAt - metrics.requestStartedAt),
+          conditioner_first_output_ms: Math.round(metrics.conditionerFirstOutputAt - metrics.firstAudioByteAt),
+          full_generation_ms: Math.round(metrics.completedAt - metrics.requestStartedAt),
+        }, "Kokoro realtime synthesis completed");
+      } finally {
+        clearTimeout(absoluteTimer);
+        controller.abort();
+        reader.releaseLock();
+        if (ffmpeg.exitCode === null) ffmpeg.kill("SIGKILL");
+      }
+    }
+    return { audio: conditionedAudio(), metrics, streaming: true };
+  }
+
+  async stream(text, format) {
+    validateFormat(format);
+    const segments = splitRealtimeText(text);
+    const metrics = {
+      requestStartedAt: performance.now(), responseHeadersAt: null, firstAudioByteAt: null,
+      conditionerFirstOutputAt: null, completedAt: null, rawPcmBytes: 0, conditionedPcmBytes: 0,
+      segments: segments.length,
+    };
+    const queued = [];
+    const waiters = [];
+    let producerError = null;
+    let producerDone = false;
+    let cancelled = false;
+    const wake = () => { while (waiters.length) waiters.shift()(); };
+    const producer = (async () => {
+      try {
+        for (const segment of segments) {
+          if (cancelled) break;
+          const source = await this.streamSegment(segment, format);
+          for await (const chunk of source.audio) {
+            if (cancelled) break;
+            if (metrics.responseHeadersAt === null) metrics.responseHeadersAt = source.metrics.responseHeadersAt;
+            if (metrics.firstAudioByteAt === null) metrics.firstAudioByteAt = source.metrics.firstAudioByteAt;
+            if (metrics.conditionerFirstOutputAt === null) metrics.conditionerFirstOutputAt = source.metrics.conditionerFirstOutputAt;
+            metrics.rawPcmBytes += chunk.length;
+            metrics.conditionedPcmBytes += chunk.length;
+            if (metrics.conditionedPcmBytes > this.maxPcmBytes) throw new Error("Kokoro output exceeded limit");
+            queued.push(chunk);
+            wake();
+          }
+        }
+        metrics.completedAt = performance.now();
+      } catch (error) {
+        producerError = error;
+      } finally {
+        producerDone = true;
+        wake();
+      }
+    })();
+    producer.catch(() => {});
+    async function* audio() {
+      try {
+        while (!producerDone || queued.length) {
+          if (!queued.length) await new Promise((resolve) => waiters.push(resolve));
+          while (queued.length) yield queued.shift();
+          if (producerError) throw producerError;
+        }
+        if (producerError) throw producerError;
+      } finally {
+        cancelled = true;
+        wake();
+      }
+    }
+    return { audio: audio(), metrics, streaming: true };
+  }
+
+  async synthesize(text, format) {
+    const source = await this.stream(text, format);
+    const chunks = [];
+    for await (const chunk of source.audio) chunks.push(chunk);
+    return Buffer.concat(chunks);
   }
 }
 
-/** Replaceable backend boundary. Implementations return raw PCM in the requested format. */
+/** Explicit local fallback. It retains known-length framing. */
 export class EspeakTtsBackend {
-  constructor({ voice = "en", rate = 155, maxPcmBytes = 2_880_000, gainDb = ESPEAK_GAIN_DB, limiter = SPEAKER_LIMITER } = {}) {
+  constructor({ voice = "en", rate = 155, maxPcmBytes = SPEAKER_STREAM_MAX_BYTES, gainDb = ESPEAK_GAIN_DB, limiter = SPEAKER_LIMITER } = {}) {
     this.voice = voice;
     this.rate = rate;
     this.maxPcmBytes = maxPcmBytes;
@@ -209,7 +407,6 @@ export class EspeakTtsBackend {
 
   async synthesize(text, format) {
     const espeak = spawn("espeak-ng", ["--stdout", "-v", this.voice, "-s", String(this.rate), text], { stdio: ["ignore", "pipe", "pipe"] });
-    // Resample before conditioning so output resampling cannot create peaks after the limiter.
     const filter = `aresample=${format.sampleRate},${this.filter}`;
     const ffmpeg = spawn("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-af", filter, "-f", "s16le", "-acodec", "pcm_s16le", "-ac", String(format.channels), "-ar", String(format.sampleRate), "pipe:1"], { stdio: ["pipe", "pipe", "pipe"] });
     espeak.stdout.pipe(ffmpeg.stdin);
@@ -244,24 +441,21 @@ export function speakerCreditBytes(sentBytes, consumedBytes, {
   return Math.max(0, Math.min(targetOutstandingBytes - outstanding, maxOutstandingBytes - outstanding));
 }
 
+export function startTelegramAndSpeech(sendTelegram, startSpeech) {
+  const telegramReply = sendTelegram();
+  startSpeech();
+  return telegramReply;
+}
+
 export function createSpeakerRuntime({
-  logger,
-  backend,
-  enabled,
-  getDevice,
-  sendControl,
-  isPersistentEnabled = () => true,
-  format = { sampleRate: 24_000, channels: 1, bitsPerSample: 16 },
-  chunkBytes = 1_024,
-  maxTextChars = 300,
-  connectionTimeoutMs = 9_000,
-  resultTimeoutMs = 75_000,
-  flowTimeoutMs = SPEAKER_FLOW_TIMEOUT_MS,
+  logger, backend, enabled, getDevice, sendControl, isPersistentEnabled = () => true,
+  format = { sampleRate: 24_000, channels: 1, bitsPerSample: 16 }, chunkBytes = 2_048,
+  maxTextChars = 300, maxStreamBytes = SPEAKER_STREAM_MAX_BYTES, connectionTimeoutMs = 9_000,
+  resultTimeoutMs = 75_000, flowTimeoutMs = SPEAKER_FLOW_TIMEOUT_MS,
   targetOutstandingBytes = SPEAKER_TARGET_OUTSTANDING_BYTES,
-  maxOutstandingBytes = SPEAKER_MAX_OUTSTANDING_BYTES,
-  maxPendingJobs = 4,
+  maxOutstandingBytes = SPEAKER_MAX_OUTSTANDING_BYTES, maxPendingJobs = 4,
 }) {
-  if (!Number.isInteger(chunkBytes) || chunkBytes <= 0) throw new Error("invalid speaker chunk size");
+  if (!Number.isInteger(chunkBytes) || chunkBytes <= 0 || (chunkBytes & 1)) throw new Error("invalid speaker chunk size");
   if (SPEAKER_INITIAL_LEAD_BYTES > maxOutstandingBytes || targetOutstandingBytes > maxOutstandingBytes) throw new Error("invalid speaker flow configuration");
 
   const jobs = new Map();
@@ -277,15 +471,10 @@ export function createSpeakerRuntime({
     connection = null;
     if (current.ws.readyState === 1) current.ws.close(1000, reason);
   }
-
   function rejectFlowWaiters(job, error) {
-    for (const waiter of job.flowWaiters) {
-      clearTimeout(waiter.timer);
-      waiter.reject(error);
-    }
+    for (const waiter of job.flowWaiters) { clearTimeout(waiter.timer); waiter.reject(error); }
     job.flowWaiters.clear();
   }
-
   function settle(job, result) {
     if (job.settled) return;
     job.settled = true;
@@ -296,72 +485,49 @@ export function createSpeakerRuntime({
     if (job.temporary && !isPersistentEnabled()) closeConnection("temporary playback complete");
     result.kind === "complete" ? job.resolve(result) : job.reject(new Error(result.error ?? result.kind));
   }
-
   function waitForConnection(timeoutMs = connectionTimeoutMs) {
     if (connection?.ws.readyState === 1) return Promise.resolve(connection);
     return new Promise((resolve, reject) => {
       const waiter = { resolve, reject, timer: null };
-      waiter.timer = setTimeout(() => {
-        connectionWaiters.delete(waiter);
-        reject(new Error("speaker connection timeout"));
-      }, timeoutMs);
+      waiter.timer = setTimeout(() => { connectionWaiters.delete(waiter); reject(new Error("speaker connection timeout")); }, timeoutMs);
       waiter.timer.unref();
       connectionWaiters.add(waiter);
     });
   }
-
   function resolveConnectionWaiters(current) {
-    for (const waiter of connectionWaiters) {
-      clearTimeout(waiter.timer);
-      waiter.resolve(current);
-    }
+    for (const waiter of connectionWaiters) { clearTimeout(waiter.timer); waiter.resolve(current); }
     connectionWaiters.clear();
   }
-
   async function requestTemporaryConnection(job) {
     if (connection?.ws.readyState === 1) return connection;
     const device = getDevice();
     if (!device) throw new Error("speaker unavailable");
-    const sent = await sendControl({ type: "speaker_control", action: "temporary_connect" }, device);
-    if (!sent) throw new Error("temporary speaker connection request failed");
+    if (!await sendControl({ type: "speaker_control", action: "temporary_connect" }, device)) throw new Error("temporary speaker connection request failed");
     logger.info({ playback_id: job.id }, "Temporary speaker connection requested");
     return waitForConnection();
   }
-
   function sendFrame(ws, data, options) {
     return new Promise((resolve, reject) => {
       try { ws.send(data, options, (error) => error ? reject(error) : resolve()); }
       catch (error) { reject(error); }
     });
   }
-
   function waitForFlow(job) {
     if (job.settled) return Promise.reject(new Error("speaker playback already settled"));
     const version = job.flowVersion;
     return new Promise((resolve, reject) => {
       const waiter = { resolve, reject, timer: null, version };
-      waiter.timer = setTimeout(() => {
-        job.flowWaiters.delete(waiter);
-        reject(new Error("speaker flow timeout"));
-      }, flowTimeoutMs);
+      waiter.timer = setTimeout(() => { job.flowWaiters.delete(waiter); reject(timeoutError("flow_timeout")); }, flowTimeoutMs);
+      waiter.timer.unref();
       job.flowWaiters.add(waiter);
-      if (job.flowVersion !== version) {
-        clearTimeout(waiter.timer);
-        job.flowWaiters.delete(waiter);
-        resolve();
-      }
+      if (job.flowVersion !== version) { clearTimeout(waiter.timer); job.flowWaiters.delete(waiter); resolve(); }
     });
   }
-
   function signalFlow(job) {
     job.flowVersion += 1;
-    for (const waiter of job.flowWaiters) {
-      clearTimeout(waiter.timer);
-      waiter.resolve();
-    }
+    for (const waiter of job.flowWaiters) { clearTimeout(waiter.timer); waiter.resolve(); }
     job.flowWaiters.clear();
   }
-
   function handleFlow(current, message) {
     const job = jobs.get(message.playback_id);
     if (!job || connection !== current || job.settled) return false;
@@ -381,115 +547,122 @@ export function createSpeakerRuntime({
     signalFlow(job);
     return true;
   }
-
   function handleSocketMessage(current, data, isBinary) {
     if (isBinary) return false;
     let message;
     try { message = JSON.parse(Buffer.isBuffer(data) ? data.toString("utf8") : String(data)); }
     catch { return false; }
-    if (message?.type !== "speaker_flow") return false;
-    return handleFlow(current, message);
+    return message?.type === "speaker_flow" ? handleFlow(current, message) : false;
   }
-
   function recordOutstanding(job) {
     const outstanding = speakerOutstandingBytes(job.bytesSent, job.consumedBytes);
     job.maxOutstandingBytes = Math.max(job.maxOutstandingBytes, outstanding);
     if (outstanding > maxOutstandingBytes) throw new Error("speaker flow window exceeded");
-    return outstanding;
   }
-
   async function sendPcmChunk(job, current, chunk) {
+    if (!chunk.length || (chunk.length & 1)) throw new Error("invalid_pcm");
     if (job.settled || connection !== current || current.ws.readyState !== 1) throw new Error("speaker disconnected");
-    const nextBytesSent = job.bytesSent + chunk.length;
-    const nextOutstanding = nextBytesSent - job.consumedBytes;
-    if (nextOutstanding > maxOutstandingBytes) throw new Error("speaker flow window exceeded");
-    job.bytesSent = nextBytesSent;
+    if (job.bytesSent + chunk.length > maxStreamBytes) throw new Error("speaker stream exceeded limit");
+    if (job.bytesSent + chunk.length - job.consumedBytes > maxOutstandingBytes) throw new Error("speaker flow window exceeded");
+    // Account before awaiting the socket callback so an exceptionally fast ESP
+    // flow report cannot appear to acknowledge bytes the sender has not recorded.
+    job.bytesSent += chunk.length;
+    job.statistics.add(chunk);
     await sendFrame(current.ws, chunk, { binary: true });
     recordOutstanding(job);
     if (job.firstPcmSentAt === null) {
       job.firstPcmSentAt = performance.now();
-      logger.info({ playback_id: job.id, ready_to_first_pcm_ms: Math.round(job.firstPcmSentAt - job.readyAt) }, "Speaker first PCM sent");
+      logger.info({ playback_id: job.id, begin_to_first_pcm_ms: Math.round(job.firstPcmSentAt - job.beginSentAt) }, "Speaker first PCM sent");
     }
   }
-
-  async function stream(job, current) {
-    if (connection !== current || current.ws.readyState !== 1) throw new Error("speaker disconnected");
-    const ws = current.ws;
-    jobs.set(job.id, job);
-    job.resultTimer = setTimeout(() => settle(job, { kind: "timeout", error: "speaker playback timeout" }), resultTimeoutMs);
-    job.resultTimer.unref();
-    const begin = { type: "speaker_begin", playback_id: job.id, sample_rate: format.sampleRate, channels: format.channels, bits_per_sample: format.bitsPerSample, bytes: job.pcm.length };
-    job.beginSentAt = performance.now();
-    await sendFrame(ws, JSON.stringify(begin));
-    logger.info({ device_id: current.deviceId, playback_id: job.id, pcm_bytes: job.pcm.length }, "Speaker begin sent");
-
-    const streamStartedAt = performance.now();
-    const leadBytes = Math.min(SPEAKER_INITIAL_LEAD_BYTES, job.pcm.length);
-    while (job.bytesSent < leadBytes) {
-      const end = Math.min(job.bytesSent + chunkBytes, leadBytes);
-      await sendPcmChunk(job, current, job.pcm.subarray(job.bytesSent, end));
-    }
-
-    while (job.bytesSent < job.pcm.length) {
-      if (job.settled || connection !== current || ws.readyState !== 1) throw new Error("speaker disconnected");
-      const nextLength = Math.min(chunkBytes, job.pcm.length - job.bytesSent);
-      const credit = speakerCreditBytes(job.bytesSent, job.consumedBytes, { targetOutstandingBytes, maxOutstandingBytes });
-      if (credit < nextLength) {
-        await waitForFlow(job);
-        continue;
+  async function sendWithFlow(job, current, chunk) {
+    let offset = 0;
+    while (offset < chunk.length) {
+      if (job.settled || connection !== current || current.ws.readyState !== 1) throw new Error("speaker disconnected");
+      let nextLength = Math.min(chunkBytes, chunk.length - offset);
+      if (job.bytesSent < SPEAKER_INITIAL_LEAD_BYTES) nextLength = Math.min(nextLength, SPEAKER_INITIAL_LEAD_BYTES - job.bytesSent);
+      else {
+        const credit = speakerCreditBytes(job.bytesSent, job.consumedBytes, { targetOutstandingBytes, maxOutstandingBytes });
+        if (credit < nextLength) { await waitForFlow(job); continue; }
       }
-      const start = job.bytesSent;
-      await sendPcmChunk(job, current, job.pcm.subarray(start, start + nextLength));
+      await sendPcmChunk(job, current, chunk.subarray(offset, offset + nextLength));
+      offset += nextLength;
     }
-
-    await sendFrame(ws, JSON.stringify({ type: "speaker_end", playback_id: job.id, bytes: job.pcm.length }));
-    logger.info({
-      device_id: current.deviceId,
-      playback_id: job.id,
-      bytes: job.pcm.length,
-      stream_ms: Math.round(performance.now() - streamStartedAt),
-      pacing: "receiver_credit",
-      lead_bytes: leadBytes,
-      target_outstanding_bytes: targetOutstandingBytes,
-      max_outstanding_limit_bytes: maxOutstandingBytes,
-      max_outstanding_bytes: job.maxOutstandingBytes,
-      flow_reports: job.flowReports,
-      min_reported_buffer: Number.isFinite(job.minReportedBufferedBytes) ? job.minReportedBufferedBytes : null,
-      max_reported_buffer: job.maxReportedBufferedBytes,
-      chunk_bytes: chunkBytes,
-    }, "Speaker PCM stream sent");
+  }
+  function beginJob(job) {
+    jobs.set(job.id, job);
+    job.resultTimer = setTimeout(() => settle(job, { kind: "timeout", error: "speaker_stream_timeout" }), resultTimeoutMs);
+    job.resultTimer.unref();
+  }
+  async function streamRealtime(job, current, source) {
+    const iterator = source.audio[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    if (first.done || !Buffer.isBuffer(first.value) || !first.value.length) throw new Error("invalid_pcm");
+    job.backendMetrics = source.metrics;
+    beginJob(job);
+    const begin = { type: "speaker_begin", playback_id: job.id, sample_rate: format.sampleRate, channels: 1, bits_per_sample: 16, streaming: true, max_bytes: maxStreamBytes };
+    job.beginSentAt = performance.now();
+    await sendFrame(current.ws, JSON.stringify(begin));
+    logger.info({ device_id: current.deviceId, playback_id: job.id, streaming: true, max_pcm_bytes: maxStreamBytes }, "Speaker begin sent");
+    await sendWithFlow(job, current, first.value);
+    while (true) {
+      const part = await iterator.next();
+      if (part.done) break;
+      await sendWithFlow(job, current, part.value);
+    }
+    if (!job.bytesSent || (job.bytesSent & 1)) throw new Error("invalid_pcm");
+    job.ttsCompletedAt = source.metrics.completedAt ?? performance.now();
+    job.audio = job.statistics.result(backend.limiter ?? SPEAKER_LIMITER);
+    await sendFrame(current.ws, JSON.stringify({ type: "speaker_end", playback_id: job.id, bytes: job.bytesSent }));
+    logStreamComplete(job, current);
     return job.completion;
   }
-
+  async function streamKnown(job, current, pcm) {
+    job.pcmBytes = pcm.length;
+    beginJob(job);
+    job.beginSentAt = performance.now();
+    await sendFrame(current.ws, JSON.stringify({ type: "speaker_begin", playback_id: job.id, sample_rate: format.sampleRate, channels: 1, bits_per_sample: 16, bytes: pcm.length }));
+    logger.info({ device_id: current.deviceId, playback_id: job.id, pcm_bytes: pcm.length, streaming: false }, "Speaker begin sent");
+    await sendWithFlow(job, current, pcm);
+    job.audio = job.statistics.result(backend.limiter ?? SPEAKER_LIMITER);
+    await sendFrame(current.ws, JSON.stringify({ type: "speaker_end", playback_id: job.id, bytes: job.bytesSent }));
+    logStreamComplete(job, current);
+    return job.completion;
+  }
+  function logStreamComplete(job, current) {
+    const audio = job.audio;
+    logger.info({
+      event: "SPEAKER_AUDIO", playback_id: job.id,
+      peak_dbfs: Number.isFinite(audio.peakDbfs) ? Number(audio.peakDbfs.toFixed(1)) : "-inf",
+      rms_dbfs: Number.isFinite(audio.rmsDbfs) ? Number(audio.rmsDbfs.toFixed(1)) : "-inf",
+      gain_db: backend.gainDb ?? SPEAKER_GAIN_DB, limiter: backend.limiter ?? SPEAKER_LIMITER,
+      limiter_reached: audio.limiterReached, clipped: audio.clipped, bytes: audio.bytes,
+    }, "SPEAKER_AUDIO");
+    logger.info({
+      device_id: current.deviceId, playback_id: job.id, bytes: job.bytesSent,
+      stream_ms: Math.round(performance.now() - job.beginSentAt), pacing: "receiver_credit",
+      lead_bytes: Math.min(SPEAKER_INITIAL_LEAD_BYTES, job.bytesSent), target_outstanding_bytes: targetOutstandingBytes,
+      max_outstanding_limit_bytes: maxOutstandingBytes, max_outstanding_bytes: job.maxOutstandingBytes,
+      flow_reports: job.flowReports, min_reported_buffer: Number.isFinite(job.minReportedBufferedBytes) ? job.minReportedBufferedBytes : null,
+      max_reported_buffer: job.maxReportedBufferedBytes, chunk_bytes: chunkBytes,
+    }, "Speaker PCM stream sent");
+  }
   async function run(job) {
     if (job.settled || closing) return;
     if (!getDevice()) throw new Error("speaker unavailable");
     logger.info({ playback_id: job.id, text_chars: job.text.length }, "Speaker TTS synthesis started");
     const connectionPromise = job.temporary ? requestTemporaryConnection(job) : waitForConnection();
     connectionPromise.catch(() => {});
-    const synthesisStartedAt = performance.now();
-    job.synthesisStartedAt = synthesisStartedAt;
-    const pcm = await backend.synthesize(job.text, format);
+    job.synthesisStartedAt = performance.now();
+    if (typeof backend.stream === "function") {
+      const [source, current] = await Promise.all([backend.stream(job.text, format), connectionPromise]);
+      return streamRealtime(job, current, source);
+    }
+    const [pcm, current] = await Promise.all([backend.synthesize(job.text, format), connectionPromise]);
     job.ttsCompletedAt = performance.now();
-    job.pcm = pcm;
-    const audio = analyzePcm16(pcm, backend.limiter ?? SPEAKER_LIMITER);
-    logger.info({
-      event: "SPEAKER_AUDIO", playback_id: job.id,
-      peak_dbfs: Number.isFinite(audio.peakDbfs) ? Number(audio.peakDbfs.toFixed(1)) : "-inf",
-      rms_dbfs: Number.isFinite(audio.rmsDbfs) ? Number(audio.rmsDbfs.toFixed(1)) : "-inf",
-      gain_db: backend.gainDb ?? SPEAKER_GAIN_DB,
-      limiter: backend.limiter ?? SPEAKER_LIMITER,
-      limiter_reached: audio.limiterReached,
-      clipped: audio.clipped,
-      bytes: pcm.length,
-    }, "SPEAKER_AUDIO");
-    logger.info({ playback_id: job.id, pcm_bytes: pcm.length, tts_ms: Math.round(job.ttsCompletedAt - synthesisStartedAt), format }, "Speaker TTS synthesis completed");
-    const current = await connectionPromise;
-    job.readyAt = performance.now();
-    return stream(job, current);
+    return streamKnown(job, current, pcm);
   }
-
-  function speak(html, { maxChars = maxTextChars, temporary = false } = {}) {
+  function speak(html, { maxChars = maxTextChars, temporary = false, replyReadyAt = performance.now() } = {}) {
     if (!enabled || closing) return { kind: "disabled" };
     if (allJobs.size >= maxPendingJobs) return { kind: "busy" };
     const text = telegramHtmlToSpeech(html, maxChars);
@@ -501,21 +674,21 @@ export function createSpeakerRuntime({
     const completion = new Promise((res, rej) => { resolve = res; reject = rej; });
     completion.catch(() => {});
     const job = {
-      id, text, pcm: null, temporary, settled: false, resultTimer: null,
-      queuedAt: performance.now(), synthesisStartedAt: null, ttsCompletedAt: null, readyAt: null,
-      beginSentAt: null, firstPcmSentAt: null, resolve, reject, completion,
-      bytesSent: 0, consumedBytes: 0, reportedBufferedBytes: 0, flowVersion: 0, flowWaiters: new Set(),
-      flowReports: 0, maxOutstandingBytes: 0, minReportedBufferedBytes: Number.POSITIVE_INFINITY, maxReportedBufferedBytes: 0,
+      id, text, temporary, settled: false, resultTimer: null, queuedAt: performance.now(), replyReadyAt,
+      synthesisStartedAt: null, ttsCompletedAt: null, beginSentAt: null, firstPcmSentAt: null,
+      backendMetrics: null, playbackStartedAt: null, firstPcmToPlayMs: null,
+      resolve, reject, completion, bytesSent: 0, consumedBytes: 0, reportedBufferedBytes: 0,
+      flowVersion: 0, flowWaiters: new Set(), flowReports: 0, maxOutstandingBytes: 0,
+      minReportedBufferedBytes: Number.POSITIVE_INFINITY, maxReportedBufferedBytes: 0, statistics: pcmStatistics(), audio: null,
     };
     allJobs.add(job);
     logger.info({ playback_id: id, text_chars: text.length, temporary }, "Speaker job queued");
     queue = queue.catch(() => {}).then(() => run(job)).catch((error) => {
-      settle(job, { kind: "error", error: error?.message ?? "TTS failed" });
-      logger.warn({ playback_id: id, error_message: error?.message ?? "unknown" }, "Speaker/TTS job failed");
+      settle(job, { kind: "error", error: error?.code ?? error?.message ?? "TTS failed" });
+      logger.warn({ playback_id: id, error_message: error?.code ?? error?.message ?? "unknown" }, "Speaker/TTS job failed");
     });
     return { kind: "queued", playbackId: id, text, completion };
   }
-
   function handleConnection(ws, deviceId) {
     if (connection?.ws && connection.ws !== ws && connection.ws.readyState === 1) connection.ws.close(4001, "replaced by new connection");
     const current = { ws, deviceId, connectedAt: performance.now() };
@@ -530,7 +703,6 @@ export function createSpeakerRuntime({
     resolveConnectionWaiters(current);
     logger.info({ device_id: deviceId }, "Persistent speaker stream ready");
   }
-
   async function handleDeviceConnected(deviceId, device) {
     for (const job of allJobs) {
       if (!job.temporary || job.settled || connection?.ws.readyState === 1) continue;
@@ -538,39 +710,49 @@ export function createSpeakerRuntime({
       catch (error) { logger.warn({ device_id: deviceId, playback_id: job.id, error_message: error?.message ?? "unknown" }, "Temporary speaker reconnect request failed"); }
     }
   }
-
   function handlePlaybackStarted(deviceId, message) {
     const job = jobs.get(message.playback_id);
     if (!job || job.firstPcmSentAt === null) return false;
-    const firstPcmToPlayMs = message.first_pcm_to_play_ms;
-    const metrics = {
-      device_id: deviceId,
-      playback_id: job.id,
-      tts_ms: Math.round(job.ttsCompletedAt - job.synthesisStartedAt),
-      ready_to_first_pcm_ms: Math.round(job.firstPcmSentAt - job.readyAt),
-      first_pcm_to_play_ms: firstPcmToPlayMs,
-      total_start_latency_ms: Math.round(job.firstPcmSentAt - job.queuedAt + firstPcmToPlayMs),
-    };
-    logger.info(metrics, "SPEAKER_LATENCY");
+    job.firstPcmToPlayMs = message.first_pcm_to_play_ms;
+    job.playbackStartedAt = performance.now();
+    logger.info({
+      event: "SPEAKER_TTFA", device_id: deviceId, playback_id: job.id,
+      tts_request_to_first_pcm_ms: job.backendMetrics?.conditionerFirstOutputAt == null ? null : Math.round(job.backendMetrics.conditionerFirstOutputAt - job.backendMetrics.requestStartedAt),
+      kokoro_first_audio_byte_ms: job.backendMetrics?.firstAudioByteAt == null ? null : Math.round(job.backendMetrics.firstAudioByteAt - job.backendMetrics.requestStartedAt),
+      conditioning_first_output_ms: job.backendMetrics?.conditionerFirstOutputAt == null ? null : Math.round(job.backendMetrics.conditionerFirstOutputAt - job.backendMetrics.firstAudioByteAt),
+      reply_ready_to_first_pcm_send_ms: Math.round(job.firstPcmSentAt - job.replyReadyAt),
+      first_pcm_to_play_ms: job.firstPcmToPlayMs,
+      estimated_reply_ready_to_audible_ms: Math.round(job.firstPcmSentAt - job.replyReadyAt + job.firstPcmToPlayMs),
+    }, "SPEAKER_TTFA");
     return true;
   }
-
   function handleResult(deviceId, message) {
     const job = jobs.get(message.playback_id);
     if (!job) return false;
-    const result = message.type === "speaker_complete" ? { kind: "complete", bytes: message.bytes } : { kind: "error", error: message.error ?? "device playback failed" };
+    let result;
+    if (message.type === "speaker_complete") {
+      result = message.bytes === job.bytesSent ? { kind: "complete", bytes: message.bytes } : { kind: "error", error: "truncated" };
+    } else result = { kind: "error", error: message.error ?? "device playback failed" };
+    if (result.kind === "complete") {
+      logger.info({
+        event: "SPEAKER_TTFA_FINAL", device_id: deviceId, playback_id: job.id,
+        tts_request_to_first_pcm_ms: job.backendMetrics?.conditionerFirstOutputAt == null ? null : Math.round(job.backendMetrics.conditionerFirstOutputAt - job.backendMetrics.requestStartedAt),
+        conditioning_first_output_ms: job.backendMetrics?.conditionerFirstOutputAt == null ? null : Math.round(job.backendMetrics.conditionerFirstOutputAt - job.backendMetrics.firstAudioByteAt),
+        reply_ready_to_first_pcm_send_ms: job.firstPcmSentAt == null ? null : Math.round(job.firstPcmSentAt - job.replyReadyAt),
+        first_pcm_to_play_ms: job.firstPcmToPlayMs,
+        estimated_reply_ready_to_audible_ms: job.firstPcmSentAt == null || job.firstPcmToPlayMs == null ? null : Math.round(job.firstPcmSentAt - job.replyReadyAt + job.firstPcmToPlayMs),
+        full_tts_generation_ms: job.backendMetrics?.completedAt == null ? (job.ttsCompletedAt == null ? null : Math.round(job.ttsCompletedAt - job.synthesisStartedAt)) : Math.round(job.backendMetrics.completedAt - job.backendMetrics.requestStartedAt),
+        total_playback_ms: job.beginSentAt == null ? null : Math.round(performance.now() - job.beginSentAt), bytes: message.bytes,
+      }, "SPEAKER_TTFA_FINAL");
+    }
     settle(job, result);
-    logger[message.type === "speaker_complete" ? "info" : "warn"]({ device_id: deviceId, playback_id: message.playback_id, bytes: message.bytes, error: message.error }, `Speaker playback ${message.type === "speaker_complete" ? "complete" : "failed"}`);
+    logger[message.type === "speaker_complete" && result.kind === "complete" ? "info" : "warn"]({ device_id: deviceId, playback_id: message.playback_id, bytes: message.bytes, error: result.error }, `Speaker playback ${result.kind === "complete" ? "complete" : "failed"}`);
     return true;
   }
-
   function setPersistentEnabled(persistentEnabled) {
     if (persistentEnabled) return;
-    for (const job of [...allJobs]) {
-      if (!job.temporary) settle(job, { kind: "disabled", error: "speaker disabled" });
-    }
+    for (const job of [...allJobs]) if (!job.temporary) settle(job, { kind: "disabled", error: "speaker disabled" });
   }
-
   function close() {
     closing = true;
     for (const waiter of connectionWaiters) { clearTimeout(waiter.timer); waiter.reject(new Error("server shutting down")); }
@@ -578,6 +760,5 @@ export function createSpeakerRuntime({
     for (const job of [...allJobs]) settle(job, { kind: "shutdown", error: "server shutting down" });
     closeConnection("server shutting down");
   }
-
   return { speak, handleConnection, handleDeviceConnected, handlePlaybackStarted, handleResult, setPersistentEnabled, close, isReady: () => connection?.ws.readyState === 1, format };
 }

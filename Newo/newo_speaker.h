@@ -52,8 +52,10 @@ class NewoSpeaker {
     char playbackId[40];
     uint32_t sampleRate;
     uint32_t bytes;
+    uint32_t maxBytes;
     uint8_t channels;
     uint8_t bitsPerSample;
+    bool streaming;
   };
   struct MemorySnapshot {
     uint32_t heap = 0;
@@ -103,6 +105,7 @@ class NewoSpeaker {
   volatile uint32_t receivedBytes_ = 0;
   volatile uint32_t consumedBytes_ = 0;
   volatile uint32_t firstPcmReceivedMs_ = 0;
+  volatile uint32_t lastPcmReceivedMs_ = 0;
   const char* volatile failureReason_ = nullptr;
   bool resultReady_ = false;
   volatile bool playbackStartedEventReady_ = false;

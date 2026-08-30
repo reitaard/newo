@@ -7,6 +7,7 @@
 
 #include "newo_config.h"
 #include "newo_log.h"
+#include "newo_speaker_protocol.h"
 
 #if __has_include("newo_secrets.h")
 #include "newo_secrets.h"
@@ -173,9 +174,10 @@ const char* NewoSpeaker::lastPlayback() const {
 
 bool NewoSpeaker::startPlayback(const Request& request) {
   if (!connected_ || !buffer_ || task_ || resultReady_) return false;
-  if (request.sampleRate != NewoConfig::SPEAKER_SAMPLE_RATE || request.channels != 1 ||
-      request.bitsPerSample != 16 || request.bytes == 0 ||
-      request.bytes > NewoConfig::SPEAKER_MAX_STREAM_BYTES || (request.bytes & 1)) return false;
+  if (!newoValidSpeakerBegin(request.sampleRate, request.channels, request.bitsPerSample,
+                             request.streaming, request.bytes, request.maxBytes,
+                             NewoConfig::SPEAKER_SAMPLE_RATE,
+                             NewoConfig::SPEAKER_MAX_STREAM_BYTES)) return false;
   if (!audio_.setPlaybackActive(true)) return false;
 
   request_ = request;
@@ -188,6 +190,7 @@ bool NewoSpeaker::startPlayback(const Request& request) {
   receivedBytes_ = 0;
   consumedBytes_ = 0;
   firstPcmReceivedMs_ = 0;
+  lastPcmReceivedMs_ = millis();
   failureReason_ = nullptr;
   minimumTaskStackBytes_ = UINT32_MAX;
   i2sSentEventCount_ = 0;
@@ -240,7 +243,11 @@ void NewoSpeaker::handleText(const uint8_t* payload, size_t length) {
     request.sampleRate = doc["sample_rate"] | 0;
     request.channels = doc["channels"] | 0;
     request.bitsPerSample = doc["bits_per_sample"] | 0;
+    request.streaming = doc["streaming"] | false;
     request.bytes = doc["bytes"] | 0;
+    request.maxBytes = request.streaming
+        ? static_cast<uint32_t>(doc["max_bytes"] | 0)
+        : request.bytes;
     if (!request.playbackId[0] || !startPlayback(request)) {
       NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::AUDIO,
                    "SPEAKER_BEGIN_REJECTED", request.playbackId);
@@ -250,11 +257,12 @@ void NewoSpeaker::handleText(const uint8_t* payload, size_t length) {
   if (strcmp(type, "speaker_end") == 0 && playing()) {
     const char* playbackId = doc["playback_id"] | "";
     const uint32_t bytes = doc["bytes"] | 0;
-    if (strcmp(playbackId, request_.playbackId) != 0 || bytes != request_.bytes) {
-      fail("invalid_end");
-    } else {
-      endReceived_ = true;
-    }
+    const NewoSpeakerEndValidation validation = newoValidateSpeakerEnd(
+        strcmp(playbackId, request_.playbackId) == 0, request_.streaming, bytes,
+        receivedBytes_, request_.bytes, request_.maxBytes);
+    if (validation == NewoSpeakerEndValidation::WRONG_PLAYBACK_ID) fail("wrong_playback_id");
+    else if (validation != NewoSpeakerEndValidation::OK) fail("invalid_end");
+    else { request_.bytes = bytes; endReceived_ = true; }
   }
 }
 
@@ -268,9 +276,12 @@ void NewoSpeaker::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
     return;
   }
   if (type == WStype_BIN) {
-    if (!playing() || !length || (length & 1) || receivedBytes_ > request_.bytes ||
-        length > request_.bytes - receivedBytes_) { fail("invalid_pcm"); return; }
+    const uint32_t limitBytes = request_.streaming ? request_.maxBytes : request_.bytes;
+    if (!playing() || !newoValidSpeakerChunk(length, receivedBytes_, limitBytes, endReceived_)) {
+      fail("invalid_pcm"); return;
+    }
     if (firstPcmReceivedMs_ == 0) firstPcmReceivedMs_ = millis();
+    lastPcmReceivedMs_ = millis();
     // Never wait in the WebSocket callback. Receiver-driven credit on the VPS
     // keeps unconsumed PCM bounded well below this fixed 16 KiB StreamBuffer.
     if (xStreamBufferSend(buffer_, payload, length, 0) != length) {
@@ -330,7 +341,9 @@ void NewoSpeaker::playbackTask() {
       fail("i2s_callback_failed");
     }
 
-    const uint32_t timeoutMs = 15'000 + (request_.bytes * 1'000UL / NewoConfig::SPEAKER_PCM_BYTES_PER_SECOND);
+    const uint32_t timeoutMs = request_.streaming
+        ? NewoConfig::SPEAKER_STREAM_ABSOLUTE_TIMEOUT_MS
+        : 15'000 + (request_.bytes * 1'000UL / NewoConfig::SPEAKER_PCM_BYTES_PER_SECOND);
     const uint32_t startedMs = millis();
     uint32_t playbackStartedMs = 0;
     bool playbackStarted = false;
@@ -342,7 +355,7 @@ void NewoSpeaker::playbackTask() {
       if (available > maximumBufferedBytes_) maximumBufferedBytes_ = static_cast<uint32_t>(available);
 
       if (!playbackStarted) {
-        const bool allPcmReceived = receivedBytes_ == request_.bytes;
+        const bool allPcmReceived = endReceived_ && receivedBytes_ == request_.bytes;
         if (available >= NewoConfig::SPEAKER_PREBUFFER_BYTES ||
             (allPcmReceived && available >= sizeof(int16_t))) {
           playbackStarted = true;
@@ -384,7 +397,7 @@ void NewoSpeaker::playbackTask() {
         } else {
           consumedBytes_ += static_cast<uint32_t>(count);
         }
-      } else if (playbackStarted && receivedBytes_ < request_.bytes && !underrunActive) {
+      } else if (playbackStarted && !endReceived_ && !underrunActive) {
         ++underrunCount_;
         minimumBufferedBytes_ = 0;
         underrunActive = true;
@@ -393,7 +406,12 @@ void NewoSpeaker::playbackTask() {
         if (receivedBytes_ != request_.bytes || consumedBytes_ != request_.bytes) fail("truncated");
         break;
       }
-      if (millis() - startedMs >= timeoutMs) { fail("timeout"); break; }
+      const uint32_t nowMs = millis();
+      if (!endReceived_ && nowMs - lastPcmReceivedMs_ >= NewoConfig::SPEAKER_STREAM_NO_PROGRESS_TIMEOUT_MS) {
+        fail("speaker_stream_timeout");
+        break;
+      }
+      if (nowMs - startedMs >= timeoutMs) { fail("timeout"); break; }
       vTaskDelay(pdMS_TO_TICKS(1));
     }
 

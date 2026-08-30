@@ -9,12 +9,14 @@ import {
   speakerAudioFilter,
   speakerCreditBytes,
   speakerOutstandingBytes,
+  splitRealtimeText,
   SPEAKER_AUDIO_FILTER,
   SPEAKER_GAIN_DB,
   SPEAKER_INITIAL_LEAD_BYTES,
   SPEAKER_LIMITER,
   SPEAKER_MAX_OUTSTANDING_BYTES,
   SPEAKER_TARGET_OUTSTANDING_BYTES,
+  startTelegramAndSpeech,
   telegramHtmlToSpeech,
 } from "../src/tts.js";
 
@@ -75,34 +77,102 @@ test("speaker conditioning adds configurable gain before the limiter", () => {
   assert.match(speakerAudioFilter(3), /volume=3dB/);
 });
 
-test("Kokoro backend requests bounded raw PCM with a configurable voice", async () => {
+test("realtime text segmentation keeps short replies whole and advances long replies by sentence", () => {
+  assert.deepEqual(splitRealtimeText("Face curious."), ["Face curious."]);
+  assert.deepEqual(splitRealtimeText("Hello, I'm Newo. This is a realtime voice latency test."), ["Hello, I'm Newo. This is a realtime voice latency test."]);
+  const long = splitRealtimeText("Newo is online and connected to the cloud. Speaker output is enabled and healthy. The remaining status follows shortly.");
+  assert.ok(long.length >= 2);
+  assert.equal(long.join(" "), "Newo is online and connected to the cloud. Speaker output is enabled and healthy. The remaining status follows shortly.");
+});
+
+test("Kokoro backend uses realtime PCM with configurable voice and speed", async () => {
   let requestBody;
+  let requestUrl;
+  const sourcePcm = Buffer.alloc(24_000);
+  sourcePcm.writeInt16LE(1_000, 2_000);
   const server = createServer((request, response) => {
+    requestUrl = request.url;
     const chunks = [];
     request.on("data", (chunk) => chunks.push(chunk));
     request.on("end", () => {
       requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       response.writeHead(200, { "content-type": "application/octet-stream" });
-      response.end(Buffer.from([1, 0, 2, 0]));
+      response.end(sourcePcm);
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
-  let conditioning;
-  const backend = new KokoroTtsBackend({
-    baseUrl: `http://127.0.0.1:${port}`,
-    voice: "bm_george",
-    conditioner: async (pcm, format, options) => { conditioning = { pcm, format, options }; return pcm; },
-  });
+  const backend = new KokoroTtsBackend({ baseUrl: `http://127.0.0.1:${port}`, voice: "am_eric", speed: 1.1 });
   try {
     const pcm = await backend.synthesize("Natural speech.", { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
-    assert.deepEqual(pcm, Buffer.from([1, 0, 2, 0]));
-    assert.deepEqual(requestBody, { model: "kokoro", input: "Natural speech.", voice: "bm_george", response_format: "pcm", speed: 1 });
-    assert.equal(conditioning.format.sampleRate, 24_000);
-    assert.equal(conditioning.options.gainDb, 2);
+    assert.equal(requestUrl, "/v1/audio/realtime");
+    assert.ok(pcm.length > 0);
+    assert.equal(pcm.length & 1, 0);
+    assert.deepEqual(requestBody, { model: "kokoro", input: "Natural speech.", voice: "am_eric", response_format: "pcm", speed: 1.1 });
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("Kokoro PCM is consumed incrementally before the HTTP response ends", async () => {
+  let finishResponse;
+  const firstPcm = Buffer.alloc(24_000, 1);
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/octet-stream" });
+    response.write(firstPcm);
+    finishResponse = () => response.end(Buffer.alloc(24_000, 2));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const backend = new KokoroTtsBackend({ baseUrl: `http://127.0.0.1:${port}` });
+  try {
+    const source = await backend.stream("stream me", { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
+    const iterator = source.audio[Symbol.asyncIterator]();
+    const firstOutput = await iterator.next();
+    assert.equal(firstOutput.done, false);
+    assert.ok(firstOutput.value.length > 0, "conditioner must emit before response end");
+    finishResponse();
+    while (!(await iterator.next()).done) {};
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Kokoro realtime stall fails with a bounded no-progress timeout", async () => {
+  let response;
+  const server = createServer((_request, current) => {
+    response = current;
+    current.writeHead(200, { "content-type": "application/octet-stream" });
+    current.write(Buffer.alloc(24_000, 1));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const backend = new KokoroTtsBackend({ baseUrl: `http://127.0.0.1:${port}`, streamNoProgressMs: 200 });
+  try {
+    const source = await backend.stream("stall", { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
+    const iterator = source.audio[Symbol.asyncIterator]();
+    assert.equal((await iterator.next()).done, false);
+    await assert.rejects(async () => {
+      while (!(await iterator.next()).done) {}
+    }, /kokoro_stream_timeout|aborted/);
+  } finally {
+    response?.destroy();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Telegram send starts before independent TTS and is not blocked by it", async () => {
+  const order = [];
+  let finishTelegram;
+  const telegram = new Promise((resolve) => { finishTelegram = resolve; });
+  const result = startTelegramAndSpeech(
+    () => { order.push("telegram"); return telegram; },
+    () => { order.push("tts"); },
+  );
+  assert.deepEqual(order, ["telegram", "tts"]);
+  assert.equal(result, telegram);
+  finishTelegram("sent");
+  assert.equal(await result, "sent");
 });
 
 test("Kokoro backend reports an unavailable local service clearly", async () => {
@@ -125,7 +195,7 @@ test("Kokoro backend rejects compressed or malformed output", async () => {
     try {
       await assert.rejects(
         backend.synthesize("test", { sampleRate: 24_000, channels: 1, bitsPerSample: 16 }),
-        /non-PCM content type|invalid PCM16/,
+        /non-PCM content type|invalid_pcm|invalid PCM16/,
       );
     } finally {
       await new Promise((resolve) => server.close(resolve));
@@ -159,6 +229,48 @@ test("speaker runtime bounds queued jobs", () => {
   runtime.close();
 });
 
+test("streaming speaker framing emits PCM before synthesis ends", async () => {
+  let releaseTail;
+  const ws = fakeSocket();
+  const backend = {
+    gainDb: 2, limiter: 0.95,
+    async stream() {
+      const metrics = { requestStartedAt: performance.now(), firstAudioByteAt: performance.now(), conditionerFirstOutputAt: performance.now(), completedAt: null };
+      return { metrics, audio: (async function* () {
+        yield Buffer.alloc(8_192, 1);
+        await new Promise((resolve) => { releaseTail = resolve; });
+        yield Buffer.alloc(4_096, 2);
+        metrics.completedAt = performance.now();
+      })() };
+    },
+  };
+  const runtime = createSpeakerRuntime({ logger: logger(), enabled: true, backend, getDevice: () => ({}), sendControl: () => true });
+  runtime.handleConnection(ws, "newo-01");
+  const queued = runtime.speak("streaming");
+  await waitFor(() => binaryFrames(ws).length > 0);
+  const begin = JSON.parse(String(ws.frames[0]));
+  assert.equal(begin.streaming, true);
+  assert.equal(begin.max_bytes, 2_880_000);
+  assert.equal(ws.frames.some((frame) => String(frame).includes("speaker_end")), false);
+  releaseTail();
+  await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
+  runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 12_288 });
+  await queued.completion;
+  runtime.close();
+});
+
+test("streaming speaker enforces the cumulative byte maximum", async () => {
+  const ws = fakeSocket();
+  const backend = { gainDb: 2, limiter: 0.95, async stream() {
+    return { metrics: {}, audio: (async function* () { yield Buffer.alloc(6_000, 1); })() };
+  } };
+  const runtime = createSpeakerRuntime({ logger: logger(), enabled: true, backend, getDevice: () => ({}), sendControl: () => true, maxStreamBytes: 4_096 });
+  runtime.handleConnection(ws, "newo-01");
+  const queued = runtime.speak("too large");
+  await assert.rejects(queued.completion, /exceeded limit/);
+  runtime.close();
+});
+
 test("receiver credit stops after initial lead and resumes only after ESP consumption", async () => {
   const ws = fakeSocket();
   const runtime = createSpeakerRuntime({
@@ -170,19 +282,18 @@ test("receiver credit stops after initial lead and resumes only after ESP consum
   runtime.handleConnection(ws, "newo-01");
   const queued = runtime.speak("flow controlled");
 
-  await waitFor(() => binaryFrames(ws).length === 18);
+  await waitFor(() => binaryFrames(ws).length === 9);
   await tick();
-  assert.equal(binaryFrames(ws).length, 18, "sender must stop at the 18 KiB initial window");
+  assert.equal(binaryFrames(ws).length, 9, "sender must stop at the 18 KiB initial window");
   assert.equal(ws.frames.some((frame) => String(frame).includes("speaker_end")), false);
 
   for (let consumed = 1_024; consumed <= 6_144; consumed += 1_024) {
-    const before = binaryFrames(ws).length;
     ws.emitMessage({ type: "speaker_flow", playback_id: queued.playbackId, consumed_bytes: consumed, buffered_bytes: 18_432 - consumed });
-    await waitFor(() => binaryFrames(ws).length === before + 1);
+    await tick();
   }
 
   await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
-  assert.equal(binaryFrames(ws).length, 24);
+  assert.equal(binaryFrames(ws).length, 12);
   runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 24_576 });
   assert.equal((await queued.completion).kind, "complete");
   runtime.close();
@@ -198,8 +309,8 @@ test("speaker runtime fails rather than guessing when receiver flow stops", asyn
   });
   runtime.handleConnection(ws, "newo-01");
   const queued = runtime.speak("no receiver credit");
-  await assert.rejects(queued.completion, /speaker flow timeout/);
-  assert.equal(binaryFrames(ws).length, 18);
+  await assert.rejects(queued.completion, /flow_timeout/);
+  assert.equal(binaryFrames(ws).length, 9);
   runtime.close();
 });
 
@@ -216,7 +327,7 @@ test("one persistent speaker connection is reused for 10 framed playbacks", asyn
   await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
   const firstFrames = [...ws.frames];
   assert.match(String(firstFrames[0]), /"type":"speaker_begin"/);
-  assert.deepEqual(firstFrames.filter(Buffer.isBuffer).map((frame) => frame.length), [1_024, 1_024, 1_024, 1_024]);
+  assert.deepEqual(firstFrames.filter(Buffer.isBuffer).map((frame) => frame.length), [2_048, 2_048]);
   assert.match(String(firstFrames.at(-1)), /"type":"speaker_end"/);
   assert.equal(ws.closeCount, 0);
   runtime.handlePlaybackStarted("newo-01", { playback_id: first.playbackId, first_pcm_to_play_ms: 128 });
@@ -232,6 +343,22 @@ test("one persistent speaker connection is reused for 10 framed playbacks", asyn
   }
   assert.equal(ws.closeCount, 0);
   assert.equal(ws.frames.filter((frame) => String(frame).includes("speaker_begin")).length, 10);
+  runtime.close();
+});
+
+test("speaker completion verifies playback ID and final byte count", async () => {
+  const ws = fakeSocket();
+  const runtime = createSpeakerRuntime({
+    logger: logger(), enabled: true,
+    backend: { async synthesize() { return Buffer.alloc(4_096, 1); }, gainDb: 2, limiter: 0.95 },
+    getDevice: () => ({}), sendControl: () => true,
+  });
+  runtime.handleConnection(ws, "newo-01");
+  const queued = runtime.speak("verify");
+  await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
+  assert.equal(runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: "00000000-0000-4000-8000-000000000000", bytes: 4_096 }), false);
+  runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 2_048 });
+  await assert.rejects(queued.completion, /truncated/);
   runtime.close();
 });
 

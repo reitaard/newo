@@ -1,6 +1,6 @@
 services:
   kokoro:
-    image: ghcr.io/seancheung/kokoro-openai-tts-api:latest
+    image: ghcr.io/openttsgroup/kokoro-open-tts@sha256:135171972ead991f352cdf85dbff3608d4f681468b1099857e88131637fd628c
     container_name: newo-kokoro
     restart: unless-stopped
     ports:
@@ -9,12 +9,11 @@ services:
       - ./data/kokoro-cache:/root/.cache
     environment:
       KOKORO_MODEL: hexgrad/Kokoro-82M
-      KOKORO_PRELOAD_LANGS: a,b
-      KOKORO_PRELOAD_VOICES: bf_emma,bm_george,af_bella
+      KOKORO_DEVICE: cpu
+      KOKORO_PRELOAD_LANGS: a
       DEFAULT_RESPONSE_FORMAT: pcm
+      MAX_CONCURRENCY: "1"
       MAX_INPUT_CHARS: "500"
-      OMP_NUM_THREADS: "4"
-      MKL_NUM_THREADS: "4"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
       interval: 30s
