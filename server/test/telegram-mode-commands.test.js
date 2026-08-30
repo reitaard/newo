@@ -21,7 +21,7 @@ function createHarness(sendDeviceRequest, overrides = {}) {
     getSpeakerEnabled: () => speakerEnabled,
     setSpeakerAccepting: (enabled) => { speakerEnabled = enabled; },
     persistSpeakerEnabled: async (enabled) => { speakerEnabled = enabled; return enabled; },
-    speakerInfo: { ttsEnabled: true, backend: "espeak", format: "16 kHz PCM16", bufferBytes: 16_384 },
+    speakerInfo: { ttsEnabled: true, backend: "kokoro", format: "24 kHz PCM16", bufferBytes: 24_576 },
   });
   return { handlers, replies, get speakerEnabled() { return speakerEnabled; } };
 }
@@ -29,7 +29,7 @@ function createHarness(sendDeviceRequest, overrides = {}) {
 const speakerAck = {
   type: "speaker_ack", request_id: "request-1", enabled: true, connection: "Ready",
   volume: 100, muted: false, applied: true, last_playback: "Complete",
-  underruns: 0, overflows: 0, buffer_bytes: 16_384,
+  underruns: 0, overflows: 0, buffer_bytes: 24_576,
 };
 
 test("/voice toggles and returns detailed current status", async () => {

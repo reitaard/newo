@@ -54,16 +54,16 @@ function collectProcessOutput(child, maxBytes, label) {
   });
 }
 
-export const SPEAKER_GAIN_DB = 6;
+export const SPEAKER_GAIN_DB = 2;
+export const ESPEAK_GAIN_DB = 6;
 export const SPEAKER_LIMITER = 0.95;
 export const SPEAKER_LIMITER_ATTACK_MS = 5;
-// Keep enough receiver credit to cover the measured TLS/WebSocket/display service
-// latency while remaining strictly below the ESP's fixed 16 KiB StreamBuffer.
-// 12 KiB = 384 ms of mono PCM16 at 16 kHz; the 14 KiB hard ceiling leaves 2 KiB
-// of physical receiver headroom and still prevents catch-up bursts/overflow.
-export const SPEAKER_INITIAL_LEAD_BYTES = 12_288;
-export const SPEAKER_TARGET_OUTSTANDING_BYTES = 12_288;
-export const SPEAKER_MAX_OUTSTANDING_BYTES = 14_336;
+// Preserve the stable receiver-credit windows by time at 24 kHz mono PCM16.
+// 18 KiB = 384 ms; the 21 KiB hard ceiling = 448 ms and leaves 3 KiB / 64 ms
+// of physical headroom in the ESP's fixed 24 KiB StreamBuffer.
+export const SPEAKER_INITIAL_LEAD_BYTES = 18_432;
+export const SPEAKER_TARGET_OUTSTANDING_BYTES = 18_432;
+export const SPEAKER_MAX_OUTSTANDING_BYTES = 21_504;
 export const SPEAKER_FLOW_TIMEOUT_MS = 3_000;
 
 export function speakerAudioFilter(gainDb = SPEAKER_GAIN_DB, limiter = SPEAKER_LIMITER) {
@@ -98,9 +98,107 @@ export function analyzePcm16(pcm, limiter = SPEAKER_LIMITER) {
   };
 }
 
+export async function conditionPcm16(pcm, format, {
+  gainDb = SPEAKER_GAIN_DB,
+  limiter = SPEAKER_LIMITER,
+  maxPcmBytes = 2_880_000,
+} = {}) {
+  if (!Buffer.isBuffer(pcm) || pcm.length === 0 || (pcm.length & 1)) throw new Error("invalid PCM16 audio");
+  if (format?.channels !== 1 || format?.bitsPerSample !== 16 || !Number.isInteger(format?.sampleRate) || format.sampleRate <= 0) {
+    throw new Error("invalid speaker PCM format");
+  }
+  const filter = speakerAudioFilter(gainDb, limiter);
+  const ffmpeg = spawn("ffmpeg", [
+    "-hide_banner", "-loglevel", "error", "-f", "s16le", "-ac", "1", "-ar", String(format.sampleRate),
+    "-i", "pipe:0", "-af", filter, "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1",
+    "-ar", String(format.sampleRate), "pipe:1",
+  ], { stdio: ["pipe", "pipe", "pipe"] });
+  ffmpeg.stdin.on("error", () => {});
+  ffmpeg.stdin.end(pcm);
+  const conditioned = await collectProcessOutput(ffmpeg, maxPcmBytes, "ffmpeg");
+  if (conditioned.length === 0 || (conditioned.length & 1)) throw new Error("ffmpeg returned invalid PCM16 audio");
+  return conditioned;
+}
+
+async function collectResponseBody(response, maxBytes, label) {
+  const chunks = [];
+  let bytes = 0;
+  for await (const chunk of response.body ?? []) {
+    const buffer = Buffer.from(chunk);
+    bytes += buffer.length;
+    if (bytes > maxBytes) {
+      await response.body?.cancel?.().catch(() => {});
+      throw new Error(`${label} output exceeded limit`);
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+/** OpenAI-compatible local Kokoro backend. Always requests raw mono 24 kHz s16le PCM. */
+export class KokoroTtsBackend {
+  constructor({
+    baseUrl = "http://127.0.0.1:8010",
+    voice = "bf_emma",
+    requestTimeoutMs = 30_000,
+    maxPcmBytes = 2_880_000,
+    gainDb = SPEAKER_GAIN_DB,
+    limiter = SPEAKER_LIMITER,
+    logger = null,
+    conditioner = conditionPcm16,
+  } = {}) {
+    this.baseUrl = String(baseUrl).replace(/\/+$/, "");
+    this.voice = voice;
+    this.requestTimeoutMs = requestTimeoutMs;
+    this.maxPcmBytes = maxPcmBytes;
+    this.gainDb = gainDb;
+    this.limiter = limiter;
+    this.logger = logger;
+    this.conditioner = conditioner;
+  }
+
+  async synthesize(text, format) {
+    if (format?.sampleRate !== 24_000 || format?.channels !== 1 || format?.bitsPerSample !== 16) {
+      throw new Error("Kokoro requires mono 24000 Hz PCM16 output");
+    }
+    const startedAt = performance.now();
+    let response;
+    try {
+      response = await fetch(`${this.baseUrl}/v1/audio/speech`, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/octet-stream" },
+        body: JSON.stringify({ model: "kokoro", input: text, voice: this.voice, response_format: "pcm", speed: 1.0 }),
+        signal: AbortSignal.timeout(this.requestTimeoutMs),
+      });
+    } catch (error) {
+      if (error?.name === "TimeoutError") throw new Error(`Kokoro request timed out after ${this.requestTimeoutMs} ms`);
+      throw new Error(`Kokoro unavailable: ${error?.message ?? "request failed"}`);
+    }
+    if (!response.ok) {
+      const detail = (await collectResponseBody(response, 2_000, "Kokoro error")).toString("utf8").trim();
+      throw new Error(`Kokoro request failed (${response.status})${detail ? `: ${detail}` : ""}`);
+    }
+    const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+    if (contentType !== "application/octet-stream") throw new Error(`Kokoro returned non-PCM content type: ${contentType ?? "missing"}`);
+    let rawPcm;
+    try {
+      rawPcm = await collectResponseBody(response, this.maxPcmBytes, "Kokoro");
+    } catch (error) {
+      if (error?.name === "AbortError" || error?.name === "TimeoutError") throw new Error(`Kokoro request timed out after ${this.requestTimeoutMs} ms`);
+      throw error;
+    }
+    if (rawPcm.length === 0 || (rawPcm.length & 1)) throw new Error("Kokoro returned invalid PCM16 audio");
+    const inferenceMs = Math.round(performance.now() - startedAt);
+    this.logger?.info({ voice: this.voice, inference_ms: inferenceMs, raw_pcm_bytes: rawPcm.length }, "Kokoro synthesis completed");
+    return this.conditioner(rawPcm, format, {
+      gainDb: this.gainDb, limiter: this.limiter, maxPcmBytes: this.maxPcmBytes,
+    });
+  }
+}
+
 /** Replaceable backend boundary. Implementations return raw PCM in the requested format. */
 export class EspeakTtsBackend {
-  constructor({ voice = "en", rate = 155, maxPcmBytes = 1_920_000, gainDb = SPEAKER_GAIN_DB, limiter = SPEAKER_LIMITER } = {}) {
+  constructor({ voice = "en", rate = 155, maxPcmBytes = 2_880_000, gainDb = ESPEAK_GAIN_DB, limiter = SPEAKER_LIMITER } = {}) {
     this.voice = voice;
     this.rate = rate;
     this.maxPcmBytes = maxPcmBytes;
@@ -153,7 +251,7 @@ export function createSpeakerRuntime({
   getDevice,
   sendControl,
   isPersistentEnabled = () => true,
-  format = { sampleRate: 16_000, channels: 1, bitsPerSample: 16 },
+  format = { sampleRate: 24_000, channels: 1, bitsPerSample: 16 },
   chunkBytes = 1_024,
   maxTextChars = 300,
   connectionTimeoutMs = 9_000,

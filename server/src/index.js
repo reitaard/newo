@@ -7,7 +7,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 
 import { createRuntimeStateStore } from "./runtime-state.js";
-import { createSpeakerRuntime, EspeakTtsBackend } from "./tts.js";
+import { createSpeakerRuntime, EspeakTtsBackend, KokoroTtsBackend, ESPEAK_GAIN_DB, SPEAKER_GAIN_DB } from "./tts.js";
 import { createPrimaryModeHandlers } from "./telegram-mode-commands.js";
 import { createVoiceRuntime, NullAsrBackend, WorkerAsrBackend } from "./voice.js";
 
@@ -50,12 +50,15 @@ const EnvSchema = z.object({
   VOICE_ASR_HOTWORDS_SCORE: z.preprocess(emptyToUndefined, z.coerce.number().min(0).max(5).default(1.5)),
   VOICE_LIVE_TEST_MODE: z.preprocess(stringToBoolean, z.boolean().default(false)),
   TTS_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
-  TTS_BACKEND: z.preprocess(emptyToUndefined, z.enum(["espeak"]).default("espeak")),
-  TTS_VOICE: z.preprocess(emptyToUndefined, z.string().min(1).default("en")),
+  TTS_BACKEND: z.preprocess(emptyToUndefined, z.enum(["kokoro", "espeak"]).default("kokoro")),
+  TTS_VOICE: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  TTS_SAMPLE_RATE: z.preprocess(emptyToUndefined, z.coerce.number().int().refine((value) => value === 24_000, "speaker output must be 24000 Hz").default(24_000)),
   TTS_RATE: z.preprocess(emptyToUndefined, z.coerce.number().int().min(80).max(450).default(155)),
-  TTS_GAIN_DB: z.preprocess(emptyToUndefined, z.coerce.number().min(-12).max(18).default(6)),
+  TTS_GAIN_DB: z.preprocess(emptyToUndefined, z.coerce.number().min(-12).max(18).optional()),
   TTS_MAX_TEXT_CHARS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(20).max(500).default(300)),
-  TTS_MAX_PCM_BYTES: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().max(1_920_000).default(1_920_000)),
+  TTS_MAX_PCM_BYTES: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().max(2_880_000).default(2_880_000)),
+  KOKORO_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://127.0.0.1:8010")),
+  KOKORO_REQUEST_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(120_000).default(30_000)),
   RUNTIME_STATE_FILE: z.preprocess(emptyToUndefined, z.string().default("data/runtime-state.json")),
 });
 
@@ -111,10 +114,19 @@ let shuttingDown = false;
 const runtimeState = createRuntimeStateStore({ filePath: env.RUNTIME_STATE_FILE, logger: app.log });
 let automaticSpeakerEnabled = runtimeState.speakerEnabled;
 
+const ttsVoice = env.TTS_VOICE ?? (env.TTS_BACKEND === "kokoro" ? "bf_emma" : "en");
+const ttsGainDb = env.TTS_GAIN_DB ?? (env.TTS_BACKEND === "kokoro" ? SPEAKER_GAIN_DB : ESPEAK_GAIN_DB);
+const ttsBackend = env.TTS_BACKEND === "kokoro"
+  ? new KokoroTtsBackend({
+    baseUrl: env.KOKORO_BASE_URL, voice: ttsVoice, requestTimeoutMs: env.KOKORO_REQUEST_TIMEOUT_MS,
+    gainDb: ttsGainDb, maxPcmBytes: env.TTS_MAX_PCM_BYTES, logger: app.log,
+  })
+  : new EspeakTtsBackend({ voice: ttsVoice, rate: env.TTS_RATE, gainDb: ttsGainDb, maxPcmBytes: env.TTS_MAX_PCM_BYTES });
+
 const speakerRuntime = createSpeakerRuntime({
   logger: app.log,
   enabled: env.TTS_ENABLED,
-  backend: new EspeakTtsBackend({ voice: env.TTS_VOICE, rate: env.TTS_RATE, gainDb: env.TTS_GAIN_DB, maxPcmBytes: env.TTS_MAX_PCM_BYTES }),
+  backend: ttsBackend,
   getDevice: () => getConnectedDeviceState(),
   isPersistentEnabled: () => automaticSpeakerEnabled,
   sendControl(message, device) {
@@ -128,6 +140,7 @@ const speakerRuntime = createSpeakerRuntime({
     });
   },
   maxTextChars: env.TTS_MAX_TEXT_CHARS,
+  format: { sampleRate: env.TTS_SAMPLE_RATE, channels: 1, bitsPerSample: 16 },
 });
 
 const DeviceMessageSchema = z.discriminatedUnion("type", [
@@ -529,7 +542,7 @@ const primaryModeHandlers = createPrimaryModeHandlers({
     ttsEnabled: env.TTS_ENABLED,
     backend: env.TTS_BACKEND,
     format: `${speakerRuntime.format.sampleRate / 1_000} kHz PCM${speakerRuntime.format.bitsPerSample}`,
-    bufferBytes: 16_384,
+    bufferBytes: 24_576,
   },
 });
 
@@ -697,7 +710,8 @@ app.log.info({
   speaker_format: `${speakerRuntime.format.channels}ch ${speakerRuntime.format.sampleRate}Hz ${speakerRuntime.format.bitsPerSample}-bit PCM LE`,
   tts_enabled: env.TTS_ENABLED,
   tts_backend: env.TTS_BACKEND,
-  tts_gain_db: env.TTS_GAIN_DB,
+  tts_voice: ttsVoice,
+  tts_gain_db: ttsGainDb,
   voice_format: `${env.VOICE_CHANNELS}ch ${env.VOICE_SAMPLE_RATE}Hz ${env.VOICE_BITS_PER_SAMPLE}-bit PCM LE`,
   voice_wav_capture_enabled: env.VOICE_SAVE_WAV,
   voice_asr_backend: env.VOICE_ASR_BACKEND,

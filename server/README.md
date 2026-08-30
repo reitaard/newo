@@ -42,20 +42,29 @@ Copy `.env.example` to `.env` on the VPS and fill secrets there. Never commit `.
 
 ### Speaker TTS
 
-Install the initial VPS backend and normalizer:
+Install FFmpeg and keep eSpeak available as the explicit lightweight fallback:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y espeak-ng ffmpeg
 ```
 
-Enable it in `.env` with `TTS_ENABLED=true`, `TTS_BACKEND=espeak`, `TTS_VOICE=en`, and optional `TTS_RATE` (default 155 words/minute) and `TTS_GAIN_DB` (default +6 dB). Telegram is always answered first. The shared reply helper then strips HTML, normalizes common units, limits speech to 300 characters, and queues synthesis without awaiting playback. `/speaker` toggles automatic spoken Telegram replies and persists that choice atomically in `RUNTIME_STATE_FILE` (default `data/runtime-state.json`); the matching device setting is persisted in NVS. `/speak <text>` remains a manual command limited to 150 characters and works while automatic replies are OFF by opening a temporary authenticated stream that closes after playback.
+Kokoro-82M runs persistently on CPU in a localhost-only container. Its cache survives container replacement and the English pipelines plus the three evaluation voices are preloaded:
 
-`espeak-ng --stdout -v <voice> -s <rate> <text>` is piped through an FFmpeg one-pass 110 Hz high-pass, configurable speech gain (default +6 dB), and 0.95 peak limiter, then converted with `-f s16le -acodec pcm_s16le -ac 1 -ar 16000`. Gain is applied in FFmpeg before PCM16 conversion, so the limiter catches amplified peaks without integer clipping. The limiter keeps approximately 5 ms lookahead and disables auto-gain. Final PCM peak/RMS, gain, limiter reach, clipping, and byte count are logged as `SPEAKER_AUDIO`.
+```bash
+cd /opt/newo/server
+mkdir -p data/kokoro-cache
+docker compose -f docker-compose.kokoro.yml up -d
+curl -fsS http://127.0.0.1:8010/healthz
+```
 
-When Speaker is ON, Newo establishes one persistent authenticated `/speaker` WSS after `/device` connects and reuses it for every utterance. No playback ID is carried in upgrade headers. Each utterance is framed on that stream by JSON `speaker_begin`, paced 1,024-byte binary PCM frames, then JSON `speaker_end`; completion/error and playback-start timing remain on `/device`. Speaker OFF terminates active playback, restores WakeNet/display state, closes the stream, and deletes the 16,384-byte StreamBuffer. Firmware logs before/connected/released internal heap, minimum heap, PSRAM, deltas, and recovered memory.
+Configure Newo with `TTS_ENABLED=true`, `TTS_BACKEND=kokoro`, `TTS_VOICE=bf_emma`, `TTS_SAMPLE_RATE=24000`, `TTS_GAIN_DB=2`, and `KOKORO_BASE_URL=http://127.0.0.1:8010`. Voice selection is not hardwired; `bm_george` and `af_bella` can be selected through `TTS_VOICE` and a restart. Set `TTS_BACKEND=espeak`, `TTS_VOICE=en`, and normally `TTS_GAIN_DB=6` for the local fallback. An individual Kokoro failure is reported and never silently replaced with eSpeak.
 
-Firmware keeps a 16,384-byte (512 ms) mono stream buffer, retains the 4,096-byte (128 ms) audible prebuffer, duplicates samples into stereo I2S slots, and defaults to 100% digital amplitude. `/volume [0-100]` reads or changes runtime amplitude and `/mute` toggles mute; both settings are persisted in ESP32 NVS and apply without reflashing. The server sends an 8,192-byte (256 ms) initial lead immediately; firmware still begins after 4,096 bytes, so the extra lead is safety headroom rather than added audible latency. Sending then follows an absolute monotonic 32,000-byte/second PCM timeline without cumulative timer drift. Its dedicated TX pins are BCLK GPIO21, LRC GPIO47, and DOUT GPIO14. During actual playback it temporarily releases WakeNet and shows the existing SPEAKING animation; afterward it restores the unchanged OFF/ARMED choice and prior display state.
+Kokoro is requested with OpenAI-compatible `response_format=pcm`; only non-empty, even-length `application/octet-stream` is accepted. The native mono 24 kHz s16le is passed through a one-pass 110 Hz high-pass, conservative configurable gain, and 0.95 limiter with auto-gain disabled. Compressed responses are rejected. Final PCM peak/RMS, gain, limiter reach, clipping, byte count, and synthesis latency are logged.
+
+Telegram is always answered first. Bounded text handling remains at 300 characters. `/speaker` persists automatic spoken replies on the VPS and in ESP NVS; `/speak <text>` (alias `/sp`) uses a temporary authenticated stream while automatic replies are OFF.
+
+When Speaker is ON, Newo reuses one authenticated `/speaker` WSS. Existing `speaker_begin` / 1,024-byte binary PCM / `speaker_end` framing and `/device` completion events are unchanged. Receiver-driven `speaker_flow` credit targets 18,432 outstanding bytes (384 ms), has a hard ceiling of 21,504 bytes (448 ms), and stays below the ESP's 24,576-byte physical buffer. Firmware starts after 6,144 bytes (128 ms), duplicates mono samples to stereo I2S slots, and keeps real TX DMA-tail drain completion. Speaker OFF closes the stream and releases the 24,576-byte StreamBuffer/TLS resources. Heap, minimum heap, PSRAM, recovered memory, flow reports, buffer range, underruns, overflows, and drain time remain diagnostic outputs.
 
 Primary Telegram mode commands are pure toggles: `/voice` (alias `/v`), `/speaker`, and `/eco`. Each waits for its applicable acknowledgement and returns a detailed subsystem status. The existing `/vs` alias remains a read-only detailed voice status. Speaker controls are `/volume`, `/volume <0-100>`, `/mute`, and `/speak <text>` (alias `/sp`; `/s` remains the established status alias). Existing operational aliases remain `/s`, `/h`, `/l`, `/e`, `/p`, `/r`, and `/f`; `/errors` behavior is unchanged.
 

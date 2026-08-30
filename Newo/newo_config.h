@@ -49,12 +49,12 @@ constexpr uint32_t AUDIO_LEVEL_LOG_INTERVAL_MS = 5'000;
 constexpr int8_t SPEAKER_I2S_BCLK_PIN = 21;
 constexpr int8_t SPEAKER_I2S_WS_PIN = 47;
 constexpr int8_t SPEAKER_I2S_DOUT_PIN = 14;
-constexpr uint32_t SPEAKER_SAMPLE_RATE = 16'000;
+constexpr uint32_t SPEAKER_SAMPLE_RATE = 24'000;
 constexpr uint32_t SPEAKER_PCM_BYTES_PER_SECOND = SPEAKER_SAMPLE_RATE * sizeof(int16_t);
 constexpr size_t SPEAKER_CHUNK_BYTES = 1'024;
-constexpr size_t SPEAKER_PREBUFFER_BYTES = 4'096;  // 128 ms mono PCM before audible output.
-constexpr size_t SPEAKER_BUFFER_BYTES = 16'384;  // 512 ms mono PCM16, strictly bounded.
-// Receiver-driven credit is reported after every 1 KiB actually consumed into I2S.
+constexpr size_t SPEAKER_PREBUFFER_BYTES = 6'144;  // 128 ms mono PCM before audible output.
+constexpr size_t SPEAKER_BUFFER_BYTES = 24'576;  // 512 ms mono PCM16, strictly bounded.
+// Report every 1 KiB consumed into I2S (~21 ms) to keep receiver credit current.
 constexpr size_t SPEAKER_FLOW_REPORT_BYTES = 1'024;
 // Arduino-ESP32 3.3.11 uses six 240-frame TX DMA descriptors. Waiting for one
 // full ring plus one extra TX EOF after the final write makes completion mean
@@ -65,7 +65,7 @@ static_assert(SPEAKER_PREBUFFER_BYTES <= SPEAKER_BUFFER_BYTES, "speaker prebuffe
 static_assert(SPEAKER_CHUNK_BYTES <= SPEAKER_PREBUFFER_BYTES, "speaker chunk exceeds prebuffer");
 static_assert(SPEAKER_FLOW_REPORT_BYTES <= SPEAKER_PREBUFFER_BYTES, "speaker flow report interval exceeds prebuffer");
 static_assert((SPEAKER_PREBUFFER_BYTES & 1) == 0, "speaker prebuffer must align to PCM16");
-constexpr uint32_t SPEAKER_MAX_STREAM_BYTES = 1'920'000;  // At most 60 seconds.
+constexpr uint32_t SPEAKER_MAX_STREAM_BYTES = 2'880'000;  // At most 60 seconds.
 constexpr int16_t SPEAKER_DIGITAL_DIVISOR = 1;  // 100% digital amplitude; VPS limiter protects peaks.
 
 constexpr uint32_t INITIAL_RECOVERY_WINDOW_MS = 18'000;

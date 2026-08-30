@@ -88,7 +88,7 @@ See [`docs/architecture.md`](docs/architecture.md), [`docs/phase-1.md`](docs/pha
 
 ## Build
 
-Speaker output uses a dedicated MAX98357A I2S TX instance: BCLK GPIO21, LRC GPIO47, and DOUT GPIO14. The microphone remains on BCLK GPIO4, WS GPIO5, and SD GPIO6. Playback is mono 16 kHz PCM16 LE duplicated to stereo slots with a bounded 16 KiB buffer, an unchanged 4 KiB audible prebuffer, and 100% digital amplitude. VPS conditioning is one-pass: 110 Hz high-pass, configurable +6 dB software gain, then a 0.95 peak limiter with auto-gain disabled.
+Speaker output uses a dedicated MAX98357A I2S TX instance: BCLK GPIO21, LRC GPIO47, and DOUT GPIO14. The microphone remains on BCLK GPIO4, WS GPIO5, and SD GPIO6. Kokoro playback is native mono 24 kHz PCM16 LE duplicated to stereo slots with a bounded 24 KiB buffer, 6 KiB / 128 ms audible prebuffer, and 100% digital amplitude. VPS conditioning is one-pass: 110 Hz high-pass, configurable conservative gain (Kokoro default +2 dB), then a 0.95 peak limiter with auto-gain disabled. eSpeak remains an explicitly selectable fallback.
 
 Speaker ON keeps one authenticated `/speaker` WSS connected after `/device` and reuses it with `speaker_begin` / binary PCM / `speaker_end` framing. Speaker OFF stops playback, restores WakeNet/display state, closes the WSS, and releases its dynamic StreamBuffer and TLS/network resources. The mode, volume, and mute settings are persisted in ESP32 NVS; automatic-reply mode is also persisted on the VPS. Manual `/speak` while OFF uses a temporary stream and leaves Speaker OFF.
 
