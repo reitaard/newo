@@ -42,6 +42,6 @@ Only after five zero-underrun baseline runs: test 9,600-byte/200-ms prebuffer fi
 
 ## Task/concurrency review notes
 
-The WebSocket callback only validates/copies Opus packets into PSRAM queues. The decoder task is core 1, priority 1; playback is core 1, priority 2; decode therefore cannot block callback/Wi-Fi work and playback has precedence once PCM is ready. Decoder must remain below playback priority. Hardware must confirm callback average/worst are well below the old synchronous 7–10 ms decode cost.
+The WebSocket callback only validates/copies Opus packets into PSRAM queues. The decoder task is core 1, priority 1; playback is core 1, priority 2. Opus decode no longer executes synchronously inside the WebSocket callback; decoder work runs independently while playback has precedence once PCM is ready. Decoder and Arduino-loop/Wi-Fi work can still contend or time-slice on a core, so physical callback timing must confirm scheduling behavior and must not be assumed.
 
 Static review must be rechecked on hardware: result publication waits for `taskFinished_` and decoder-task exit before resource release; late frames are rejected after completion; queue slots are returned after decode; disconnect is converted to failure. Shared telemetry is observational and can be non-atomic; consumers must not infer `buffered == received-consumed` from separately sampled counters.
