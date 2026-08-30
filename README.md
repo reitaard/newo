@@ -45,7 +45,9 @@ Caddy proxies the public endpoint to the Node service on loopback `127.0.0.1:878
 
 ## Local wake-word voice lifecycle
 
-Voice defaults **OFF** so an initial flash is safe without the INMP441 attached. Telegram `/voice` (alias `/v`) toggles OFF to ARMED and toggles ARMED or STREAMING to OFF; `/vs` remains the detailed read-only status alias. In **ARMED**, official Arduino-ESP32 3.3.11 ESP_SR WakeNet listens locally through the shipped English model, sends **no microphone PCM**, and opens no `/voice` socket. `/device` remains the sole persistent cloud WebSocket.
+Voice defaults **OFF** so an initial flash is safe without the INMP441 attached. Telegram `/voice` (alias `/v`) toggles OFF to ARMED and toggles ARMED or STREAMING to OFF; `/vs` remains the detailed read-only status alias. In **ARMED**, official Arduino-ESP32 3.3.11 ESP_SR WakeNet listens locally using the WakeNet model stored in the flash `model` partition, sends **no microphone PCM**, and opens no `/voice` socket. `/device` remains the sole persistent cloud WebSocket.
+
+The written product identity is **Newo** and the spoken assistant name is **Neo**. Newo firmware does not name a wake phrase: the actual local trigger is embedded in the WakeNet model packed into `srmodels.bin`. The current Sherpa hotword file contains `NEO`, but that only biases transcription after wake and cannot make WakeNet detect Neo. Do not claim the board supports a `Neo` wake phrase until a Neo WakeNet model has been installed and physically validated. See [`docs/wake-word.md`](docs/wake-word.md).
 
 A local wake changes the lifecycle to **STREAMING**: ESP_SR is stopped and releases I2S before the temporary voice task acquires it, opens authenticated certificate-validated `wss://newo.reitaard.de/voice`, and sends direct 20 ms 16 kHz mono PCM16 frames. A final transcript, disconnect, send failure, timeout, or a `/voice` toggle while STREAMING closes `/voice`, releases I2S/task resources, restores WakeNet, and returns to ARMED (or OFF). There is no permanent PCM queue or cloud sender task; transport stalls fail the utterance rather than accumulating stale audio.
 
@@ -60,7 +62,7 @@ INMP441 SD   -> GPIO6  (I2S data in)
 INMP441 L/R  -> GND    (left channel)
 ```
 
-GPIO4/5/6 are configurable in `newo_config.h`; the firmware audit found no current Newo assignments for them and deliberately excludes GPIO0 (bootstrap), GPIO19/20 (USB/JTAG), GPIO48 (RGB LED), and flash/PSRAM pins. The module receives 32-bit stereo I2S slots at 16 kHz, selects the configured INMP441 channel, sign-extends the left-aligned 24-bit sample (`slot32 >> 8`), then reduces and clamps it to signed PCM16 (`sample24 >> 8`).
+GPIO4/5/6 are configurable in `newo_config.h`; the firmware audit found no current Newo assignments for them and deliberately excludes GPIO0 (bootstrap), GPIO19/20 (USB/JTAG), GPIO48 (RGB LED), and flash/PSRAM pins. The module receives 32-bit stereo I2S slots at 16 kHz and uses Arduino's supported `I2S_RX_TRANSFORM_32_TO_16`; streaming then selects the configured mono channel from the transformed stereo input.
 
 ## Display and Telegram control
 
@@ -84,7 +86,7 @@ Important firmware events still print over USB Serial and are also held in a fix
 
 `0.3.1-dev` had a physical `loopTask` stack-canary failure when diagnostics copied the full ring buffer onto the 8 KiB Arduino task stack. `0.3.2-dev` keeps the 64-entry global ring but exports selected log entries through temporary PSRAM (with a normal-heap fallback); health copies metadata only.
 
-See [`docs/architecture.md`](docs/architecture.md), [`docs/phase-1.md`](docs/phase-1.md), and [`docs/telegram.md`](docs/telegram.md).
+See [`docs/architecture.md`](docs/architecture.md), [`docs/wake-word.md`](docs/wake-word.md), [`docs/phase-1.md`](docs/phase-1.md), and [`docs/telegram.md`](docs/telegram.md).
 
 ## Build
 
@@ -92,7 +94,7 @@ Speaker output uses a dedicated MAX98357A I2S TX instance: BCLK GPIO21, LRC GPIO
 
 Speaker ON keeps one authenticated `/speaker` WSS connected after `/device` and reuses it with `speaker_begin` / binary PCM / `speaker_end` framing. Kokoro realtime playback uses explicit unknown-length framing (`streaming: true`, bounded `max_bytes`, and exact final `speaker_end.bytes`); known-length framing remains supported for the eSpeak fallback. Speaker OFF stops playback, restores WakeNet/display state, closes the WSS, and releases its dynamic StreamBuffer and TLS/network resources. The mode, volume, and mute settings are persisted in ESP32 NVS; automatic-reply mode is also persisted on the VPS. Manual `/speak` while OFF uses a temporary stream and leaves Speaker OFF.
 
-Open `Newo/Newo.ino`. Build with Arduino-ESP32 3.3.11 and `esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=esp_sr_16,UploadSpeed=921600`. The ESP_SR partition is mandatory because its official model is stored in the model partition. Arduino-ESP32 builds `srmodels.bin` but its ordinary upload recipe does not write it; use `Newo/flash_esp_sr.sh <serial-port>` to flash both the application and the official model partition. Hidden allowlisted Telegram controls wait for correlated `/device` acknowledgements. `/voice`, `/speaker`, and `/eco` are primary toggles with detailed replies; `/volume [0-100]` reads or updates the NVS-persisted runtime speaker gain, `/mute` toggles persisted mute, and `/speak <text>` remains a manual TTS playback command independent of the automatic `/speaker` toggle.
+Open `Newo/Newo.ino`. Build with Arduino-ESP32 3.3.11 and `esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=esp_sr_16,UploadSpeed=921600`. The ESP_SR model partition is mandatory. Arduino-ESP32 copies its packaged `srmodels.bin` into the build output when ESP_SR is used; on Newo's confirmed 3.3.11 + built-in `esp_sr_16` Arduino IDE configuration, a normal upload has also been observed to write that model image to the model partition. `Newo/flash_esp_sr.sh <serial-port>` remains the explicit recovery/manual path when the model partition must be written separately. A future Neo WakeNet model will require an `srmodels.bin` containing that model; changing a firmware string is not sufficient. Hidden allowlisted Telegram controls wait for correlated `/device` acknowledgements. `/voice`, `/speaker`, and `/eco` are primary toggles with detailed replies; `/volume [0-100]` reads or updates the NVS-persisted runtime speaker gain, `/mute` toggles persisted mute, and `/speak <text>` remains a manual TTS playback command independent of the automatic `/speaker` toggle.
 
 ## Repository rule
 
