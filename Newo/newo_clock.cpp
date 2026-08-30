@@ -1,6 +1,6 @@
 #include "newo_display.h"
 
-#include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/FreeSans12pt7b.h>
 #include <time.h>
 #include <cstring>
 
@@ -8,9 +8,9 @@ namespace {
 constexpr char kTimeZone[] = "ICT-7";  // UTC+7 (Cambodia); POSIX TZ sign is reversed.
 constexpr int16_t kClockY = 214;
 constexpr int16_t kClockClearX = 34;
-constexpr int16_t kClockClearY = 194;
+constexpr int16_t kClockClearY = 190;
 constexpr int16_t kClockClearW = 172;
-constexpr int16_t kClockClearH = 30;
+constexpr int16_t kClockClearH = 38;
 }
 
 void NewoDisplay::updateClock() {
@@ -54,7 +54,7 @@ void NewoDisplay::updateClock() {
   if (clockText[0] == '0') memmove(clockText, clockText + 1, strlen(clockText));
 
   display_.fillRect(kClockClearX, kClockClearY, kClockClearW, kClockClearH, ST77XX_BLACK);
-  display_.setFont(&FreeSans9pt7b);
+  display_.setFont(&FreeSans12pt7b);
   display_.setTextColor(ST77XX_WHITE);
   int16_t x1, y1;
   uint16_t width, height;
