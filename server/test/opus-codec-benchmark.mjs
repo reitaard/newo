@@ -34,7 +34,7 @@ for (const frameMs of [20, 40, 60]) for (const bitrate of [20_000, 24_000, 32_00
   const payload = runs.map((run) => run.payloadBytes);
   const packets = pcm.length / frameBytes;
   cases.push({ frame_ms: frameMs, bitrate, packets_per_second: 1_000 / frameMs,
-    packets_per_10s: packets, payload_bytes_median: median(payload),
+    packet_count: packets, packetization_delay_ms: frameMs, payload_bytes_median: median(payload),
     wire_bytes_median: median(payload) + packets * 8,
     encode_ms_median: Number(median(elapsed).toFixed(2)), encode_ms_worst: Number(Math.max(...elapsed).toFixed(2)),
     compression_ratio: Number((pcm.length / (median(payload) + packets * 8)).toFixed(2)) });

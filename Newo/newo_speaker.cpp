@@ -122,7 +122,7 @@ bool NewoSpeaker::allocateOpusQueue() {
       NewoConfig::SPEAKER_OPUS_QUEUE_DEPTH * NewoConfig::SPEAKER_OPUS_PACKET_MAX_BYTES,
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (!opusReadyQueue_ || !opusFreeQueue_ || !opusPacketStorage_) { releaseOpusQueue(); return false; }
-  return resetOpusQueue();
+  return true;
 }
 
 bool NewoSpeaker::resetOpusQueue() {
@@ -234,10 +234,12 @@ bool NewoSpeaker::startPlayback(const Request& request) {
   releaseOpusDecoder();
   if (request.codec == Codec::OPUS && (!allocateOpusQueue() || !resetOpusQueue())) {
     NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::AUDIO, "SPEAKER_OPUS_INIT_FAILED", "queue_allocation");
+    publishStartupFailure(request, "opus_queue_allocation_failed");
     return false;
   }
   if (!audio_.setPlaybackActive(true)) {
     releaseOpusDecoder();
+    publishStartupFailure(request, "playback_activation_failed");
     return false;
   }
 
@@ -286,7 +288,9 @@ bool NewoSpeaker::startPlayback(const Request& request) {
   opusCallbackWorstUs_ = 0;
   minimumDecoderStackBytes_ = UINT32_MAX;
   if (request.codec == Codec::OPUS && xTaskCreatePinnedToCore(decoderTaskEntry, "newo-opus", NewoConfig::SPEAKER_OPUS_DECODER_STACK_BYTES, this, 1, &decoderTask_, 1) != pdPASS) {
-    decoderTask_ = nullptr; audio_.setPlaybackActive(false); releaseOpusQueue(); return false;
+    decoderTask_ = nullptr; audio_.setPlaybackActive(false); releaseOpusQueue();
+    publishStartupFailure(request, "opus_decoder_task_create_failed");
+    return false;
   }
   opusSawPartialFrame_ = false;
   playbackStateApplied_ = true;
@@ -300,6 +304,10 @@ bool NewoSpeaker::startPlayback(const Request& request) {
     playbackStateApplied_ = false;
     // The decoder task exclusively owns opusDecoder_ and queue slots.
     fail("playback_task_create_failed");
+    result_ = {};
+    strlcpy(result_.playbackId, request.playbackId, sizeof(result_.playbackId));
+    result_.success = false;
+    strlcpy(result_.error, "playback_task_create_failed", sizeof(result_.error));
     decoderAbort_ = true;
     taskFinished_ = true;
     return false;
@@ -361,6 +369,16 @@ void NewoSpeaker::fail(const char* error) {
   if (!failed_) failureReason_ = error;
   failed_ = true;
   portEXIT_CRITICAL(&stateMux_);
+}
+
+void NewoSpeaker::publishStartupFailure(const Request& request, const char* error) {
+  result_ = {};
+  strlcpy(result_.playbackId, request.playbackId, sizeof(result_.playbackId));
+  result_.success = false;
+  strlcpy(result_.error, error, sizeof(result_.error));
+  resultReady_ = true;
+  lastPlayback_ = LastPlayback::FAILED;
+  NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::AUDIO, "SPEAKER_FAILED", error);
 }
 
 bool NewoSpeaker::handleOpusPacket(const uint8_t* payload, size_t length) {

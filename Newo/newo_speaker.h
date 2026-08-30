@@ -92,6 +92,7 @@ class NewoSpeaker {
   void logMemory(const char* stage, const MemorySnapshot& snapshot, const MemorySnapshot* comparison = nullptr);
   MemorySnapshot memorySnapshot() const;
   void fail(const char* error);
+  void publishStartupFailure(const Request& request, const char* error);
 
   NewoWiFi& wifi_;
   NewoDisplay& display_;
