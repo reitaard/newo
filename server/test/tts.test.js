@@ -104,11 +104,41 @@ test("Kokoro backend uses realtime PCM with configurable voice and speed", async
   const { port } = server.address();
   const backend = new KokoroTtsBackend({ baseUrl: `http://127.0.0.1:${port}`, voice: "am_eric", speed: 1.1 });
   try {
-    const pcm = await backend.synthesize("Natural speech.", { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
+    const source = await backend.stream("Natural speech.", { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
+    const chunks = [];
+    for await (const chunk of source.audio) chunks.push(chunk);
+    const pcm = Buffer.concat(chunks);
     assert.equal(requestUrl, "/v1/audio/realtime");
     assert.ok(pcm.length > 0);
     assert.equal(pcm.length & 1, 0);
+    assert.equal(source.metrics.rawPcmBytes, sourcePcm.length, "outer raw metric must aggregate upstream bytes");
+    assert.equal(source.metrics.conditionedPcmBytes, pcm.length);
+    assert.ok(source.metrics.producerQueueHighWaterBytes > 0);
     assert.deepEqual(requestBody, { model: "kokoro", input: "Natural speech.", voice: "am_eric", response_format: "pcm", speed: 1.1 });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("outer Kokoro metrics aggregate actual raw bytes across text segments", async () => {
+  let requests = 0;
+  const rawPerSegment = 24_000;
+  const server = createServer((_request, response) => {
+    requests += 1;
+    response.writeHead(200, { "content-type": "application/octet-stream" });
+    response.end(Buffer.alloc(rawPerSegment, requests));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const backend = new KokoroTtsBackend({ baseUrl: `http://127.0.0.1:${port}` });
+  try {
+    const text = "Newo is online and connected to the cloud. Speaker output is enabled and healthy. The remaining status follows shortly.";
+    const source = await backend.stream(text, { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
+    const chunks = [];
+    for await (const chunk of source.audio) chunks.push(chunk);
+    assert.ok(requests >= 2);
+    assert.equal(source.metrics.rawPcmBytes, requests * rawPerSegment);
+    assert.equal(source.metrics.conditionedPcmBytes, Buffer.concat(chunks).length);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -157,6 +187,35 @@ test("Kokoro realtime stall fails with a bounded no-progress timeout", async () 
     }, /kokoro_stream_timeout|aborted/);
   } finally {
     response?.destroy();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Kokoro iterator cancellation aborts HTTP production and waits for cleanup", async () => {
+  let writes = 0;
+  let closed = false;
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/octet-stream" });
+    const timer = setInterval(() => {
+      writes += 1;
+      response.write(Buffer.alloc(24_000, writes & 0xff));
+    }, 5);
+    response.on("close", () => { clearInterval(timer); closed = true; });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const backend = new KokoroTtsBackend({ baseUrl: `http://127.0.0.1:${port}` });
+  try {
+    const source = await backend.stream("cancel", { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
+    const iterator = source.audio[Symbol.asyncIterator]();
+    assert.equal((await iterator.next()).done, false);
+    await iterator.return();
+    await waitFor(() => closed);
+    const writesAfterCancel = writes;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(writes, writesAfterCancel, "HTTP producer must stop after iterator cancellation");
+    assert.equal(source.metrics.producerQueuedBytes, 0);
+  } finally {
     await new Promise((resolve) => server.close(resolve));
   }
 });
@@ -256,6 +315,52 @@ test("streaming speaker framing emits PCM before synthesis ends", async () => {
   await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
   runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 12_288 });
   await queued.completion;
+  runtime.close();
+});
+
+test("speaker failure cancels an active source before the next queued job", async () => {
+  const ws = fakeSocket();
+  let streamCalls = 0;
+  let produced = 0;
+  let cancelled = false;
+  const backend = {
+    gainDb: 2, limiter: 0.95,
+    async stream() {
+      streamCalls += 1;
+      const metrics = {};
+      if (streamCalls > 1) return { metrics, audio: (async function* () { yield Buffer.alloc(4_096, 2); })() };
+      return { metrics, audio: (async function* () {
+        const producer = setInterval(() => { produced += 1; }, 1);
+        try {
+          while (true) {
+            produced += 1;
+            yield Buffer.alloc(2_048, 1);
+            await tick();
+          }
+        } finally {
+          clearInterval(producer);
+          cancelled = true;
+        }
+      })() };
+    },
+  };
+  const runtime = createSpeakerRuntime({
+    logger: logger(), enabled: true, backend, getDevice: () => ({}), sendControl: () => true,
+    flowTimeoutMs: 25,
+  });
+  runtime.handleConnection(ws, "newo-01");
+  const failed = runtime.speak("cancel this stream");
+  await assert.rejects(failed.completion, /flow_timeout/);
+  assert.equal(cancelled, true, "source finally must run before failed playback settles");
+  const producedAtCancel = produced;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(produced, producedAtCancel, "cancelled producer must not emit more PCM");
+
+  const next = runtime.speak("next stream");
+  await waitFor(() => ws.frames.filter((frame) => String(frame).includes("speaker_end")).length === 1);
+  assert.equal(streamCalls, 2, "next job must not remain blocked behind the cancelled producer");
+  runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: next.playbackId, bytes: 4_096 });
+  await next.completion;
   runtime.close();
 });
 

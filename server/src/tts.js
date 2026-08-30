@@ -216,9 +216,13 @@ export class KokoroTtsBackend {
     this.logger = logger;
   }
 
-  async streamSegment(text, format) {
+  async streamSegment(text, format, { signal } = {}) {
     validateFormat(format);
     const controller = new AbortController();
+    const cancelFromParent = () => controller.abort(signal?.reason ?? timeoutError("kokoro_stream_cancelled"));
+    if (signal?.aborted) cancelFromParent();
+    else signal?.addEventListener("abort", cancelFromParent, { once: true });
+    const removeParentSignal = () => signal?.removeEventListener("abort", cancelFromParent);
     const metrics = {
       requestStartedAt: performance.now(), responseHeadersAt: null, firstAudioByteAt: null,
       conditionerFirstOutputAt: null, completedAt: null, rawPcmBytes: 0, conditionedPcmBytes: 0,
@@ -238,6 +242,7 @@ export class KokoroTtsBackend {
     } catch (error) {
       clearTimeout(requestTimer);
       clearTimeout(absoluteTimer);
+      removeParentSignal();
       if (controller.signal.aborted || error?.name === "TimeoutError" || error?.name === "AbortError") {
         throw timeoutError(controller.signal.reason?.code ?? "kokoro_request_timeout");
       }
@@ -247,17 +252,20 @@ export class KokoroTtsBackend {
     metrics.responseHeadersAt = performance.now();
     if (!response.ok) {
       clearTimeout(absoluteTimer);
+      removeParentSignal();
       const detail = (await collectResponseBody(response, 2_000, "Kokoro error")).toString("utf8").trim();
       throw new Error(`Kokoro request failed (${response.status})${detail ? `: ${detail}` : ""}`);
     }
     const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
     if (contentType !== "application/octet-stream") {
       clearTimeout(absoluteTimer);
+      removeParentSignal();
       await response.body?.cancel?.().catch(() => {});
       throw new Error(`Kokoro returned non-PCM content type: ${contentType ?? "missing"}`);
     }
     if (!response.body) {
       clearTimeout(absoluteTimer);
+      removeParentSignal();
       throw new Error("Kokoro returned no PCM body");
     }
 
@@ -322,9 +330,13 @@ export class KokoroTtsBackend {
         }, "Kokoro realtime synthesis completed");
       } finally {
         clearTimeout(absoluteTimer);
-        controller.abort();
-        reader.releaseLock();
+        removeParentSignal();
+        if (!controller.signal.aborted) controller.abort(timeoutError("kokoro_stream_cancelled"));
+        await reader.cancel().catch(() => {});
         if (ffmpeg.exitCode === null) ffmpeg.kill("SIGKILL");
+        await Promise.allSettled([pump, closePromise]);
+        metrics.cancelled = metrics.completedAt === null;
+        reader.releaseLock();
       }
     }
     return { audio: conditionedAudio(), metrics, streaming: true };
@@ -336,54 +348,72 @@ export class KokoroTtsBackend {
     const metrics = {
       requestStartedAt: performance.now(), responseHeadersAt: null, firstAudioByteAt: null,
       conditionerFirstOutputAt: null, completedAt: null, rawPcmBytes: 0, conditionedPcmBytes: 0,
-      segments: segments.length,
+      segments: segments.length, producerQueuedBytes: 0, producerQueueHighWaterBytes: 0,
     };
     const queued = [];
     const waiters = [];
     let producerError = null;
     let producerDone = false;
     let cancelled = false;
+    const producerController = new AbortController();
     const wake = () => { while (waiters.length) waiters.shift()(); };
     const producer = (async () => {
       try {
         for (const segment of segments) {
           if (cancelled) break;
-          const source = await this.streamSegment(segment, format);
-          for await (const chunk of source.audio) {
-            if (cancelled) break;
-            if (metrics.responseHeadersAt === null) metrics.responseHeadersAt = source.metrics.responseHeadersAt;
-            if (metrics.firstAudioByteAt === null) metrics.firstAudioByteAt = source.metrics.firstAudioByteAt;
-            if (metrics.conditionerFirstOutputAt === null) metrics.conditionerFirstOutputAt = source.metrics.conditionerFirstOutputAt;
-            metrics.rawPcmBytes += chunk.length;
-            metrics.conditionedPcmBytes += chunk.length;
-            if (metrics.conditionedPcmBytes > this.maxPcmBytes) throw new Error("Kokoro output exceeded limit");
-            queued.push(chunk);
-            wake();
+          const source = await this.streamSegment(segment, format, { signal: producerController.signal });
+          try {
+            for await (const chunk of source.audio) {
+              if (cancelled) break;
+              if (metrics.responseHeadersAt === null) metrics.responseHeadersAt = source.metrics.responseHeadersAt;
+              if (metrics.firstAudioByteAt === null) metrics.firstAudioByteAt = source.metrics.firstAudioByteAt;
+              if (metrics.conditionerFirstOutputAt === null) metrics.conditionerFirstOutputAt = source.metrics.conditionerFirstOutputAt;
+              metrics.conditionedPcmBytes += chunk.length;
+              if (metrics.conditionedPcmBytes > this.maxPcmBytes) throw new Error("Kokoro output exceeded limit");
+              queued.push(chunk);
+              metrics.producerQueuedBytes += chunk.length;
+              metrics.producerQueueHighWaterBytes = Math.max(metrics.producerQueueHighWaterBytes, metrics.producerQueuedBytes);
+              wake();
+            }
+          } finally {
+            metrics.rawPcmBytes += source.metrics.rawPcmBytes;
           }
         }
         metrics.completedAt = performance.now();
       } catch (error) {
-        producerError = error;
+        if (!cancelled) producerError = error;
       } finally {
         producerDone = true;
         wake();
       }
     })();
     producer.catch(() => {});
+    function cancel() {
+      if (cancelled) return;
+      cancelled = true;
+      producerController.abort(timeoutError("kokoro_stream_cancelled"));
+      queued.length = 0;
+      metrics.producerQueuedBytes = 0;
+      wake();
+    }
     async function* audio() {
       try {
         while (!producerDone || queued.length) {
           if (!queued.length) await new Promise((resolve) => waiters.push(resolve));
-          while (queued.length) yield queued.shift();
+          while (queued.length) {
+            const chunk = queued.shift();
+            metrics.producerQueuedBytes -= chunk.length;
+            yield chunk;
+          }
           if (producerError) throw producerError;
         }
         if (producerError) throw producerError;
       } finally {
-        cancelled = true;
-        wake();
+        cancel();
+        await producer;
       }
     }
-    return { audio: audio(), metrics, streaming: true };
+    return { audio: audio(), metrics, streaming: true, cancel };
   }
 
   async synthesize(text, format) {
@@ -482,6 +512,7 @@ export function createSpeakerRuntime({
     rejectFlowWaiters(job, new Error(result.error ?? result.kind));
     jobs.delete(job.id);
     allJobs.delete(job);
+    if (result.kind !== "complete") void job.cancelSource?.();
     if (job.temporary && !isPersistentEnabled()) closeConnection("temporary playback complete");
     result.kind === "complete" ? job.resolve(result) : job.reject(new Error(result.error ?? result.kind));
   }
@@ -596,26 +627,43 @@ export function createSpeakerRuntime({
   }
   async function streamRealtime(job, current, source) {
     const iterator = source.audio[Symbol.asyncIterator]();
-    const first = await iterator.next();
-    if (first.done || !Buffer.isBuffer(first.value) || !first.value.length) throw new Error("invalid_pcm");
-    job.backendMetrics = source.metrics;
-    beginJob(job);
-    const begin = { type: "speaker_begin", playback_id: job.id, sample_rate: format.sampleRate, channels: 1, bits_per_sample: 16, streaming: true, max_bytes: maxStreamBytes };
-    job.beginSentAt = performance.now();
-    await sendFrame(current.ws, JSON.stringify(begin));
-    logger.info({ device_id: current.deviceId, playback_id: job.id, streaming: true, max_pcm_bytes: maxStreamBytes }, "Speaker begin sent");
-    await sendWithFlow(job, current, first.value);
-    while (true) {
-      const part = await iterator.next();
-      if (part.done) break;
-      await sendWithFlow(job, current, part.value);
+    let sourceCompleted = false;
+    let cancellationPromise = null;
+    const cancelSource = () => {
+      source.cancel?.();
+      if (typeof iterator.return !== "function") return Promise.resolve();
+      cancellationPromise ??= iterator.return().catch((error) => {
+        logger.warn({ playback_id: job.id, error_message: error?.message ?? "unknown" }, "Speaker source cancellation failed");
+      });
+      return cancellationPromise;
+    };
+    job.cancelSource = cancelSource;
+    try {
+      const first = await iterator.next();
+      if (first.done || !Buffer.isBuffer(first.value) || !first.value.length) throw new Error("invalid_pcm");
+      job.backendMetrics = source.metrics;
+      beginJob(job);
+      const begin = { type: "speaker_begin", playback_id: job.id, sample_rate: format.sampleRate, channels: 1, bits_per_sample: 16, streaming: true, max_bytes: maxStreamBytes };
+      job.beginSentAt = performance.now();
+      await sendFrame(current.ws, JSON.stringify(begin));
+      logger.info({ device_id: current.deviceId, playback_id: job.id, streaming: true, max_pcm_bytes: maxStreamBytes }, "Speaker begin sent");
+      await sendWithFlow(job, current, first.value);
+      while (true) {
+        const part = await iterator.next();
+        if (part.done) { sourceCompleted = true; break; }
+        await sendWithFlow(job, current, part.value);
+      }
+      if (!job.bytesSent || (job.bytesSent & 1)) throw new Error("invalid_pcm");
+      job.ttsCompletedAt = source.metrics.completedAt ?? performance.now();
+      job.audio = job.statistics.result(backend.limiter ?? SPEAKER_LIMITER);
+      await sendFrame(current.ws, JSON.stringify({ type: "speaker_end", playback_id: job.id, bytes: job.bytesSent }));
+      logStreamComplete(job, current);
+      return job.completion;
+    } finally {
+      if (!sourceCompleted) await cancelSource();
+      else if (cancellationPromise) await cancellationPromise;
+      job.cancelSource = null;
     }
-    if (!job.bytesSent || (job.bytesSent & 1)) throw new Error("invalid_pcm");
-    job.ttsCompletedAt = source.metrics.completedAt ?? performance.now();
-    job.audio = job.statistics.result(backend.limiter ?? SPEAKER_LIMITER);
-    await sendFrame(current.ws, JSON.stringify({ type: "speaker_end", playback_id: job.id, bytes: job.bytesSent }));
-    logStreamComplete(job, current);
-    return job.completion;
   }
   async function streamKnown(job, current, pcm) {
     job.pcmBytes = pcm.length;
@@ -645,6 +693,7 @@ export function createSpeakerRuntime({
       max_outstanding_limit_bytes: maxOutstandingBytes, max_outstanding_bytes: job.maxOutstandingBytes,
       flow_reports: job.flowReports, min_reported_buffer: Number.isFinite(job.minReportedBufferedBytes) ? job.minReportedBufferedBytes : null,
       max_reported_buffer: job.maxReportedBufferedBytes, chunk_bytes: chunkBytes,
+      producer_queue_high_water_bytes: job.backendMetrics?.producerQueueHighWaterBytes ?? null,
     }, "Speaker PCM stream sent");
   }
   async function run(job) {
@@ -676,7 +725,7 @@ export function createSpeakerRuntime({
     const job = {
       id, text, temporary, settled: false, resultTimer: null, queuedAt: performance.now(), replyReadyAt,
       synthesisStartedAt: null, ttsCompletedAt: null, beginSentAt: null, firstPcmSentAt: null,
-      backendMetrics: null, playbackStartedAt: null, firstPcmToPlayMs: null,
+      backendMetrics: null, playbackStartedAt: null, firstPcmToPlayMs: null, cancelSource: null,
       resolve, reject, completion, bytesSent: 0, consumedBytes: 0, reportedBufferedBytes: 0,
       flowVersion: 0, flowWaiters: new Set(), flowReports: 0, maxOutstandingBytes: 0,
       minReportedBufferedBytes: Number.POSITIVE_INFINITY, maxReportedBufferedBytes: 0, statistics: pcmStatistics(), audio: null,
@@ -696,7 +745,10 @@ export function createSpeakerRuntime({
     ws.on?.("message", (data, isBinary) => { handleSocketMessage(current, data, isBinary); });
     ws.on?.("close", () => {
       if (connection === current) connection = null;
-      for (const job of jobs.values()) rejectFlowWaiters(job, new Error("speaker disconnected"));
+      for (const job of jobs.values()) {
+        void job.cancelSource?.();
+        rejectFlowWaiters(job, new Error("speaker disconnected"));
+      }
       logger.info({ device_id: deviceId }, "Persistent speaker stream disconnected");
     });
     ws.on?.("error", () => logger.warn({ device_id: deviceId }, "Persistent speaker WebSocket error"));
