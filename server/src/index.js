@@ -276,17 +276,15 @@ async function handleNewoCommand(ctx) {
   return commandReply(ctx, commandMessage("newo", [quote(["Reserved for the Newo agent."])]), "reserved");
 }
 
-function faceKeyboard() {
-  return { reply_markup: { inline_keyboard: FACE_STYLES.map((style) => [{ text: `/face ${style}`, callback_data: `face:${style}` }]) } };
-}
+function faceStyleCommand(style) { return `/face_${style}`; }
 
 async function handleFaceCommand(ctx, selectedInput = null) {
   const input = selectedInput ?? String(ctx.match ?? "").trim().toLowerCase();
   if (!input) {
-    return commandReply(ctx, commandMessage("face", [quote(FACE_STYLES.map((style) => `/face ${style}`))]), "usage", null, faceKeyboard());
+    return commandReply(ctx, commandMessage("face", [quote(FACE_STYLES.map(faceStyleCommand))]), "usage");
   }
   if (!FACE_STYLES.includes(input)) {
-    return commandReply(ctx, commandMessage("face", [quote(["Choose one:", ...FACE_STYLES.map((style) => `/face ${style}`)])]), "usage", null, faceKeyboard());
+    return commandReply(ctx, commandMessage("face", [quote(["Choose one:", ...FACE_STYLES.map(faceStyleCommand)])]), "usage");
   }
   const request = sendDeviceRequest("display_set", "display_ack", { mode: input, text: "" }, commandTrace(ctx));
   if (request.kind === "offline") return commandReply(ctx, statusMessage("face", "offline"), "offline");
@@ -518,11 +516,7 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["reboot", "r"], handleRebootCommand);
   bot.command("newo", handleNewoCommand);
   bot.command(["face", "f"], handleFaceCommand);
-  bot.callbackQuery(/^face:([a-z]+)$/, async (ctx) => {
-    const style = ctx.match[1];
-    await ctx.answerCallbackQuery();
-    await handleFaceCommand(ctx, style);
-  });
+  for (const style of FACE_STYLES) bot.command(`face_${style}`, (ctx) => handleFaceCommand(ctx, style));
   bot.command("eco", handleEcoCommand);
   bot.command(["voice", "v"], handleVoiceCommand);
   bot.command("vs", (ctx) => handleVoiceCommand(ctx, "status"));
