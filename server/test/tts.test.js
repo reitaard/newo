@@ -5,17 +5,19 @@ import {
   analyzePcm16,
   createSpeakerRuntime,
   speakerAudioFilter,
-  speakerChunkDueMs,
-  speakerChunkSendDueAt,
+  speakerCreditBytes,
+  speakerOutstandingBytes,
   SPEAKER_AUDIO_FILTER,
   SPEAKER_GAIN_DB,
   SPEAKER_INITIAL_LEAD_BYTES,
   SPEAKER_LIMITER,
+  SPEAKER_MAX_OUTSTANDING_BYTES,
+  SPEAKER_TARGET_OUTSTANDING_BYTES,
   telegramHtmlToSpeech,
 } from "../src/tts.js";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
-async function waitFor(predicate, attempts = 100) {
+async function waitFor(predicate, attempts = 200) {
   for (let index = 0; index < attempts; index += 1) {
     if (predicate()) return;
     await tick();
@@ -34,11 +36,13 @@ function fakeSocket() {
       this.frames.push(data);
       (typeof options === "function" ? options : callback)?.();
     },
+    emitMessage(value) { listeners.get("message")?.(Buffer.from(JSON.stringify(value)), false); },
     close() { this.closeCount += 1; this.readyState = 3; listeners.get("close")?.(); },
   };
 }
 
 function logger() { return { info() {}, warn() {} }; }
+function binaryFrames(ws) { return ws.frames.filter(Buffer.isBuffer); }
 
 test("Telegram HTML becomes bounded natural speech", () => {
   assert.equal(
@@ -49,34 +53,15 @@ test("Telegram HTML becomes bounded natural speech", () => {
   assert.ok(telegramHtmlToSpeech("word ".repeat(100), 80).length <= 81);
 });
 
-test("speaker pacing keeps the 256 ms lead and prevents overdue catch-up bursts", () => {
+test("speaker flow window keeps 8 KiB target and 12 KiB hard ceiling", () => {
   assert.equal(SPEAKER_INITIAL_LEAD_BYTES, 8_192);
-  assert.equal(speakerChunkDueMs(4_096, 8_192, 32_000), 0);
-  assert.equal(speakerChunkDueMs(8_192, 8_192, 32_000), 0);
-  assert.equal(speakerChunkDueMs(9_216, 8_192, 32_000), 32);
-  assert.equal(speakerChunkDueMs(10_240, 8_192, 32_000), 64);
-  assert.throws(() => speakerChunkDueMs(1_024, 8_192, 0), /invalid PCM byte rate/);
-
-  // If Node wakes late, the old absolute timeline would make several chunks
-  // immediately overdue. The new bound spaces the next chunk by 32 ms instead.
-  assert.equal(speakerChunkSendDueAt({
-    streamStartedAt: 1_000,
-    bytesSent: 10_240,
-    leadBytes: 8_192,
-    bytesPerSecond: 32_000,
-    lastPcmSentAt: 1_200,
-    chunkBytes: 1_024,
-  }), 1_232);
-
-  // Initial lead remains immediate and therefore does not add startup latency.
-  assert.equal(speakerChunkSendDueAt({
-    streamStartedAt: 1_000,
-    bytesSent: 8_192,
-    leadBytes: 8_192,
-    bytesPerSecond: 32_000,
-    lastPcmSentAt: 1_010,
-    chunkBytes: 1_024,
-  }), 1_000);
+  assert.equal(SPEAKER_TARGET_OUTSTANDING_BYTES, 8_192);
+  assert.equal(SPEAKER_MAX_OUTSTANDING_BYTES, 12_288);
+  assert.equal(speakerOutstandingBytes(8_192, 0), 8_192);
+  assert.equal(speakerCreditBytes(8_192, 0), 0);
+  assert.equal(speakerCreditBytes(8_192, 1_024), 1_024);
+  assert.equal(speakerCreditBytes(12_288, 4_096), 0);
+  assert.throws(() => speakerOutstandingBytes(1_024, 2_048), /invalid speaker flow counters/);
 });
 
 test("speaker conditioning adds configurable gain before the limiter", () => {
@@ -111,6 +96,50 @@ test("speaker runtime bounds queued jobs", () => {
   assert.equal(runtime.speak("one").kind, "queued");
   assert.equal(runtime.speak("two").kind, "queued");
   assert.equal(runtime.speak("three").kind, "busy");
+  runtime.close();
+});
+
+test("receiver credit stops after initial lead and resumes only after ESP consumption", async () => {
+  const ws = fakeSocket();
+  const runtime = createSpeakerRuntime({
+    logger: logger(), enabled: true,
+    backend: { async synthesize() { return Buffer.alloc(12_288, 1); }, gainDb: 6, limiter: 0.95 },
+    getDevice: () => ({}), sendControl: () => true,
+    flowTimeoutMs: 500,
+  });
+  runtime.handleConnection(ws, "newo-01");
+  const queued = runtime.speak("flow controlled");
+
+  await waitFor(() => binaryFrames(ws).length === 8);
+  await tick();
+  assert.equal(binaryFrames(ws).length, 8, "sender must stop at the 8 KiB initial window");
+  assert.equal(ws.frames.some((frame) => String(frame).includes("speaker_end")), false);
+
+  for (let consumed = 1_024; consumed <= 4_096; consumed += 1_024) {
+    const before = binaryFrames(ws).length;
+    ws.emitMessage({ type: "speaker_flow", playback_id: queued.playbackId, consumed_bytes: consumed, buffered_bytes: 8_192 - consumed });
+    await waitFor(() => binaryFrames(ws).length === before + 1);
+  }
+
+  await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
+  assert.equal(binaryFrames(ws).length, 12);
+  runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 12_288 });
+  assert.equal((await queued.completion).kind, "complete");
+  runtime.close();
+});
+
+test("speaker runtime fails rather than guessing when receiver flow stops", async () => {
+  const ws = fakeSocket();
+  const runtime = createSpeakerRuntime({
+    logger: logger(), enabled: true,
+    backend: { async synthesize() { return Buffer.alloc(12_288, 1); }, gainDb: 6, limiter: 0.95 },
+    getDevice: () => ({}), sendControl: () => true,
+    flowTimeoutMs: 20,
+  });
+  runtime.handleConnection(ws, "newo-01");
+  const queued = runtime.speak("no receiver credit");
+  await assert.rejects(queued.completion, /speaker flow timeout/);
+  assert.equal(binaryFrames(ws).length, 8);
   runtime.close();
 });
 

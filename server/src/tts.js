@@ -58,6 +58,9 @@ export const SPEAKER_GAIN_DB = 6;
 export const SPEAKER_LIMITER = 0.95;
 export const SPEAKER_LIMITER_ATTACK_MS = 5;
 export const SPEAKER_INITIAL_LEAD_BYTES = 8_192;
+export const SPEAKER_TARGET_OUTSTANDING_BYTES = 8_192;
+export const SPEAKER_MAX_OUTSTANDING_BYTES = 12_288;
+export const SPEAKER_FLOW_TIMEOUT_MS = 3_000;
 
 export function speakerAudioFilter(gainDb = SPEAKER_GAIN_DB, limiter = SPEAKER_LIMITER) {
   if (!Number.isFinite(gainDb) || gainDb < -12 || gainDb > 18) throw new Error("invalid speaker gain");
@@ -120,29 +123,45 @@ export class EspeakTtsBackend {
   }
 }
 
-const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
-
-export function speakerChunkDueMs(bytesSent, leadBytes, bytesPerSecond) {
-  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) throw new Error("invalid PCM byte rate");
-  return Math.max(0, (bytesSent - leadBytes) * 1_000 / bytesPerSecond);
+export function speakerOutstandingBytes(sentBytes, consumedBytes) {
+  if (!Number.isInteger(sentBytes) || !Number.isInteger(consumedBytes) || sentBytes < 0 || consumedBytes < 0 || consumedBytes > sentBytes) {
+    throw new Error("invalid speaker flow counters");
+  }
+  return sentBytes - consumedBytes;
 }
 
-/**
- * Bound catch-up after event-loop stalls. The absolute PCM timeline still defines
- * normal pacing, but once the initial lead has been sent we never transmit two
- * chunks closer together than one chunk of playback time. This prevents a late
- * Node timer from "catching up" with a burst that can overflow the ESP buffer.
- */
-export function speakerChunkSendDueAt({ streamStartedAt, bytesSent, leadBytes, bytesPerSecond, lastPcmSentAt, chunkBytes }) {
-  if (!Number.isFinite(streamStartedAt)) throw new Error("invalid stream start");
-  if (!Number.isFinite(chunkBytes) || chunkBytes <= 0) throw new Error("invalid speaker chunk");
-  const absoluteDueAt = streamStartedAt + speakerChunkDueMs(bytesSent, leadBytes, bytesPerSecond);
-  if (bytesSent <= leadBytes || !Number.isFinite(lastPcmSentAt)) return absoluteDueAt;
-  const minimumSpacingMs = chunkBytes * 1_000 / bytesPerSecond;
-  return Math.max(absoluteDueAt, lastPcmSentAt + minimumSpacingMs);
+export function speakerCreditBytes(sentBytes, consumedBytes, {
+  targetOutstandingBytes = SPEAKER_TARGET_OUTSTANDING_BYTES,
+  maxOutstandingBytes = SPEAKER_MAX_OUTSTANDING_BYTES,
+} = {}) {
+  if (!Number.isInteger(targetOutstandingBytes) || !Number.isInteger(maxOutstandingBytes) || targetOutstandingBytes <= 0 || maxOutstandingBytes < targetOutstandingBytes) {
+    throw new Error("invalid speaker flow window");
+  }
+  const outstanding = speakerOutstandingBytes(sentBytes, consumedBytes);
+  if (outstanding >= maxOutstandingBytes) return 0;
+  return Math.max(0, Math.min(targetOutstandingBytes - outstanding, maxOutstandingBytes - outstanding));
 }
 
-export function createSpeakerRuntime({ logger, backend, enabled, getDevice, sendControl, isPersistentEnabled = () => true, format = { sampleRate: 16_000, channels: 1, bitsPerSample: 16 }, chunkBytes = 1_024, maxTextChars = 300, connectionTimeoutMs = 9_000, resultTimeoutMs = 75_000, maxPendingJobs = 4 }) {
+export function createSpeakerRuntime({
+  logger,
+  backend,
+  enabled,
+  getDevice,
+  sendControl,
+  isPersistentEnabled = () => true,
+  format = { sampleRate: 16_000, channels: 1, bitsPerSample: 16 },
+  chunkBytes = 1_024,
+  maxTextChars = 300,
+  connectionTimeoutMs = 9_000,
+  resultTimeoutMs = 75_000,
+  flowTimeoutMs = SPEAKER_FLOW_TIMEOUT_MS,
+  targetOutstandingBytes = SPEAKER_TARGET_OUTSTANDING_BYTES,
+  maxOutstandingBytes = SPEAKER_MAX_OUTSTANDING_BYTES,
+  maxPendingJobs = 4,
+}) {
+  if (!Number.isInteger(chunkBytes) || chunkBytes <= 0) throw new Error("invalid speaker chunk size");
+  if (SPEAKER_INITIAL_LEAD_BYTES > maxOutstandingBytes || targetOutstandingBytes > maxOutstandingBytes) throw new Error("invalid speaker flow configuration");
+
   const jobs = new Map();
   const allJobs = new Set();
   const connectionWaiters = new Set();
@@ -157,10 +176,19 @@ export function createSpeakerRuntime({ logger, backend, enabled, getDevice, send
     if (current.ws.readyState === 1) current.ws.close(1000, reason);
   }
 
+  function rejectFlowWaiters(job, error) {
+    for (const waiter of job.flowWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+    job.flowWaiters.clear();
+  }
+
   function settle(job, result) {
     if (job.settled) return;
     job.settled = true;
     clearTimeout(job.resultTimer);
+    rejectFlowWaiters(job, new Error(result.error ?? result.kind));
     jobs.delete(job.id);
     allJobs.delete(job);
     if (job.temporary && !isPersistentEnabled()) closeConnection("temporary playback complete");
@@ -205,6 +233,83 @@ export function createSpeakerRuntime({ logger, backend, enabled, getDevice, send
     });
   }
 
+  function waitForFlow(job) {
+    if (job.settled) return Promise.reject(new Error("speaker playback already settled"));
+    const version = job.flowVersion;
+    return new Promise((resolve, reject) => {
+      const waiter = { resolve, reject, timer: null, version };
+      waiter.timer = setTimeout(() => {
+        job.flowWaiters.delete(waiter);
+        reject(new Error("speaker flow timeout"));
+      }, flowTimeoutMs);
+      job.flowWaiters.add(waiter);
+      if (job.flowVersion !== version) {
+        clearTimeout(waiter.timer);
+        job.flowWaiters.delete(waiter);
+        resolve();
+      }
+    });
+  }
+
+  function signalFlow(job) {
+    job.flowVersion += 1;
+    for (const waiter of job.flowWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.resolve();
+    }
+    job.flowWaiters.clear();
+  }
+
+  function handleFlow(current, message) {
+    const job = jobs.get(message.playback_id);
+    if (!job || connection !== current || job.settled) return false;
+    const consumedBytes = message.consumed_bytes;
+    const bufferedBytes = message.buffered_bytes;
+    if (!Number.isInteger(consumedBytes) || !Number.isInteger(bufferedBytes) || consumedBytes < 0 || bufferedBytes < 0 ||
+        consumedBytes < job.consumedBytes || consumedBytes > job.bytesSent) {
+      logger.warn({ device_id: current.deviceId, playback_id: message.playback_id, consumed_bytes: consumedBytes, buffered_bytes: bufferedBytes, bytes_sent: job.bytesSent }, "Ignored invalid speaker flow report");
+      return false;
+    }
+    if (consumedBytes === job.consumedBytes && bufferedBytes === job.reportedBufferedBytes) return true;
+    job.consumedBytes = consumedBytes;
+    job.reportedBufferedBytes = bufferedBytes;
+    job.flowReports += 1;
+    job.minReportedBufferedBytes = Math.min(job.minReportedBufferedBytes, bufferedBytes);
+    job.maxReportedBufferedBytes = Math.max(job.maxReportedBufferedBytes, bufferedBytes);
+    signalFlow(job);
+    return true;
+  }
+
+  function handleSocketMessage(current, data, isBinary) {
+    if (isBinary) return false;
+    let message;
+    try { message = JSON.parse(Buffer.isBuffer(data) ? data.toString("utf8") : String(data)); }
+    catch { return false; }
+    if (message?.type !== "speaker_flow") return false;
+    return handleFlow(current, message);
+  }
+
+  function recordOutstanding(job) {
+    const outstanding = speakerOutstandingBytes(job.bytesSent, job.consumedBytes);
+    job.maxOutstandingBytes = Math.max(job.maxOutstandingBytes, outstanding);
+    if (outstanding > maxOutstandingBytes) throw new Error("speaker flow window exceeded");
+    return outstanding;
+  }
+
+  async function sendPcmChunk(job, current, chunk) {
+    if (job.settled || connection !== current || current.ws.readyState !== 1) throw new Error("speaker disconnected");
+    const nextBytesSent = job.bytesSent + chunk.length;
+    const nextOutstanding = nextBytesSent - job.consumedBytes;
+    if (nextOutstanding > maxOutstandingBytes) throw new Error("speaker flow window exceeded");
+    job.bytesSent = nextBytesSent;
+    await sendFrame(current.ws, chunk, { binary: true });
+    recordOutstanding(job);
+    if (job.firstPcmSentAt === null) {
+      job.firstPcmSentAt = performance.now();
+      logger.info({ playback_id: job.id, ready_to_first_pcm_ms: Math.round(job.firstPcmSentAt - job.readyAt) }, "Speaker first PCM sent");
+    }
+  }
+
   async function stream(job, current) {
     if (connection !== current || current.ws.readyState !== 1) throw new Error("speaker disconnected");
     const ws = current.ws;
@@ -216,39 +321,39 @@ export function createSpeakerRuntime({ logger, backend, enabled, getDevice, send
     await sendFrame(ws, JSON.stringify(begin));
     logger.info({ device_id: current.deviceId, playback_id: job.id, pcm_bytes: job.pcm.length }, "Speaker begin sent");
 
-    const bytesPerSecond = format.sampleRate * format.channels * (format.bitsPerSample / 8);
-    const leadBytes = Math.min(SPEAKER_INITIAL_LEAD_BYTES, job.pcm.length);
     const streamStartedAt = performance.now();
-    let lastPcmSentAt = Number.NaN;
-    for (let offset = 0; offset < job.pcm.length; offset += chunkBytes) {
-      if (job.settled || connection !== current || ws.readyState !== 1) throw new Error("speaker disconnected");
-      const chunk = job.pcm.subarray(offset, Math.min(offset + chunkBytes, job.pcm.length));
-      const bytesSent = offset + chunk.length;
-      const dueAt = speakerChunkSendDueAt({
-        streamStartedAt,
-        bytesSent,
-        leadBytes,
-        bytesPerSecond,
-        lastPcmSentAt,
-        chunkBytes: chunk.length,
-      });
-      const waitMs = dueAt - performance.now();
-      if (waitMs > 0) await delay(waitMs);
-      await sendFrame(ws, chunk, { binary: true });
-      lastPcmSentAt = performance.now();
-      if (job.firstPcmSentAt === null) {
-        job.firstPcmSentAt = lastPcmSentAt;
-        logger.info({ playback_id: job.id, ready_to_first_pcm_ms: Math.round(job.firstPcmSentAt - job.readyAt) }, "Speaker first PCM sent");
-      }
+    const leadBytes = Math.min(SPEAKER_INITIAL_LEAD_BYTES, job.pcm.length);
+    while (job.bytesSent < leadBytes) {
+      const end = Math.min(job.bytesSent + chunkBytes, leadBytes);
+      await sendPcmChunk(job, current, job.pcm.subarray(job.bytesSent, end));
     }
+
+    while (job.bytesSent < job.pcm.length) {
+      if (job.settled || connection !== current || ws.readyState !== 1) throw new Error("speaker disconnected");
+      const nextLength = Math.min(chunkBytes, job.pcm.length - job.bytesSent);
+      const credit = speakerCreditBytes(job.bytesSent, job.consumedBytes, { targetOutstandingBytes, maxOutstandingBytes });
+      if (credit < nextLength) {
+        await waitForFlow(job);
+        continue;
+      }
+      const start = job.bytesSent;
+      await sendPcmChunk(job, current, job.pcm.subarray(start, start + nextLength));
+    }
+
     await sendFrame(ws, JSON.stringify({ type: "speaker_end", playback_id: job.id, bytes: job.pcm.length }));
     logger.info({
       device_id: current.deviceId,
       playback_id: job.id,
       bytes: job.pcm.length,
       stream_ms: Math.round(performance.now() - streamStartedAt),
-      pacing: "no_burst_catchup",
+      pacing: "receiver_credit",
       lead_bytes: leadBytes,
+      target_outstanding_bytes: targetOutstandingBytes,
+      max_outstanding_limit_bytes: maxOutstandingBytes,
+      max_outstanding_bytes: job.maxOutstandingBytes,
+      flow_reports: job.flowReports,
+      min_reported_buffer: Number.isFinite(job.minReportedBufferedBytes) ? job.minReportedBufferedBytes : null,
+      max_reported_buffer: job.maxReportedBufferedBytes,
       chunk_bytes: chunkBytes,
     }, "Speaker PCM stream sent");
     return job.completion;
@@ -293,7 +398,13 @@ export function createSpeakerRuntime({ logger, backend, enabled, getDevice, send
     let reject;
     const completion = new Promise((res, rej) => { resolve = res; reject = rej; });
     completion.catch(() => {});
-    const job = { id, text, pcm: null, temporary, settled: false, resultTimer: null, queuedAt: performance.now(), synthesisStartedAt: null, ttsCompletedAt: null, readyAt: null, beginSentAt: null, firstPcmSentAt: null, resolve, reject, completion };
+    const job = {
+      id, text, pcm: null, temporary, settled: false, resultTimer: null,
+      queuedAt: performance.now(), synthesisStartedAt: null, ttsCompletedAt: null, readyAt: null,
+      beginSentAt: null, firstPcmSentAt: null, resolve, reject, completion,
+      bytesSent: 0, consumedBytes: 0, reportedBufferedBytes: 0, flowVersion: 0, flowWaiters: new Set(),
+      flowReports: 0, maxOutstandingBytes: 0, minReportedBufferedBytes: Number.POSITIVE_INFINITY, maxReportedBufferedBytes: 0,
+    };
     allJobs.add(job);
     logger.info({ playback_id: id, text_chars: text.length, temporary }, "Speaker job queued");
     queue = queue.catch(() => {}).then(() => run(job)).catch((error) => {
@@ -307,8 +418,10 @@ export function createSpeakerRuntime({ logger, backend, enabled, getDevice, send
     if (connection?.ws && connection.ws !== ws && connection.ws.readyState === 1) connection.ws.close(4001, "replaced by new connection");
     const current = { ws, deviceId, connectedAt: performance.now() };
     connection = current;
+    ws.on?.("message", (data, isBinary) => { handleSocketMessage(current, data, isBinary); });
     ws.on?.("close", () => {
       if (connection === current) connection = null;
+      for (const job of jobs.values()) rejectFlowWaiters(job, new Error("speaker disconnected"));
       logger.info({ device_id: deviceId }, "Persistent speaker stream disconnected");
     });
     ws.on?.("error", () => logger.warn({ device_id: deviceId }, "Persistent speaker WebSocket error"));

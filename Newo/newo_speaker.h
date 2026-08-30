@@ -62,6 +62,7 @@ class NewoSpeaker {
   };
 
   static void taskEntry(void* context);
+  static bool IRAM_ATTR onI2sSent(i2s_chan_handle_t handle, i2s_event_data_t* event, void* userData);
   void playbackTask();
   void handleEvent(WStype_t type, uint8_t* payload, size_t length);
   void handleText(const uint8_t* payload, size_t length);
@@ -70,6 +71,7 @@ class NewoSpeaker {
   void startConnection();
   void stopConnection(const char* reason);
   void releaseResources();
+  void sendFlowReport(bool force = false);
   void logMemory(const char* stage, const MemorySnapshot& snapshot, const MemorySnapshot* comparison = nullptr);
   MemorySnapshot memorySnapshot() const;
   void fail(const char* error);
@@ -99,6 +101,7 @@ class NewoSpeaker {
   volatile bool failed_ = false;
   volatile bool taskFinished_ = false;
   volatile uint32_t receivedBytes_ = 0;
+  volatile uint32_t consumedBytes_ = 0;
   volatile uint32_t firstPcmReceivedMs_ = 0;
   const char* volatile failureReason_ = nullptr;
   bool resultReady_ = false;
@@ -106,6 +109,10 @@ class NewoSpeaker {
   PlaybackStarted playbackStartedEvent_ = {};
   bool playbackStateApplied_ = false;
   volatile uint32_t minimumTaskStackBytes_ = UINT32_MAX;
+  volatile uint32_t i2sSentEventCount_ = 0;
+  uint32_t lastFlowSentBytes_ = 0;
+  uint32_t flowReportCount_ = 0;
+  uint32_t i2sDrainMs_ = 0;
   uint32_t underrunCount_ = 0;
   uint32_t overflowCount_ = 0;
   uint32_t minimumBufferedBytes_ = UINT32_MAX;

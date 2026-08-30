@@ -54,8 +54,16 @@ constexpr uint32_t SPEAKER_PCM_BYTES_PER_SECOND = SPEAKER_SAMPLE_RATE * sizeof(i
 constexpr size_t SPEAKER_CHUNK_BYTES = 1'024;
 constexpr size_t SPEAKER_PREBUFFER_BYTES = 4'096;  // 128 ms mono PCM before audible output.
 constexpr size_t SPEAKER_BUFFER_BYTES = 16'384;  // 512 ms mono PCM16, strictly bounded.
+// Receiver-driven credit is reported after every 1 KiB actually consumed into I2S.
+constexpr size_t SPEAKER_FLOW_REPORT_BYTES = 1'024;
+// Arduino-ESP32 3.3.11 uses six 240-frame TX DMA descriptors. Waiting for one
+// full ring plus one extra TX EOF after the final write makes completion mean
+// the physical I2S tail has drained, rather than merely that our StreamBuffer is empty.
+constexpr uint8_t SPEAKER_I2S_DRAIN_DMA_EVENTS = 7;
+constexpr uint32_t SPEAKER_I2S_DRAIN_TIMEOUT_MS = 500;
 static_assert(SPEAKER_PREBUFFER_BYTES <= SPEAKER_BUFFER_BYTES, "speaker prebuffer exceeds stream buffer");
 static_assert(SPEAKER_CHUNK_BYTES <= SPEAKER_PREBUFFER_BYTES, "speaker chunk exceeds prebuffer");
+static_assert(SPEAKER_FLOW_REPORT_BYTES <= SPEAKER_PREBUFFER_BYTES, "speaker flow report interval exceeds prebuffer");
 static_assert((SPEAKER_PREBUFFER_BYTES & 1) == 0, "speaker prebuffer must align to PCM16");
 constexpr uint32_t SPEAKER_MAX_STREAM_BYTES = 1'920'000;  // At most 60 seconds.
 constexpr int16_t SPEAKER_DIGITAL_DIVISOR = 1;  // 100% digital amplitude; VPS limiter protects peaks.
@@ -79,6 +87,5 @@ constexpr uint8_t CLOUD_WS_MISSED_PONG_LIMIT = 2;
 // STREAMING has a finite lifetime and must never retain stale PCM.
 constexpr bool VOICE_DEFAULT_ENABLED = false;
 constexpr uint32_t VOICE_ACTIVE_SESSION_TIMEOUT_MS = 30'000;
-
 
 }  // namespace NewoConfig

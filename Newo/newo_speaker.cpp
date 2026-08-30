@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <cstring>
+#include <driver/i2s_common.h>
 #include <esp_heap_caps.h>
 
 #include "newo_config.h"
@@ -185,9 +186,14 @@ bool NewoSpeaker::startPlayback(const Request& request) {
   failed_ = false;
   taskFinished_ = false;
   receivedBytes_ = 0;
+  consumedBytes_ = 0;
   firstPcmReceivedMs_ = 0;
   failureReason_ = nullptr;
   minimumTaskStackBytes_ = UINT32_MAX;
+  i2sSentEventCount_ = 0;
+  lastFlowSentBytes_ = 0;
+  flowReportCount_ = 0;
+  i2sDrainMs_ = 0;
   underrunCount_ = 0;
   overflowCount_ = 0;
   minimumBufferedBytes_ = UINT32_MAX;
@@ -207,6 +213,14 @@ bool NewoSpeaker::startPlayback(const Request& request) {
 }
 
 void NewoSpeaker::taskEntry(void* context) { static_cast<NewoSpeaker*>(context)->playbackTask(); }
+
+bool IRAM_ATTR NewoSpeaker::onI2sSent(i2s_chan_handle_t handle, i2s_event_data_t* event, void* userData) {
+  (void)handle;
+  (void)event;
+  auto* speaker = static_cast<NewoSpeaker*>(userData);
+  if (speaker) ++speaker->i2sSentEventCount_;
+  return false;
+}
 
 void NewoSpeaker::fail(const char* error) {
   if (!failed_) failureReason_ = error;
@@ -257,8 +271,8 @@ void NewoSpeaker::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
     if (!playing() || !length || (length & 1) || receivedBytes_ > request_.bytes ||
         length > request_.bytes - receivedBytes_) { fail("invalid_pcm"); return; }
     if (firstPcmReceivedMs_ == 0) firstPcmReceivedMs_ = millis();
-    // Never wait in the WebSocket callback. The VPS paces 1 KiB chunks and this
-    // fixed stream buffer absorbs up to 512 ms; overflow fails instead of growing.
+    // Never wait in the WebSocket callback. Receiver-driven credit on the VPS
+    // keeps unconsumed PCM bounded well below this fixed 16 KiB StreamBuffer.
     if (xStreamBufferSend(buffer_, payload, length, 0) != length) {
       ++overflowCount_;
       fail("buffer_overflow");
@@ -281,6 +295,24 @@ void NewoSpeaker::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
   }
 }
 
+void NewoSpeaker::sendFlowReport(bool force) {
+  if (!connected_ || !playing() || !buffer_) return;
+  const uint32_t consumed = consumedBytes_;
+  if (consumed <= lastFlowSentBytes_) return;
+  if (!force && consumed - lastFlowSentBytes_ < NewoConfig::SPEAKER_FLOW_REPORT_BYTES) return;
+
+  JsonDocument doc;
+  doc["type"] = "speaker_flow";
+  doc["playback_id"] = request_.playbackId;
+  doc["consumed_bytes"] = consumed;
+  doc["buffered_bytes"] = static_cast<uint32_t>(xStreamBufferBytesAvailable(buffer_));
+  String body;
+  serializeJson(doc, body);
+  webSocket_.sendTXT(body);
+  lastFlowSentBytes_ = consumed;
+  ++flowReportCount_;
+}
+
 void NewoSpeaker::playbackTask() {
   minimumTaskStackBytes_ = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
   i2s_.setPins(NewoConfig::SPEAKER_I2S_BCLK_PIN, NewoConfig::SPEAKER_I2S_WS_PIN,
@@ -289,6 +321,15 @@ void NewoSpeaker::playbackTask() {
                   I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH)) {
     fail("i2s_failed");
   } else {
+    i2s_chan_handle_t txChannel = i2s_.txChan();
+    i2s_event_callbacks_t callbacks = {};
+    callbacks.on_sent = &NewoSpeaker::onI2sSent;
+    if (!txChannel || i2s_channel_disable(txChannel) != ESP_OK ||
+        i2s_channel_register_event_callback(txChannel, &callbacks, this) != ESP_OK ||
+        i2s_channel_enable(txChannel) != ESP_OK) {
+      fail("i2s_callback_failed");
+    }
+
     const uint32_t timeoutMs = 15'000 + (request_.bytes * 1'000UL / NewoConfig::SPEAKER_PCM_BYTES_PER_SECOND);
     const uint32_t startedMs = millis();
     uint32_t playbackStartedMs = 0;
@@ -338,26 +379,52 @@ void NewoSpeaker::playbackTask() {
         }
         const size_t stereoBytes = samples * 2 * sizeof(int16_t);
         if (stereoBytes > sizeof(stereoWorking_) ||
-            i2s_.write(stereoWorking_, stereoBytes) != stereoBytes) fail("i2s_write_failed");
+            i2s_.write(stereoWorking_, stereoBytes) != stereoBytes) {
+          fail("i2s_write_failed");
+        } else {
+          consumedBytes_ += static_cast<uint32_t>(count);
+        }
       } else if (playbackStarted && receivedBytes_ < request_.bytes && !underrunActive) {
         ++underrunCount_;
         minimumBufferedBytes_ = 0;
         underrunActive = true;
       }
       if (endReceived_ && xStreamBufferBytesAvailable(buffer_) == 0) {
-        if (receivedBytes_ != request_.bytes) fail("truncated");
+        if (receivedBytes_ != request_.bytes || consumedBytes_ != request_.bytes) fail("truncated");
         break;
       }
       if (millis() - startedMs >= timeoutMs) { fail("timeout"); break; }
       vTaskDelay(pdMS_TO_TICKS(1));
     }
+
+    // I2SClass::write() only guarantees that PCM was copied into the TX DMA ring.
+    // Arduino-ESP32 3.3.11 uses six 240-frame descriptors. Waiting for a full
+    // ring plus one additional TX EOF after the final write guarantees the
+    // descriptor containing the last audio samples and the hardware FIFO tail
+    // have actually drained before SPEAKER_COMPLETE can be emitted.
+    if (!failed_ && playbackStarted && endReceived_ && receivedBytes_ == request_.bytes &&
+        consumedBytes_ == request_.bytes) {
+      const uint32_t drainStartEvents = i2sSentEventCount_;
+      const uint32_t drainStartedMs = millis();
+      while (static_cast<uint32_t>(i2sSentEventCount_ - drainStartEvents) <
+             NewoConfig::SPEAKER_I2S_DRAIN_DMA_EVENTS) {
+        if (millis() - drainStartedMs >= NewoConfig::SPEAKER_I2S_DRAIN_TIMEOUT_MS) {
+          fail("i2s_drain_timeout");
+          break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+      }
+      i2sDrainMs_ = millis() - drainStartedMs;
+    }
+
     i2s_.end();
     if (playbackStarted) playbackDurationMs_ = millis() - playbackStartedMs;
   }
   const uint32_t finalStackBytes = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
   if (finalStackBytes < minimumTaskStackBytes_) minimumTaskStackBytes_ = finalStackBytes;
   result_.bytes = receivedBytes_;
-  result_.success = !failed_ && endReceived_ && receivedBytes_ == request_.bytes;
+  result_.success = !failed_ && endReceived_ && receivedBytes_ == request_.bytes &&
+                    consumedBytes_ == request_.bytes;
   strlcpy(result_.error, result_.success ? "" : (failureReason_ ? failureReason_ : "unknown"), sizeof(result_.error));
   taskFinished_ = true;
   vTaskDelete(nullptr);
@@ -374,6 +441,15 @@ void NewoSpeaker::loop(bool cloudReady) {
   }
   if (started_) webSocket_.loop();
 
+  if (playing() && connected_ && buffer_) {
+    const uint32_t consumed = consumedBytes_;
+    const bool finalProgress = endReceived_ && consumed == request_.bytes;
+    if (consumed > lastFlowSentBytes_ &&
+        (consumed - lastFlowSentBytes_ >= NewoConfig::SPEAKER_FLOW_REPORT_BYTES || finalProgress)) {
+      sendFlowReport(finalProgress);
+    }
+  }
+
   if (task_ && taskFinished_) {
     task_ = nullptr;
     if (playbackStateApplied_) {
@@ -383,19 +459,21 @@ void NewoSpeaker::loop(bool cloudReady) {
     }
     resultReady_ = true;
     lastPlayback_ = result_.success ? LastPlayback::COMPLETE : LastPlayback::FAILED;
-    char diagnostics[96];
-    snprintf(diagnostics, sizeof(diagnostics), "rx=%lu duration_ms=%lu underruns=%lu min_buffer=%lu stack_low=%lu",
+    char diagnostics[112];
+    snprintf(diagnostics, sizeof(diagnostics), "rx=%lu duration_ms=%lu underruns=%lu min_buffer=%lu drain_ms=%lu stack_low=%lu",
              static_cast<unsigned long>(result_.bytes), static_cast<unsigned long>(playbackDurationMs_),
              static_cast<unsigned long>(underrunCount_),
              static_cast<unsigned long>(minimumBufferedBytes_ == UINT32_MAX ? 0 : minimumBufferedBytes_),
+             static_cast<unsigned long>(i2sDrainMs_),
              static_cast<unsigned long>(minimumTaskStackBytes_));
     NewoLog::log(underrunCount_ == 0 ? NewoLog::Level::INFO : NewoLog::Level::WARN,
                  NewoLog::Subsystem::AUDIO, "SPEAKER_DIAGNOSTICS", diagnostics);
-    char bufferDiagnostics[80];
-    snprintf(bufferDiagnostics, sizeof(bufferDiagnostics), "overflows=%lu max_buffer=%lu capacity=%u chunk=%u",
+    char bufferDiagnostics[96];
+    snprintf(bufferDiagnostics, sizeof(bufferDiagnostics), "overflows=%lu max_buffer=%lu capacity=%u chunk=%u flow_reports=%lu",
              static_cast<unsigned long>(overflowCount_), static_cast<unsigned long>(maximumBufferedBytes_),
              static_cast<unsigned>(NewoConfig::SPEAKER_BUFFER_BYTES),
-             static_cast<unsigned>(NewoConfig::SPEAKER_CHUNK_BYTES));
+             static_cast<unsigned>(NewoConfig::SPEAKER_CHUNK_BYTES),
+             static_cast<unsigned long>(flowReportCount_));
     NewoLog::log(overflowCount_ == 0 ? NewoLog::Level::INFO : NewoLog::Level::ERROR,
                  NewoLog::Subsystem::AUDIO, "SPEAKER_BUFFER", bufferDiagnostics);
     NewoLog::log(result_.success ? NewoLog::Level::INFO : NewoLog::Level::ERROR,
