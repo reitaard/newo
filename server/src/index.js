@@ -490,7 +490,7 @@ function completePendingReboot(deviceId) {
 }
 async function handleSpeakCommand(ctx) {
   const text = String(ctx.match ?? "").trim();
-  if (!text || text.length > 150) return commandReply(ctx, commandMessage("speak", [quote(["Usage: /speak <1-150 characters>"])]), "usage", null, { newoSpeak: false });
+  if (!text || text.length > 150) return commandReply(ctx, commandMessage("speak", [quote(["Usage: /speak &lt;1-150 characters&gt;"])]), "usage", null, { newoSpeak: false });
   const speech = speakerRuntime.speak(text, { maxChars: 150, temporary: !automaticSpeakerEnabled });
   if (speech.kind !== "queued") return commandReply(ctx, statusMessage("speak", speech.kind === "offline" ? "offline" : "unavailable"), speech.kind, null, { newoSpeak: false });
   await commandReply(ctx, commandMessage("speak", [quote(["Playback queued."])]), "queued", null, { newoSpeak: false });
