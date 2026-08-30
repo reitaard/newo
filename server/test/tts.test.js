@@ -95,12 +95,14 @@ test("speaker conditioning adds configurable gain before the limiter", () => {
   assert.match(speakerAudioFilter(3), /volume=3dB/);
 });
 
-test("realtime text segmentation keeps short replies whole and advances long replies by sentence", () => {
+test("realtime text segmentation makes the first phrase a natural latency-aware clause", () => {
   assert.deepEqual(splitRealtimeText("Face curious."), ["Face curious."]);
-  assert.deepEqual(splitRealtimeText("Hello, I'm Newo. This is a realtime voice latency test."), ["Hello, I'm Newo. This is a realtime voice latency test."]);
+  assert.deepEqual(splitRealtimeText("Hello, I'm Newo. This is a realtime voice latency test."), ["Hello, I'm Newo.", "This is a realtime voice latency test."]);
+  assert.deepEqual(splitRealtimeText("One two three four five six seven eight", { firstSegmentTargetChars: 20 }), ["One two three four", "five six seven eight"]);
   const long = splitRealtimeText("Newo is online and connected to the cloud. Speaker output is enabled and healthy. The remaining status follows shortly.");
   assert.ok(long.length >= 2);
   assert.equal(long.join(" "), "Newo is online and connected to the cloud. Speaker output is enabled and healthy. The remaining status follows shortly.");
+  assert.throws(() => splitRealtimeText("test", { firstSegmentTargetChars: 1 }), /invalid realtime segmentation policy/);
 });
 
 test("Kokoro backend uses realtime PCM with configurable voice and speed", async () => {

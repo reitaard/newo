@@ -177,23 +177,40 @@ async function readWithTimeout(reader, timeoutMs, controller) {
   }
 }
 
-export function splitRealtimeText(text, { minimumFirstChars = 35, maximumSegmentChars = 90 } = {}) {
+export function splitRealtimeText(text, { firstSegmentTargetChars = 28, maximumSegmentChars = 90 } = {}) {
   const input = String(text).trim();
   if (!input) return [];
-  const sentences = input.match(/[^.!?]+[.!?]+(?:[\"'](?=\s|$))?|[^.!?]+$/g)?.map((part) => part.trim()).filter(Boolean) ?? [input];
+  if (!Number.isInteger(firstSegmentTargetChars) || firstSegmentTargetChars < 12 ||
+      !Number.isInteger(maximumSegmentChars) || maximumSegmentChars < firstSegmentTargetChars) {
+    throw new Error("invalid realtime segmentation policy");
+  }
+  // The first phrase is latency-critical: prefer its last natural boundary in
+  // the target window, then use whitespace only when no clause boundary exists.
+  const firstCut = (value) => {
+    if (value.length <= firstSegmentTargetChars) return value.length;
+    const prefix = value.slice(0, firstSegmentTargetChars + 1);
+    for (const boundary of [/[.!?][\"']?(?=\s|$)/g, /[,;:](?=\s|$)/g, /\s/g]) {
+      const matches = [...prefix.matchAll(boundary)];
+      if (matches.length) return matches.at(-1).index + matches.at(-1)[0].length;
+    }
+    const next = value.slice(firstSegmentTargetChars).search(/\s/);
+    return next < 0 ? value.length : firstSegmentTargetChars + next;
+  };
   const segments = [];
+  let remainder = input;
+  const cut = firstCut(remainder);
+  if (cut < remainder.length) {
+    segments.push(remainder.slice(0, cut).trim());
+    remainder = remainder.slice(cut).trim();
+  }
+  const sentences = remainder.match(/[^.!?]+[.!?]+(?:[\"'](?=\s|$))?|[^.!?]+$/g)?.map((part) => part.trim()).filter(Boolean) ?? [remainder];
   let current = "";
   for (const sentence of sentences) {
     const candidate = current ? `${current} ${sentence}` : sentence;
-    if (current.length >= minimumFirstChars && candidate.length > maximumSegmentChars) {
-      segments.push(current);
-      current = sentence;
-    } else current = candidate;
+    if (current && candidate.length > maximumSegmentChars) { segments.push(current); current = sentence; }
+    else current = candidate;
   }
-  if (current) {
-    if (segments.length && current.length < minimumFirstChars) segments[segments.length - 1] += ` ${current}`;
-    else segments.push(current);
-  }
+  if (current) segments.push(current);
   return segments;
 }
 
