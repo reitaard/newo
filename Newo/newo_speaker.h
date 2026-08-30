@@ -86,6 +86,7 @@ class NewoSpeaker {
   void releaseResources();
   void releaseOpusDecoder();
   bool allocateOpusQueue();
+  bool resetOpusQueue();
   void releaseOpusQueue();
   void sendFlowReport(bool force = false);
   void logMemory(const char* stage, const MemorySnapshot& snapshot, const MemorySnapshot* comparison = nullptr);
@@ -117,6 +118,7 @@ class NewoSpeaker {
   MemorySnapshot beforeConnection_ = {};
   MemorySnapshot connectedMemory_ = {};
   bool memoryCycleActive_ = false;
+  portMUX_TYPE stateMux_ = portMUX_INITIALIZER_UNLOCKED;
 
   volatile bool endReceived_ = false;
   volatile bool failed_ = false;
@@ -162,6 +164,9 @@ class NewoSpeaker {
   uint32_t opusQueueHighWaterBytes_ = 0;
   uint32_t opusQueueOverflows_ = 0;
   volatile uint32_t opusQueuedWireBytes_ = 0;
+  uint32_t opusCallbackCount_ = 0;
+  uint64_t opusCallbackTotalUs_ = 0;
+  uint32_t opusCallbackWorstUs_ = 0;
   volatile uint32_t minimumDecoderStackBytes_ = UINT32_MAX;
 
   volatile uint8_t volume_ = 100;
