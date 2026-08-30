@@ -44,6 +44,8 @@ Copy `.env.example` to `.env` on the VPS and fill secrets there. Never commit `.
 
 A finalized Sherpa transcript can make one bounded assistant request and, when it returns non-empty text, uses the existing Kokoro `/speaker` path. Partials and cleanup finals never invoke the model, and one active assistant turn is allowed per device. The assistant does not retain conversation history, call tools, or create a new audio transport.
 
+The written identity is **Newo**, while the spoken assistant name is **Neo**. The assistant system prompt preserves that distinction. `server/config/newo-hotwords.txt` contains `NEO` only as Sherpa contextual bias after wake; it does not configure the ESP32 WakeNet trigger. See `../docs/wake-word.md` for the WakeNet model research and Neo integration plan.
+
 The existing Qwen3 llama.cpp service is OpenAI-chat compatible and must remain private. Configure only its private URL and model alias, for example `ASSISTANT_ENABLED=true`, `ASSISTANT_BASE_URL=http://127.0.0.1:8181`, and `ASSISTANT_MODEL=helix-qwen3-0.6b`. `ASSISTANT_TIMEOUT_MS`, `ASSISTANT_MAX_OUTPUT_TOKENS`, and `ASSISTANT_MAX_REPLY_CHARS` bound request time and spoken output. No API key is needed for the local service unless its deployment adds one.
 
 ### Speaker TTS
@@ -104,13 +106,13 @@ X-Newo-Device-Id: newo-01
 Authorization: Bearer <NEWO_DEVICE_SECRET>
 ```
 
-Send continuous **binary WebSocket frames** containing raw PCM only. Default format is mono, 16 kHz, signed 16-bit little-endian. The server accepts arbitrary even-sized raw PCM chunks; it has no 640-byte assumption. Newo currently groups five contiguous internal 20 ms frames into a 3,200-byte / 100 ms message. `VOICE_MAX_CHUNK_BYTES` (64 KiB) limits one message and `VOICE_MAX_STREAM_BYTES` (default 10 minutes at 16 kHz mono 16-bit) bounds one connection. Do not send WAV headers, base64, separators, or binary payloads on `/device`.
+Send continuous **binary WebSocket frames** containing raw PCM only. Default format is mono, 16 kHz, signed 16-bit little-endian. The server accepts arbitrary even-sized raw PCM chunks; it has no 640-byte assumption. Newo's current firmware sends direct 20 ms PCM16 frames (320 mono samples / 640 bytes each) with no microphone PCM queue or bundling backlog. `VOICE_MAX_CHUNK_BYTES` (64 KiB) limits one message and `VOICE_MAX_STREAM_BYTES` bounds one connection. Do not send WAV headers, base64, separators, or binary payloads on `/device`.
 
 The voice runtime logs connect/start/progress outcome metadata without logging audio. It calculates received PCM duration from the configured format. `VOICE_SAVE_WAV=false` is the default. Set it to `true` only during a local development capture; the finalized WAV file is written to `/tmp/newo-voice` by default and is never tracked by git.
 
 `src/voice.js` defines the replaceable streaming ASR boundary: `createStream({ format, onEvent })`, `acceptAudio(chunk)`, and `stop()`. With `VOICE_ASR_BACKEND=sherpa`, `src/sherpa-worker.js` exclusively loads the native addon, owns recognizer streams, and performs synchronous decode. The Fastify thread only authenticates, receives bounded PCM, and forwards at most two undecoded chunks per connection; it closes a realtime stream rather than forming an unbounded JavaScript backlog. Sherpa defaults to `VOICE_SHERPA_MODEL=libri-giga`; `VOICE_ASR_BACKEND=null` retains the transport-only fallback.
 
-The larger BPE model supports sherpa contextual biasing through `config/newo-hotwords.txt`: one phrase per line, initially `NEWO`, `HELLO`, `CHECK`, and `ONE TWO THREE`. `VOICE_ASR_HOTWORDS_SCORE=1.5` is intentionally conservative; changing the vocabulary or score requires a server restart. Biasing is enabled with modified beam search and affects recognition only—it does not rewrite transcript text or implement a wake word.
+The larger BPE model supports Sherpa contextual biasing through `config/newo-hotwords.txt`. Production currently keeps this intentionally minimal as a single line, `NEO`, with `VOICE_ASR_HOTWORDS_SCORE=1.5` as a conservative default. Changing the vocabulary or score requires a server restart. Biasing affects recognition only—it does not rewrite transcript text and it does not implement or change the local WakeNet wake word.
 
 The streaming adapter decodes every ready chunk, emits only changed partial text, finalizes/reset streams at sherpa endpoints, and finalizes remaining text on disconnect. Events retain `{ type: "partial" | "final", text }` compatibility and add `stage: "partial" | "first_pass_final"`; a future rescorer can add `rescored_final` without changing the ESP protocol. With `VOICE_LIVE_TEST_MODE=true`, logs add received duration, first-partial timing, final timing, and final transcript for controlled repeated-phrase tests; WAV capture remains disabled unless explicitly enabled.
 
