@@ -197,8 +197,8 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     const char* text = doc["text"] | "";
 
     bool faceSelection = true;
-    NewoFaceStyle faceStyle = NewoFaceStyle::DEFAULT;
-    if (strcmp(mode, "default") == 0) faceStyle = NewoFaceStyle::DEFAULT;
+    NewoFaceStyle faceStyle = NewoFaceStyle::NEUTRAL;
+    if (strcmp(mode, "default") == 0) faceStyle = NewoFaceStyle::NEUTRAL;
     else if (strcmp(mode, "happy") == 0) faceStyle = NewoFaceStyle::HAPPY;
     else if (strcmp(mode, "angry") == 0) faceStyle = NewoFaceStyle::ANGRY;
     else if (strcmp(mode, "tired") == 0) faceStyle = NewoFaceStyle::TIRED;
