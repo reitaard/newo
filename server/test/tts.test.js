@@ -6,6 +6,7 @@ import {
   createSpeakerRuntime,
   speakerAudioFilter,
   speakerChunkDueMs,
+  speakerChunkSendDueAt,
   SPEAKER_AUDIO_FILTER,
   SPEAKER_GAIN_DB,
   SPEAKER_INITIAL_LEAD_BYTES,
@@ -48,13 +49,34 @@ test("Telegram HTML becomes bounded natural speech", () => {
   assert.ok(telegramHtmlToSpeech("word ".repeat(100), 80).length <= 81);
 });
 
-test("speaker pacing keeps the 256 ms lead and absolute PCM timeline", () => {
+test("speaker pacing keeps the 256 ms lead and prevents overdue catch-up bursts", () => {
   assert.equal(SPEAKER_INITIAL_LEAD_BYTES, 8_192);
   assert.equal(speakerChunkDueMs(4_096, 8_192, 32_000), 0);
   assert.equal(speakerChunkDueMs(8_192, 8_192, 32_000), 0);
   assert.equal(speakerChunkDueMs(9_216, 8_192, 32_000), 32);
   assert.equal(speakerChunkDueMs(10_240, 8_192, 32_000), 64);
   assert.throws(() => speakerChunkDueMs(1_024, 8_192, 0), /invalid PCM byte rate/);
+
+  // If Node wakes late, the old absolute timeline would make several chunks
+  // immediately overdue. The new bound spaces the next chunk by 32 ms instead.
+  assert.equal(speakerChunkSendDueAt({
+    streamStartedAt: 1_000,
+    bytesSent: 10_240,
+    leadBytes: 8_192,
+    bytesPerSecond: 32_000,
+    lastPcmSentAt: 1_200,
+    chunkBytes: 1_024,
+  }), 1_232);
+
+  // Initial lead remains immediate and therefore does not add startup latency.
+  assert.equal(speakerChunkSendDueAt({
+    streamStartedAt: 1_000,
+    bytesSent: 8_192,
+    leadBytes: 8_192,
+    bytesPerSecond: 32_000,
+    lastPcmSentAt: 1_010,
+    chunkBytes: 1_024,
+  }), 1_000);
 });
 
 test("speaker conditioning adds configurable gain before the limiter", () => {
@@ -132,7 +154,9 @@ test("speaker runtime fails quickly when no persistent stream becomes ready", as
     connectionTimeoutMs: 20,
   });
   const queued = runtime.speak("hello");
+  const keepAlive = setTimeout(() => {}, 100);
   await assert.rejects(queued.completion, /speaker connection timeout/);
+  clearTimeout(keepAlive);
   runtime.close();
 });
 
