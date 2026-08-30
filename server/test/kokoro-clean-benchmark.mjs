@@ -21,19 +21,22 @@ const contended = process.argv.includes("--contended") || os.loadavg()[0] > os.c
 console.log(JSON.stringify({ benchmark: "kokoro-clean-segmentation", warning: contended ? "CONTENDED BENCHMARK — RESULTS NOT AUTHORITATIVE" : null, timestamp: new Date().toISOString(), cpu_count: os.cpus().length, loadavg: os.loadavg(), free_ram: os.freemem(), url, runs }, null, 2));
 for (const target of [20, 28, 36, 44]) for (const [name, text] of Object.entries(texts)) {
   const segments = splitRealtimeText(text, { firstSegmentTargetChars: target }); const samples = [];
-  for (let run = 0; run < runs; run += 1) {
+  // One discarded warm-up keeps the five requested samples out of cold-start data.
+  for (let run = -1; run < runs; run += 1) {
     const started = performance.now(); let firstRaw = null, firstConditioned = null, pcmBytes = 0; const segmentEvents = [];
     for (const segment of segments) {
-      const segmentStarted = performance.now();
+      const segmentStarted = performance.now(); let segmentFirstRaw = null;
       const response = await fetch(`${url}/v1/audio/realtime`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "kokoro", input: segment, voice: "am_michael", response_format: "pcm", speed: 1 }) });
       if (!response.ok || !response.body) throw new Error(`Kokoro HTTP ${response.status}`);
-      const chunks = []; for await (const chunk of response.body) { if (firstRaw === null) firstRaw = performance.now(); chunks.push(Buffer.from(chunk)); }
+      const chunks = []; for await (const chunk of response.body) { if (segmentFirstRaw === null) segmentFirstRaw = performance.now(); if (firstRaw === null) firstRaw = segmentFirstRaw; chunks.push(Buffer.from(chunk)); }
+      const rawComplete = performance.now(), conditionerStarted = rawComplete;
       const conditioned = await conditionPcm16(Buffer.concat(chunks), { sampleRate: 24000, channels: 1, bitsPerSample: 16 });
-      if (firstConditioned === null) firstConditioned = performance.now(); pcmBytes += conditioned.length;
-      segmentEvents.push({ start_ms: segmentStarted - started, first_pcm_ms: firstRaw - started, complete_ms: performance.now() - started });
+      const conditionedAvailable = performance.now(); if (firstConditioned === null) firstConditioned = conditionedAvailable; pcmBytes += conditioned.length;
+      segmentEvents.push({ synthesis_start_ms: segmentStarted - started, first_raw_ms: segmentFirstRaw - started, raw_complete_ms: rawComplete - started, conditioner_start_ms: conditionerStarted - started, first_conditioned_ms: conditionedAvailable - started, complete_ms: conditionedAvailable - started });
     }
-    samples.push({ raw: firstRaw - started, conditioned: firstConditioned - started, total: performance.now() - started, audio_ms: pcmBytes / 48, rtf: (performance.now() - started) / (pcmBytes / 48), gaps: segmentEvents.slice(1).map((event, i) => event.start_ms - segmentEvents[i].complete_ms) });
+    const total = performance.now() - started;
+    if (run >= 0) samples.push({ raw: firstRaw - started, conditioned: firstConditioned - started, total, audio_ms: pcmBytes / 48, rtf: total / (pcmBytes / 48), events: segmentEvents, availability_gaps: segmentEvents.slice(1).map((event, i) => event.first_conditioned_ms - segmentEvents[i].complete_ms) });
   }
   console.log(JSON.stringify({ target, case: name, first_segment: segments[0], first_segment_chars: segments[0].length, segment_count: segments.length,
-    first_raw_ms: summary(samples.map((x) => x.raw)), first_conditioned_ms: summary(samples.map((x) => x.conditioned)), total_generation_ms: summary(samples.map((x) => x.total)), audio_ms: summary(samples.map((x) => x.audio_ms)), rtf: summary(samples.map((x) => x.rtf)), inter_segment_gap_ms: summary(samples.flatMap((x) => x.gaps.length ? x.gaps : [0])) }));
+    first_raw_ms: summary(samples.map((x) => x.raw)), first_conditioned_ms: summary(samples.map((x) => x.conditioned)), total_generation_ms: summary(samples.map((x) => x.total)), audio_ms: summary(samples.map((x) => x.audio_ms)), rtf: summary(samples.map((x) => x.rtf)), inter_segment_availability_ms: summary(samples.flatMap((x) => x.availability_gaps.length ? x.availability_gaps : [0])), per_segment_timing: samples.map((x) => x.events) }));
 }
