@@ -41,6 +41,15 @@ test("assistant timeout and malformed or empty responses settle cleanly", async 
 test("assistant disabled and overlapping device turns never create speaker work", async () => {
   const disabled = createAssistantRuntime({ enabled: false });
   assert.equal((await disabled.respond(turn)).kind, "disabled");
+  let disabledSpeakerCalls = 0;
+  const disabledTurns = createAssistantTurnRuntime({
+    assistant: disabled,
+    speakerRuntime: { speak() { disabledSpeakerCalls += 1; return { kind: "queued" }; } },
+    isPersistentSpeakerEnabled: () => true, maxReplyChars: 240, logger: quietLogger,
+  });
+  const disabledFinal = disabledTurns.handleFinalTranscript(turn);
+  assert.equal((await disabledFinal.completion).kind, "disabled");
+  assert.equal(disabledSpeakerCalls, 0);
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   const assistant = createAssistantRuntime({
