@@ -13,6 +13,7 @@ class NewoDisplay {
   NewoDisplay();
   void begin();
   void loop();
+  void updateClock();
   bool setMode(NewoDisplayMode mode, const char* text = nullptr, bool temporary = false);
   bool setFaceStyle(NewoFaceStyle style);
   void setSpeaking(bool active);
