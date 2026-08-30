@@ -11,9 +11,7 @@ import { createVoiceRuntime, NullAsrBackend, WorkerAsrBackend } from "./voice.js
 try {
   loadEnvFile(".env");
 } catch (error) {
-  if (error?.code !== "ENOENT") {
-    throw error;
-  }
+  if (error?.code !== "ENOENT") throw error;
 }
 
 const emptyToUndefined = (value) => {
@@ -26,10 +24,7 @@ const stringToBoolean = (value) => typeof value === "string" ? value.trim().toLo
 const EnvSchema = z.object({
   HOST: z.preprocess(emptyToUndefined, z.string().default("127.0.0.1")),
   PORT: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(65535).default(8788)),
-  PUBLIC_BASE_URL: z.preprocess(
-    emptyToUndefined,
-    z.string().url().default("https://newo.reitaard.de"),
-  ),
+  PUBLIC_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().default("https://newo.reitaard.de")),
   TELEGRAM_BOT_TOKEN: z.preprocess(emptyToUndefined, z.string().optional()),
   TELEGRAM_WEBHOOK_SECRET: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
   TELEGRAM_ALLOWED_USER_IDS: z.preprocess(emptyToUndefined, z.string().optional()),
@@ -45,7 +40,6 @@ const EnvSchema = z.object({
   VOICE_CAPTURE_DIRECTORY: z.preprocess(emptyToUndefined, z.string().default("/tmp/newo-voice")),
   VOICE_ASR_BACKEND: z.preprocess(emptyToUndefined, z.enum(["null", "sherpa"]).default("sherpa")),
   VOICE_SHERPA_MODEL: z.preprocess(emptyToUndefined, z.enum(["20m", "libri-giga"]).default("libri-giga")),
-  // Optional emergency/manual override; normally select a known bundle above.
   VOICE_ASR_MODEL_DIRECTORY: z.preprocess(emptyToUndefined, z.string().optional()),
   VOICE_ASR_THREADS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(6).default(2)),
   VOICE_ASR_HOTWORDS_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(true)),
@@ -55,38 +49,15 @@ const EnvSchema = z.object({
 });
 
 const env = EnvSchema.parse(process.env);
+if (env.TELEGRAM_BOT_TOKEN && !env.TELEGRAM_WEBHOOK_SECRET) throw new Error("TELEGRAM_WEBHOOK_SECRET is required when TELEGRAM_BOT_TOKEN is set");
 
-if (env.TELEGRAM_BOT_TOKEN && !env.TELEGRAM_WEBHOOK_SECRET) {
-  throw new Error("TELEGRAM_WEBHOOK_SECRET is required when TELEGRAM_BOT_TOKEN is set");
-}
-
-const parseIdSet = (value) =>
-  new Set(
-    (value ?? "")
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean),
-  );
-
+const parseIdSet = (value) => new Set((value ?? "").split(",").map((item) => item.trim()).filter(Boolean));
 const allowedUserIds = parseIdSet(env.TELEGRAM_ALLOWED_USER_IDS);
 const allowedChatIds = parseIdSet(env.TELEGRAM_ALLOWED_CHAT_IDS);
 
-const app = Fastify({
-  logger: true,
-  trustProxy: true,
-  bodyLimit: 256 * 1024,
-});
-
-const wss = new WebSocketServer({
-  noServer: true,
-  perMessageDeflate: false,
-  maxPayload: 64 * 1024,
-});
-const voiceWss = new WebSocketServer({
-  noServer: true,
-  perMessageDeflate: false,
-  maxPayload: env.VOICE_MAX_CHUNK_BYTES,
-});
+const app = Fastify({ logger: true, trustProxy: true, bodyLimit: 256 * 1024 });
+const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 64 * 1024 });
+const voiceWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: env.VOICE_MAX_CHUNK_BYTES });
 const sherpaModelDirectories = {
   "20m": "models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
   "libri-giga": "models/sherpa-onnx-streaming-zipformer-en-2023-06-21",
@@ -97,9 +68,7 @@ const voiceAsr = env.VOICE_ASR_BACKEND === "sherpa"
     modelDirectory: voiceModelDirectory,
     model: env.VOICE_SHERPA_MODEL,
     numThreads: env.VOICE_ASR_THREADS,
-    hotwordsFile: env.VOICE_SHERPA_MODEL === "libri-giga" && env.VOICE_ASR_HOTWORDS_ENABLED
-      ? env.VOICE_ASR_HOTWORDS_FILE
-      : undefined,
+    hotwordsFile: env.VOICE_SHERPA_MODEL === "libri-giga" && env.VOICE_ASR_HOTWORDS_ENABLED ? env.VOICE_ASR_HOTWORDS_FILE : undefined,
     hotwordsScore: env.VOICE_ASR_HOTWORDS_SCORE,
   })
   : new NullAsrBackend();
@@ -123,73 +92,26 @@ const pendingRequests = new Map();
 const DEVICE_REQUEST_TIMEOUT_MS = 5_000;
 const OFFLINE_GRACE_MS = 12_000;
 const REBOOT_RETURN_TIMEOUT_MS = 60_000;
+const FACE_STYLES = ["default", "happy", "angry", "tired", "curious", "confused", "laugh", "sweat", "cyclops"];
 let bot = null;
 let pendingReboot = null;
 let shuttingDown = false;
 
 const DeviceMessageSchema = z.discriminatedUnion("type", [
-  z
-    .object({
-      type: z.literal("hello"),
-      device: z.string().min(1),
-      firmware: z.string().optional(),
-      chip: z.string().optional(),
-    })
-    .passthrough(),
-  z
-    .object({
-      type: z.literal("pong"),
-      request_id: z.string().optional(),
-      uptime_ms: z.number().nonnegative().optional(),
-      rssi: z.number().optional(),
-      ssid: z.string().optional(),
-    })
-    .passthrough(),
-  z
-    .object({
-      type: z.literal("status"),
-      request_id: z.string().optional(),
-      uptime_ms: z.number().nonnegative().optional(),
-      rssi: z.number().optional(),
-      ssid: z.string().optional(),
-      free_heap: z.number().nonnegative().optional(),
-      free_psram: z.number().nonnegative().optional(),
-    })
-    .passthrough(),
-  z
-    .object({
-      type: z.literal("reboot_ack"),
-      request_id: z.string().optional(),
-    })
-    .passthrough(),
+  z.object({ type: z.literal("hello"), device: z.string().min(1), firmware: z.string().optional(), chip: z.string().optional() }).passthrough(),
+  z.object({ type: z.literal("pong"), request_id: z.string().optional(), uptime_ms: z.number().nonnegative().optional(), rssi: z.number().optional(), ssid: z.string().optional() }).passthrough(),
+  z.object({ type: z.literal("status"), request_id: z.string().optional(), uptime_ms: z.number().nonnegative().optional(), rssi: z.number().optional(), ssid: z.string().optional(), free_heap: z.number().nonnegative().optional(), free_psram: z.number().nonnegative().optional() }).passthrough(),
+  z.object({ type: z.literal("reboot_ack"), request_id: z.string().optional() }).passthrough(),
+  z.object({ type: z.literal("voice_ack"), request_id: z.string(), state: z.enum(["off", "armed", "streaming"]), voice_connected: z.boolean(), wake_count: z.number().nonnegative(), session_count: z.number().nonnegative() }).passthrough(),
   z.object({
-    type: z.literal("voice_ack"), request_id: z.string(),
-    state: z.enum(["off", "armed", "streaming"]), voice_connected: z.boolean(),
-    wake_count: z.number().nonnegative(), session_count: z.number().nonnegative(),
-  }).passthrough(),
-  z.object({
-    type: z.literal("health"),
-    request_id: z.string(),
-    firmware: z.string(),
-    uptime_ms: z.number().nonnegative(),
-    reset_reason: z.number().int(),
-    ssid: z.string().optional(),
-    rssi: z.number().optional(),
-    cloud_connected: z.boolean(),
-    free_heap: z.number().nonnegative(),
-    min_free_heap: z.number().nonnegative(),
-    free_psram: z.number().nonnegative(),
-    largest_free_internal_block: z.number().nonnegative().optional(),
+    type: z.literal("health"), request_id: z.string(), firmware: z.string(), uptime_ms: z.number().nonnegative(), reset_reason: z.number().int(), ssid: z.string().optional(), rssi: z.number().optional(), cloud_connected: z.boolean(), free_heap: z.number().nonnegative(), min_free_heap: z.number().nonnegative(), free_psram: z.number().nonnegative(), largest_free_internal_block: z.number().nonnegative().optional(),
     voice: z.object({ state: z.enum(["off", "armed", "streaming"]), connected: z.boolean(), wakes: z.number(), sessions: z.number(), failures: z.number(), timeouts: z.number() }).optional(),
     wifi: z.object({ scans: z.number(), connect_attempts: z.number(), connections: z.number(), failed: z.number(), disconnects: z.number(), last_disconnect_reason: z.string() }),
     cloud: z.object({ connections: z.number(), disconnects: z.number(), errors: z.number() }),
     logs: z.object({ stored: z.number().int(), capacity: z.number().int(), warnings: z.number(), errors: z.number() }),
   }),
   z.object({ type: z.literal("display_ack"), request_id: z.string().optional(), mode: z.string().max(16) }).passthrough(),
-  z.object({
-    type: z.literal("logs"), request_id: z.string(), firmware: z.string(), uptime_ms: z.number().nonnegative(), warnings: z.number().nonnegative(), errors: z.number().nonnegative(), error: z.string().optional(),
-    entries: z.array(z.object({ seq: z.number(), first_ms: z.number(), last_ms: z.number(), repeat: z.number().int().positive(), level: z.enum(["info", "warn", "error"]), subsystem: z.string(), code: z.string(), detail: z.string().max(96) })).max(40),
-  }),
+  z.object({ type: z.literal("logs"), request_id: z.string(), firmware: z.string(), uptime_ms: z.number().nonnegative(), warnings: z.number().nonnegative(), errors: z.number().nonnegative(), error: z.string().optional(), entries: z.array(z.object({ seq: z.number(), first_ms: z.number(), last_ms: z.number(), repeat: z.number().int().positive(), level: z.enum(["info", "warn", "error"]), subsystem: z.string(), code: z.string(), detail: z.string().max(96) })).max(40) }),
 ]);
 
 function safeEqual(left, right) {
@@ -200,24 +122,14 @@ function safeEqual(left, right) {
 }
 
 function rejectUpgrade(socket, statusCode, statusText) {
-  socket.write(
-    `HTTP/1.1 ${statusCode} ${statusText}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
-  );
+  socket.write(`HTTP/1.1 ${statusCode} ${statusText}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
   socket.destroy();
 }
 
 function getDeviceSnapshot() {
   const device = devices.get(env.NEWO_DEVICE_ID);
   const connected = device?.ws?.readyState === WebSocket.OPEN;
-
-  return {
-    connected,
-    id: env.NEWO_DEVICE_ID,
-    connected_at: device?.connectedAt ?? null,
-    last_seen: device?.lastSeen ?? null,
-    hello: device?.hello ?? null,
-    status: device?.status ?? null,
-  };
+  return { connected, id: env.NEWO_DEVICE_ID, connected_at: device?.connectedAt ?? null, last_seen: device?.lastSeen ?? null, hello: device?.hello ?? null, status: device?.status ?? null };
 }
 
 function getConnectedDeviceState() {
@@ -231,116 +143,57 @@ function settlePendingRequest(requestId, result) {
     app.log.info({ request_id: requestId, settlement: result.kind }, "Ignored already-settled Newo request");
     return false;
   }
-
   pendingRequests.delete(requestId);
   clearTimeout(pending.timer);
-  app.log.info({
-    request_id: requestId, request_type: pending.requestType, expected_response_type: pending.responseType,
-    telegram_update_id: pending.trace?.updateId ?? null, settlement: result.kind,
-    elapsed_ms: Math.max(0, Date.now() - pending.startedAt),
-  }, "Newo request settled");
+  app.log.info({ request_id: requestId, request_type: pending.requestType, expected_response_type: pending.responseType, telegram_update_id: pending.trace?.updateId ?? null, settlement: result.kind, elapsed_ms: Math.max(0, Date.now() - pending.startedAt) }, "Newo request settled");
   pending.resolve(result);
   return true;
 }
 
 function createRequestId() {
   let requestId;
-  do {
-    requestId = randomUUID();
-  } while (pendingRequests.has(requestId));
+  do requestId = randomUUID(); while (pendingRequests.has(requestId));
   return requestId;
 }
 
 function sendDeviceRequest(requestType, responseType, fields = {}, trace = null) {
   const device = getConnectedDeviceState();
   if (!device) return { kind: "offline" };
-
   const requestId = createRequestId();
   const startedAt = Date.now();
   let timer;
   let resolveRequest;
-  const promise = new Promise((resolve) => {
-    resolveRequest = resolve;
-  });
-
-  timer = setTimeout(() => {
-    settlePendingRequest(requestId, { kind: "timeout" });
-  }, DEVICE_REQUEST_TIMEOUT_MS);
+  const promise = new Promise((resolve) => { resolveRequest = resolve; });
+  timer = setTimeout(() => settlePendingRequest(requestId, { kind: "timeout" }), DEVICE_REQUEST_TIMEOUT_MS);
   timer.unref();
-  pendingRequests.set(requestId, {
-    deviceId: env.NEWO_DEVICE_ID,
-    ws: device.ws,
-    requestType,
-    responseType,
-    startedAt,
-    timer,
-    resolve: resolveRequest,
-    trace,
-  });
-  app.log.info({ request_id: requestId, request_type: requestType, expected_response_type: responseType,
-    telegram_update_id: trace?.updateId ?? null, created_at: new Date(startedAt).toISOString() }, "Newo request created");
-
+  pendingRequests.set(requestId, { deviceId: env.NEWO_DEVICE_ID, ws: device.ws, requestType, responseType, startedAt, timer, resolve: resolveRequest, trace });
+  app.log.info({ request_id: requestId, request_type: requestType, expected_response_type: responseType, telegram_update_id: trace?.updateId ?? null, created_at: new Date(startedAt).toISOString() }, "Newo request created");
   try {
-    device.ws.send(
-      JSON.stringify({
-        type: requestType,
-        request_id: requestId,
-        ...fields,
-      }),
-      (error) => {
-        if (error) {
-          settlePendingRequest(requestId, { kind: "send_error" });
-        }
-      },
-    );
+    device.ws.send(JSON.stringify({ type: requestType, request_id: requestId, ...fields }), (error) => { if (error) settlePendingRequest(requestId, { kind: "send_error" }); });
   } catch {
     settlePendingRequest(requestId, { kind: "send_error" });
   }
-
   return { kind: "sent", requestId, promise };
 }
 
 function resolvePendingResponse(deviceId, ws, message) {
   if (!message.request_id) return false;
-
   const pending = pendingRequests.get(message.request_id);
-  if (
-    !pending ||
-    pending.deviceId !== deviceId ||
-    pending.ws !== ws ||
-    pending.responseType !== message.type
-  ) {
-    return false;
-  }
-
-  return settlePendingRequest(message.request_id, {
-    kind: "response",
-    message,
-    elapsedMs: Math.max(0, Date.now() - pending.startedAt),
-  });
+  if (!pending || pending.deviceId !== deviceId || pending.ws !== ws || pending.responseType !== message.type) return false;
+  return settlePendingRequest(message.request_id, { kind: "response", message, elapsedMs: Math.max(0, Date.now() - pending.startedAt) });
 }
 
 function failPendingRequestsForDevice(deviceId, ws, kind = "disconnected") {
-  for (const [requestId, pending] of pendingRequests) {
-    if (pending.deviceId === deviceId && pending.ws === ws) {
-      settlePendingRequest(requestId, { kind });
-    }
-  }
+  for (const [requestId, pending] of pendingRequests) if (pending.deviceId === deviceId && pending.ws === ws) settlePendingRequest(requestId, { kind });
 }
 
 function formatDuration(milliseconds) {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return "unknown";
-
   let seconds = Math.floor(milliseconds / 1_000);
   if (seconds < 1) return `${Math.floor(milliseconds)} ms`;
-
-  const days = Math.floor(seconds / 86_400);
-  seconds %= 86_400;
-  const hours = Math.floor(seconds / 3_600);
-  seconds %= 3_600;
-  const minutes = Math.floor(seconds / 60);
-  seconds %= 60;
-
+  const days = Math.floor(seconds / 86_400); seconds %= 86_400;
+  const hours = Math.floor(seconds / 3_600); seconds %= 3_600;
+  const minutes = Math.floor(seconds / 60); seconds %= 60;
   const parts = [];
   if (days) parts.push(`${days}d`);
   if (hours) parts.push(`${hours}h`);
@@ -349,17 +202,12 @@ function formatDuration(milliseconds) {
   return parts.join(" ");
 }
 
-function escapeHtml(value) {
-  return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-}
-
+function escapeHtml(value) { return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
 function bold(value) { return `<b>${escapeHtml(value)}</b>`; }
 function italic(value) { return `<i>${escapeHtml(value)}</i>`; }
 function boldItalic(value) { return `<b><i>${escapeHtml(value)}</i></b>`; }
 function title(value) { return boldItalic(value); }
 function quote(lines) { return `<blockquote>${lines.join("\n")}</blockquote>`; }
-// Telegram response headers are intentionally generic: no product name, just a
-// lowercase bold/italic command label followed by a semicolon.
 function commandMessage(name, blocks) { return `${title(`${String(name).toLowerCase()}:`)}\n${blocks.join("\n")}`; }
 function statusMessage(name, status) { return commandMessage(name, [quote([`Status: ${bold(status)}`])]); }
 function timeoutMessage(name) { return commandMessage(name, [quote([`Status: ${bold("No reply")}`, `Timeout: ${bold(5)} ${italic("seconds")}`])]); }
@@ -378,89 +226,42 @@ function formatDeviceStatus(snapshot, source = "live") {
 }
 
 function cancelOfflineTimer(state) {
-  if (state?.offlineTimer) {
-    clearTimeout(state.offlineTimer);
-    state.offlineTimer = null;
-  }
+  if (state?.offlineTimer) { clearTimeout(state.offlineTimer); state.offlineTimer = null; }
 }
 
 function sendConnectivityNotification(html) {
   if (!bot || allowedChatIds.size === 0) return;
-
   for (const chatId of allowedChatIds) {
-    void Promise.resolve()
-      .then(() => bot.api.sendMessage(chatId, html, { parse_mode: "HTML" }))
-      .catch(() => {
-        app.log.warn({ chat_id: chatId }, "Failed to send Newo connectivity notification");
-      });
+    void Promise.resolve().then(() => bot.api.sendMessage(chatId, html, { parse_mode: "HTML" })).catch(() => app.log.warn({ chat_id: chatId }, "Failed to send Newo connectivity notification"));
   }
 }
 
 function scheduleOfflineNotification(deviceId, state, ws) {
-  if (
-    shuttingDown ||
-    !state.hasBeenConnected ||
-    pendingReboot?.deviceId === deviceId
-  ) return;
-
+  if (shuttingDown || !state.hasBeenConnected || pendingReboot?.deviceId === deviceId) return;
   cancelOfflineTimer(state);
   state.offlineSince = Date.now();
   state.offlineNotified = false;
   state.offlineTimer = setTimeout(() => {
     state.offlineTimer = null;
     const current = devices.get(deviceId);
-    if (
-      shuttingDown ||
-      pendingReboot?.deviceId === deviceId ||
-      current !== state ||
-      current.ws !== ws ||
-      current.ws.readyState === WebSocket.OPEN
-    ) {
-      return;
-    }
-
+    if (shuttingDown || pendingReboot?.deviceId === deviceId || current !== state || current.ws !== ws || current.ws.readyState === WebSocket.OPEN) return;
     state.offlineNotified = true;
     sendConnectivityNotification(statusMessage("connectivity", "offline"));
   }, OFFLINE_GRACE_MS);
   state.offlineTimer.unref();
 }
 
-app.get("/", async () => ({
-  service: "newo-cloud",
-  status: "ok",
-}));
-
+app.get("/", async () => ({ service: "newo-cloud", status: "ok" }));
 app.get("/health", async () => {
   const device = getDeviceSnapshot();
-  return {
-    status: "ok",
-    service: "newo-cloud",
-    uptime_s: Math.floor(process.uptime()),
-    telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN),
-    device: {
-      connected: device.connected,
-      id: device.id,
-      connected_at: device.connected_at,
-      last_seen: device.last_seen,
-      firmware: device.hello?.firmware ?? null,
-      chip: device.hello?.chip ?? null,
-    },
-  };
+  return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), device: { connected: device.connected, id: device.id, connected_at: device.connected_at, last_seen: device.last_seen, firmware: device.hello?.firmware ?? null, chip: device.hello?.chip ?? null } };
 });
 
-// Commands remain callable but are intentionally not advertised in Telegram's menu.
-const TELEGRAM_COMMANDS = []; 
-
-function commandTrace(ctx) {
-  return ctx.newoTrace ?? null;
-}
-
+const TELEGRAM_COMMANDS = [];
+function commandTrace(ctx) { return ctx.newoTrace ?? null; }
 async function commandReply(ctx, text, category = "reply", requestId = null) {
   const trace = commandTrace(ctx);
-  if (trace) {
-    trace.replyCategory = category;
-    trace.requestId = requestId;
-  }
+  if (trace) { trace.replyCategory = category; trace.requestId = requestId; }
   return ctx.reply(text, { parse_mode: "HTML" });
 }
 
@@ -471,14 +272,23 @@ function showDisplay(text) {
 
 async function handleNewoCommand(ctx) {
   const input = String(ctx.match ?? "").trim();
-  if (!input || input.length > 96) return commandReply(ctx, commandMessage("newo", [quote(["Use a mode or up to 96 characters."])]), "usage");
-  const mode = ["idle", "listening", "thinking", "speaking", "error"].includes(input.toLowerCase()) ? input.toLowerCase() : "message";
-  const text = mode === "message" ? input : "";
-  const request = sendDeviceRequest("display_set", "display_ack", { mode, text }, commandTrace(ctx));
-  if (request.kind === "offline") return commandReply(ctx, statusMessage("newo", "offline"), "offline");
+  if (input) return commandReply(ctx, commandMessage("newo", [quote(["Reserved for the Newo agent. Use /face for display styles."])]), "reserved");
+  return commandReply(ctx, commandMessage("newo", [quote(["Reserved for the Newo agent."])]), "reserved");
+}
+
+async function handleFaceCommand(ctx) {
+  const input = String(ctx.match ?? "").trim().toLowerCase();
+  if (!input) {
+    return commandReply(ctx, commandMessage("face", [quote(FACE_STYLES.map((style) => `/face ${style}`))]), "usage");
+  }
+  if (!FACE_STYLES.includes(input)) {
+    return commandReply(ctx, commandMessage("face", [quote(["Choose one:", ...FACE_STYLES.map((style) => `/face ${style}`)])]), "usage");
+  }
+  const request = sendDeviceRequest("display_set", "display_ack", { mode: input, text: "" }, commandTrace(ctx));
+  if (request.kind === "offline") return commandReply(ctx, statusMessage("face", "offline"), "offline");
   const result = await request.promise;
-  if (result.kind === "response") return commandReply(ctx, commandMessage("newo", [quote([mode === "message" ? text : mode.toUpperCase()])]), "response", request.requestId);
-  return commandReply(ctx, commandMessage("newo", [quote(["Display update was not acknowledged."])]), result.kind, request.requestId);
+  if (result.kind === "response") return commandReply(ctx, commandMessage("face", [quote([`Face: ${bold(input)}`])]), "response", request.requestId);
+  return commandReply(ctx, commandMessage("face", [quote(["Face update was not acknowledged."])]), result.kind, request.requestId);
 }
 
 async function handleEcoCommand(ctx) {
@@ -491,11 +301,7 @@ async function handleEcoCommand(ctx) {
 
 async function handleStatusCommand(ctx) {
   const request = sendDeviceRequest("status_request", "status", {}, commandTrace(ctx));
-  if (request.kind === "offline") {
-    await commandReply(ctx, statusMessage("status", "offline"), "offline");
-    return;
-  }
-
+  if (request.kind === "offline") { await commandReply(ctx, statusMessage("status", "offline"), "offline"); return; }
   const result = await request.promise;
   if (result.kind === "response") {
     const state = getDeviceSnapshot();
@@ -503,21 +309,13 @@ async function handleStatusCommand(ctx) {
     await commandReply(ctx, formatDeviceStatus(state), "response", request.requestId);
     return;
   }
-
   if (result.kind === "timeout") {
     const snapshot = getDeviceSnapshot();
-    if (snapshot.status) {
-      await commandReply(ctx, formatDeviceStatus(snapshot, "cached"), "cached", request.requestId);
-    } else {
-      await commandReply(ctx, timeoutMessage("status"), "timeout", request.requestId);
-    }
+    if (snapshot.status) await commandReply(ctx, formatDeviceStatus(snapshot, "cached"), "cached", request.requestId);
+    else await commandReply(ctx, timeoutMessage("status"), "timeout", request.requestId);
     return;
   }
-
-  await commandReply(ctx,
-    getConnectedDeviceState() ? timeoutMessage("status") : statusMessage("status", "offline"),
-    "unavailable", request.requestId,
-  );
+  await commandReply(ctx, getConnectedDeviceState() ? timeoutMessage("status") : statusMessage("status", "offline"), "unavailable", request.requestId);
 }
 
 function formatBytes(bytes) {
@@ -525,11 +323,7 @@ function formatBytes(bytes) {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
   return `${Math.round(bytes / 1024)} KB`;
 }
-
-function formatResetReason(reason) {
-  return ({ 1: "Power on", 2: "External reset", 3: "Software restart", 4: "Crash", 5: "Watchdog", 6: "Watchdog", 7: "Watchdog", 8: "Deep sleep wake", 9: "Brownout" })[reason] ?? "Unknown";
-}
-
+function formatResetReason(reason) { return ({ 1: "Power on", 2: "External reset", 3: "Software restart", 4: "Crash", 5: "Watchdog", 6: "Watchdog", 7: "Watchdog", 8: "Deep sleep wake", 9: "Brownout" })[reason] ?? "Unknown"; }
 function parseLogsArguments(match, forceProblems = false) {
   const parts = String(match ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
   let limit = 20;
@@ -542,7 +336,6 @@ function parseLogsArguments(match, forceProblems = false) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 40) return null;
   return { limit, minLevel };
 }
-
 function formatLogTime(milliseconds) {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000));
   const hours = Math.floor(seconds / 3600);
@@ -550,48 +343,33 @@ function formatLogTime(milliseconds) {
   const remainder = seconds % 60;
   return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}` : `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
 }
-
 function parseLogDetail(code, detail) {
   const text = String(detail ?? "");
   const valueAfter = (prefix) => text.startsWith(prefix) ? text.slice(prefix.length) : undefined;
   switch (code) {
-    case "WIFI_CONNECTING":
-      return { ssid: valueAfter("ssid=") };
+    case "WIFI_CONNECTING": return { ssid: valueAfter("ssid=") };
     case "WIFI_CONNECTED": {
-      const marker = " rssi=";
-      const index = text.lastIndexOf(marker);
+      const marker = " rssi="; const index = text.lastIndexOf(marker);
       if (index === -1 || !text.startsWith("ssid=")) return {};
       return { ssid: text.slice("ssid=".length, index), rssi: text.slice(index + marker.length) };
     }
     case "WIFI_CONNECT_FAILED": {
-      const marker = " reason=";
-      const index = text.lastIndexOf(marker);
+      const marker = " reason="; const index = text.lastIndexOf(marker);
       if (index === -1 || !text.startsWith("ssid=")) return {};
       return { ssid: text.slice("ssid=".length, index), reason: text.slice(index + marker.length) };
     }
-    case "WIFI_DISCONNECTED":
-      return { reason: valueAfter("reason=") };
-    default:
-      return Object.fromEntries(text.split(" ").map((part) => part.split(/=(.*)/, 2)).filter(([key, value]) => key && value !== undefined));
+    case "WIFI_DISCONNECTED": return { reason: valueAfter("reason=") };
+    default: return Object.fromEntries(text.split(" ").map((part) => part.split(/=(.*)/, 2)).filter(([key, value]) => key && value !== undefined));
   }
 }
-
 function formatLogEntry(entry) {
   const detail = parseLogDetail(entry.code, entry.detail);
   const withTimestamp = (event, details = []) => `${italic(formatLogTime(entry.last_ms))}  ${bold(event)}${details.length ? ` — ${details.join(", ")}` : ""}${entry.repeat > 1 ? ` ${italic(`×${entry.repeat}`)}` : ""}`;
-
-  if (entry.code === "WIFI_CONNECTING") {
-    return withTimestamp("Connecting", [escapeHtml(detail.ssid ?? "Wi-Fi")]);
-  }
+  if (entry.code === "WIFI_CONNECTING") return withTimestamp("Connecting", [escapeHtml(detail.ssid ?? "Wi-Fi")]);
   if (entry.code === "WIFI_CONNECTED") {
-    const details = [escapeHtml(detail.ssid ?? "unknown")];
-    if (detail.rssi) details.push(`${escapeHtml(detail.rssi)} ${italic("dBm")}`);
-    return withTimestamp("Wi-Fi connected", details);
+    const details = [escapeHtml(detail.ssid ?? "unknown")]; if (detail.rssi) details.push(`${escapeHtml(detail.rssi)} ${italic("dBm")}`); return withTimestamp("Wi-Fi connected", details);
   }
-  if (entry.code === "WIFI_CONNECT_FAILED") {
-    return withTimestamp("Wi-Fi connection failed", [escapeHtml(detail.ssid ?? "unknown"), escapeHtml(detail.reason ?? "unknown reason")]);
-  }
-
+  if (entry.code === "WIFI_CONNECT_FAILED") return withTimestamp("Wi-Fi connection failed", [escapeHtml(detail.ssid ?? "unknown"), escapeHtml(detail.reason ?? "unknown reason")]);
   const labels = {
     BOOT_START: ["Started"], BOOT_READY: ["Newo ready"], STORAGE_READY: ["Storage ready", `${detail.saved_networks ?? "0"} networks`], STORAGE_FAILED: ["Storage failed"],
     WIFI_SCAN_START: ["Scanning for saved Wi-Fi"], WIFI_SCAN_EMPTY: ["Wi-Fi scan found nothing"], WIFI_SCAN_RESULT: ["Found saved Wi-Fi"], WIFI_DISCONNECTED: ["Wi-Fi disconnected", detail.reason ?? "unknown reason"], WIFI_RECONNECTING: ["Reconnecting Wi-Fi"],
@@ -601,21 +379,16 @@ function formatLogEntry(entry) {
   const [event, ...details] = labels[entry.code] ?? [entry.code.replaceAll("_", " ")];
   return withTimestamp(event, details.filter(Boolean).map(escapeHtml));
 }
-
 async function replyLogLines(ctx, name, lines, requestId = null, prefixBlocks = []) {
   const header = title(`${String(name).toLowerCase()}:`);
   let chunk = [];
   for (const line of lines) {
     const candidate = `${header}\n${[...prefixBlocks, quote([...chunk, line])].join("\n")}`;
-    if (chunk.length && candidate.length > 3800) {
-      await commandReply(ctx, `${header}\n${[...prefixBlocks, quote(chunk)].join("\n")}`, "logs_chunk", requestId);
-      chunk = [];
-    }
+    if (chunk.length && candidate.length > 3800) { await commandReply(ctx, `${header}\n${[...prefixBlocks, quote(chunk)].join("\n")}`, "logs_chunk", requestId); chunk = []; }
     chunk.push(line);
   }
   if (chunk.length || prefixBlocks.length) await commandReply(ctx, `${header}\n${[...prefixBlocks, quote(chunk)].join("\n")}`, "logs_chunk", requestId);
 }
-
 async function handleHealthCommand(ctx) {
   const request = sendDeviceRequest("health_request", "health", {}, commandTrace(ctx));
   if (request.kind === "offline") return commandReply(ctx, statusMessage("health", "offline"), "offline");
@@ -634,7 +407,6 @@ async function handleHealthCommand(ctx) {
     quote(["Logs", value("Stored", `${health.logs.stored} / ${health.logs.capacity}`), value("Warnings", health.logs.warnings), value("Errors", health.logs.errors)]),
   ]), "response", request.requestId);
 }
-
 async function handleLogsCommand(ctx, forceProblems = false) {
   const name = forceProblems ? "errors" : "logs";
   const args = parseLogsArguments(ctx.match, forceProblems);
@@ -650,7 +422,6 @@ async function handleLogsCommand(ctx, forceProblems = false) {
   const summary = forceProblems ? [quote(["Summary", `Warnings: ${bold(result.message.warnings)}`, `Errors: ${bold(result.message.errors)}`])] : [];
   await replyLogLines(ctx, name, entries.map(formatLogEntry), request.requestId, summary);
 }
-
 async function handlePingCommand(ctx) {
   const request = sendDeviceRequest("ping", "pong", {}, commandTrace(ctx));
   if (request.kind === "offline") return commandReply(ctx, statusMessage("ping", "offline"), "offline");
@@ -659,80 +430,40 @@ async function handlePingCommand(ctx) {
   if (result.kind === "timeout") return commandReply(ctx, timeoutMessage("ping"), "timeout", request.requestId);
   return commandReply(ctx, getConnectedDeviceState() ? timeoutMessage("ping") : statusMessage("ping", "offline"), "unavailable", request.requestId);
 }
-
 function trackPendingReboot(chatId, messageId, deviceId) {
-  if (pendingReboot?.timer) {
-    clearTimeout(pendingReboot.timer);
-  }
-
+  if (pendingReboot?.timer) clearTimeout(pendingReboot.timer);
   const tracker = { chatId, messageId, deviceId, timer: null };
   tracker.timer = setTimeout(() => {
     if (pendingReboot !== tracker) return;
     pendingReboot = null;
-
-    void bot?.api
-      .editMessageText(chatId, messageId, statusMessage("reboot", "Not back online yet"), { parse_mode: "HTML" })
-      .catch(() => {
-        app.log.warn({ chat_id: chatId }, "Failed to update timed-out reboot message");
-      });
+    void bot?.api.editMessageText(chatId, messageId, statusMessage("reboot", "Not back online yet"), { parse_mode: "HTML" }).catch(() => app.log.warn({ chat_id: chatId }, "Failed to update timed-out reboot message"));
   }, REBOOT_RETURN_TIMEOUT_MS);
   tracker.timer.unref();
   pendingReboot = tracker;
 }
-
 function completePendingReboot(deviceId) {
   const tracker = pendingReboot;
   if (!tracker || tracker.deviceId !== deviceId) return false;
-
   pendingReboot = null;
   clearTimeout(tracker.timer);
-
-  void Promise.resolve()
-    .then(() => bot?.api.deleteMessage(tracker.chatId, tracker.messageId))
-    .catch(() => {
-      app.log.warn(
-        { chat_id: tracker.chatId },
-        "Failed to delete Telegram reboot message",
-      );
-    })
-    .then(() => bot?.api.sendMessage(tracker.chatId, statusMessage("reboot", "Back online"), { parse_mode: "HTML" }))
-    .catch(() => {
-      app.log.warn(
-        { chat_id: tracker.chatId },
-        "Failed to send Telegram reboot completion message",
-      );
-    });
+  void Promise.resolve().then(() => bot?.api.deleteMessage(tracker.chatId, tracker.messageId)).catch(() => app.log.warn({ chat_id: tracker.chatId }, "Failed to delete Telegram reboot message")).then(() => bot?.api.sendMessage(tracker.chatId, statusMessage("reboot", "Back online"), { parse_mode: "HTML" })).catch(() => app.log.warn({ chat_id: tracker.chatId }, "Failed to send Telegram reboot completion message"));
   return true;
 }
-
 async function handleVoiceCommand(ctx, forcedArgument = null) {
   const argument = (forcedArgument ?? String(ctx.match ?? "")).trim().toLowerCase();
   const isStatus = argument === "status";
   const action = argument === "" ? "toggle" : argument;
-  if (!isStatus && action !== "on" && action !== "off" && action !== "toggle") {
-    return commandReply(ctx, commandMessage("voice", [quote(["Usage: /voice [on|off|status]"])]), "usage");
-  }
-  const request = isStatus
-    ? sendDeviceRequest("voice_status", "voice_ack", {}, commandTrace(ctx))
-    : sendDeviceRequest("voice_control", "voice_ack", { action }, commandTrace(ctx));
+  if (!isStatus && action !== "on" && action !== "off" && action !== "toggle") return commandReply(ctx, commandMessage("voice", [quote(["Usage: /voice [on|off|status]"])]), "usage");
+  const request = isStatus ? sendDeviceRequest("voice_status", "voice_ack", {}, commandTrace(ctx)) : sendDeviceRequest("voice_control", "voice_ack", { action }, commandTrace(ctx));
   if (request.kind === "offline") return commandReply(ctx, statusMessage("voice", "offline"), "offline");
   const result = await request.promise;
   if (result.kind === "response") {
     const voice = result.message;
-    if (!isStatus) {
-      return commandReply(ctx, commandMessage("voice", [quote([
-        voice.state === "off" ? bold("Voice OFF") : bold("Voice ON"),
-      ])]), "response", request.requestId);
-    }
-    return commandReply(ctx, commandMessage("voice", [quote([
-      `State: ${bold(voice.state.toUpperCase())}`,
-      `Wake detections: ${bold(voice.wake_count)}`,
-      `Sessions: ${bold(voice.session_count)}`,
-    ])]), "response", request.requestId);
+    if (!isStatus) return commandReply(ctx, commandMessage("voice", [quote([voice.state === "off" ? bold("Voice OFF") : bold("Voice ON")])]), "response", request.requestId);
+    return commandReply(ctx, commandMessage("voice", [quote([`State: ${bold(voice.state.toUpperCase())}`, `Wake detections: ${bold(voice.wake_count)}`, `Sessions: ${bold(voice.session_count)}`])]), "response", request.requestId);
   }
   return commandReply(ctx, result.kind === "timeout" ? timeoutMessage("voice") : statusMessage("voice", "offline"), result.kind, request.requestId);
 }
-
 async function handleRebootCommand(ctx) {
   const request = sendDeviceRequest("reboot", "reboot_ack", {}, commandTrace(ctx));
   if (request.kind === "offline") return commandReply(ctx, statusMessage("reboot", "offline"), "offline");
@@ -749,60 +480,31 @@ async function handleRebootCommand(ctx) {
 
 if (env.TELEGRAM_BOT_TOKEN) {
   bot = new Bot(env.TELEGRAM_BOT_TOKEN);
-
   bot.use(async (ctx, next) => {
     const text = ctx.message?.text;
     const command = typeof text === "string" ? text.match(/^\/([a-z0-9_]+)/i)?.[1]?.toLowerCase() ?? null : null;
-    ctx.newoTrace = {
-      updateId: ctx.update.update_id ?? null,
-      messageId: ctx.message?.message_id ?? null,
-      command,
-      invokedAt: new Date().toISOString(),
-      replyCount: 0,
-    };
-    app.log.info({ telegram_update_id: ctx.newoTrace.updateId, telegram_message_id: ctx.newoTrace.messageId,
-      chat_id: ctx.chat?.id?.toString() ?? null, command, handler_invoked_at: ctx.newoTrace.invokedAt },
-      "Newo Telegram update received");
+    ctx.newoTrace = { updateId: ctx.update.update_id ?? null, messageId: ctx.message?.message_id ?? null, command, invokedAt: new Date().toISOString(), replyCount: 0 };
+    app.log.info({ telegram_update_id: ctx.newoTrace.updateId, telegram_message_id: ctx.newoTrace.messageId, chat_id: ctx.chat?.id?.toString() ?? null, command, handler_invoked_at: ctx.newoTrace.invokedAt }, "Newo Telegram update received");
     const originalReply = ctx.reply.bind(ctx);
     ctx.reply = async (...args) => {
-      const trace = ctx.newoTrace;
-      trace.replyCount += 1;
-      app.log.info({ telegram_update_id: trace.updateId, request_id: trace.requestId ?? null,
-        result: trace.replyCategory ?? "reply", reply_count: trace.replyCount,
-        reply_already_emitted: trace.replyCount > 1 }, "Newo Telegram reply emitted");
+      const trace = ctx.newoTrace; trace.replyCount += 1;
+      app.log.info({ telegram_update_id: trace.updateId, request_id: trace.requestId ?? null, result: trace.replyCategory ?? "reply", reply_count: trace.replyCount, reply_already_emitted: trace.replyCount > 1 }, "Newo Telegram reply emitted");
       return originalReply(...args);
     };
     const userId = ctx.from?.id?.toString();
     const chatId = ctx.chat?.id?.toString();
-    const allowed =
-      (userId && allowedUserIds.has(userId)) ||
-      (chatId && allowedChatIds.has(chatId));
-
-    if (!allowed) {
-      app.log.warn(
-        { user_id: userId ?? null, chat_id: chatId ?? null },
-        "Rejected Telegram update outside allowlist",
-      );
-      return;
-    }
-
+    const allowed = (userId && allowedUserIds.has(userId)) || (chatId && allowedChatIds.has(chatId));
+    if (!allowed) { app.log.warn({ user_id: userId ?? null, chat_id: chatId ?? null }, "Rejected Telegram update outside allowlist"); return; }
     await next();
   });
-
   bot.catch((error) => {
-    const ctx = error.ctx;
-    const trace = commandTrace(ctx);
-    app.log.error({ telegram_update_id: ctx?.update?.update_id ?? null,
-      telegram_message_id: ctx?.message?.message_id ?? null, command: trace?.command ?? null,
-      error_type: error.error?.name ?? "Error", error_message: error.error?.message ?? "unknown" },
-      "Newo Telegram update failed");
+    const ctx = error.ctx; const trace = commandTrace(ctx);
+    app.log.error({ telegram_update_id: ctx?.update?.update_id ?? null, telegram_message_id: ctx?.message?.message_id ?? null, command: trace?.command ?? null, error_type: error.error?.name ?? "Error", error_message: error.error?.message ?? "unknown" }, "Newo Telegram update failed");
   });
-
   bot.command("start", async (ctx) => {
     const state = getDeviceSnapshot().connected ? "online" : "offline";
     await commandReply(ctx, `${title("status:")}\n${quote([`Status: ${bold(state)}`])}`, "response");
   });
-
   bot.command(["status", "s"], handleStatusCommand);
   bot.command(["health", "h"], handleHealthCommand);
   bot.command(["logs", "l"], (ctx) => handleLogsCommand(ctx));
@@ -810,216 +512,74 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command("e", (ctx) => handleLogsCommand(ctx, true));
   bot.command(["ping", "p"], handlePingCommand);
   bot.command(["reboot", "r"], handleRebootCommand);
-  bot.command(["newo", "n"], handleNewoCommand);
+  bot.command("newo", handleNewoCommand);
+  bot.command(["face", "f"], handleFaceCommand);
   bot.command("eco", handleEcoCommand);
-  // Not advertised in the public command menu; shared middleware enforces allowlists.
   bot.command(["voice", "v"], handleVoiceCommand);
   bot.command("vs", (ctx) => handleVoiceCommand(ctx, "status"));
-
-  void bot.api.setMyCommands(TELEGRAM_COMMANDS).catch(() => {
-    app.log.warn("Failed to register the Telegram command menu");
-  });
-
-  app.post(
-    "/telegram/webhook",
-    webhookCallback(bot, "fastify", {
-      secretToken: env.TELEGRAM_WEBHOOK_SECRET,
-      onTimeout: "return",
-      timeoutMilliseconds: 9_000,
-    }),
-  );
+  void bot.api.setMyCommands(TELEGRAM_COMMANDS).catch(() => app.log.warn("Failed to register the Telegram command menu"));
+  app.post("/telegram/webhook", webhookCallback(bot, "fastify", { secretToken: env.TELEGRAM_WEBHOOK_SECRET, onTimeout: "return", timeoutMilliseconds: 9_000 }));
 }
 
 app.server.on("upgrade", (request, socket, head) => {
   let pathname;
-  try {
-    pathname = new URL(request.url ?? "/", "http://localhost").pathname;
-  } catch {
-    rejectUpgrade(socket, 400, "Bad Request");
-    return;
-  }
-
-  if (pathname !== "/device" && pathname !== "/voice") {
-    rejectUpgrade(socket, 404, "Not Found");
-    return;
-  }
-
-  if (!env.NEWO_DEVICE_SECRET) {
-    app.log.error("Rejected Newo WebSocket because NEWO_DEVICE_SECRET is not configured");
-    rejectUpgrade(socket, 503, "Service Unavailable");
-    return;
-  }
-
+  try { pathname = new URL(request.url ?? "/", "http://localhost").pathname; } catch { rejectUpgrade(socket, 400, "Bad Request"); return; }
+  if (pathname !== "/device" && pathname !== "/voice") { rejectUpgrade(socket, 404, "Not Found"); return; }
+  if (!env.NEWO_DEVICE_SECRET) { app.log.error("Rejected Newo WebSocket because NEWO_DEVICE_SECRET is not configured"); rejectUpgrade(socket, 503, "Service Unavailable"); return; }
   const deviceId = request.headers["x-newo-device-id"];
   const authorization = request.headers.authorization;
-  const presentedSecret =
-    typeof authorization === "string" && authorization.startsWith("Bearer ")
-      ? authorization.slice("Bearer ".length)
-      : undefined;
-
-  if (
-    !safeEqual(deviceId, env.NEWO_DEVICE_ID) ||
-    !safeEqual(presentedSecret, env.NEWO_DEVICE_SECRET)
-  ) {
-    app.log.warn({ device_id: deviceId ?? null, path: pathname }, "Rejected unauthenticated Newo WebSocket");
-    rejectUpgrade(socket, 401, "Unauthorized");
-    return;
-  }
-
+  const presentedSecret = typeof authorization === "string" && authorization.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : undefined;
+  if (!safeEqual(deviceId, env.NEWO_DEVICE_ID) || !safeEqual(presentedSecret, env.NEWO_DEVICE_SECRET)) { app.log.warn({ device_id: deviceId ?? null, path: pathname }, "Rejected unauthenticated Newo WebSocket"); rejectUpgrade(socket, 401, "Unauthorized"); return; }
   const server = pathname === "/voice" ? voiceWss : wss;
-  server.handleUpgrade(request, socket, head, (ws) => {
-    server.emit("connection", ws, request, deviceId);
-  });
+  server.handleUpgrade(request, socket, head, (ws) => server.emit("connection", ws, request, deviceId));
 });
 
 voiceWss.on("connection", (ws, request, deviceId) => {
-  void voiceRuntime.handleConnection(ws, deviceId).catch((error) => {
-    app.log.error({ device_id: deviceId, error_message: error?.message ?? "unknown" }, "Voice connection setup failed");
-    ws.close(1011, "voice setup failed");
-  });
+  void voiceRuntime.handleConnection(ws, deviceId).catch((error) => { app.log.error({ device_id: deviceId, error_message: error?.message ?? "unknown" }, "Voice connection setup failed"); ws.close(1011, "voice setup failed"); });
 });
 
 wss.on("connection", (ws, request, deviceId) => {
   const previous = devices.get(deviceId);
-  const reconnectingAfterNotifiedOffline = Boolean(
-    previous?.hasBeenConnected &&
-      previous.offlineNotified &&
-      previous.offlineSince !== null,
-  );
-  const offlineDuration = reconnectingAfterNotifiedOffline
-    ? Math.max(0, Date.now() - previous.offlineSince)
-    : 0;
-
+  const reconnectingAfterNotifiedOffline = Boolean(previous?.hasBeenConnected && previous.offlineNotified && previous.offlineSince !== null);
+  const offlineDuration = reconnectingAfterNotifiedOffline ? Math.max(0, Date.now() - previous.offlineSince) : 0;
   cancelOfflineTimer(previous);
-  if (previous?.ws.readyState === WebSocket.OPEN) {
-    failPendingRequestsForDevice(deviceId, previous.ws, "disconnected");
-    previous.ws.close(4001, "replaced by new connection");
-  }
-
-  const state = {
-    ws,
-    connectedAt: new Date().toISOString(),
-    lastSeen: new Date().toISOString(),
-    hello: previous?.hello ?? null,
-    status: previous?.status ?? null,
-    hasBeenConnected: previous?.hasBeenConnected ?? true,
-    offlineSince: null,
-    offlineNotified: false,
-    offlineTimer: null,
-    isAlive: true,
-  };
+  if (previous?.ws.readyState === WebSocket.OPEN) { failPendingRequestsForDevice(deviceId, previous.ws, "disconnected"); previous.ws.close(4001, "replaced by new connection"); }
+  const state = { ws, connectedAt: new Date().toISOString(), lastSeen: new Date().toISOString(), hello: previous?.hello ?? null, status: previous?.status ?? null, hasBeenConnected: previous?.hasBeenConnected ?? true, offlineSince: null, offlineNotified: false, offlineTimer: null, isAlive: true };
   devices.set(deviceId, state);
-
   const completedIntentionalReboot = completePendingReboot(deviceId);
-  if (reconnectingAfterNotifiedOffline && !completedIntentionalReboot) {
-    sendConnectivityNotification(commandMessage("connectivity", [quote([
-      `Status: ${bold("Back online")}`,
-      `Offline for: ${boldItalic(formatDuration(offlineDuration))}`,
-    ])]));
-  }
-
+  if (reconnectingAfterNotifiedOffline && !completedIntentionalReboot) sendConnectivityNotification(commandMessage("connectivity", [quote([`Status: ${bold("Back online")}`, `Offline for: ${boldItalic(formatDuration(offlineDuration))}`]) ]));
   app.log.info({ device_id: deviceId }, "Newo device connected");
-
-  ws.on("pong", () => {
-    state.isAlive = true;
-    state.lastSeen = new Date().toISOString();
-  });
-
+  ws.on("pong", () => { state.isAlive = true; state.lastSeen = new Date().toISOString(); });
   ws.on("message", (raw, isBinary) => {
     const current = devices.get(deviceId);
     if (current !== state || current.ws !== ws) return;
-
     state.lastSeen = new Date().toISOString();
-
-    if (isBinary) {
-      app.log.warn({ device_id: deviceId }, "Ignoring unexpected binary device message");
-      return;
-    }
-
+    if (isBinary) { app.log.warn({ device_id: deviceId }, "Ignoring unexpected binary device message"); return; }
     let json;
-    try {
-      json = JSON.parse(raw.toString("utf8"));
-    } catch {
-      app.log.warn({ device_id: deviceId }, "Ignoring invalid JSON from device");
-      return;
-    }
-
+    try { json = JSON.parse(raw.toString("utf8")); } catch { app.log.warn({ device_id: deviceId }, "Ignoring invalid JSON from device"); return; }
     const parsed = DeviceMessageSchema.safeParse(json);
-    if (!parsed.success) {
-      app.log.warn(
-        { device_id: deviceId, issues: parsed.error.issues },
-        "Ignoring invalid device message",
-      );
-      return;
-    }
-
+    if (!parsed.success) { app.log.warn({ device_id: deviceId, issues: parsed.error.issues }, "Ignoring invalid device message"); return; }
     const message = parsed.data;
-    if (message.type === "hello" && message.device !== deviceId) {
-      app.log.warn(
-        { authenticated_device: deviceId, claimed_device: message.device },
-        "Device hello identity mismatch",
-      );
-      ws.close(4003, "device identity mismatch");
-      return;
-    }
-
-    if (message.type === "hello") {
-      state.hello = {
-        device: message.device,
-        firmware: message.firmware ?? null,
-        chip: message.chip ?? null,
-        received_at: state.lastSeen,
-      };
-    }
-
-    if (message.type === "status" || message.type === "pong") {
-      state.status = {
-        ...(state.status ?? {}),
-        ...message,
-        received_at: state.lastSeen,
-      };
-    }
-
+    if (message.type === "hello" && message.device !== deviceId) { app.log.warn({ authenticated_device: deviceId, claimed_device: message.device }, "Device hello identity mismatch"); ws.close(4003, "device identity mismatch"); return; }
+    if (message.type === "hello") state.hello = { device: message.device, firmware: message.firmware ?? null, chip: message.chip ?? null, received_at: state.lastSeen };
+    if (message.type === "status" || message.type === "pong") state.status = { ...(state.status ?? {}), ...message, received_at: state.lastSeen };
     resolvePendingResponse(deviceId, ws, message);
     app.log.info({ device_id: deviceId, type: message.type }, "Device message received");
   });
-
   ws.on("close", (code, reason) => {
     const current = devices.get(deviceId);
     failPendingRequestsForDevice(deviceId, ws, "disconnected");
-    if (current?.ws === ws) {
-      current.lastSeen = new Date().toISOString();
-      scheduleOfflineNotification(deviceId, current, ws);
-    }
-    app.log.info(
-      { device_id: deviceId, code, reason: reason.toString() },
-      "Newo device disconnected",
-    );
+    if (current?.ws === ws) { current.lastSeen = new Date().toISOString(); scheduleOfflineNotification(deviceId, current, ws); }
+    app.log.info({ device_id: deviceId, code, reason: reason.toString() }, "Newo device disconnected");
   });
-
-  ws.on("error", () => {
-    app.log.warn({ device_id: deviceId }, "Newo WebSocket error");
-  });
-
-  ws.send(
-    JSON.stringify({
-      type: "hello_ack",
-      device: deviceId,
-      server_time: new Date().toISOString(),
-    }),
-  );
+  ws.on("error", () => app.log.warn({ device_id: deviceId }, "Newo WebSocket error"));
+  ws.send(JSON.stringify({ type: "hello_ack", device: deviceId, server_time: new Date().toISOString() }));
 });
 
 const heartbeatTimer = setInterval(() => {
   for (const [deviceId, state] of devices) {
     if (state.ws.readyState !== WebSocket.OPEN) continue;
-
-    if (!state.isAlive) {
-      app.log.warn({ device_id: deviceId }, "Terminating stale Newo WebSocket");
-      state.ws.terminate();
-      continue;
-    }
-
+    if (!state.isAlive) { app.log.warn({ device_id: deviceId }, "Terminating stale Newo WebSocket"); state.ws.terminate(); continue; }
     state.isAlive = false;
     state.ws.ping();
   }
@@ -1028,29 +588,12 @@ heartbeatTimer.unref();
 
 async function closeDeviceSocket(ws) {
   if (ws.readyState === WebSocket.CLOSED) return;
-
   await new Promise((resolve) => {
     let finished = false;
-    const finish = () => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timeout);
-      resolve();
-    };
-    const timeout = setTimeout(() => {
-      ws.terminate();
-      finish();
-    }, 1_000);
-    timeout.unref();
-
-    ws.once("close", finish);
-    ws.once("error", finish);
-    try {
-      ws.close(1001, "server shutting down");
-    } catch {
-      ws.terminate();
-      finish();
-    }
+    const finish = () => { if (finished) return; finished = true; clearTimeout(timeout); resolve(); };
+    const timeout = setTimeout(() => { ws.terminate(); finish(); }, 1_000); timeout.unref();
+    ws.once("close", finish); ws.once("error", finish);
+    try { ws.close(1001, "server shutting down"); } catch { ws.terminate(); finish(); }
   });
 }
 
@@ -1059,59 +602,30 @@ async function shutdown(signal) {
   shuttingDown = true;
   app.log.info({ signal }, "Shutting down Newo cloud");
   clearInterval(heartbeatTimer);
-  if (pendingReboot?.timer) {
-    clearTimeout(pendingReboot.timer);
-    pendingReboot = null;
-  }
-
-  for (const [requestId] of pendingRequests) {
-    settlePendingRequest(requestId, { kind: "shutdown" });
-  }
-  for (const state of devices.values()) {
-    cancelOfflineTimer(state);
-  }
-
-  await Promise.all([
-    ...[...devices.values()].map((state) => state.ws),
-    ...voiceWss.clients,
-  ].filter((ws) => ws.readyState !== WebSocket.CLOSED).map(closeDeviceSocket));
-
-  await Promise.all([wss, voiceWss].map((server) => new Promise((resolve) => {
-    try {
-      server.close(() => resolve());
-    } catch {
-      resolve();
-    }
-  })));
+  if (pendingReboot?.timer) { clearTimeout(pendingReboot.timer); pendingReboot = null; }
+  for (const [requestId] of pendingRequests) settlePendingRequest(requestId, { kind: "shutdown" });
+  for (const state of devices.values()) cancelOfflineTimer(state);
+  await Promise.all([...[...devices.values()].map((state) => state.ws), ...voiceWss.clients].filter((ws) => ws.readyState !== WebSocket.CLOSED).map(closeDeviceSocket));
+  await Promise.all([wss, voiceWss].map((server) => new Promise((resolve) => { try { server.close(() => resolve()); } catch { resolve(); } })));
   await voiceAsr.close?.();
   await app.close();
   process.exitCode = 0;
 }
-
-function handleShutdownSignal(signal) {
-  void shutdown(signal).catch(() => {
-    process.exitCode = 1;
-  });
-}
-
+function handleShutdownSignal(signal) { void shutdown(signal).catch(() => { process.exitCode = 1; }); }
 process.once("SIGINT", () => handleShutdownSignal("SIGINT"));
 process.once("SIGTERM", () => handleShutdownSignal("SIGTERM"));
 
 await app.listen({ host: env.HOST, port: env.PORT });
-
-app.log.info(
-  {
-    bind: `${env.HOST}:${env.PORT}`,
-    public_base_url: env.PUBLIC_BASE_URL,
-    websocket_path: "/device",
-    voice_websocket_path: "/voice",
-    voice_format: `${env.VOICE_CHANNELS}ch ${env.VOICE_SAMPLE_RATE}Hz ${env.VOICE_BITS_PER_SAMPLE}-bit PCM LE`,
-    voice_wav_capture_enabled: env.VOICE_SAVE_WAV,
-    voice_asr_backend: env.VOICE_ASR_BACKEND,
-    voice_sherpa_model: env.VOICE_ASR_BACKEND === "sherpa" ? env.VOICE_SHERPA_MODEL : null,
-    voice_live_test_mode: env.VOICE_LIVE_TEST_MODE,
-    telegram_enabled: Boolean(bot),
-    device_auth_configured: Boolean(env.NEWO_DEVICE_SECRET),
-  },
-  "Newo cloud started",
-);
+app.log.info({
+  bind: `${env.HOST}:${env.PORT}`,
+  public_base_url: env.PUBLIC_BASE_URL,
+  websocket_path: "/device",
+  voice_websocket_path: "/voice",
+  voice_format: `${env.VOICE_CHANNELS}ch ${env.VOICE_SAMPLE_RATE}Hz ${env.VOICE_BITS_PER_SAMPLE}-bit PCM LE`,
+  voice_wav_capture_enabled: env.VOICE_SAVE_WAV,
+  voice_asr_backend: env.VOICE_ASR_BACKEND,
+  voice_sherpa_model: env.VOICE_ASR_BACKEND === "sherpa" ? env.VOICE_SHERPA_MODEL : null,
+  voice_live_test_mode: env.VOICE_LIVE_TEST_MODE,
+  telegram_enabled: Boolean(bot),
+  device_auth_configured: Boolean(env.NEWO_DEVICE_SECRET),
+}, "Newo cloud started");
