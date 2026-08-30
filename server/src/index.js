@@ -6,6 +6,7 @@ import { Bot, webhookCallback } from "grammy";
 import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 
+import { createSpeakerRuntime, EspeakTtsBackend } from "./tts.js";
 import { createVoiceRuntime, NullAsrBackend, WorkerAsrBackend } from "./voice.js";
 
 try {
@@ -46,6 +47,12 @@ const EnvSchema = z.object({
   VOICE_ASR_HOTWORDS_FILE: z.preprocess(emptyToUndefined, z.string().default("config/newo-hotwords.txt")),
   VOICE_ASR_HOTWORDS_SCORE: z.preprocess(emptyToUndefined, z.coerce.number().min(0).max(5).default(1.5)),
   VOICE_LIVE_TEST_MODE: z.preprocess(stringToBoolean, z.boolean().default(false)),
+  TTS_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
+  TTS_BACKEND: z.preprocess(emptyToUndefined, z.enum(["espeak"]).default("espeak")),
+  TTS_VOICE: z.preprocess(emptyToUndefined, z.string().min(1).default("en")),
+  TTS_RATE: z.preprocess(emptyToUndefined, z.coerce.number().int().min(80).max(450).default(155)),
+  TTS_MAX_TEXT_CHARS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(20).max(500).default(300)),
+  TTS_MAX_PCM_BYTES: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().max(1_920_000).default(1_920_000)),
 });
 
 const env = EnvSchema.parse(process.env);
@@ -58,6 +65,7 @@ const allowedChatIds = parseIdSet(env.TELEGRAM_ALLOWED_CHAT_IDS);
 const app = Fastify({ logger: true, trustProxy: true, bodyLimit: 256 * 1024 });
 const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 64 * 1024 });
 const voiceWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: env.VOICE_MAX_CHUNK_BYTES });
+const speakerWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 4 * 1024 });
 const sherpaModelDirectories = {
   "20m": "models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
   "libri-giga": "models/sherpa-onnx-streaming-zipformer-en-2023-06-21",
@@ -97,6 +105,19 @@ let bot = null;
 let pendingReboot = null;
 let shuttingDown = false;
 
+const speakerRuntime = createSpeakerRuntime({
+  logger: app.log,
+  enabled: env.TTS_ENABLED,
+  backend: new EspeakTtsBackend({ voice: env.TTS_VOICE, rate: env.TTS_RATE, maxPcmBytes: env.TTS_MAX_PCM_BYTES }),
+  getDevice: () => getConnectedDeviceState(),
+  sendControl(message) {
+    const device = getConnectedDeviceState();
+    if (!device) return false;
+    try { device.ws.send(JSON.stringify(message)); return true; } catch { return false; }
+  },
+  maxTextChars: env.TTS_MAX_TEXT_CHARS,
+});
+
 const DeviceMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("hello"), device: z.string().min(1), firmware: z.string().optional(), chip: z.string().optional() }).passthrough(),
   z.object({ type: z.literal("pong"), request_id: z.string().optional(), uptime_ms: z.number().nonnegative().optional(), rssi: z.number().optional(), ssid: z.string().optional() }).passthrough(),
@@ -111,6 +132,8 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
     logs: z.object({ stored: z.number().int(), capacity: z.number().int(), warnings: z.number(), errors: z.number() }),
   }),
   z.object({ type: z.literal("display_ack"), request_id: z.string().optional(), mode: z.string().max(16) }).passthrough(),
+  z.object({ type: z.literal("speaker_complete"), playback_id: z.string().uuid(), bytes: z.number().int().nonnegative() }).passthrough(),
+  z.object({ type: z.literal("speaker_error"), playback_id: z.string().uuid(), bytes: z.number().int().nonnegative(), error: z.string().max(48) }).passthrough(),
   z.object({ type: z.literal("logs"), request_id: z.string(), firmware: z.string(), uptime_ms: z.number().nonnegative(), warnings: z.number().nonnegative(), errors: z.number().nonnegative(), error: z.string().optional(), entries: z.array(z.object({ seq: z.number(), first_ms: z.number(), last_ms: z.number(), repeat: z.number().int().positive(), level: z.enum(["info", "warn", "error"]), subsystem: z.string(), code: z.string(), detail: z.string().max(96) })).max(40) }),
 ]);
 
@@ -262,7 +285,15 @@ function commandTrace(ctx) { return ctx.newoTrace ?? null; }
 async function commandReply(ctx, text, category = "reply", requestId = null, options = {}) {
   const trace = commandTrace(ctx);
   if (trace) { trace.replyCategory = category; trace.requestId = requestId; }
-  return ctx.reply(text, { parse_mode: "HTML", ...options });
+  const { newoSpeak = true, newoSpeakMaxChars, ...telegramOptions } = options;
+  const message = await ctx.reply(text, { parse_mode: "HTML", ...telegramOptions });
+  // Telegram is primary: synthesis/playback starts only after its reply and is never awaited.
+  if (newoSpeak && (!trace || !trace.speechQueued)) {
+    if (trace) trace.speechQueued = true;
+    const speech = speakerRuntime.speak(text, { maxChars: newoSpeakMaxChars });
+    if (speech.kind === "queued") void speech.completion.catch((error) => app.log.warn({ playback_id: speech.playbackId, error_message: error.message }, "Asynchronous Telegram speech failed"));
+  }
+  return message;
 }
 
 function showDisplay(text) {
@@ -466,6 +497,18 @@ async function handleVoiceCommand(ctx, forcedArgument = null) {
   }
   return commandReply(ctx, result.kind === "timeout" ? timeoutMessage("voice") : statusMessage("voice", "offline"), result.kind, request.requestId);
 }
+async function handleSpeakCommand(ctx) {
+  const text = String(ctx.match ?? "").trim();
+  if (!text || text.length > 150) return commandReply(ctx, commandMessage("speak", [quote(["Usage: /speak <1-150 characters>"])]), "usage", null, { newoSpeak: false });
+  const speech = speakerRuntime.speak(text, { maxChars: 150 });
+  if (speech.kind !== "queued") return commandReply(ctx, statusMessage("speak", speech.kind === "offline" ? "offline" : "unavailable"), speech.kind, null, { newoSpeak: false });
+  await commandReply(ctx, commandMessage("speak", [quote(["Playback queued."])]), "queued", null, { newoSpeak: false });
+  void speech.completion.then(
+    () => ctx.reply(commandMessage("speak", [quote(["Playback complete."])]), { parse_mode: "HTML" }),
+    (error) => ctx.reply(commandMessage("speak", [quote(["Playback failed."])]), { parse_mode: "HTML" }).catch(() => app.log.warn({ playback_id: speech.playbackId, error_message: error.message }, "Failed to report speaker test failure")),
+  ).catch(() => {});
+}
+
 async function handleRebootCommand(ctx) {
   const request = sendDeviceRequest("reboot", "reboot_ack", {}, commandTrace(ctx));
   if (request.kind === "offline") return commandReply(ctx, statusMessage("reboot", "offline"), "offline");
@@ -520,6 +563,8 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command("eco", handleEcoCommand);
   bot.command(["voice", "v"], handleVoiceCommand);
   bot.command("vs", (ctx) => handleVoiceCommand(ctx, "status"));
+  // Hidden physical bring-up command; deliberately omitted from setMyCommands.
+  bot.command("speak", handleSpeakCommand);
   void bot.api.setMyCommands(TELEGRAM_COMMANDS).catch(() => app.log.warn("Failed to register the Telegram command menu"));
   app.post("/telegram/webhook", webhookCallback(bot, "fastify", { secretToken: env.TELEGRAM_WEBHOOK_SECRET, onTimeout: "return", timeoutMilliseconds: 9_000 }));
 }
@@ -527,18 +572,24 @@ if (env.TELEGRAM_BOT_TOKEN) {
 app.server.on("upgrade", (request, socket, head) => {
   let pathname;
   try { pathname = new URL(request.url ?? "/", "http://localhost").pathname; } catch { rejectUpgrade(socket, 400, "Bad Request"); return; }
-  if (pathname !== "/device" && pathname !== "/voice") { rejectUpgrade(socket, 404, "Not Found"); return; }
+  if (pathname !== "/device" && pathname !== "/voice" && pathname !== "/speaker") { rejectUpgrade(socket, 404, "Not Found"); return; }
   if (!env.NEWO_DEVICE_SECRET) { app.log.error("Rejected Newo WebSocket because NEWO_DEVICE_SECRET is not configured"); rejectUpgrade(socket, 503, "Service Unavailable"); return; }
   const deviceId = request.headers["x-newo-device-id"];
   const authorization = request.headers.authorization;
   const presentedSecret = typeof authorization === "string" && authorization.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : undefined;
   if (!safeEqual(deviceId, env.NEWO_DEVICE_ID) || !safeEqual(presentedSecret, env.NEWO_DEVICE_SECRET)) { app.log.warn({ device_id: deviceId ?? null, path: pathname }, "Rejected unauthenticated Newo WebSocket"); rejectUpgrade(socket, 401, "Unauthorized"); return; }
-  const server = pathname === "/voice" ? voiceWss : wss;
-  server.handleUpgrade(request, socket, head, (ws) => server.emit("connection", ws, request, deviceId));
+  const playbackId = request.headers["x-newo-playback-id"];
+  if (pathname === "/speaker" && (typeof playbackId !== "string" || !/^[0-9a-f-]{36}$/i.test(playbackId))) { rejectUpgrade(socket, 400, "Bad Request"); return; }
+  const server = pathname === "/voice" ? voiceWss : pathname === "/speaker" ? speakerWss : wss;
+  server.handleUpgrade(request, socket, head, (ws) => server.emit("connection", ws, request, deviceId, playbackId));
 });
 
 voiceWss.on("connection", (ws, request, deviceId) => {
   void voiceRuntime.handleConnection(ws, deviceId).catch((error) => { app.log.error({ device_id: deviceId, error_message: error?.message ?? "unknown" }, "Voice connection setup failed"); ws.close(1011, "voice setup failed"); });
+});
+
+speakerWss.on("connection", (ws, request, deviceId, playbackId) => {
+  void speakerRuntime.handleConnection(ws, deviceId, playbackId).catch((error) => { app.log.warn({ device_id: deviceId, playback_id: playbackId, error_message: error?.message ?? "unknown" }, "Speaker connection setup failed"); ws.close(1011, "speaker setup failed"); });
 });
 
 wss.on("connection", (ws, request, deviceId) => {
@@ -567,6 +618,7 @@ wss.on("connection", (ws, request, deviceId) => {
     if (message.type === "hello") state.hello = { device: message.device, firmware: message.firmware ?? null, chip: message.chip ?? null, received_at: state.lastSeen };
     if (message.type === "status" || message.type === "pong") state.status = { ...(state.status ?? {}), ...message, received_at: state.lastSeen };
     resolvePendingResponse(deviceId, ws, message);
+    if (message.type === "speaker_complete" || message.type === "speaker_error") speakerRuntime.handleResult(deviceId, message);
     app.log.info({ device_id: deviceId, type: message.type }, "Device message received");
   });
   ws.on("close", (code, reason) => {
@@ -608,8 +660,9 @@ async function shutdown(signal) {
   if (pendingReboot?.timer) { clearTimeout(pendingReboot.timer); pendingReboot = null; }
   for (const [requestId] of pendingRequests) settlePendingRequest(requestId, { kind: "shutdown" });
   for (const state of devices.values()) cancelOfflineTimer(state);
-  await Promise.all([...[...devices.values()].map((state) => state.ws), ...voiceWss.clients].filter((ws) => ws.readyState !== WebSocket.CLOSED).map(closeDeviceSocket));
-  await Promise.all([wss, voiceWss].map((server) => new Promise((resolve) => { try { server.close(() => resolve()); } catch { resolve(); } })));
+  speakerRuntime.close();
+  await Promise.all([...[...devices.values()].map((state) => state.ws), ...voiceWss.clients, ...speakerWss.clients].filter((ws) => ws.readyState !== WebSocket.CLOSED).map(closeDeviceSocket));
+  await Promise.all([wss, voiceWss, speakerWss].map((server) => new Promise((resolve) => { try { server.close(() => resolve()); } catch { resolve(); } })));
   await voiceAsr.close?.();
   await app.close();
   process.exitCode = 0;
@@ -624,6 +677,10 @@ app.log.info({
   public_base_url: env.PUBLIC_BASE_URL,
   websocket_path: "/device",
   voice_websocket_path: "/voice",
+  speaker_websocket_path: "/speaker",
+  speaker_format: `${speakerRuntime.format.channels}ch ${speakerRuntime.format.sampleRate}Hz ${speakerRuntime.format.bitsPerSample}-bit PCM LE`,
+  tts_enabled: env.TTS_ENABLED,
+  tts_backend: env.TTS_BACKEND,
   voice_format: `${env.VOICE_CHANNELS}ch ${env.VOICE_SAMPLE_RATE}Hz ${env.VOICE_BITS_PER_SAMPLE}-bit PCM LE`,
   voice_wav_capture_enabled: env.VOICE_SAVE_WAV,
   voice_asr_backend: env.VOICE_ASR_BACKEND,

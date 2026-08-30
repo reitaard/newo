@@ -27,6 +27,7 @@ The Node service binds to loopback by default. Port 8788 should not be exposed p
 - `GET /health` cloud/device health JSON
 - `WS /device` authenticated Newo device control/status connection
 - `WS /voice` authenticated raw PCM audio stream for development ASR preparation
+- `WS /speaker` authenticated server-to-device mono PCM playback stream
 - `POST /telegram/webhook` enabled only when Telegram environment variables are configured
 
 Telegram commands are allowlist-protected. The visible menu contains `/status` (quick status), `/health` (live device health), `/logs` (recent events), `/errors` (warnings/errors), and `/reboot` (acknowledged restart). Hidden aliases `/s`, `/h`, `/l`, `/e`, `/r`, `/ping`, and `/p` remain available; aliases and latency checks are not placed in the menu.
@@ -38,6 +39,23 @@ Temporary structured operational tracing records safe Telegram update/message/ch
 ## Environment
 
 Copy `.env.example` to `.env` on the VPS and fill secrets there. Never commit `.env`.
+
+### Speaker TTS
+
+Install the initial VPS backend and normalizer:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y espeak-ng ffmpeg
+```
+
+Enable it in `.env` with `TTS_ENABLED=true`, `TTS_BACKEND=espeak`, `TTS_VOICE=en`, and an optional `TTS_RATE` (default 155 words/minute). Telegram is always answered first. The shared reply helper then strips HTML, normalizes common units, limits speech to 300 characters, and queues synthesis without awaiting playback. `/speak <text>` is a hidden bring-up command limited to 150 characters.
+
+`espeak-ng --stdout -v <voice> -s <rate> <text>` is piped into `ffmpeg -i pipe:0 -f s16le -acodec pcm_s16le -ac 1 -ar 16000 pipe:1`. The backend boundary returns mono 16 kHz signed PCM16 little-endian and can be replaced without changing firmware or `/speaker`.
+
+The VPS sends only `{type:"speaker_play", playback_id, sample_rate, channels, bits_per_sample, bytes}` over `/device`. Newo opens `/speaker` with the normal device headers plus `X-Newo-Playback-Id`. The server sends paced 2,048-byte binary PCM frames followed by `{type:"speaker_end", playback_id, bytes}` and Newo reports `speaker_complete` or `speaker_error` on `/device`. PCM never travels on the control socket.
+
+Firmware keeps an 8,192-byte (256 ms) mono stream buffer, duplicates samples into stereo I2S slots, and starts at 12.5% digital amplitude. Its dedicated TX pins are BCLK GPIO21, LRC GPIO47, and DOUT GPIO14. During actual playback it temporarily releases WakeNet and shows the existing SPEAKING animation; afterward it restores the unchanged OFF/ARMED choice and prior display state.
 
 The first cloud bring-up only needs:
 

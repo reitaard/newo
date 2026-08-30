@@ -5,6 +5,7 @@
 #include "newo_config.h"
 #include "newo_display.h"
 #include "newo_log.h"
+#include "newo_speaker.h"
 #include "newo_storage.h"
 #include "newo_wifi.h"
 
@@ -13,6 +14,7 @@ NewoWiFi newoWiFi(newoStorage);
 NewoDisplay newoDisplay;
 NewoCloud newoCloud(newoWiFi, newoDisplay);
 NewoAudio newoAudio(newoWiFi, newoDisplay);
+NewoSpeaker newoSpeaker(newoWiFi, newoDisplay, newoAudio);
 
 void printHardwareInfo() {
   Serial.println();
@@ -49,6 +51,7 @@ void setup() {
   newoWiFi.begin();
   newoCloud.begin();
   newoAudio.begin();
+  newoSpeaker.begin();
 
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::BOOT, "BOOT_READY");
   newoCloud.recordStack("after boot");
@@ -59,6 +62,8 @@ void loop() {
   static VoiceAck pendingVoiceAcks[8] = {};
   static uint8_t pendingVoiceAckCount = 0;
   NewoCloud::VoiceRequest voiceRequest;
+  NewoCloud::SpeakerRequest speakerRequest;
+  NewoSpeaker::Result speakerResult;
   newoWiFi.loop();
   newoCloud.loop();
   // Consume every queued control request now. In particular, an OFF/toggle is
@@ -75,7 +80,21 @@ void loop() {
               sizeof(pendingVoiceAcks[0].requestId));
     }
   }
+  while (newoCloud.consumeSpeakerRequest(speakerRequest)) {
+    NewoSpeaker::Request request = {};
+    strlcpy(request.playbackId, speakerRequest.playbackId, sizeof(request.playbackId));
+    request.sampleRate = speakerRequest.sampleRate;
+    request.channels = speakerRequest.channels;
+    request.bitsPerSample = speakerRequest.bitsPerSample;
+    request.bytes = speakerRequest.bytes;
+    if (!newoSpeaker.play(request)) newoCloud.sendSpeakerResult(request.playbackId, false, 0, "busy_or_invalid");
+  }
   newoAudio.loop();
+  newoSpeaker.loop();
+  while (newoSpeaker.consumeResult(speakerResult)) {
+    newoCloud.sendSpeakerResult(speakerResult.playbackId, speakerResult.success,
+                                speakerResult.bytes, speakerResult.error);
+  }
   newoCloud.updateVoiceTelemetry(newoAudio.state(), newoAudio.voiceConnected(), newoAudio.wakeCount(),
                                   newoAudio.sessionCount(), newoAudio.failures(), newoAudio.timeouts());
   if (!newoAudio.transitionPending()) {

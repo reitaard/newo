@@ -18,6 +18,9 @@ class NewoAudio {
   void begin();
   void loop();
   bool setEnabled(bool enabled);
+  // Temporarily releases WakeNet while preserving the user's OFF/ARMED choice.
+  // Returns false only when an active STREAMING session makes playback unsafe.
+  bool setPlaybackActive(bool active);
   NewoVoiceState state() const { return state_; }
   uint32_t wakeCount() const { return wakeCount_; }
   uint32_t sessionCount() const { return sessionCount_; }
@@ -53,6 +56,7 @@ class NewoAudio {
   bool wakeNetRunning_ = false;
   bool i2sRunning_ = false;
   bool transitionPending_ = false;
+  bool playbackSuppressed_ = false;
   const char* volatile streamEndReason_ = nullptr;
   uint32_t streamStartedMs_ = 0;
   uint32_t wakeCount_ = 0;

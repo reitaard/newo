@@ -102,6 +102,24 @@ bool NewoCloud::consumeVoiceRequest(VoiceRequest& request) {
   return true;
 }
 
+bool NewoCloud::consumeSpeakerRequest(SpeakerRequest& request) {
+  if (speakerRequestCount_ == 0) return false;
+  request = speakerRequests_[speakerRequestHead_];
+  speakerRequestHead_ = (speakerRequestHead_ + 1) % kSpeakerRequestQueueDepth;
+  --speakerRequestCount_;
+  return true;
+}
+
+void NewoCloud::sendSpeakerResult(const char* playbackId, bool success, uint32_t bytes, const char* error) {
+  if (!connected_ || !playbackId || !playbackId[0]) return;
+  JsonDocument doc;
+  doc["type"] = success ? "speaker_complete" : "speaker_error";
+  doc["playback_id"] = playbackId;
+  doc["bytes"] = bytes;
+  if (!success) doc["error"] = error && error[0] ? error : "unknown";
+  String body; serializeJson(doc, body); webSocket_.sendTXT(body);
+}
+
 void NewoCloud::updateVoiceTelemetry(NewoVoiceState state, bool connected, uint32_t wakes,
                                       uint32_t sessions, uint32_t failures, uint32_t timeouts) {
   voiceState_ = state; voiceConnected_ = connected; voiceWakes_ = wakes;
@@ -239,6 +257,24 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
   if (strcmp(type, "eco_toggle") == 0) {
     display_.toggleEco();
     sendDisplayAck(doc["request_id"] | "", display_.ecoEnabled() ? "eco_on" : "eco_off");
+    return;
+  }
+
+  if (strcmp(type, "speaker_play") == 0) {
+    const char* playbackId = doc["playback_id"] | "";
+    SpeakerRequest request = {};
+    strlcpy(request.playbackId, playbackId, sizeof(request.playbackId));
+    request.sampleRate = doc["sample_rate"] | 0;
+    request.channels = doc["channels"] | 0;
+    request.bitsPerSample = doc["bits_per_sample"] | 0;
+    request.bytes = doc["bytes"] | 0;
+    if (strlen(playbackId) != 36 || !request.bytes || speakerRequestCount_ == kSpeakerRequestQueueDepth) {
+      sendSpeakerResult(playbackId, false, 0, speakerRequestCount_ == kSpeakerRequestQueueDepth ? "busy" : "invalid_request");
+      return;
+    }
+    speakerRequests_[speakerRequestTail_] = request;
+    speakerRequestTail_ = (speakerRequestTail_ + 1) % kSpeakerRequestQueueDepth;
+    ++speakerRequestCount_;
     return;
   }
 

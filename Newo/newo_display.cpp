@@ -60,8 +60,46 @@ bool NewoDisplay::setMode(NewoDisplayMode mode, const char* text, bool temporary
   }
   temporary_ = temporary;
   restoreAtMs_ = temporary ? millis() + kTemporaryMs : 0;
+  if (speakerOverride_) {
+    const uint32_t now = millis();
+    speakerSavedMode_ = mode_;
+    strlcpy(speakerSavedText_, text_, sizeof(speakerSavedText_));
+    speakerSavedTemporary_ = temporary_;
+    speakerSavedRestoreRemainingMs_ = temporary_ ? kTemporaryMs : 0;
+    mode_ = NewoDisplayMode::SPEAKING;
+    text_[0] = '\0';
+    temporary_ = false;
+    restoreAtMs_ = 0;
+    modeStartedMs_ = now;
+  }
   dirty_ = true;
   return true;
+}
+
+void NewoDisplay::setSpeaking(bool active) {
+  if (active == speakerOverride_) return;
+  const uint32_t now = millis();
+  if (active) {
+    speakerSavedMode_ = mode_;
+    strlcpy(speakerSavedText_, text_, sizeof(speakerSavedText_));
+    speakerSavedTemporary_ = temporary_;
+    speakerSavedRestoreRemainingMs_ = temporary_ && static_cast<int32_t>(restoreAtMs_ - now) > 0
+        ? restoreAtMs_ - now : 0;
+    speakerOverride_ = true;
+    mode_ = NewoDisplayMode::SPEAKING;
+    text_[0] = '\0';
+    temporary_ = false;
+    restoreAtMs_ = 0;
+  } else {
+    speakerOverride_ = false;
+    mode_ = speakerSavedMode_;
+    strlcpy(text_, speakerSavedText_, sizeof(text_));
+    temporary_ = speakerSavedTemporary_ && speakerSavedRestoreRemainingMs_ > 0;
+    restoreAtMs_ = temporary_ ? now + speakerSavedRestoreRemainingMs_ : 0;
+  }
+  modeStartedMs_ = now;
+  resetFaceMotion(now);
+  dirty_ = true;
 }
 
 bool NewoDisplay::setFaceStyle(NewoFaceStyle style) {
@@ -78,6 +116,13 @@ bool NewoDisplay::setFaceStyle(NewoFaceStyle style) {
   nextEcoPageMs_ = 0;
   modeStartedMs_ = millis();
   resetFaceMotion(modeStartedMs_);
+  if (speakerOverride_) {
+    speakerSavedMode_ = mode_;
+    strlcpy(speakerSavedText_, text_, sizeof(speakerSavedText_));
+    speakerSavedTemporary_ = false;
+    speakerSavedRestoreRemainingMs_ = 0;
+    mode_ = NewoDisplayMode::SPEAKING;
+  }
   dirty_ = true;
   return true;
 }
@@ -96,6 +141,13 @@ void NewoDisplay::toggleEco() {
     resetFaceMotion(millis());
     strncpy(text_, persistentText_, sizeof(text_) - 1);
     text_[sizeof(text_) - 1] = '\0';
+  }
+  if (speakerOverride_) {
+    speakerSavedMode_ = mode_;
+    strlcpy(speakerSavedText_, text_, sizeof(speakerSavedText_));
+    speakerSavedTemporary_ = false;
+    speakerSavedRestoreRemainingMs_ = 0;
+    mode_ = NewoDisplayMode::SPEAKING;
   }
   dirty_ = true;
 }

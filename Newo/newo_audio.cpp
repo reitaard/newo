@@ -49,7 +49,7 @@ void NewoAudio::releaseI2s() {
 }
 
 bool NewoAudio::startWakeNet() {
-  if (!enabled_ || wakeNetRunning_) return wakeNetRunning_;
+  if (!enabled_ || playbackSuppressed_ || wakeNetRunning_) return wakeNetRunning_;
   if (!configureI2s()) return false;
   ESP_SR.onEvent(srEvent);
   // Empty commands keep Newo in SR_MODE_WAKEWORD; it never enters command mode.
@@ -73,6 +73,26 @@ void NewoAudio::stopWakeNet() {
   releaseI2s();
 }
 
+bool NewoAudio::setPlaybackActive(bool active) {
+  if (active) {
+    if (state_ == NewoVoiceState::STREAMING) return false;
+    playbackSuppressed_ = true;
+    if (state_ == NewoVoiceState::ARMED) stopWakeNet();
+    NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "WAKENET_SPEAKER_SUPPRESSED");
+    return true;
+  }
+  if (!playbackSuppressed_) return true;
+  playbackSuppressed_ = false;
+  if (enabled_ && state_ != NewoVoiceState::STREAMING) {
+    state_ = NewoVoiceState::ARMED;
+    if (!startWakeNet()) state_ = NewoVoiceState::OFF;
+  } else if (!enabled_) {
+    state_ = NewoVoiceState::OFF;
+  }
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "WAKENET_SPEAKER_RESTORED");
+  return true;
+}
+
 bool NewoAudio::setEnabled(bool enabled) {
   enabled_ = enabled;
   if (!enabled) {
@@ -89,6 +109,11 @@ bool NewoAudio::setEnabled(bool enabled) {
     return true;
   }
   if (state_ == NewoVoiceState::OFF) {
+    if (playbackSuppressed_) {
+      state_ = NewoVoiceState::ARMED;
+      transitionPending_ = false;
+      return true;
+    }
     const bool armed = startWakeNet();
     transitionPending_ = false;
     return armed;
@@ -205,5 +230,5 @@ void NewoAudio::handleVoiceEvent(WStype_t type, uint8_t* payload, size_t length)
 void NewoAudio::loop() {
   if (state_ == NewoVoiceState::ARMED && wakePending_) { wakePending_ = false; beginStreaming(); }
   if (state_ == NewoVoiceState::STREAMING && streamFinished_) finishStreaming(streamEndReason_);
-  if (state_ == NewoVoiceState::OFF && enabled_ && !transitionPending_) startWakeNet();
+  if (state_ == NewoVoiceState::OFF && enabled_ && !transitionPending_ && !playbackSuppressed_) startWakeNet();
 }

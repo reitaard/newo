@@ -10,6 +10,7 @@ constexpr char PROVISIONING_DEVICE_NAME[] = "PROV_NEWO";
 constexpr char CLOUD_HOST[] = "newo.reitaard.de";
 constexpr char CLOUD_PATH[] = "/device";
 constexpr char VOICE_PATH[] = "/voice";
+constexpr char SPEAKER_PATH[] = "/speaker";
 constexpr uint16_t CLOUD_PORT = 443;
 
 constexpr uint8_t RGB_LED_PIN = 48;
@@ -43,6 +44,17 @@ constexpr size_t AUDIO_WS_BUNDLE_FRAMES = 5;
 constexpr size_t AUDIO_WS_BUNDLE_BYTES = AUDIO_WS_BUNDLE_FRAMES * AUDIO_FRAME_BYTES;
 constexpr size_t AUDIO_SEND_DRAIN_FRAME_LIMIT = 6;
 constexpr uint32_t AUDIO_LEVEL_LOG_INTERVAL_MS = 5'000;
+
+// MAX98357A on a dedicated TX controller. Microphone mappings above are unchanged.
+constexpr int8_t SPEAKER_I2S_BCLK_PIN = 21;
+constexpr int8_t SPEAKER_I2S_WS_PIN = 47;
+constexpr int8_t SPEAKER_I2S_DOUT_PIN = 14;
+constexpr uint32_t SPEAKER_SAMPLE_RATE = 16'000;
+constexpr uint32_t SPEAKER_PCM_BYTES_PER_SECOND = SPEAKER_SAMPLE_RATE * sizeof(int16_t);
+constexpr size_t SPEAKER_CHUNK_BYTES = 2'048;
+constexpr size_t SPEAKER_BUFFER_BYTES = 8'192;  // 256 ms mono PCM16, strictly bounded.
+constexpr uint32_t SPEAKER_MAX_STREAM_BYTES = 1'920'000;  // At most 60 seconds.
+constexpr int16_t SPEAKER_DIGITAL_DIVISOR = 8;  // 12.5% starting amplitude.
 
 constexpr uint32_t INITIAL_RECOVERY_WINDOW_MS = 18'000;
 constexpr uint32_t WIFI_SCAN_RETRY_DELAY_MS = 1'000;

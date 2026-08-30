@@ -88,6 +88,8 @@ See [`docs/architecture.md`](docs/architecture.md), [`docs/phase-1.md`](docs/pha
 
 ## Build
 
+Speaker output uses a dedicated MAX98357A I2S TX instance: BCLK GPIO21, LRC GPIO47, and DOUT GPIO14. The microphone remains on BCLK GPIO4, WS GPIO5, and SD GPIO6. Playback is mono 16 kHz PCM16 LE duplicated to stereo slots with a bounded 8 KiB buffer and 12.5% initial digital amplitude.
+
 Open `Newo/Newo.ino`. Build with Arduino-ESP32 3.3.11 and `esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=esp_sr_16,UploadSpeed=921600`. The ESP_SR partition is mandatory because its official model is stored in the model partition. Arduino-ESP32 builds `srmodels.bin` but its ordinary upload recipe does not write it; use `Newo/flash_esp_sr.sh <serial-port>` to flash both the application and the official model partition. Hidden allowlisted Telegram controls wait for correlated `/device` acknowledgements: `/voice` toggles OFF/ARMED (and stops STREAMING), `/voice on` and `/voice off` explicitly set it, and `/voice status` reads it.
 
 ## Repository rule

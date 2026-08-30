@@ -15,7 +15,10 @@ class NewoCloud {
   void loop();
   bool connected() const;
   struct VoiceRequest { enum class Action : uint8_t { ON, OFF, TOGGLE }; Action action; char requestId[40]; };
+  struct SpeakerRequest { char playbackId[40]; uint32_t sampleRate; uint32_t bytes; uint8_t channels; uint8_t bitsPerSample; };
   bool consumeVoiceRequest(VoiceRequest& request);
+  bool consumeSpeakerRequest(SpeakerRequest& request);
+  void sendSpeakerResult(const char* playbackId, bool success, uint32_t bytes, const char* error = nullptr);
   void sendVoiceAck(const char* requestId, NewoVoiceState state, bool voiceConnected,
                     uint32_t wakes, uint32_t sessions);
   void updateVoiceTelemetry(NewoVoiceState state, bool connected, uint32_t wakes,
@@ -53,6 +56,11 @@ class NewoCloud {
   uint8_t voiceRequestHead_ = 0;
   uint8_t voiceRequestTail_ = 0;
   uint8_t voiceRequestCount_ = 0;
+  static constexpr uint8_t kSpeakerRequestQueueDepth = 2;
+  SpeakerRequest speakerRequests_[kSpeakerRequestQueueDepth] = {};
+  uint8_t speakerRequestHead_ = 0;
+  uint8_t speakerRequestTail_ = 0;
+  uint8_t speakerRequestCount_ = 0;
   NewoVoiceState voiceState_ = NewoVoiceState::OFF;
   bool voiceConnected_ = false;
   uint32_t voiceWakes_ = 0, voiceSessions_ = 0, voiceFailures_ = 0, voiceTimeouts_ = 0;
