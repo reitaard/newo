@@ -4,7 +4,7 @@
 
 namespace NewoConfig {
 
-constexpr char FIRMWARE_VERSION[] = "0.4.2-dev";
+constexpr char FIRMWARE_VERSION[] = "0.4.3-dev";
 constexpr char PROVISIONING_DEVICE_NAME[] = "PROV_NEWO";
 
 constexpr char CLOUD_HOST[] = "newo.reitaard.de";
@@ -64,6 +64,11 @@ constexpr uint16_t SPEAKER_OPUS_FRAME_MS = 40;
 constexpr size_t SPEAKER_OPUS_FRAME_SAMPLES = SPEAKER_SAMPLE_RATE * SPEAKER_OPUS_FRAME_MS / 1'000;
 constexpr size_t SPEAKER_OPUS_FRAME_PCM_BYTES = SPEAKER_OPUS_FRAME_SAMPLES * sizeof(int16_t);
 constexpr size_t SPEAKER_OPUS_PACKET_HEADER_BYTES = 8;
+// The server rejects envelopes above 4,000 bytes. Sixteen PSRAM slots provide
+// 640 ms of bounded compressed-audio scheduling margin without a PCM reservoir.
+constexpr size_t SPEAKER_OPUS_PACKET_MAX_BYTES = 4'000;
+constexpr size_t SPEAKER_OPUS_QUEUE_DEPTH = 16;
+constexpr uint32_t SPEAKER_OPUS_DECODER_STACK_BYTES = 8'192;
 static_assert(SPEAKER_OPUS_FRAME_SAMPLES == 960, "speaker Opus frame samples changed");
 static_assert(SPEAKER_OPUS_FRAME_PCM_BYTES == 1'920, "speaker Opus frame bytes changed");
 

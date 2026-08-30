@@ -114,9 +114,30 @@ void NewoSpeaker::releaseOpusDecoder() {
   opusDecoder_ = nullptr;
 }
 
+bool NewoSpeaker::allocateOpusQueue() {
+  if (opusReadyQueue_) return true;
+  opusReadyQueue_ = xQueueCreate(NewoConfig::SPEAKER_OPUS_QUEUE_DEPTH, sizeof(OpusPacketRef));
+  opusFreeQueue_ = xQueueCreate(NewoConfig::SPEAKER_OPUS_QUEUE_DEPTH, sizeof(uint8_t));
+  opusPacketStorage_ = static_cast<uint8_t*>(heap_caps_malloc(
+      NewoConfig::SPEAKER_OPUS_QUEUE_DEPTH * NewoConfig::SPEAKER_OPUS_PACKET_MAX_BYTES,
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!opusReadyQueue_ || !opusFreeQueue_ || !opusPacketStorage_) { releaseOpusQueue(); return false; }
+  for (uint8_t slot = 0; slot < NewoConfig::SPEAKER_OPUS_QUEUE_DEPTH; ++slot) xQueueSend(opusFreeQueue_, &slot, 0);
+  return true;
+}
+
+void NewoSpeaker::releaseOpusQueue() {
+  if (decoderTask_) return;
+  if (opusReadyQueue_) { vQueueDelete(opusReadyQueue_); opusReadyQueue_ = nullptr; }
+  if (opusFreeQueue_) { vQueueDelete(opusFreeQueue_); opusFreeQueue_ = nullptr; }
+  if (opusPacketStorage_) { heap_caps_free(opusPacketStorage_); opusPacketStorage_ = nullptr; }
+}
+
 void NewoSpeaker::releaseResources() {
   if (playing()) { releaseRequested_ = true; return; }
+  if (decoderTask_) { releaseRequested_ = true; return; }
   releaseOpusDecoder();
+  releaseOpusQueue();
   if (buffer_) {
     vStreamBufferDelete(buffer_);
     buffer_ = nullptr;
@@ -189,7 +210,7 @@ const char* NewoSpeaker::lastPlayback() const {
 }
 
 bool NewoSpeaker::startPlayback(const Request& request) {
-  if (!connected_ || !buffer_ || task_ || resultReady_) return false;
+  if (!connected_ || !buffer_ || task_ || decoderTask_ || resultReady_) return false;
   if (!newoValidSpeakerBegin(request.sampleRate, request.channels, request.bitsPerSample,
                              request.streaming, request.bytes, request.maxBytes,
                              NewoConfig::SPEAKER_SAMPLE_RATE,
@@ -199,15 +220,9 @@ bool NewoSpeaker::startPlayback(const Request& request) {
        request.opusFramePcmBytes != NewoConfig::SPEAKER_OPUS_FRAME_PCM_BYTES)) return false;
 
   releaseOpusDecoder();
-  if (request.codec == Codec::OPUS) {
-    int opusError = OPUS_OK;
-    opusDecoder_ = opus_decoder_create(NewoConfig::SPEAKER_SAMPLE_RATE, 1, &opusError);
-    if (!opusDecoder_ || opusError != OPUS_OK) {
-      releaseOpusDecoder();
-      NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::AUDIO,
-                   "SPEAKER_OPUS_INIT_FAILED", opus_strerror(opusError));
-      return false;
-    }
+  if (request.codec == Codec::OPUS && !allocateOpusQueue()) {
+    NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::AUDIO, "SPEAKER_OPUS_INIT_FAILED", "queue_allocation");
+    return false;
   }
   if (!audio_.setPlaybackActive(true)) {
     releaseOpusDecoder();
@@ -246,6 +261,18 @@ bool NewoSpeaker::startPlayback(const Request& request) {
   opusDecodeTotalUs_ = 0;
   opusDecodeWorstUs_ = 0;
   expectedOpusSequence_ = 0;
+  expectedOpusDecodeSequence_ = 0;
+  opusAdmittedBytes_ = 0;
+  decoderFinished_ = request.codec != Codec::OPUS;
+  decoderAbort_ = false;
+  opusQueueHighWaterPackets_ = 0;
+  opusQueueHighWaterBytes_ = 0;
+  opusQueueOverflows_ = 0;
+  opusQueuedWireBytes_ = 0;
+  minimumDecoderStackBytes_ = UINT32_MAX;
+  if (request.codec == Codec::OPUS && xTaskCreatePinnedToCore(decoderTaskEntry, "newo-opus", NewoConfig::SPEAKER_OPUS_DECODER_STACK_BYTES, this, 2, &decoderTask_, 1) != pdPASS) {
+    decoderTask_ = nullptr; releaseOpusQueue(); return false;
+  }
   opusSawPartialFrame_ = false;
   playbackStateApplied_ = true;
   playbackStartedEventReady_ = false;
@@ -263,6 +290,42 @@ bool NewoSpeaker::startPlayback(const Request& request) {
 }
 
 void NewoSpeaker::taskEntry(void* context) { static_cast<NewoSpeaker*>(context)->playbackTask(); }
+void NewoSpeaker::decoderTaskEntry(void* context) { static_cast<NewoSpeaker*>(context)->opusDecoderTask(); }
+
+void NewoSpeaker::opusDecoderTask() {
+  minimumDecoderStackBytes_ = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
+  int opusError = OPUS_OK;
+  opusDecoder_ = opus_decoder_create(NewoConfig::SPEAKER_SAMPLE_RATE, 1, &opusError);
+  if (!opusDecoder_ || opusError != OPUS_OK) fail("opus_decoder_init");
+  OpusPacketRef packet;
+  while (!failed_ && !decoderAbort_) {
+    if (xQueueReceive(opusReadyQueue_, &packet, pdMS_TO_TICKS(10)) != pdTRUE) {
+      if (endReceived_ && uxQueueMessagesWaiting(opusReadyQueue_) == 0) break;
+      continue;
+    }
+    const uint8_t* encoded = opusPacketStorage_ + static_cast<size_t>(packet.slot) * NewoConfig::SPEAKER_OPUS_PACKET_MAX_BYTES;
+    opusQueuedWireBytes_ -= packet.length;
+    const uint32_t started = micros();
+    const int samples = opus_decode(opusDecoder_, encoded + NewoConfig::SPEAKER_OPUS_PACKET_HEADER_BYTES,
+      packet.length - NewoConfig::SPEAKER_OPUS_PACKET_HEADER_BYTES, opusDecoded_, NewoConfig::SPEAKER_OPUS_FRAME_SAMPLES, 0);
+    const uint32_t elapsed = micros() - started;
+    ++opusDecodeCount_; opusDecodeTotalUs_ += elapsed; if (elapsed > opusDecodeWorstUs_) opusDecodeWorstUs_ = elapsed;
+    if (samples != static_cast<int>(NewoConfig::SPEAKER_OPUS_FRAME_SAMPLES) || packet.sequence != expectedOpusDecodeSequence_ ||
+        xStreamBufferSend(buffer_, reinterpret_cast<const uint8_t*>(opusDecoded_), packet.validPcmBytes, pdMS_TO_TICKS(100)) != packet.validPcmBytes) {
+      ++opusDecoderErrors_; fail(samples < 0 ? "opus_decode_failed" : "opus_decode_output");
+    } else {
+      ++expectedOpusDecodeSequence_; receivedBytes_ += packet.validPcmBytes;
+      if (firstPcmReceivedMs_ == 0) firstPcmReceivedMs_ = millis(); lastPcmReceivedMs_ = millis();
+    }
+    xQueueSend(opusFreeQueue_, &packet.slot, 0);
+    const uint32_t stack = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
+    if (stack < minimumDecoderStackBytes_) minimumDecoderStackBytes_ = stack;
+  }
+  releaseOpusDecoder();
+  decoderFinished_ = true;
+  decoderTask_ = nullptr;
+  vTaskDelete(nullptr);
+}
 
 bool IRAM_ATTR NewoSpeaker::onI2sSent(i2s_chan_handle_t handle, i2s_event_data_t* event, void* userData) {
   (void)handle;
@@ -279,7 +342,8 @@ void NewoSpeaker::fail(const char* error) {
 
 bool NewoSpeaker::handleOpusPacket(const uint8_t* payload, size_t length) {
   const uint32_t limitBytes = request_.streaming ? request_.maxBytes : request_.bytes;
-  if (!opusDecoder_ || endReceived_ || length <= NewoConfig::SPEAKER_OPUS_PACKET_HEADER_BYTES) {
+  if (!opusReadyQueue_ || !opusFreeQueue_ || !opusPacketStorage_ || endReceived_ ||
+      length <= NewoConfig::SPEAKER_OPUS_PACKET_HEADER_BYTES || length > NewoConfig::SPEAKER_OPUS_PACKET_MAX_BYTES) {
     fail("invalid_opus");
     return false;
   }
@@ -299,49 +363,25 @@ bool NewoSpeaker::handleOpusPacket(const uint8_t* payload, size_t length) {
   }
   if (validPcmBytes == 0 || (validPcmBytes & 1) ||
       validPcmBytes > NewoConfig::SPEAKER_OPUS_FRAME_PCM_BYTES ||
-      receivedBytes_ > limitBytes || validPcmBytes > limitBytes - receivedBytes_) {
+      opusAdmittedBytes_ > limitBytes || validPcmBytes > limitBytes - opusAdmittedBytes_) {
     fail("invalid_opus_pcm");
     return false;
   }
 
-  const uint32_t decodeStartedUs = micros();
-  const int decodedSamples = opus_decode(
-      opusDecoder_, payload + NewoConfig::SPEAKER_OPUS_PACKET_HEADER_BYTES,
-      static_cast<opus_int32>(length - NewoConfig::SPEAKER_OPUS_PACKET_HEADER_BYTES),
-      opusDecoded_, NewoConfig::SPEAKER_OPUS_FRAME_SAMPLES, 0);
-  const uint32_t decodeUs = micros() - decodeStartedUs;
-  ++opusDecodeCount_;
-  opusDecodeTotalUs_ += decodeUs;
-  if (decodeUs > opusDecodeWorstUs_) opusDecodeWorstUs_ = decodeUs;
-  if (decodedSamples < 0) {
-    ++opusDecoderErrors_;
-    fail("opus_decode_failed");
-    return false;
-  }
-  if (decodedSamples != static_cast<int>(NewoConfig::SPEAKER_OPUS_FRAME_SAMPLES)) {
-    ++opusDecoderErrors_;
-    fail("opus_frame_size");
-    return false;
-  }
-  const size_t decodedBytes = static_cast<size_t>(decodedSamples) * sizeof(int16_t);
-  if (validPcmBytes > decodedBytes) {
-    ++opusDecoderErrors_;
-    fail("opus_pcm_overrun");
-    return false;
-  }
-  if (xStreamBufferSend(buffer_, reinterpret_cast<const uint8_t*>(opusDecoded_), validPcmBytes, 0) != validPcmBytes) {
-    ++overflowCount_;
-    fail("buffer_overflow");
-    return false;
-  }
-
+  uint8_t slot;
+  if (xQueueReceive(opusFreeQueue_, &slot, 0) != pdTRUE) { ++opusQueueOverflows_; fail("opus_queue_overflow"); return false; }
+  memcpy(opusPacketStorage_ + static_cast<size_t>(slot) * NewoConfig::SPEAKER_OPUS_PACKET_MAX_BYTES, payload, length);
+  const OpusPacketRef packet = {slot, static_cast<uint16_t>(length), sequence, validPcmBytes};
+  if (xQueueSend(opusReadyQueue_, &packet, 0) != pdTRUE) { xQueueSend(opusFreeQueue_, &slot, 0); ++opusQueueOverflows_; fail("opus_queue_overflow"); return false; }
   ++expectedOpusSequence_;
   ++opusPacketsReceived_;
   opusBytesReceived_ += static_cast<uint32_t>(length);
-  receivedBytes_ += validPcmBytes;
+  opusAdmittedBytes_ += validPcmBytes;
+  const uint32_t queued = uxQueueMessagesWaiting(opusReadyQueue_);
+  if (queued > opusQueueHighWaterPackets_) opusQueueHighWaterPackets_ = queued;
+  opusQueuedWireBytes_ += length;
+  if (opusQueuedWireBytes_ > opusQueueHighWaterBytes_) opusQueueHighWaterBytes_ = opusQueuedWireBytes_;
   if (validPcmBytes < NewoConfig::SPEAKER_OPUS_FRAME_PCM_BYTES) opusSawPartialFrame_ = true;
-  if (firstPcmReceivedMs_ == 0) firstPcmReceivedMs_ = millis();
-  lastPcmReceivedMs_ = millis();
   return true;
 }
 
@@ -386,7 +426,7 @@ void NewoSpeaker::handleText(const uint8_t* payload, size_t length) {
     const uint32_t bytes = doc["bytes"] | 0;
     const NewoSpeakerEndValidation validation = newoValidateSpeakerEnd(
         strcmp(playbackId, request_.playbackId) == 0, request_.streaming, bytes,
-        receivedBytes_, request_.bytes, request_.maxBytes);
+        request_.codec == Codec::OPUS ? opusAdmittedBytes_ : receivedBytes_, request_.bytes, request_.maxBytes);
     if (validation == NewoSpeakerEndValidation::WRONG_PLAYBACK_ID) fail("wrong_playback_id");
     else if (validation != NewoSpeakerEndValidation::OK) fail("invalid_end");
     else { request_.bytes = bytes; endReceived_ = true; }
@@ -495,7 +535,7 @@ void NewoSpeaker::playbackTask() {
       if (available > maximumBufferedBytes_) maximumBufferedBytes_ = static_cast<uint32_t>(available);
 
       if (!playbackStarted) {
-        const bool allPcmReceived = endReceived_ && receivedBytes_ == request_.bytes;
+        const bool allPcmReceived = endReceived_ && decoderFinished_ && receivedBytes_ == request_.bytes;
         if (available >= NewoConfig::SPEAKER_PREBUFFER_BYTES ||
             (allPcmReceived && available >= sizeof(int16_t))) {
           playbackStarted = true;
@@ -544,7 +584,7 @@ void NewoSpeaker::playbackTask() {
         minimumBufferedBytes_ = 0;
         underrunActive = true;
       }
-      if (endReceived_ && xStreamBufferBytesAvailable(buffer_) == 0) {
+      if (endReceived_ && decoderFinished_ && xStreamBufferBytesAvailable(buffer_) == 0) {
         if (receivedBytes_ != request_.bytes || consumedBytes_ != request_.bytes) fail("truncated");
         break;
       }
@@ -562,7 +602,7 @@ void NewoSpeaker::playbackTask() {
     // ring plus one additional TX EOF after the final write guarantees the
     // descriptor containing the last audio samples and the hardware FIFO tail
     // have actually drained before SPEAKER_COMPLETE can be emitted.
-    if (!failed_ && playbackStarted && endReceived_ && receivedBytes_ == request_.bytes &&
+    if (!failed_ && playbackStarted && endReceived_ && decoderFinished_ && receivedBytes_ == request_.bytes &&
         consumedBytes_ == request_.bytes) {
       const uint32_t drainStartEvents = i2sSentEventCount_;
       const uint32_t drainStartedMs = millis();
@@ -583,7 +623,7 @@ void NewoSpeaker::playbackTask() {
   const uint32_t finalStackBytes = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
   if (finalStackBytes < minimumTaskStackBytes_) minimumTaskStackBytes_ = finalStackBytes;
   result_.bytes = receivedBytes_;
-  result_.success = !failed_ && endReceived_ && receivedBytes_ == request_.bytes &&
+  result_.success = !failed_ && endReceived_ && decoderFinished_ && receivedBytes_ == request_.bytes &&
                     consumedBytes_ == request_.bytes;
   strlcpy(result_.error, result_.success ? "" : (failureReason_ ? failureReason_ : "unknown"), sizeof(result_.error));
   playbackStarted_ = false;
@@ -619,7 +659,7 @@ void NewoSpeaker::loop(bool cloudReady) {
 
   if (task_ && taskFinished_) {
     task_ = nullptr;
-    releaseOpusDecoder();
+    // The decoder task owns/destroys its Opus state; it may still be draining.
     if (playbackStateApplied_) {
       display_.setSpeaking(false);
       audio_.setPlaybackActive(false);
@@ -647,17 +687,17 @@ void NewoSpeaker::loop(bool cloudReady) {
     NewoLog::log(overflowCount_ == 0 ? NewoLog::Level::INFO : NewoLog::Level::ERROR,
                  NewoLog::Subsystem::AUDIO, "SPEAKER_BUFFER", bufferDiagnostics);
     if (request_.codec == Codec::OPUS) {
-      char opusDiagnostics[144];
+      char opusDiagnostics[224];
       const uint32_t averageDecodeUs = opusDecodeCount_ == 0 ? 0 :
           static_cast<uint32_t>(opusDecodeTotalUs_ / opusDecodeCount_);
       snprintf(opusDiagnostics, sizeof(opusDiagnostics),
-               "packets=%lu wire_bytes=%lu decoded_pcm=%lu decode_avg_us=%lu decode_worst_us=%lu decoder_errors=%lu",
-               static_cast<unsigned long>(opusPacketsReceived_),
-               static_cast<unsigned long>(opusBytesReceived_),
-               static_cast<unsigned long>(receivedBytes_),
-               static_cast<unsigned long>(averageDecodeUs),
-               static_cast<unsigned long>(opusDecodeWorstUs_),
-               static_cast<unsigned long>(opusDecoderErrors_));
+               "packets_rx=%lu decoded=%lu wire_bytes=%lu decoded_pcm=%lu q_high_packets=%lu q_high_bytes=%lu q_overflows=%lu decode_avg_us=%lu decode_worst_us=%lu decoder_errors=%lu decoder_stack_low=%lu",
+               static_cast<unsigned long>(opusPacketsReceived_), static_cast<unsigned long>(opusDecodeCount_),
+               static_cast<unsigned long>(opusBytesReceived_), static_cast<unsigned long>(receivedBytes_),
+               static_cast<unsigned long>(opusQueueHighWaterPackets_), static_cast<unsigned long>(opusQueueHighWaterBytes_),
+               static_cast<unsigned long>(opusQueueOverflows_), static_cast<unsigned long>(averageDecodeUs),
+               static_cast<unsigned long>(opusDecodeWorstUs_), static_cast<unsigned long>(opusDecoderErrors_),
+               static_cast<unsigned long>(minimumDecoderStackBytes_ == UINT32_MAX ? 0 : minimumDecoderStackBytes_));
       NewoLog::log(opusDecoderErrors_ == 0 ? NewoLog::Level::INFO : NewoLog::Level::ERROR,
                    NewoLog::Subsystem::AUDIO, "SPEAKER_OPUS", opusDiagnostics);
     }

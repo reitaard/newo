@@ -4,6 +4,7 @@
 #include <ESP_I2S.h>
 #include <WebSocketsClient.h>
 #include <freertos/stream_buffer.h>
+#include <freertos/queue.h>
 #include <opus.h>
 
 #include "newo_audio.h"
@@ -33,7 +34,7 @@ class NewoSpeaker {
   bool consumeResult(Result& result);
   bool consumePlaybackStarted(PlaybackStarted& started);
 
-  bool playing() const { return task_ != nullptr; }
+  bool playing() const { return task_ != nullptr || decoderTask_ != nullptr; }
   bool enabled() const { return enabled_; }
   bool ready() const { return connected_; }
   bool released() const { return !started_ && !connected_ && !buffer_ && !playing(); }
@@ -71,8 +72,10 @@ class NewoSpeaker {
   };
 
   static void taskEntry(void* context);
+  static void decoderTaskEntry(void* context);
   static bool IRAM_ATTR onI2sSent(i2s_chan_handle_t handle, i2s_event_data_t* event, void* userData);
   void playbackTask();
+  void opusDecoderTask();
   void handleEvent(WStype_t type, uint8_t* payload, size_t length);
   void handleText(const uint8_t* payload, size_t length);
   bool handleOpusPacket(const uint8_t* payload, size_t length);
@@ -82,6 +85,8 @@ class NewoSpeaker {
   void stopConnection(const char* reason);
   void releaseResources();
   void releaseOpusDecoder();
+  bool allocateOpusQueue();
+  void releaseOpusQueue();
   void sendFlowReport(bool force = false);
   void logMemory(const char* stage, const MemorySnapshot& snapshot, const MemorySnapshot* comparison = nullptr);
   MemorySnapshot memorySnapshot() const;
@@ -95,6 +100,11 @@ class NewoSpeaker {
   WebSocketsClient webSocket_;
   StreamBufferHandle_t buffer_ = nullptr;
   TaskHandle_t task_ = nullptr;
+  TaskHandle_t decoderTask_ = nullptr;
+  struct OpusPacketRef { uint8_t slot; uint16_t length; uint16_t sequence; uint16_t validPcmBytes; };
+  QueueHandle_t opusReadyQueue_ = nullptr;
+  QueueHandle_t opusFreeQueue_ = nullptr;
+  uint8_t* opusPacketStorage_ = nullptr;
   Request request_ = {};
   Result result_ = {};
   volatile bool connected_ = false;
@@ -136,7 +146,11 @@ class NewoSpeaker {
   uint32_t playbackDurationMs_ = 0;
 
   OpusDecoder* opusDecoder_ = nullptr;
-  uint16_t expectedOpusSequence_ = 0;
+  volatile bool decoderFinished_ = true;
+  volatile bool decoderAbort_ = false;
+  volatile uint16_t expectedOpusSequence_ = 0;
+  volatile uint32_t opusAdmittedBytes_ = 0;
+  uint16_t expectedOpusDecodeSequence_ = 0;
   bool opusSawPartialFrame_ = false;
   uint32_t opusPacketsReceived_ = 0;
   uint32_t opusBytesReceived_ = 0;
@@ -144,6 +158,11 @@ class NewoSpeaker {
   uint32_t opusDecoderErrors_ = 0;
   uint64_t opusDecodeTotalUs_ = 0;
   uint32_t opusDecodeWorstUs_ = 0;
+  uint32_t opusQueueHighWaterPackets_ = 0;
+  uint32_t opusQueueHighWaterBytes_ = 0;
+  uint32_t opusQueueOverflows_ = 0;
+  volatile uint32_t opusQueuedWireBytes_ = 0;
+  volatile uint32_t minimumDecoderStackBytes_ = UINT32_MAX;
 
   volatile uint8_t volume_ = 100;
   volatile bool muted_ = false;
