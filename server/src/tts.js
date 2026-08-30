@@ -127,6 +127,21 @@ export function speakerChunkDueMs(bytesSent, leadBytes, bytesPerSecond) {
   return Math.max(0, (bytesSent - leadBytes) * 1_000 / bytesPerSecond);
 }
 
+/**
+ * Bound catch-up after event-loop stalls. The absolute PCM timeline still defines
+ * normal pacing, but once the initial lead has been sent we never transmit two
+ * chunks closer together than one chunk of playback time. This prevents a late
+ * Node timer from "catching up" with a burst that can overflow the ESP buffer.
+ */
+export function speakerChunkSendDueAt({ streamStartedAt, bytesSent, leadBytes, bytesPerSecond, lastPcmSentAt, chunkBytes }) {
+  if (!Number.isFinite(streamStartedAt)) throw new Error("invalid stream start");
+  if (!Number.isFinite(chunkBytes) || chunkBytes <= 0) throw new Error("invalid speaker chunk");
+  const absoluteDueAt = streamStartedAt + speakerChunkDueMs(bytesSent, leadBytes, bytesPerSecond);
+  if (bytesSent <= leadBytes || !Number.isFinite(lastPcmSentAt)) return absoluteDueAt;
+  const minimumSpacingMs = chunkBytes * 1_000 / bytesPerSecond;
+  return Math.max(absoluteDueAt, lastPcmSentAt + minimumSpacingMs);
+}
+
 export function createSpeakerRuntime({ logger, backend, enabled, getDevice, sendControl, isPersistentEnabled = () => true, format = { sampleRate: 16_000, channels: 1, bitsPerSample: 16 }, chunkBytes = 1_024, maxTextChars = 300, connectionTimeoutMs = 9_000, resultTimeoutMs = 75_000, maxPendingJobs = 4 }) {
   const jobs = new Map();
   const allJobs = new Set();
@@ -204,20 +219,38 @@ export function createSpeakerRuntime({ logger, backend, enabled, getDevice, send
     const bytesPerSecond = format.sampleRate * format.channels * (format.bitsPerSample / 8);
     const leadBytes = Math.min(SPEAKER_INITIAL_LEAD_BYTES, job.pcm.length);
     const streamStartedAt = performance.now();
+    let lastPcmSentAt = Number.NaN;
     for (let offset = 0; offset < job.pcm.length; offset += chunkBytes) {
       if (job.settled || connection !== current || ws.readyState !== 1) throw new Error("speaker disconnected");
       const chunk = job.pcm.subarray(offset, Math.min(offset + chunkBytes, job.pcm.length));
-      const dueAt = streamStartedAt + speakerChunkDueMs(offset + chunk.length, leadBytes, bytesPerSecond);
+      const bytesSent = offset + chunk.length;
+      const dueAt = speakerChunkSendDueAt({
+        streamStartedAt,
+        bytesSent,
+        leadBytes,
+        bytesPerSecond,
+        lastPcmSentAt,
+        chunkBytes: chunk.length,
+      });
       const waitMs = dueAt - performance.now();
       if (waitMs > 0) await delay(waitMs);
       await sendFrame(ws, chunk, { binary: true });
+      lastPcmSentAt = performance.now();
       if (job.firstPcmSentAt === null) {
-        job.firstPcmSentAt = performance.now();
+        job.firstPcmSentAt = lastPcmSentAt;
         logger.info({ playback_id: job.id, ready_to_first_pcm_ms: Math.round(job.firstPcmSentAt - job.readyAt) }, "Speaker first PCM sent");
       }
     }
     await sendFrame(ws, JSON.stringify({ type: "speaker_end", playback_id: job.id, bytes: job.pcm.length }));
-    logger.info({ device_id: current.deviceId, playback_id: job.id, bytes: job.pcm.length, stream_ms: Math.round(performance.now() - streamStartedAt) }, "Speaker PCM stream sent");
+    logger.info({
+      device_id: current.deviceId,
+      playback_id: job.id,
+      bytes: job.pcm.length,
+      stream_ms: Math.round(performance.now() - streamStartedAt),
+      pacing: "no_burst_catchup",
+      lead_bytes: leadBytes,
+      chunk_bytes: chunkBytes,
+    }, "Speaker PCM stream sent");
     return job.completion;
   }
 
