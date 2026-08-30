@@ -53,14 +53,14 @@ test("Telegram HTML becomes bounded natural speech", () => {
   assert.ok(telegramHtmlToSpeech("word ".repeat(100), 80).length <= 81);
 });
 
-test("speaker flow window keeps 8 KiB target and 12 KiB hard ceiling", () => {
-  assert.equal(SPEAKER_INITIAL_LEAD_BYTES, 8_192);
-  assert.equal(SPEAKER_TARGET_OUTSTANDING_BYTES, 8_192);
-  assert.equal(SPEAKER_MAX_OUTSTANDING_BYTES, 12_288);
-  assert.equal(speakerOutstandingBytes(8_192, 0), 8_192);
-  assert.equal(speakerCreditBytes(8_192, 0), 0);
-  assert.equal(speakerCreditBytes(8_192, 1_024), 1_024);
-  assert.equal(speakerCreditBytes(12_288, 4_096), 0);
+test("speaker flow window keeps 12 KiB jitter reserve and 14 KiB hard ceiling", () => {
+  assert.equal(SPEAKER_INITIAL_LEAD_BYTES, 12_288);
+  assert.equal(SPEAKER_TARGET_OUTSTANDING_BYTES, 12_288);
+  assert.equal(SPEAKER_MAX_OUTSTANDING_BYTES, 14_336);
+  assert.equal(speakerOutstandingBytes(12_288, 0), 12_288);
+  assert.equal(speakerCreditBytes(12_288, 0), 0);
+  assert.equal(speakerCreditBytes(12_288, 1_024), 1_024);
+  assert.equal(speakerCreditBytes(14_336, 1_024), 0);
   assert.throws(() => speakerOutstandingBytes(1_024, 2_048), /invalid speaker flow counters/);
 });
 
@@ -103,27 +103,27 @@ test("receiver credit stops after initial lead and resumes only after ESP consum
   const ws = fakeSocket();
   const runtime = createSpeakerRuntime({
     logger: logger(), enabled: true,
-    backend: { async synthesize() { return Buffer.alloc(12_288, 1); }, gainDb: 6, limiter: 0.95 },
+    backend: { async synthesize() { return Buffer.alloc(16_384, 1); }, gainDb: 6, limiter: 0.95 },
     getDevice: () => ({}), sendControl: () => true,
     flowTimeoutMs: 500,
   });
   runtime.handleConnection(ws, "newo-01");
   const queued = runtime.speak("flow controlled");
 
-  await waitFor(() => binaryFrames(ws).length === 8);
+  await waitFor(() => binaryFrames(ws).length === 12);
   await tick();
-  assert.equal(binaryFrames(ws).length, 8, "sender must stop at the 8 KiB initial window");
+  assert.equal(binaryFrames(ws).length, 12, "sender must stop at the 12 KiB initial window");
   assert.equal(ws.frames.some((frame) => String(frame).includes("speaker_end")), false);
 
   for (let consumed = 1_024; consumed <= 4_096; consumed += 1_024) {
     const before = binaryFrames(ws).length;
-    ws.emitMessage({ type: "speaker_flow", playback_id: queued.playbackId, consumed_bytes: consumed, buffered_bytes: 8_192 - consumed });
+    ws.emitMessage({ type: "speaker_flow", playback_id: queued.playbackId, consumed_bytes: consumed, buffered_bytes: 12_288 - consumed });
     await waitFor(() => binaryFrames(ws).length === before + 1);
   }
 
   await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
-  assert.equal(binaryFrames(ws).length, 12);
-  runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 12_288 });
+  assert.equal(binaryFrames(ws).length, 16);
+  runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 16_384 });
   assert.equal((await queued.completion).kind, "complete");
   runtime.close();
 });
@@ -132,14 +132,14 @@ test("speaker runtime fails rather than guessing when receiver flow stops", asyn
   const ws = fakeSocket();
   const runtime = createSpeakerRuntime({
     logger: logger(), enabled: true,
-    backend: { async synthesize() { return Buffer.alloc(12_288, 1); }, gainDb: 6, limiter: 0.95 },
+    backend: { async synthesize() { return Buffer.alloc(16_384, 1); }, gainDb: 6, limiter: 0.95 },
     getDevice: () => ({}), sendControl: () => true,
     flowTimeoutMs: 20,
   });
   runtime.handleConnection(ws, "newo-01");
   const queued = runtime.speak("no receiver credit");
   await assert.rejects(queued.completion, /speaker flow timeout/);
-  assert.equal(binaryFrames(ws).length, 8);
+  assert.equal(binaryFrames(ws).length, 12);
   runtime.close();
 });
 
