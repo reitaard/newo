@@ -148,7 +148,11 @@ export function createPrimaryModeHandlers({
       try { await persistSpeakerEnabled(false); }
       catch { return commandReply(ctx, unavailable("speaker", "Speaker is OFF but state could not be saved"), "persistence_error", status.request.requestId ?? null, { newoSpeak: false }); }
     }
-    return commandReply(ctx, formatSpeakerStatus({ ...speakerInfo, enabled, device: status.device }), status.device ? "response" : "device_unavailable", status.request.requestId ?? null, { newoSpeak: enabled });
+
+    // `/speaker` is intentionally terse and never speaks its own toggle reply.
+    // Detailed speaker telemetry remains available to the status/control helpers.
+    const text = enabled ? "Speaker turned on." : "Speaker turned off.";
+    return commandReply(ctx, text, status.device ? "response" : "device_unavailable", status.request.requestId ?? null, { newoSpeak: false });
   }
 
   async function speaker(ctx) {
