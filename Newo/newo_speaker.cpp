@@ -44,9 +44,10 @@ bool NewoSpeaker::play(const Request& request) {
   taskFinished_ = false;
   receivedBytes_ = 0;
   failureReason_ = nullptr;
+  minimumTaskStackBytes_ = UINT32_MAX;
   playbackStateApplied_ = true;
   display_.setSpeaking(true);
-  if (xTaskCreatePinnedToCore(taskEntry, "newo-speaker", 6144, this, 2, &task_, 1) != pdPASS) {
+  if (xTaskCreatePinnedToCore(taskEntry, "newo-speaker", 8192, this, 2, &task_, 1) != pdPASS) {
     task_ = nullptr;
     display_.setSpeaking(false);
     audio_.setPlaybackActive(false);
@@ -69,7 +70,8 @@ void NewoSpeaker::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
     return;
   }
   if (type == WStype_BIN) {
-    if (!length || (length & 1) || receivedBytes_ + length > request_.bytes) { fail("invalid_pcm"); return; }
+    if (!length || (length & 1) || receivedBytes_ > request_.bytes ||
+        length > request_.bytes - receivedBytes_) { fail("invalid_pcm"); return; }
     // Never wait in the WebSocket callback. The VPS paces 2 KiB chunks and this
     // fixed stream buffer absorbs up to 256 ms; overflow fails instead of growing.
     if (xStreamBufferSend(buffer_, payload, length, 0) != length) { fail("buffer_overflow"); return; }
@@ -92,6 +94,7 @@ void NewoSpeaker::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
 }
 
 void NewoSpeaker::playbackTask() {
+  minimumTaskStackBytes_ = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
 #if !NEWO_SPEAKER_HAS_LOCAL_SECRETS
   fail("secrets_missing");
 #else
@@ -111,24 +114,29 @@ void NewoSpeaker::playbackTask() {
     webSocket_.beginSslWithCA(NewoConfig::CLOUD_HOST, NewoConfig::CLOUD_PORT,
                               NewoConfig::SPEAKER_PATH, NewoSecrets::CLOUD_CA_CERT, "");
 
-    int16_t mono[NewoConfig::SPEAKER_CHUNK_BYTES / sizeof(int16_t)];
-    int16_t stereo[NewoConfig::SPEAKER_CHUNK_BYTES];
     const uint32_t timeoutMs = 15'000 + (request_.bytes * 1'000UL / NewoConfig::SPEAKER_PCM_BYTES_PER_SECOND);
     const uint32_t startedMs = millis();
     while (!failed_) {
       webSocket_.loop();
+      const uint32_t stackBytes = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
+      if (stackBytes < minimumTaskStackBytes_) minimumTaskStackBytes_ = stackBytes;
       size_t available = xStreamBufferBytesAvailable(buffer_);
-      if (available >= 2) {
-        const size_t wanted = min(available & ~static_cast<size_t>(1), sizeof(mono));
-        const size_t count = xStreamBufferReceive(buffer_, mono, wanted, 0);
+      if (available >= sizeof(int16_t)) {
+        const size_t evenAvailable = available & ~static_cast<size_t>(1);
+        const size_t wanted = min(evenAvailable, sizeof(monoWorking_));
+        const size_t count = xStreamBufferReceive(buffer_, monoWorking_, wanted, 0);
+        if (count & 1) { fail("unaligned_pcm"); continue; }
         const size_t samples = count / sizeof(int16_t);
+        if (samples > kWorkingSamples) { fail("working_overflow"); continue; }
         for (size_t i = 0; i < samples; ++i) {
           // Begin at one eighth full-scale for the first MAX98357A test.
-          const int16_t sample = mono[i] / NewoConfig::SPEAKER_DIGITAL_DIVISOR;
-          stereo[i * 2] = sample;
-          stereo[i * 2 + 1] = sample;
+          const int16_t sample = monoWorking_[i] / NewoConfig::SPEAKER_DIGITAL_DIVISOR;
+          stereoWorking_[i * 2] = sample;
+          stereoWorking_[i * 2 + 1] = sample;
         }
-        if (i2s_.write(stereo, samples * 2 * sizeof(int16_t)) != samples * 2 * sizeof(int16_t)) {
+        const size_t stereoBytes = samples * 2 * sizeof(int16_t);
+        if (stereoBytes > sizeof(stereoWorking_) ||
+            i2s_.write(stereoWorking_, stereoBytes) != stereoBytes) {
           fail("i2s_write_failed");
         }
       }
@@ -143,6 +151,8 @@ void NewoSpeaker::playbackTask() {
     i2s_.end();
   }
 #endif
+  const uint32_t finalStackBytes = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
+  if (finalStackBytes < minimumTaskStackBytes_) minimumTaskStackBytes_ = finalStackBytes;
   result_.bytes = receivedBytes_;
   result_.success = !failed_ && endReceived_ && receivedBytes_ == request_.bytes;
   strlcpy(result_.error, result_.success ? "" : (failureReason_ ? failureReason_ : "unknown"), sizeof(result_.error));
@@ -160,8 +170,9 @@ void NewoSpeaker::loop() {
   }
   resultReady_ = true;
   char detail[80];
-  snprintf(detail, sizeof(detail), "bytes=%lu result=%s", static_cast<unsigned long>(result_.bytes),
-           result_.success ? "complete" : result_.error);
+  snprintf(detail, sizeof(detail), "bytes=%lu result=%s stack_low=%lu",
+           static_cast<unsigned long>(result_.bytes), result_.success ? "complete" : result_.error,
+           static_cast<unsigned long>(minimumTaskStackBytes_));
   NewoLog::log(result_.success ? NewoLog::Level::INFO : NewoLog::Level::ERROR,
                NewoLog::Subsystem::AUDIO, result_.success ? "SPEAKER_COMPLETE" : "SPEAKER_FAILED", detail);
 }

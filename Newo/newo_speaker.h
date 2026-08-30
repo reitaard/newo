@@ -57,4 +57,14 @@ class NewoSpeaker {
   const char* volatile failureReason_ = nullptr;
   bool resultReady_ = false;
   bool playbackStateApplied_ = false;
+  volatile uint32_t minimumTaskStackBytes_ = UINT32_MAX;
+
+  // Fixed object-owned conversion workspace: no large PCM arrays live on the
+  // playback task stack. 512 mono bytes expand to exactly 1,024 stereo bytes.
+  static constexpr size_t kMonoWorkingBytes = 512;
+  static constexpr size_t kWorkingSamples = kMonoWorkingBytes / sizeof(int16_t);
+  int16_t monoWorking_[kWorkingSamples] = {};
+  int16_t stereoWorking_[kWorkingSamples * 2] = {};
+  static_assert(sizeof(monoWorking_) == 512, "speaker mono workspace changed");
+  static_assert(sizeof(stereoWorking_) == 1024, "speaker stereo workspace changed");
 };
