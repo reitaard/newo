@@ -41,7 +41,12 @@ constexpr int8_t SPEAKER_I2S_DOUT_PIN = 14;
 constexpr uint32_t SPEAKER_SAMPLE_RATE = 24'000;
 constexpr uint32_t SPEAKER_PCM_BYTES_PER_SECOND = SPEAKER_SAMPLE_RATE * sizeof(int16_t);
 constexpr size_t SPEAKER_CHUNK_BYTES = 2'048;
-constexpr size_t SPEAKER_PREBUFFER_BYTES = 12'288;  // 256 ms mono PCM before audible output.
+// Production remains 256 ms until the physical matrix proves a lower value
+// has zero underruns. The candidates are named for reproducible later flashes.
+constexpr size_t SPEAKER_PREBUFFER_CANDIDATE_160_BYTES = 7'680;
+constexpr size_t SPEAKER_PREBUFFER_CANDIDATE_200_BYTES = 9'600;
+constexpr size_t SPEAKER_PREBUFFER_CANDIDATE_256_BYTES = 12'288;
+constexpr size_t SPEAKER_PREBUFFER_BYTES = SPEAKER_PREBUFFER_CANDIDATE_256_BYTES;
 constexpr size_t SPEAKER_BUFFER_BYTES = 24'576;  // 512 ms mono PCM16, strictly bounded.
 
 // Experimental WAN transport: each WebSocket binary frame carries one raw Opus
