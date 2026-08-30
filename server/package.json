@@ -17,6 +17,7 @@
   "dependencies": {
     "fastify": "5.12.1",
     "grammy": "1.45.1",
+    "libopus-wasm": "0.2.0",
     "sherpa-onnx-node": "^1.13.6",
     "ws": "8.21.3",
     "zod": "4.4.3"

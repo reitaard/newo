@@ -70,19 +70,18 @@ test("Telegram HTML becomes bounded natural speech", () => {
 
 test("delivery-aware flow separates network flight, ESP buffer, and total outstanding", () => {
   assert.equal(SPEAKER_RECEIVER_CAPACITY_BYTES, 24_576);
-  assert.equal(SPEAKER_RECEIVER_BUFFER_TARGET_BYTES, 14_336);
-  assert.equal(SPEAKER_NETWORK_INFLIGHT_LIMIT_BYTES, 8_192);
-  assert.equal(SPEAKER_MAX_OUTSTANDING_BYTES, 21_504);
+  assert.equal(SPEAKER_RECEIVER_BUFFER_TARGET_BYTES, 22_528);
+  assert.equal(SPEAKER_NETWORK_INFLIGHT_LIMIT_BYTES, 22_528);
+  assert.equal(SPEAKER_MAX_OUTSTANDING_BYTES, 22_528);
   assert.deepEqual(speakerDeliveryState(12_288, 8_192, 2_048, 6_144), {
     networkInFlightBytes: 4_096,
     receiverOutstandingBytes: 10_240,
     committedToReceiverBytes: 10_240,
   });
-  assert.equal(speakerCreditBytes(0, 0, 0, 0), 8_192, "initial credit is a sliding network window");
-  assert.equal(speakerCreditBytes(8_192, 0, 0, 0), 0, "sent callbacks do not count as ESP delivery");
-  assert.equal(speakerCreditBytes(8_192, 8_192, 0, 8_192), 6_144);
-  assert.equal(speakerCreditBytes(14_336, 8_192, 0, 8_192), 0);
-  assert.equal(speakerCreditBytes(14_336, 14_336, 2_048, 12_288), 2_048);
+  assert.equal(speakerCreditBytes(0, 0, 0, 0), 22_528, "initial credit leaves one 2 KiB frame of physical headroom");
+  assert.equal(speakerCreditBytes(22_528, 0, 0, 0), 0, "sent callbacks do not count as ESP delivery");
+  assert.equal(speakerCreditBytes(22_528, 8_192, 0, 8_192), 0, "delivered plus in-flight PCM must not exceed the committed ceiling");
+  assert.equal(speakerCreditBytes(22_528, 22_528, 2_048, 20_480), 2_048, "consumption replenishes exactly one frame of credit");
   assert.equal(speakerOutstandingBytes(18_432, 0), 18_432);
   assert.throws(() => speakerDeliveryState(1_024, 2_048, 0, 0), /invalid speaker delivery counters/);
 });
@@ -406,9 +405,9 @@ test("delivery credit waits for actual ESP receipt and replenishes its reported 
   runtime.handleConnection(ws, "newo-01");
   const queued = runtime.speak("flow controlled");
 
-  await waitFor(() => binaryFrames(ws).length === 4);
+  await waitFor(() => binaryFrames(ws).length === 11);
   await tick();
-  assert.equal(binaryFrames(ws).length, 4, "sender must stop at the 8 KiB network window before receipt");
+  assert.equal(binaryFrames(ws).length, 11, "sender must stop at the 22.5 KiB committed window before receipt");
   assert.equal(ws.frames.some((frame) => String(frame).includes("speaker_end")), false);
 
   let received = 0;
@@ -553,7 +552,7 @@ test("delivery-aware sliding window survives delayed jittered receiver delivery"
   assert.equal(underruns, 0, `min=${minActiveBuffer} max=${maxBuffer} inflight=${maxNetworkInFlight} queued=${maxQueuedFrames} events=${JSON.stringify(underrunEvents)}`);
   assert.ok(minActiveBuffer > 0, `receiver starved: min=${minActiveBuffer}`);
   assert.ok(maxBuffer <= 24_576);
-  assert.ok(maxNetworkInFlight <= 8_192, `network flight exceeded: ${maxNetworkInFlight}`);
+  assert.ok(maxNetworkInFlight <= 22_528, `network flight exceeded: ${maxNetworkInFlight}`);
   assert.ok(maxQueuedFrames >= 3, "sender regressed to stop-and-wait delivery");
   runtime.close();
 });
@@ -569,7 +568,7 @@ test("speaker runtime fails rather than guessing when receiver flow stops", asyn
   runtime.handleConnection(ws, "newo-01");
   const queued = runtime.speak("no receiver credit");
   await assert.rejects(queued.completion, /flow_timeout/);
-  assert.equal(binaryFrames(ws).length, 4);
+  assert.equal(binaryFrames(ws).length, 11);
   runtime.close();
 });
 
