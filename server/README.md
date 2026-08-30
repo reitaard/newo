@@ -26,7 +26,7 @@ The Node service binds to loopback by default. Port 8788 should not be exposed p
 - `GET /` basic service identity
 - `GET /health` cloud/device health JSON
 - `WS /device` authenticated Newo device control/status connection
-- `WS /voice` authenticated raw PCM audio stream for development ASR preparation
+- `WS /voice` authenticated raw PCM audio stream for streaming ASR and one-turn assistant input
 - `WS /speaker` authenticated server-to-device mono PCM playback stream
 - `POST /telegram/webhook` enabled only when Telegram environment variables are configured
 
@@ -39,6 +39,12 @@ Temporary structured operational tracing records safe Telegram update/message/ch
 ## Environment
 
 Copy `.env.example` to `.env` on the VPS and fill secrets there. Never commit `.env`.
+
+### One-turn voice assistant
+
+A finalized Sherpa transcript can make one bounded assistant request and, when it returns non-empty text, uses the existing Kokoro `/speaker` path. Partials and cleanup finals never invoke the model, and one active assistant turn is allowed per device. The assistant does not retain conversation history, call tools, or create a new audio transport.
+
+The existing Qwen3 llama.cpp service is OpenAI-chat compatible and must remain private. Configure only its private URL and model alias, for example `ASSISTANT_ENABLED=true`, `ASSISTANT_BASE_URL=http://127.0.0.1:8181`, and `ASSISTANT_MODEL=helix-qwen3-0.6b`. `ASSISTANT_TIMEOUT_MS`, `ASSISTANT_MAX_OUTPUT_TOKENS`, and `ASSISTANT_MAX_REPLY_CHARS` bound request time and spoken output. No API key is needed for the local service unless its deployment adds one.
 
 ### Speaker TTS
 

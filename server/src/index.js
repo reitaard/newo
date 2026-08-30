@@ -6,6 +6,8 @@ import { Bot, webhookCallback } from "grammy";
 import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 
+import { createAssistantRuntime } from "./assistant.js";
+import { createAssistantTurnRuntime } from "./assistant-turn.js";
 import { createRuntimeStateStore } from "./runtime-state.js";
 import { createSpeakerRuntime, EspeakTtsBackend, KokoroTtsBackend, startTelegramAndSpeech, ESPEAK_GAIN_DB, SPEAKER_GAIN_DB } from "./tts.js";
 import { createPrimaryModeHandlers } from "./telegram-mode-commands.js";
@@ -49,6 +51,13 @@ const EnvSchema = z.object({
   VOICE_ASR_HOTWORDS_FILE: z.preprocess(emptyToUndefined, z.string().default("config/newo-hotwords.txt")),
   VOICE_ASR_HOTWORDS_SCORE: z.preprocess(emptyToUndefined, z.coerce.number().min(0).max(5).default(1.5)),
   VOICE_LIVE_TEST_MODE: z.preprocess(stringToBoolean, z.boolean().default(false)),
+  ASSISTANT_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
+  ASSISTANT_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  ASSISTANT_MODEL: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  ASSISTANT_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
+  ASSISTANT_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(30_000).default(15_000)),
+  ASSISTANT_MAX_OUTPUT_TOKENS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(8).max(128).default(48)),
+  ASSISTANT_MAX_REPLY_CHARS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(40).max(500).default(240)),
   TTS_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
   TTS_BACKEND: z.preprocess(emptyToUndefined, z.enum(["kokoro", "espeak"]).default("kokoro")),
   TTS_VOICE: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
@@ -90,21 +99,6 @@ const voiceAsr = env.VOICE_ASR_BACKEND === "sherpa"
     hotwordsScore: env.VOICE_ASR_HOTWORDS_SCORE,
   })
   : new NullAsrBackend();
-const voiceRuntime = createVoiceRuntime({
-  logger: app.log,
-  asr: voiceAsr,
-  config: {
-    sampleRate: env.VOICE_SAMPLE_RATE,
-    channels: env.VOICE_CHANNELS,
-    bitsPerSample: env.VOICE_BITS_PER_SAMPLE,
-    maxStreamBytes: env.VOICE_MAX_STREAM_BYTES,
-    saveWav: env.VOICE_SAVE_WAV,
-    captureDirectory: env.VOICE_CAPTURE_DIRECTORY,
-    liveTestMode: env.VOICE_LIVE_TEST_MODE,
-    maxPendingChunks: 2,
-  },
-});
-
 const devices = new Map();
 const pendingRequests = new Map();
 const DEVICE_REQUEST_TIMEOUT_MS = 5_000;
@@ -147,6 +141,38 @@ const speakerRuntime = createSpeakerRuntime({
   },
   maxTextChars: env.TTS_MAX_TEXT_CHARS,
   format: { sampleRate: env.TTS_SAMPLE_RATE, channels: 1, bitsPerSample: 16 },
+});
+const assistantRuntime = createAssistantRuntime({
+  enabled: env.ASSISTANT_ENABLED,
+  baseUrl: env.ASSISTANT_BASE_URL,
+  model: env.ASSISTANT_MODEL,
+  apiKey: env.ASSISTANT_API_KEY,
+  timeoutMs: env.ASSISTANT_TIMEOUT_MS,
+  maxOutputTokens: env.ASSISTANT_MAX_OUTPUT_TOKENS,
+  maxReplyChars: env.ASSISTANT_MAX_REPLY_CHARS,
+  logger: app.log,
+});
+const assistantTurnRuntime = createAssistantTurnRuntime({
+  assistant: assistantRuntime,
+  speakerRuntime,
+  isPersistentSpeakerEnabled: () => automaticSpeakerEnabled,
+  maxReplyChars: env.ASSISTANT_MAX_REPLY_CHARS,
+  logger: app.log,
+});
+const voiceRuntime = createVoiceRuntime({
+  logger: app.log,
+  asr: voiceAsr,
+  config: {
+    sampleRate: env.VOICE_SAMPLE_RATE,
+    channels: env.VOICE_CHANNELS,
+    bitsPerSample: env.VOICE_BITS_PER_SAMPLE,
+    maxStreamBytes: env.VOICE_MAX_STREAM_BYTES,
+    saveWav: env.VOICE_SAVE_WAV,
+    captureDirectory: env.VOICE_CAPTURE_DIRECTORY,
+    liveTestMode: env.VOICE_LIVE_TEST_MODE,
+    maxPendingChunks: 2,
+    onFinalTranscript: (turn) => assistantTurnRuntime.handleFinalTranscript(turn),
+  },
 });
 
 const DeviceMessageSchema = z.discriminatedUnion("type", [
@@ -660,6 +686,7 @@ wss.on("connection", (ws, request, deviceId) => {
   ws.on("close", (code, reason) => {
     const current = devices.get(deviceId);
     failPendingRequestsForDevice(deviceId, ws, "disconnected");
+    assistantTurnRuntime.abortDevice(deviceId);
     if (current?.ws === ws) { current.lastSeen = new Date().toISOString(); scheduleOfflineNotification(deviceId, current, ws); }
     app.log.info({ device_id: deviceId, code, reason: reason.toString() }, "Newo device disconnected");
   });
@@ -699,6 +726,7 @@ async function shutdown(signal) {
   if (pendingReboot?.timer) { clearTimeout(pendingReboot.timer); pendingReboot = null; }
   for (const [requestId] of pendingRequests) settlePendingRequest(requestId, { kind: "shutdown" });
   for (const state of devices.values()) cancelOfflineTimer(state);
+  assistantTurnRuntime.close();
   speakerRuntime.close();
   await Promise.all([...[...devices.values()].map((state) => state.ws), ...voiceWss.clients, ...speakerWss.clients].filter((ws) => ws.readyState !== WebSocket.CLOSED).map(closeDeviceSocket));
   await Promise.all([wss, voiceWss, speakerWss].map((server) => new Promise((resolve) => { try { server.close(() => resolve()); } catch { resolve(); } })));
@@ -728,6 +756,8 @@ app.log.info({
   voice_asr_backend: env.VOICE_ASR_BACKEND,
   voice_sherpa_model: env.VOICE_ASR_BACKEND === "sherpa" ? env.VOICE_SHERPA_MODEL : null,
   voice_live_test_mode: env.VOICE_LIVE_TEST_MODE,
+  assistant_enabled: env.ASSISTANT_ENABLED,
+  assistant_model: env.ASSISTANT_ENABLED ? env.ASSISTANT_MODEL : null,
   telegram_enabled: Boolean(bot),
   device_auth_configured: Boolean(env.NEWO_DEVICE_SECRET),
 }, "Newo cloud started");

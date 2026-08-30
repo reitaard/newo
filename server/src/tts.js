@@ -787,7 +787,7 @@ export function createSpeakerRuntime({
     job.ttsCompletedAt = performance.now();
     return streamKnown(job, current, pcm);
   }
-  function speak(html, { maxChars = maxTextChars, temporary = false, replyReadyAt = performance.now() } = {}) {
+  function speak(html, { maxChars = maxTextChars, temporary = false, replyReadyAt = performance.now(), metadata = null } = {}) {
     if (!enabled || closing) return { kind: "disabled" };
     if (allJobs.size >= maxPendingJobs) return { kind: "busy" };
     const text = telegramHtmlToSpeech(html, maxChars);
@@ -799,7 +799,7 @@ export function createSpeakerRuntime({
     const completion = new Promise((res, rej) => { resolve = res; reject = rej; });
     completion.catch(() => {});
     const job = {
-      id, text, temporary, settled: false, resultTimer: null, queuedAt: performance.now(), replyReadyAt,
+      id, text, temporary, metadata, settled: false, resultTimer: null, queuedAt: performance.now(), replyReadyAt,
       synthesisStartedAt: null, ttsCompletedAt: null, beginSentAt: null, firstPcmSentAt: null,
       backendMetrics: null, playbackStartedAt: null, firstPcmToPlayMs: null, cancelSource: null,
       resolve, reject, completion, bytesSent: 0, receivedBytes: 0, consumedBytes: 0, reportedBufferedBytes: 0,
@@ -852,6 +852,9 @@ export function createSpeakerRuntime({
       reply_ready_to_first_pcm_send_ms: Math.round(job.firstPcmSentAt - job.replyReadyAt),
       first_pcm_to_play_ms: job.firstPcmToPlayMs,
       estimated_reply_ready_to_audible_ms: Math.round(job.firstPcmSentAt - job.replyReadyAt + job.firstPcmToPlayMs),
+      assistant_turn: job.metadata?.assistant_turn ?? false,
+      voice_stream_id: job.metadata?.voice_stream_id ?? null,
+      final_to_audible_ms: job.metadata?.final_at == null ? null : Math.round(performance.now() - job.metadata.final_at),
     }, "SPEAKER_TTFA");
     return true;
   }

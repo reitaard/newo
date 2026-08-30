@@ -31,6 +31,29 @@ test("a voice socket closes its ASR stream exactly once", async () => {
   assert.equal(messages.filter((message) => message === "VOICE_ASR_STREAM_CLOSED").length, 1);
 });
 
+test("only one final ASR event starts an assistant turn; partials never do", async () => {
+  const finals = [];
+  let emit;
+  const runtime = createVoiceRuntime({
+    logger: { info() {}, warn() {} },
+    asr: { async createStream({ onEvent }) { emit = onEvent; return { async acceptAudio() {}, async stop() { emit({ type: "final", text: "cleanup duplicate" }); } }; } },
+    config: { sampleRate: 16000, channels: 1, bitsPerSample: 16, maxStreamBytes: 64000, saveWav: false, liveTestMode: false,
+      onFinalTranscript: (turn) => finals.push(turn) },
+  });
+  const socket = new FakeSocket();
+  await runtime.handleConnection(socket, "test-device");
+  socket.emit("message", Buffer.alloc(3200), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  emit({ type: "partial", text: "hello" });
+  emit({ type: "final", text: "hello Newo" });
+  emit({ type: "final", text: "cleanup duplicate" });
+  await new Promise((resolve) => setImmediate(resolve));
+  socket.emit("close", 1000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(finals.length, 1);
+  assert.equal(finals[0].text, "hello Newo");
+});
+
 test("voice runtime fails rather than accumulating worker-bound PCM", async () => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });

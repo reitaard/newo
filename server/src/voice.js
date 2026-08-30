@@ -244,6 +244,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
     let firstPartialMs = null;
     let finalMs = null;
     let finalTranscript = null;
+    let assistantFinalDelivered = false;
     let processing = Promise.resolve();
     let queuedChunks = 0;
     let closed = false;
@@ -332,6 +333,14 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
               // `type` remains partial/final for deployed ESP clients. `stage`
               // allows a later rescorer to emit rescored_final without a wire break.
               if (ws.readyState === 1) ws.send(JSON.stringify(event));
+              // Cleanup can generate another final event. Exactly one finalized
+              // utterance may leave this stream for the assistant.
+              if (event.type === "final" && !assistantFinalDelivered && typeof config.onFinalTranscript === "function") {
+                assistantFinalDelivered = true;
+                void Promise.resolve()
+                  .then(() => config.onFinalTranscript({ deviceId, streamId, text: event.text }))
+                  .catch((error) => logger.warn({ device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Voice final callback failed"));
+              }
             },
           });
           if (config.saveWav) {
