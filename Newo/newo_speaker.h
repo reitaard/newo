@@ -59,7 +59,9 @@ class NewoSpeaker {
   bool playbackStateApplied_ = false;
   volatile uint32_t minimumTaskStackBytes_ = UINT32_MAX;
   uint32_t underrunCount_ = 0;
+  uint32_t overflowCount_ = 0;
   uint32_t minimumBufferedBytes_ = UINT32_MAX;
+  uint32_t maximumBufferedBytes_ = 0;
   uint32_t playbackDurationMs_ = 0;
 
   // Fixed object-owned conversion workspace: no large PCM arrays live on the

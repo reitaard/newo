@@ -54,6 +54,11 @@ function collectProcessOutput(child, maxBytes, label) {
   });
 }
 
+// One-pass, low-latency speech conditioning: remove inaudible small-speaker bass
+// and catch peaks without the alimiter auto-gain raising the noise floor.
+export const SPEAKER_AUDIO_FILTER = "highpass=f=110,alimiter=limit=0.92:attack=5:release=50:level=false:latency=true";
+export const SPEAKER_INITIAL_LEAD_BYTES = 8_192;
+
 /** Replaceable backend boundary. Implementations return raw PCM in the requested format. */
 export class EspeakTtsBackend {
   constructor({ voice = "en", rate = 155, maxPcmBytes = 1_920_000 } = {}) {
@@ -64,7 +69,7 @@ export class EspeakTtsBackend {
 
   async synthesize(text, format) {
     const espeak = spawn("espeak-ng", ["--stdout", "-v", this.voice, "-s", String(this.rate), text], { stdio: ["ignore", "pipe", "pipe"] });
-    const ffmpeg = spawn("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-f", "s16le", "-acodec", "pcm_s16le", "-ac", String(format.channels), "-ar", String(format.sampleRate), "pipe:1"], { stdio: ["pipe", "pipe", "pipe"] });
+    const ffmpeg = spawn("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-af", SPEAKER_AUDIO_FILTER, "-f", "s16le", "-acodec", "pcm_s16le", "-ac", String(format.channels), "-ar", String(format.sampleRate), "pipe:1"], { stdio: ["pipe", "pipe", "pipe"] });
     espeak.stdout.pipe(ffmpeg.stdin);
     const espeakError = new Promise((_, reject) => {
       let stderr = "";
@@ -86,7 +91,7 @@ export function speakerChunkDueMs(bytesSent, leadBytes, bytesPerSecond) {
   return Math.max(0, (bytesSent - leadBytes) * 1_000 / bytesPerSecond);
 }
 
-export function createSpeakerRuntime({ logger, backend, enabled, getDevice, sendControl, format = { sampleRate: 16_000, channels: 1, bitsPerSample: 16 }, chunkBytes = 2_048, maxTextChars = 300, connectionTimeoutMs = 9_000, resultTimeoutMs = 75_000, maxPendingJobs = 4 }) {
+export function createSpeakerRuntime({ logger, backend, enabled, getDevice, sendControl, format = { sampleRate: 16_000, channels: 1, bitsPerSample: 16 }, chunkBytes = 1_024, maxTextChars = 300, connectionTimeoutMs = 9_000, resultTimeoutMs = 75_000, maxPendingJobs = 4 }) {
   const jobs = new Map();
   const allJobs = new Set();
   let queue = Promise.resolve();
@@ -168,7 +173,7 @@ export function createSpeakerRuntime({ logger, backend, enabled, getDevice, send
     job.resultTimer = setTimeout(() => settle(job, { kind: "timeout", error: "speaker playback timeout" }), resultTimeoutMs);
     job.resultTimer.unref();
     const bytesPerSecond = format.sampleRate * format.channels * (format.bitsPerSample / 8);
-    const leadBytes = Math.min(4_096, job.pcm.length);
+    const leadBytes = Math.min(SPEAKER_INITIAL_LEAD_BYTES, job.pcm.length);
     logger.info({ device_id: deviceId, playback_id: playbackId, pcm_bytes: job.pcm.length, format }, "Speaker stream connected");
     logger.info({ device_id: deviceId, playback_id: playbackId, pcm_bytes: job.pcm.length, chunk_bytes: chunkBytes, lead_bytes: leadBytes, bytes_per_second: bytesPerSecond }, "Speaker PCM stream started");
     const streamStartedAt = performance.now();

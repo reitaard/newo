@@ -15,6 +15,8 @@ constexpr uint16_t kWidth = 240;
 constexpr uint16_t kHeight = 240;
 constexpr uint32_t kTemporaryMs = 7'000;
 constexpr uint32_t kEcoPageMs = 5'000;
+constexpr uint32_t kNormalFaceFrameMs = 50;    // ~20 FPS.
+constexpr uint32_t kSpeakingFaceFrameMs = 120;  // ~8.3 FPS while audio has priority.
 constexpr uint16_t kWhite = ST77XX_WHITE;
 constexpr int16_t kEyeCanvasWidth = 200;
 constexpr int16_t kEyeCanvasHeight = 82;
@@ -177,7 +179,9 @@ void NewoDisplay::loop() {
   if (dirty_) render();
   if (!temporary_ && mode_ != NewoDisplayMode::ECO && mode_ != NewoDisplayMode::MESSAGE &&
       static_cast<int32_t>(now - nextFaceFrameMs_) >= 0) {
-    nextFaceFrameMs_ = now + 50;  // ~20 FPS: smoother motion while preserving display headroom.
+    // The speaker task has higher RTOS priority, and the speaking override also
+    // reduces bounded SPI canvas blits while preserving both eyes and waveform.
+    nextFaceFrameMs_ = now + (speakerOverride_ ? kSpeakingFaceFrameMs : kNormalFaceFrameMs);
     drawFaceFrame(now);
   }
 }
@@ -511,6 +515,8 @@ void NewoDisplay::blitMonoCanvasFast(GFXcanvas1& canvas, int16_t x, int16_t y, i
 }
 
 void NewoDisplay::recordFaceFrame(uint32_t elapsedUs) {
+  // Wall time includes any preemption by the higher-priority speaker task; a
+  // large value here does not imply that display SPI blocked audio for that long.
   if (!frameMetricsStartedMs_) frameMetricsStartedMs_ = millis();
   frameMetricsTotalUs_ += elapsedUs;
   if (elapsedUs > frameMetricsWorstUs_) frameMetricsWorstUs_ = elapsedUs;

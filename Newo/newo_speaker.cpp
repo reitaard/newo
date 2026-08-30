@@ -24,7 +24,8 @@ void NewoSpeaker::begin() {
   webSocket_.onEvent([this](WStype_t type, uint8_t* payload, size_t length) {
     handleEvent(type, payload, length);
   });
-  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "SPEAKER_READY", "volume=50% prebuffer=4096");
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "SPEAKER_READY",
+               "volume=100% buffer=16384 prebuffer=4096 chunk=1024");
 }
 
 bool NewoSpeaker::play(const Request& request) {
@@ -46,7 +47,9 @@ bool NewoSpeaker::play(const Request& request) {
   failureReason_ = nullptr;
   minimumTaskStackBytes_ = UINT32_MAX;
   underrunCount_ = 0;
+  overflowCount_ = 0;
   minimumBufferedBytes_ = UINT32_MAX;
+  maximumBufferedBytes_ = 0;
   playbackDurationMs_ = 0;
   playbackStateApplied_ = true;
   display_.setSpeaking(true);
@@ -75,9 +78,13 @@ void NewoSpeaker::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
   if (type == WStype_BIN) {
     if (!length || (length & 1) || receivedBytes_ > request_.bytes ||
         length > request_.bytes - receivedBytes_) { fail("invalid_pcm"); return; }
-    // Never wait in the WebSocket callback. The VPS paces 2 KiB chunks and this
-    // fixed stream buffer absorbs up to 256 ms; overflow fails instead of growing.
-    if (xStreamBufferSend(buffer_, payload, length, 0) != length) { fail("buffer_overflow"); return; }
+    // Never wait in the WebSocket callback. The VPS paces 1 KiB chunks and this
+    // fixed stream buffer absorbs up to 512 ms; overflow fails instead of growing.
+    if (xStreamBufferSend(buffer_, payload, length, 0) != length) {
+      ++overflowCount_;
+      fail("buffer_overflow");
+      return;
+    }
     receivedBytes_ += length;
     return;
   }
@@ -127,6 +134,7 @@ void NewoSpeaker::playbackTask() {
       const uint32_t stackBytes = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
       if (stackBytes < minimumTaskStackBytes_) minimumTaskStackBytes_ = stackBytes;
       size_t available = xStreamBufferBytesAvailable(buffer_);
+      if (available > maximumBufferedBytes_) maximumBufferedBytes_ = static_cast<uint32_t>(available);
 
       if (!playbackStarted) {
         const bool allPcmReceived = receivedBytes_ == request_.bytes;
@@ -148,7 +156,7 @@ void NewoSpeaker::playbackTask() {
         const size_t samples = count / sizeof(int16_t);
         if (samples > kWorkingSamples) { fail("working_overflow"); continue; }
         for (size_t i = 0; i < samples; ++i) {
-          // Start at half full-scale for MAX98357A physical testing.
+          // Full digital amplitude; the VPS applies a conservative peak limiter.
           const int16_t sample = monoWorking_[i] / NewoConfig::SPEAKER_DIGITAL_DIVISOR;
           stereoWorking_[i * 2] = sample;
           stereoWorking_[i * 2 + 1] = sample;
@@ -201,6 +209,13 @@ void NewoSpeaker::loop() {
            static_cast<unsigned long>(minimumTaskStackBytes_));
   NewoLog::log(underrunCount_ == 0 ? NewoLog::Level::INFO : NewoLog::Level::WARN,
                NewoLog::Subsystem::AUDIO, "SPEAKER_DIAGNOSTICS", diagnostics);
+  char bufferDiagnostics[80];
+  snprintf(bufferDiagnostics, sizeof(bufferDiagnostics), "overflows=%lu max_buffer=%lu capacity=%u chunk=%u",
+           static_cast<unsigned long>(overflowCount_), static_cast<unsigned long>(maximumBufferedBytes_),
+           static_cast<unsigned>(NewoConfig::SPEAKER_BUFFER_BYTES),
+           static_cast<unsigned>(NewoConfig::SPEAKER_CHUNK_BYTES));
+  NewoLog::log(overflowCount_ == 0 ? NewoLog::Level::INFO : NewoLog::Level::ERROR,
+               NewoLog::Subsystem::AUDIO, "SPEAKER_BUFFER", bufferDiagnostics);
   NewoLog::log(result_.success ? NewoLog::Level::INFO : NewoLog::Level::ERROR,
                NewoLog::Subsystem::AUDIO, result_.success ? "SPEAKER_COMPLETE" : "SPEAKER_FAILED",
                result_.success ? "" : result_.error);

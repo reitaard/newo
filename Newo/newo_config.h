@@ -51,13 +51,14 @@ constexpr int8_t SPEAKER_I2S_WS_PIN = 47;
 constexpr int8_t SPEAKER_I2S_DOUT_PIN = 14;
 constexpr uint32_t SPEAKER_SAMPLE_RATE = 16'000;
 constexpr uint32_t SPEAKER_PCM_BYTES_PER_SECOND = SPEAKER_SAMPLE_RATE * sizeof(int16_t);
-constexpr size_t SPEAKER_CHUNK_BYTES = 2'048;
+constexpr size_t SPEAKER_CHUNK_BYTES = 1'024;
 constexpr size_t SPEAKER_PREBUFFER_BYTES = 4'096;  // 128 ms mono PCM before audible output.
-constexpr size_t SPEAKER_BUFFER_BYTES = 8'192;  // 256 ms mono PCM16, strictly bounded.
+constexpr size_t SPEAKER_BUFFER_BYTES = 16'384;  // 512 ms mono PCM16, strictly bounded.
 static_assert(SPEAKER_PREBUFFER_BYTES <= SPEAKER_BUFFER_BYTES, "speaker prebuffer exceeds stream buffer");
+static_assert(SPEAKER_CHUNK_BYTES <= SPEAKER_PREBUFFER_BYTES, "speaker chunk exceeds prebuffer");
 static_assert((SPEAKER_PREBUFFER_BYTES & 1) == 0, "speaker prebuffer must align to PCM16");
 constexpr uint32_t SPEAKER_MAX_STREAM_BYTES = 1'920'000;  // At most 60 seconds.
-constexpr int16_t SPEAKER_DIGITAL_DIVISOR = 2;  // 50% starting amplitude.
+constexpr int16_t SPEAKER_DIGITAL_DIVISOR = 1;  // 100% digital amplitude; VPS limiter protects peaks.
 
 constexpr uint32_t INITIAL_RECOVERY_WINDOW_MS = 18'000;
 constexpr uint32_t WIFI_SCAN_RETRY_DELAY_MS = 1'000;

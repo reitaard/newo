@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createSpeakerRuntime, speakerChunkDueMs, telegramHtmlToSpeech } from "../src/tts.js";
+import {
+  createSpeakerRuntime,
+  speakerChunkDueMs,
+  SPEAKER_AUDIO_FILTER,
+  SPEAKER_INITIAL_LEAD_BYTES,
+  telegramHtmlToSpeech,
+} from "../src/tts.js";
 
 test("Telegram HTML becomes bounded natural speech", () => {
   assert.equal(
@@ -13,12 +19,19 @@ test("Telegram HTML becomes bounded natural speech", () => {
   assert.ok(telegramHtmlToSpeech("word ".repeat(100), 80).length <= 81);
 });
 
-test("speaker pacing uses a 128 ms lead and an absolute PCM timeline", () => {
-  assert.equal(speakerChunkDueMs(2_048, 4_096, 32_000), 0);
-  assert.equal(speakerChunkDueMs(4_096, 4_096, 32_000), 0);
-  assert.equal(speakerChunkDueMs(6_144, 4_096, 32_000), 64);
-  assert.equal(speakerChunkDueMs(8_192, 4_096, 32_000), 128);
-  assert.throws(() => speakerChunkDueMs(2_048, 4_096, 0), /invalid PCM byte rate/);
+test("speaker pacing uses a 256 ms lead and an absolute PCM timeline", () => {
+  assert.equal(SPEAKER_INITIAL_LEAD_BYTES, 8_192);
+  assert.equal(speakerChunkDueMs(4_096, 8_192, 32_000), 0);
+  assert.equal(speakerChunkDueMs(8_192, 8_192, 32_000), 0);
+  assert.equal(speakerChunkDueMs(9_216, 8_192, 32_000), 32);
+  assert.equal(speakerChunkDueMs(10_240, 8_192, 32_000), 64);
+  assert.throws(() => speakerChunkDueMs(1_024, 8_192, 0), /invalid PCM byte rate/);
+});
+
+test("speaker conditioning is a lightweight high-pass and peak limiter", () => {
+  assert.match(SPEAKER_AUDIO_FILTER, /highpass=f=110/);
+  assert.match(SPEAKER_AUDIO_FILTER, /alimiter=limit=0\.92/);
+  assert.match(SPEAKER_AUDIO_FILTER, /level=false/);
 });
 
 test("speaker runtime bounds queued jobs", () => {
@@ -41,7 +54,6 @@ test("speaker runtime keeps PCM off control websocket and completes from device 
     backend: { async synthesize() { return Buffer.alloc(4_096, 1); } },
     getDevice: () => device,
     sendControl: (message) => { controls.push(message); return true; },
-    chunkBytes: 2_048,
   });
   const queued = runtime.speak("<b>hello</b>");
   assert.equal(queued.kind, "queued");
@@ -61,7 +73,8 @@ test("speaker runtime keeps PCM off control websocket and completes from device 
     close() { this.readyState = 3; },
   };
   await runtime.handleConnection(ws, "newo-01", queued.playbackId);
-  assert.equal(Buffer.isBuffer(frames[0]), true);
+  const pcmFrames = frames.filter(Buffer.isBuffer);
+  assert.deepEqual(pcmFrames.map((frame) => frame.length), [1_024, 1_024, 1_024, 1_024]);
   assert.match(String(frames.at(-1)), /speaker_end/);
   assert.equal(runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 4_096 }), true);
   assert.equal((await queued.completion).kind, "complete");
