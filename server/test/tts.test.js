@@ -27,10 +27,11 @@ test("speaker runtime bounds queued jobs", () => {
 
 test("speaker runtime keeps PCM off control websocket and completes from device result", async () => {
   const controls = [];
+  const device = {};
   const runtime = createSpeakerRuntime({
     logger: { info() {}, warn() {} }, enabled: true,
     backend: { async synthesize() { return Buffer.alloc(4_096, 1); } },
-    getDevice: () => ({}),
+    getDevice: () => device,
     sendControl: (message) => { controls.push(message); return true; },
     chunkBytes: 2_048,
   });
@@ -56,4 +57,40 @@ test("speaker runtime keeps PCM off control websocket and completes from device 
   assert.match(String(frames.at(-1)), /speaker_end/);
   assert.equal(runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 4_096 }), true);
   assert.equal((await queued.completion).kind, "complete");
+});
+
+test("speaker runtime fails quickly when the stream does not connect", async () => {
+  const device = {};
+  const runtime = createSpeakerRuntime({
+    logger: { info() {}, warn() {} }, enabled: true,
+    backend: { async synthesize() { return Buffer.alloc(512); } },
+    getDevice: () => device,
+    sendControl: () => true,
+    connectionTimeoutMs: 20,
+    resultTimeoutMs: 1_000,
+  });
+  const queued = runtime.speak("hello");
+  await assert.rejects(queued.completion, /speaker connection timeout/);
+  runtime.close();
+});
+
+test("speaker runtime retries control on a replacement device connection", async () => {
+  const oldDevice = {};
+  const newDevice = {};
+  const controls = [];
+  const runtime = createSpeakerRuntime({
+    logger: { info() {}, warn() {} }, enabled: true,
+    backend: { async synthesize() { return Buffer.alloc(512); } },
+    getDevice: () => oldDevice,
+    sendControl: (message, device) => { controls.push({ message, device }); return true; },
+    connectionTimeoutMs: 1_000,
+  });
+  const queued = runtime.speak("hello");
+  await new Promise((resolve) => setImmediate(resolve));
+  await runtime.handleDeviceConnected("newo-01", newDevice);
+  assert.equal(controls.length, 2);
+  assert.equal(controls[0].device, oldDevice);
+  assert.equal(controls[1].device, newDevice);
+  assert.equal(controls[1].message.playback_id, queued.playbackId);
+  runtime.close();
 });

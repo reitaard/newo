@@ -110,10 +110,15 @@ const speakerRuntime = createSpeakerRuntime({
   enabled: env.TTS_ENABLED,
   backend: new EspeakTtsBackend({ voice: env.TTS_VOICE, rate: env.TTS_RATE, maxPcmBytes: env.TTS_MAX_PCM_BYTES }),
   getDevice: () => getConnectedDeviceState(),
-  sendControl(message) {
-    const device = getConnectedDeviceState();
-    if (!device) return false;
-    try { device.ws.send(JSON.stringify(message)); return true; } catch { return false; }
+  sendControl(message, device) {
+    if (!device || devices.get(env.NEWO_DEVICE_ID) !== device || device.ws.readyState !== WebSocket.OPEN) return false;
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (sent) => { if (settled) return; settled = true; clearTimeout(timer); resolve(sent); };
+      const timer = setTimeout(() => finish(false), 1_000);
+      timer.unref();
+      try { device.ws.send(JSON.stringify(message), (error) => finish(!error)); } catch { finish(false); }
+    });
   },
   maxTextChars: env.TTS_MAX_TEXT_CHARS,
 });
@@ -629,6 +634,7 @@ wss.on("connection", (ws, request, deviceId) => {
   });
   ws.on("error", () => app.log.warn({ device_id: deviceId }, "Newo WebSocket error"));
   ws.send(JSON.stringify({ type: "hello_ack", device: deviceId, server_time: new Date().toISOString() }));
+  void speakerRuntime.handleDeviceConnected(deviceId, state);
 });
 
 const heartbeatTimer = setInterval(() => {

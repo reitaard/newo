@@ -81,7 +81,7 @@ export class EspeakTtsBackend {
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-export function createSpeakerRuntime({ logger, backend, enabled, getDevice, sendControl, format = { sampleRate: 16_000, channels: 1, bitsPerSample: 16 }, chunkBytes = 2_048, maxTextChars = 300, resultTimeoutMs = 75_000, maxPendingJobs = 4 }) {
+export function createSpeakerRuntime({ logger, backend, enabled, getDevice, sendControl, format = { sampleRate: 16_000, channels: 1, bitsPerSample: 16 }, chunkBytes = 2_048, maxTextChars = 300, connectionTimeoutMs = 9_000, resultTimeoutMs = 75_000, maxPendingJobs = 4 }) {
   const jobs = new Map();
   const allJobs = new Set();
   let queue = Promise.resolve();
@@ -90,24 +90,46 @@ export function createSpeakerRuntime({ logger, backend, enabled, getDevice, send
   function settle(job, result) {
     if (job.settled) return;
     job.settled = true;
-    clearTimeout(job.timer);
+    clearTimeout(job.connectionTimer);
+    clearTimeout(job.resultTimer);
     jobs.delete(job.id);
     allJobs.delete(job);
     result.kind === "complete" ? job.resolve(result) : job.reject(new Error(result.error ?? result.kind));
   }
 
+  function controlMessage(job) {
+    return { type: "speaker_play", playback_id: job.id, sample_rate: format.sampleRate, channels: format.channels, bits_per_sample: format.bitsPerSample, bytes: job.pcm.length };
+  }
+
+  async function issueControl(job, device, reason) {
+    const sent = await sendControl(controlMessage(job), device);
+    if (sent) {
+      job.controlDevice = device;
+      logger.info({ playback_id: job.id, bytes: job.pcm.length, reason }, "Speaker play control sent");
+    } else {
+      logger.warn({ playback_id: job.id, bytes: job.pcm.length, reason }, "Speaker play control send failed");
+    }
+    return sent;
+  }
+
   async function run(job) {
     if (job.settled || closing) return;
     if (!getDevice()) throw new Error("speaker unavailable");
+    logger.info({ playback_id: job.id, text_chars: job.text.length }, "Speaker TTS synthesis started");
     const pcm = await backend.synthesize(job.text, format);
-    if (!getDevice()) throw new Error("speaker unavailable");
+    logger.info({ playback_id: job.id, pcm_bytes: pcm.length, format }, "Speaker TTS synthesis completed");
+    const device = getDevice();
+    if (!device) throw new Error("speaker unavailable");
     job.pcm = pcm;
     jobs.set(job.id, job);
-    job.timer = setTimeout(() => settle(job, { kind: "timeout", error: "speaker playback timeout" }), resultTimeoutMs);
-    job.timer.unref();
-    if (!sendControl({ type: "speaker_play", playback_id: job.id, sample_rate: format.sampleRate, channels: format.channels, bits_per_sample: format.bitsPerSample, bytes: pcm.length })) {
-      settle(job, { kind: "send_error", error: "speaker control send failed" });
-    }
+    job.connectionTimer = setTimeout(() => {
+      settle(job, { kind: "connection_timeout", error: "speaker connection timeout" });
+      logger.warn({ playback_id: job.id, pcm_bytes: pcm.length, timeout_ms: connectionTimeoutMs }, "Speaker stream did not connect");
+    }, connectionTimeoutMs);
+    job.connectionTimer.unref();
+    // A control send can race a /device reconnect. Keep the short connection
+    // timer alive so handleDeviceConnected can retry on the replacement socket.
+    await issueControl(job, device, "initial");
     return job.completion;
   }
 
@@ -123,8 +145,9 @@ export function createSpeakerRuntime({ logger, backend, enabled, getDevice, send
     const completion = new Promise((res, rej) => { resolve = res; reject = rej; });
     // Callers may intentionally fire-and-forget; keep rejection handled here.
     completion.catch(() => {});
-    const job = { id, text, pcm: null, socketClaimed: false, settled: false, timer: null, resolve, reject, completion };
+    const job = { id, text, pcm: null, socketClaimed: false, settled: false, connectionTimer: null, resultTimer: null, controlDevice: null, controlSending: false, resolve, reject, completion };
     allJobs.add(job);
+    logger.info({ playback_id: id, text_chars: text.length }, "Speaker job queued");
     queue = queue.catch(() => {}).then(() => run(job)).catch((error) => {
       settle(job, { kind: "error", error: error?.message ?? "TTS failed" });
       logger.warn({ playback_id: id, error_message: error?.message ?? "unknown" }, "Speaker/TTS job failed");
@@ -136,7 +159,11 @@ export function createSpeakerRuntime({ logger, backend, enabled, getDevice, send
     const job = jobs.get(playbackId);
     if (!job || job.socketClaimed || !job.pcm) { ws.close(4004, "unknown playback"); return; }
     job.socketClaimed = true;
-    logger.info({ device_id: deviceId, playback_id: playbackId, bytes: job.pcm.length, format }, "Speaker stream connected");
+    clearTimeout(job.connectionTimer);
+    job.resultTimer = setTimeout(() => settle(job, { kind: "timeout", error: "speaker playback timeout" }), resultTimeoutMs);
+    job.resultTimer.unref();
+    logger.info({ device_id: deviceId, playback_id: playbackId, pcm_bytes: job.pcm.length, format }, "Speaker stream connected");
+    logger.info({ device_id: deviceId, playback_id: playbackId, pcm_bytes: job.pcm.length, chunk_bytes: chunkBytes }, "Speaker PCM stream started");
     try {
       for (let offset = 0; offset < job.pcm.length; offset += chunkBytes) {
         if (ws.readyState !== 1) throw new Error("speaker disconnected");
@@ -157,6 +184,22 @@ export function createSpeakerRuntime({ logger, backend, enabled, getDevice, send
     }
   }
 
+  async function handleDeviceConnected(deviceId, device) {
+    for (const job of jobs.values()) {
+      if (job.settled || job.socketClaimed || job.controlSending || job.controlDevice === device) continue;
+      job.controlSending = true;
+      try {
+        if (!await issueControl(job, device, "device_reconnected")) {
+          logger.warn({ device_id: deviceId, playback_id: job.id }, "Speaker control retry failed");
+        }
+      } catch (error) {
+        logger.warn({ device_id: deviceId, playback_id: job.id, error_message: error?.message ?? "unknown" }, "Speaker control retry failed");
+      } finally {
+        job.controlSending = false;
+      }
+    }
+  }
+
   function handleResult(deviceId, message) {
     const job = jobs.get(message.playback_id);
     if (!job) return false;
@@ -171,5 +214,5 @@ export function createSpeakerRuntime({ logger, backend, enabled, getDevice, send
     for (const job of [...allJobs]) settle(job, { kind: "shutdown", error: "server shutting down" });
   }
 
-  return { speak, handleConnection, handleResult, close, format };
+  return { speak, handleConnection, handleDeviceConnected, handleResult, close, format };
 }
