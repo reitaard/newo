@@ -276,13 +276,20 @@ async function handleNewoCommand(ctx) {
   return commandReply(ctx, commandMessage("newo", [quote(["Reserved for the Newo agent."])]), "reserved");
 }
 
+// Telegram recognizes only the `/face` token in ordinary text. Its bot-command
+// URI makes the complete command (including the style argument) tappable.
+function faceCommandLink(style) {
+  const command = `/face ${style}`;
+  return `<a href="tg://bot_command?command=${encodeURIComponent(command)}">${escapeHtml(command)}</a>`;
+}
+
 async function handleFaceCommand(ctx) {
   const input = String(ctx.match ?? "").trim().toLowerCase();
   if (!input) {
-    return commandReply(ctx, commandMessage("face", [quote(FACE_STYLES.map((style) => `/face ${style}`))]), "usage");
+    return commandReply(ctx, commandMessage("face", [quote(FACE_STYLES.map(faceCommandLink))]), "usage");
   }
   if (!FACE_STYLES.includes(input)) {
-    return commandReply(ctx, commandMessage("face", [quote(["Choose one:", ...FACE_STYLES.map((style) => `/face ${style}`)])]), "usage");
+    return commandReply(ctx, commandMessage("face", [quote(["Choose one:", ...FACE_STYLES.map(faceCommandLink)])]), "usage");
   }
   const request = sendDeviceRequest("display_set", "display_ack", { mode: input, text: "" }, commandTrace(ctx));
   if (request.kind === "offline") return commandReply(ctx, statusMessage("face", "offline"), "offline");
