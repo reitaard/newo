@@ -2,20 +2,28 @@
 
 Research snapshot: 2026-08-30.
 
+## Project status
+
+**Wake-word work is deferred.** Newo will not train, request, integrate, or flash a custom `Neo` wake-word model in the current milestone.
+
+The current priority is to finish and physically validate the one-turn chat path using the existing Telegram `/voice` command (alias `/v`) as the manual trigger. Wake-word work remains a future replacement for that manual trigger; it must not change the `/voice` → Sherpa → Qwen → Kokoro → `/speaker` architecture.
+
 ## Product naming
 
 - Written product/repository/device identity: **Newo**.
 - Spoken assistant name: **Neo**.
 - Sherpa contextual hotword: `NEO`.
-- Desired local wake phrase: **Neo**.
+- Desired future local wake phrase: **Neo**.
 
-These are separate layers. `server/config/newo-hotwords.txt` biases Sherpa transcription only after the ESP has already woken and opened `/voice`; it does not configure WakeNet.
+These are separate layers. `server/config/newo-hotwords.txt` biases Sherpa transcription only after the ESP has opened `/voice`; it does not configure WakeNet.
 
 ## What Newo does today
 
 `NewoAudio::startWakeNet()` starts Arduino-ESP32 `ESP_SR` in `SR_MODE_WAKEWORD`. Newo does not name a WakeNet model or phrase in firmware. The `"MN"` input-format string describes ESP-SR audio channels (microphone plus an unused channel), not the wake phrase.
 
 The actual wake phrase is embedded in the WakeNet model stored in the ESP-SR `model` flash partition. Therefore source code alone cannot prove that the currently flashed board recognizes `Neo`.
+
+The existing production firmware still contains the OFF/ARMED/STREAMING WakeNet lifecycle. Until the manual-toggle change is implemented, `/voice` toggles OFF to ARMED and WakeNet is still the trigger that advances ARMED to STREAMING. The manual-trigger milestone below is a planned change, not a statement about the currently deployed firmware.
 
 ## Current upstream ESP-SR findings
 
@@ -27,15 +35,21 @@ Espressif documents that a WakeNet model can contain up to five wake words and t
 
 Upstream also notes that WakeNet performance depends heavily on microphone, speaker/cavity design, distance, noise, and the training corpus, so a model that works in a reference setup still needs physical validation on Newo.
 
-## Practical ways to obtain `Neo`
+## Future ways to obtain `Neo`
 
-### 1. Recommended first route: Espressif TTS wake-word request
+These are research options only. None is active work for the current manual-toggle milestone.
 
-Espressif's public wake-word request program is the lowest-complexity path for Newo. Their issue #88 says TTS-trained wake words are released for community use and that TTS Pipeline V3 supports English. Since August 2024, a new request can qualify by linking an ongoing project or by receiving enough community votes.
+### Own/custom Neo model
 
-Espressif reports its TTS V2 pipeline at about 95-98% of the accuracy of models trained from human samples. This is an upstream comparison, not a guarantee for `Neo` on Newo hardware.
+The preferred long-term direction is to own the `Neo` wake-word behavior rather than make the current assistant depend permanently on a vendor-provided phrase. The exact training/runtime framework should be selected later, after the manual chat path is physically stable and resource measurements on the ESP32-S3 are available.
 
-For Newo, request:
+Future work should keep the wake detector isolated behind the same trigger boundary: successful local detection should only request the already-existing voice stream. It must not redesign Sherpa, Qwen, Kokoro, `/speaker`, or device/cloud authentication.
+
+### Espressif TTS wake-word request
+
+Espressif's public wake-word request program remains a fallback/reference option. Their issue #88 says TTS-trained wake words are released for community use and that TTS Pipeline V3 supports English. Since August 2024, a new request can qualify by linking an ongoing project or by receiving enough community votes.
+
+A possible request would be:
 
 ```text
 Wake word: Neo
@@ -47,47 +61,76 @@ Use: local wake word for the Newo voice assistant
 Preferred output: WakeNet model asset that can be packed into srmodels.bin/model partition
 ```
 
-If Espressif publishes a `Neo` model, use that exact model asset and then rebuild/repack `srmodels.bin` for Newo's `model` partition. Do not change the `/voice`, Sherpa, Qwen, Kokoro, or speaker architecture just to adopt the model.
+This is not the current plan and should not be submitted unless the project later chooses the Espressif route.
 
-### 2. Paid/exclusive Espressif customization
+### Paid/exclusive Espressif customization
 
 Espressif also offers an offline commercial customization service. Their documented customer-corpus route requires at least 20,000 qualified recordings; the documented process normally takes about 2-3 weeks after the corpus is ready and is paid. Espressif can also provide the corpus for an additional fee.
 
-This is unnecessary for the current prototype unless the public TTS-trained `Neo` model is unavailable or its real-device accuracy is inadequate.
+This is unnecessary for the current prototype.
 
-### 3. Do not build a DIY training pipeline yet
+## Planned manual-toggle milestone
 
-The public ESP-SR documentation points developers to the Espressif TTS request/community process and the commercial customization service. It does not expose a simple supported local command where Newo can pass the word `Neo` and train a production WakeNet model itself.
+The immediate goal is a simple one-turn chat flow with **no wake-word dependency**.
 
-For this project, avoid creating a separate wake-word ML training stack unless the official routes fail. That would add complexity without improving the current one-turn chat architecture.
+Target behavior for Telegram `/voice` and `/v`:
 
-## Model packaging and flashing
+```text
+OFF
+  -- /v --> STREAMING
+STREAMING
+  -- /v --> OFF (cancel)
+STREAMING
+  -- final/error/timeout/disconnect --> OFF
+```
 
-ESP-SR loads selected models from a flash partition labeled `model`. Newo uses the Arduino-ESP32 `ESP SR 16M` partition scheme, so a custom `Neo` wake word ultimately means changing the contents of `srmodels.bin`/the `model` partition, not changing a string in `newo_audio.cpp`.
+The intended path is:
 
-Arduino-ESP32 copies its packaged `srmodels.bin` into the sketch build output when `ESP_SR` is used. On Newo's confirmed Arduino-ESP32 3.3.11 + built-in `esp_sr_16` configuration, a normal Arduino upload has been observed to include the model image at the model-partition offset. `Newo/flash_esp_sr.sh` remains an explicit recovery/manual flashing path; it is not required after every normal upload when the IDE upload already writes `srmodels.bin`.
+```text
+/v
+  -> acquire microphone/I2S
+  -> open authenticated temporary /voice
+  -> stream existing 20 ms PCM16 frames
+  -> Sherpa final transcript
+  -> Qwen one-turn reply
+  -> existing Kokoro + /speaker playback
+  -> remain OFF after the turn
+```
 
-When a custom `Neo` model becomes available:
+Implementation constraints for that milestone:
 
-1. Keep the existing `esp_sr_16` partition layout unless the new bundle no longer fits.
-2. Produce/obtain an `srmodels.bin` that contains the desired WakeNet model.
-3. Verify the upload command actually writes the model partition; do not assume an application-only flash updates it.
-4. Do not use `Erase All Flash` casually because it also removes NVS/provisioning state and the existing model partition.
-5. After flashing, verify the ESP-SR startup/model report over Serial before calling `Neo` supported.
+- `/v` should start one microphone session directly; it should not require a WakeNet event.
+- A second `/v` while STREAMING should cancel the current session and settle to OFF.
+- After a final transcript, failure, timeout, or disconnect, voice should settle to OFF instead of re-arming the current unknown WakeNet model.
+- Keep the current WakeNet/ARMED code available but dormant for future wake-word work rather than deleting it.
+- Do not add a fourth voice state. OFF and STREAMING are sufficient for manual operation; ARMED remains reserved for local wake-word mode.
+- Do not add another audio queue, WebSocket, ASR path, LLM path, or TTS path.
+- Preserve the existing direct 20 ms microphone frames, Sherpa worker/backpressure, finalized-transcript deduplication, bounded one-turn Qwen runtime, Kokoro streaming, Opus speaker path, and playback suppression.
+- The Telegram acknowledgement for starting a manual session should return promptly once STREAMING has started; it must not be held until the entire utterance finishes.
+- `/vs` should make the active trigger clear. During the manual milestone it should not imply that `Neo` WakeNet is ready; it should show the voice state and identify the trigger as manual/Telegram, while wake-word support is deferred.
+- No tool/function calling or conversation memory is part of this milestone.
 
-## Acceptance criteria for `Neo`
+### Firmware integration shape
 
-A `Neo` model is not considered integrated merely because it builds. Physical validation should check:
+The cleanest change is to add a bounded one-shot/manual-start path in `NewoAudio` rather than pretending the unknown WakeNet model detected a wake.
 
-- repeated wakes at normal speaking volume and multiple distances;
-- fast/normal/slow pronunciation of `Neo`;
-- missed-wake rate;
-- false wakes from ordinary speech, TV/music, and words sounding similar to `Neo`;
-- wake while the device is otherwise idle for an extended period;
-- WakeNet is suppressed during speaker playback and re-arms afterward;
-- after a valid wake, Sherpa transcribes the spoken assistant name as `Neo` using the existing `NEO` contextual bias.
+The manual path should start the existing streaming task directly from OFF and remember that the session must return to OFF. The existing real WakeNet path can continue to mark future wake-triggered sessions as re-armable. This keeps one streaming implementation and avoids duplicating I2S or `/voice` ownership.
 
-If single-word `Neo` proves too trigger-prone, test a slightly longer phrase such as `Hey Neo` before changing models/frameworks. Do not make that change pre-emptively; measure the single-word target first.
+The current `transitionPending_`/voice-ack handling also needs review: today it is useful for waiting for a STREAMING cancellation to fully settle, but a manual `/v` start must not defer its Telegram acknowledgement until the stream ends.
+
+## Future model packaging and flashing
+
+If Newo later returns to ESP-SR/WakeNet for a custom `Neo` model, ESP-SR loads selected models from a flash partition labeled `model`. Newo uses the Arduino-ESP32 `ESP SR 16M` partition scheme, so a custom WakeNet `Neo` asset would ultimately change the contents of `srmodels.bin`/the `model` partition, not a string in `newo_audio.cpp`.
+
+Arduino-ESP32 copies its packaged `srmodels.bin` into the sketch build output when `ESP_SR` is used. On Newo's confirmed Arduino-ESP32 3.3.11 + built-in `esp_sr_16` configuration, a normal Arduino upload has been observed to include the model image at the model-partition offset. `Newo/flash_esp_sr.sh` remains an explicit recovery/manual flashing path.
+
+Do not use `Erase All Flash` casually because it also removes NVS/provisioning state and the existing model partition.
+
+## Future acceptance criteria for `Neo`
+
+When custom wake-word work resumes, a `Neo` model is not considered integrated merely because it builds. Physical validation should check repeated wakes, pronunciation variation, missed-wake rate, false wakes from ordinary speech/TV/music/similar words, long idle operation, speaker-playback suppression, re-arming after playback, and Sherpa transcription of the spoken assistant name as `Neo`.
+
+If single-word `Neo` proves too trigger-prone, `Hey Neo` is a possible fallback to test later. Do not change the desired phrase pre-emptively; measure `Neo` first.
 
 ## Current decision
 
@@ -96,9 +139,11 @@ For now:
 - keep branding as Newo;
 - keep the spoken assistant identity as Neo;
 - keep Sherpa hotword bias as `NEO`;
-- keep the current local WakeNet architecture unchanged;
-- do not claim the installed wake phrase is Neo until a Neo WakeNet model is installed and physically validated;
-- pursue Espressif's TTS wake-word request as the preferred low-complexity route.
+- defer all custom wake-word training/integration/flashing;
+- keep existing WakeNet code only as future infrastructure;
+- make `/voice` / `/v` the manual one-turn listen/cancel trigger for the next implementation milestone;
+- keep the assistant chat-only with no tool calling;
+- do not claim the installed WakeNet phrase is Neo.
 
 ## Official references
 
