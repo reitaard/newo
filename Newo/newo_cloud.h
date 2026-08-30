@@ -14,7 +14,7 @@ class NewoCloud {
   void begin();
   void loop();
   bool connected() const;
-  struct VoiceRequest { enum class Action : uint8_t { ON, OFF, TOGGLE }; Action action; char requestId[40]; };
+  struct VoiceRequest { enum class Action : uint8_t { ON, OFF, TOGGLE, MANUAL_TOGGLE }; Action action; char requestId[40]; };
   struct SpeakerControlRequest {
     enum class Action : uint8_t { STATUS, SET_VOLUME, TOGGLE_MUTE, SET_ENABLED, TEMPORARY_CONNECT };
     Action action;
@@ -30,7 +30,8 @@ class NewoCloud {
                       bool muted, bool applied, const char* lastPlayback,
                       uint32_t underruns, uint32_t overflows);
   void sendVoiceAck(const char* requestId, NewoVoiceState state, bool voiceConnected,
-                    uint32_t wakes, uint32_t sessions, uint32_t failures, uint32_t timeouts);
+                    uint32_t wakes, uint32_t sessions, uint32_t failures, uint32_t timeouts,
+                    bool applied = true);
   void updateVoiceTelemetry(NewoVoiceState state, bool connected, uint32_t wakes,
                             uint32_t sessions, uint32_t failures, uint32_t timeouts);
   // Temporary physical-validation instrumentation; ESP-IDF reports bytes on ESP32-S3.

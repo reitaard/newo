@@ -58,7 +58,7 @@ void setup() {
 }
 
 void loop() {
-  struct VoiceAck { char requestId[40]; };
+  struct VoiceAck { char requestId[40]; bool applied; };
   struct SpeakerAck { char requestId[40]; bool targetEnabled; bool applied; uint32_t startedMs; };
   static VoiceAck pendingVoiceAcks[8] = {};
   static uint8_t pendingVoiceAckCount = 0;
@@ -73,15 +73,23 @@ void loop() {
   // Consume every queued control request now. In particular, an OFF/toggle is
   // never held behind a prior request waiting for a streaming task to exit.
   while (newoCloud.consumeVoiceRequest(voiceRequest)) {
-    bool enable = voiceRequest.action == NewoCloud::VoiceRequest::Action::ON;
-    if (voiceRequest.action == NewoCloud::VoiceRequest::Action::TOGGLE) {
-      // STREAMING is enabled for toggle purposes, so it is cancelled to OFF.
-      enable = newoAudio.state() == NewoVoiceState::OFF;
+    bool applied = true;
+    if (voiceRequest.action == NewoCloud::VoiceRequest::Action::MANUAL_TOGGLE) {
+      // Manual /v is OFF -> STREAMING and STREAMING -> OFF. It never arms
+      // WakeNet and never queues behind speaker playback.
+      applied = newoAudio.manualToggle();
+    } else {
+      bool enable = voiceRequest.action == NewoCloud::VoiceRequest::Action::ON;
+      if (voiceRequest.action == NewoCloud::VoiceRequest::Action::TOGGLE) {
+        // Preserve the legacy/future WakeNet toggle semantics.
+        enable = newoAudio.state() == NewoVoiceState::OFF;
+      }
+      applied = newoAudio.setEnabled(enable);
     }
-    newoAudio.setEnabled(enable);
     if (pendingVoiceAckCount < sizeof(pendingVoiceAcks) / sizeof(pendingVoiceAcks[0])) {
-      strlcpy(pendingVoiceAcks[pendingVoiceAckCount++].requestId, voiceRequest.requestId,
-              sizeof(pendingVoiceAcks[0].requestId));
+      VoiceAck& pending = pendingVoiceAcks[pendingVoiceAckCount++];
+      strlcpy(pending.requestId, voiceRequest.requestId, sizeof(pending.requestId));
+      pending.applied = applied;
     }
   }
   while (newoCloud.consumeSpeakerControlRequest(speakerControlRequest)) {
@@ -143,7 +151,7 @@ void loop() {
     for (uint8_t i = 0; i < pendingVoiceAckCount; ++i) {
       newoCloud.sendVoiceAck(pendingVoiceAcks[i].requestId, newoAudio.state(), newoAudio.voiceConnected(),
                              newoAudio.wakeCount(), newoAudio.sessionCount(), newoAudio.failures(),
-                             newoAudio.timeouts());
+                             newoAudio.timeouts(), pendingVoiceAcks[i].applied);
     }
     pendingVoiceAckCount = 0;
   }

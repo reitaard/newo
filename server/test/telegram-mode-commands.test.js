@@ -40,11 +40,19 @@ test("/voice toggles and returns detailed current status", async () => {
     return response({ state: "armed", voice_connected: true, wake_count: 4, session_count: 12, failures: 0, timeouts: 0 });
   });
   await harness.handlers.voice({ match: "" });
-  assert.deepEqual(requests[0], { type: "voice_control", responseType: "voice_ack", fields: { action: "toggle" } });
+  assert.deepEqual(requests[0], { type: "voice_control", responseType: "voice_ack", fields: { action: "manual_toggle" } });
   assert.match(harness.replies[0].text, /Voice: <b>ARMED<\/b>/);
-  assert.match(harness.replies[0].text, /WakeNet: <b>Ready<\/b>/);
+  assert.match(harness.replies[0].text, /Trigger: <b>Manual \(\/v\)<\/b>/);
+  assert.match(harness.replies[0].text, /Wake word: <b>Deferred<\/b>/);
   assert.match(harness.replies[0].text, /Sessions: <b>12<\/b>/);
   assert.match(harness.replies[0].text, /Timeouts: <b>0<\/b>/);
+});
+
+test("/v reports manual microphone contention cleanly", async () => {
+  const harness = createHarness(() => response({ state: "off", voice_connected: false, wake_count: 0, session_count: 0, failures: 0, timeouts: 0, applied: false }));
+  await harness.handlers.voice({ match: "" });
+  assert.equal(harness.replies[0].category, "busy");
+  assert.match(harness.replies[0].text, /Status: <b>busy<\/b>/);
 });
 
 test("/vs reads bounded assistant telemetry without invoking chat", async () => {

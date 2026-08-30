@@ -127,16 +127,21 @@ void NewoAudio::srEvent(sr_event_t event, int, int) {
   }
 }
 
-void NewoAudio::beginStreaming() {
+bool NewoAudio::beginStreaming(bool rearmAfterStream) {
 #if !NEWO_AUDIO_HAS_LOCAL_SECRETS
   ++failures_;
   NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::AUDIO, "VOICE_STREAM_DISABLED", "secrets_missing");
-  return;
+  return false;
 #else
-  if (!enabled_ || state_ != NewoVoiceState::ARMED) return;
-  ++wakeCount_;
-  display_.setMode(NewoDisplayMode::LISTENING, "", false);
+  if (state_ == NewoVoiceState::STREAMING || streamTask_ || playbackSuppressed_) return false;
+  if (rearmAfterStream && (!enabled_ || state_ != NewoVoiceState::ARMED)) return false;
+  // A future WakeNet event and a manual request share this single stream task.
+  // StopWakeNet also releases its I2S ownership before direct capture begins.
   stopWakeNet();
+  if (!configureI2s()) { ++failures_; return false; }
+  rearmAfterStream_ = rearmAfterStream;
+  if (!rearmAfterStream_) enabled_ = false;
+  display_.setMode(NewoDisplayMode::LISTENING, "", false);
   state_ = NewoVoiceState::STREAMING;
   transitionPending_ = true;
   streamFinished_ = false;
@@ -148,8 +153,27 @@ void NewoAudio::beginStreaming() {
     ++failures_;
     streamEndReason_ = "task_failed";
     streamFinished_ = true;
+    return false;
   }
+  // I2S and the one task are now owned by STREAMING. Ack the control request
+  // promptly; WebSocket/ASR/TTS completion remains independent.
+  transitionPending_ = false;
+  return true;
 #endif
+}
+
+bool NewoAudio::manualToggle() {
+  if (state_ == NewoVoiceState::STREAMING) {
+    setEnabled(false);
+    return true;
+  }
+  if (playbackSuppressed_) {
+    NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO, "VOICE_MANUAL_BUSY", "speaker_playback");
+    return false;
+  }
+  // ARMED is preserved for future WakeNet work, but a manual turn takes the
+  // microphone directly and always settles back to OFF.
+  return beginStreaming(false);
 }
 
 void NewoAudio::streamTaskEntry(void* context) { static_cast<NewoAudio*>(context)->streamTask(); }
@@ -203,9 +227,13 @@ void NewoAudio::finishStreaming(const char* reason) {
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_STREAM_STOPPED", detail);
   streamTask_ = nullptr;
   transitionPending_ = false;
+  // Idempotent after the normal task cleanup, and required if task creation
+  // failed after direct manual I2S acquisition.
+  releaseI2s();
   // LISTENING is session-only; recover the normal face before re-arming/OFF.
   display_.setMode(NewoDisplayMode::IDLE, "", false);
-  if (enabled_ && startWakeNet()) return;
+  if (rearmAfterStream_ && enabled_ && startWakeNet()) return;
+  rearmAfterStream_ = false;
   state_ = NewoVoiceState::OFF;
 }
 
@@ -228,7 +256,10 @@ void NewoAudio::handleVoiceEvent(WStype_t type, uint8_t* payload, size_t length)
 }
 
 void NewoAudio::loop() {
-  if (state_ == NewoVoiceState::ARMED && wakePending_) { wakePending_ = false; beginStreaming(); }
+  if (state_ == NewoVoiceState::ARMED && wakePending_) {
+    wakePending_ = false;
+    if (beginStreaming(true)) ++wakeCount_;
+  }
   if (state_ == NewoVoiceState::STREAMING && streamFinished_) finishStreaming(streamEndReason_);
   if (state_ == NewoVoiceState::OFF && enabled_ && !transitionPending_ && !playbackSuppressed_) startWakeNet();
 }
