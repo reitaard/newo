@@ -108,7 +108,7 @@ void NewoDisplay::loop() {
   if (dirty_) render();
   if (!temporary_ && mode_ != NewoDisplayMode::ECO && mode_ != NewoDisplayMode::MESSAGE &&
       static_cast<int32_t>(now - nextFaceFrameMs_) >= 0) {
-    nextFaceFrameMs_ = now + 67;  // ~15 FPS: network/audio reliability takes priority.
+    nextFaceFrameMs_ = now + 50;  // ~20 FPS: smoother motion while preserving display headroom.
     drawFaceFrame(now);
   }
 }
