@@ -158,5 +158,6 @@ void loop() {
   newoDisplay.updateTelemetry(newoWiFi.connected(), newoWiFi.rssi(), newoCloud.connected(), millis(),
                               ESP.getFreeHeap(), ESP.getFreePsram(), NewoLog::stats());
   newoDisplay.loop();
+  newoDisplay.updateClock();
   delay(2);
 }
