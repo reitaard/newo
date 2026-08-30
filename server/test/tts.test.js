@@ -8,6 +8,7 @@ import {
   KokoroTtsBackend,
   speakerAudioFilter,
   speakerCreditBytes,
+  speakerCodecFlowState,
   speakerDeliveryState,
   speakerOutstandingBytes,
   splitRealtimeText,
@@ -84,6 +85,11 @@ test("delivery-aware flow separates network flight, ESP buffer, and total outsta
   assert.equal(speakerCreditBytes(22_528, 22_528, 2_048, 20_480), 2_048, "consumption replenishes exactly one frame of credit");
   assert.equal(speakerOutstandingBytes(18_432, 0), 18_432);
   assert.throws(() => speakerDeliveryState(1_024, 2_048, 0, 0), /invalid speaker delivery counters/);
+  const opus = speakerCodecFlowState({ logicalPcmProduced: 3_840, wireBytes: 420, opusPackets: 2,
+    decodedPcmAdmitted: 3_840, decodedPcmReceived: 1_920, decodedPcmConsumed: 960, decodedPcmBuffered: 960 });
+  assert.equal(opus.networkDecodedPcmInFlight, 1_920);
+  assert.equal(opus.receiverDecodedPcmOutstanding, 2_880);
+  assert.throws(() => speakerCodecFlowState({ logicalPcmProduced: 1, wireBytes: 0, opusPackets: 0, decodedPcmAdmitted: 2, decodedPcmReceived: 0, decodedPcmConsumed: 0, decodedPcmBuffered: 0 }), /ordering/);
 });
 
 test("speaker conditioning adds configurable gain before the limiter", () => {

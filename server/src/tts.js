@@ -504,6 +504,21 @@ export function speakerDeliveryState(sentBytes, receivedBytes, consumedBytes, bu
   };
 }
 
+// Codec-aware accounting: all safety/credit fields remain decoded PCM bytes.
+// Wire metrics are diagnostic only; compressed delivery never impersonates PCM.
+export function speakerCodecFlowState({ logicalPcmProduced, wireBytes, opusPackets = 0,
+  decodedPcmAdmitted, decodedPcmReceived, decodedPcmConsumed, decodedPcmBuffered }) {
+  for (const value of [logicalPcmProduced, wireBytes, opusPackets, decodedPcmAdmitted, decodedPcmReceived, decodedPcmConsumed, decodedPcmBuffered]) {
+    if (!Number.isInteger(value) || value < 0) throw new Error("invalid codec flow counters");
+  }
+  if (decodedPcmAdmitted > logicalPcmProduced || decodedPcmReceived > decodedPcmAdmitted ||
+      decodedPcmConsumed > decodedPcmReceived) throw new Error("invalid codec flow ordering");
+  return { logicalPcmProduced, wireBytes, opusPackets, decodedPcmAdmitted, decodedPcmReceived,
+    decodedPcmConsumed, decodedPcmBuffered,
+    networkDecodedPcmInFlight: decodedPcmAdmitted - decodedPcmReceived,
+    receiverDecodedPcmOutstanding: decodedPcmAdmitted - decodedPcmConsumed };
+}
+
 export function speakerCreditBytes(sentBytes, receivedBytes, consumedBytes, bufferedBytes, {
   receiverBufferTargetBytes = SPEAKER_RECEIVER_BUFFER_TARGET_BYTES,
   networkInFlightLimitBytes = SPEAKER_NETWORK_INFLIGHT_LIMIT_BYTES,
