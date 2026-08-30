@@ -36,6 +36,19 @@ test("assistant identifies Newo as pronounced Neo", async () => {
   assert.match(request.messages[0].content, /refer to your name naturally as Neo/);
 });
 
+test("assistant readiness probes the configured model without generating chat", async () => {
+  const requests = [];
+  const runtime = createAssistantRuntime({
+    enabled: true, baseUrl: "http://127.0.0.1:8181", model: "helix-qwen3-0.6b", logger: quietLogger,
+    fetchImpl: async (url) => {
+      requests.push(new URL(url).pathname);
+      return jsonResponse({ data: [{ id: "helix-qwen3-0.6b" }] });
+    },
+  });
+  assert.equal((await runtime.refreshHealth()).qwen, "online");
+  assert.deepEqual(requests, ["/v1/models"]);
+});
+
 test("production hotwords only bias the spoken name Neo", async () => {
   const hotwords = await readFile(new URL("../config/newo-hotwords.txt", import.meta.url), "utf8");
   assert.equal(hotwords, "NEO\n");
