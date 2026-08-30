@@ -58,12 +58,7 @@ void NewoCloud::startConnection() {
   headers += F("\r\nAuthorization: Bearer ");
   headers += NewoSecrets::DEVICE_SECRET;
 
-  // WebSockets 2.7.2 copies the extra headers into its client state.
-  // Never print `headers`: it contains the device bearer secret.
   webSocket_.setExtraHeaders(headers.c_str());
-
-  // Deliberately use beginSslWithCA instead of beginSSL. On ESP32 the latter
-  // falls back to setInsecure() when no trust anchor is supplied.
   webSocket_.beginSslWithCA(NewoConfig::CLOUD_HOST, NewoConfig::CLOUD_PORT,
                             NewoConfig::CLOUD_PATH, NewoSecrets::CLOUD_CA_CERT, "");
   started_ = true;
@@ -78,9 +73,7 @@ void NewoCloud::loop() {
     return;
   }
 
-  if (!configured_) {
-    return;
-  }
+  if (!configured_) return;
 
   if (!wifi_.connected()) {
     if (started_) {
@@ -93,20 +86,13 @@ void NewoCloud::loop() {
 
   startConnection();
   webSocket_.loop();
-
-  if (!connected_) {
-    return;
-  }
+  if (!connected_) return;
 
   const uint32_t now = millis();
-  if (now - lastStatusMs_ >= NewoConfig::CLOUD_STATUS_INTERVAL_MS) {
-    sendStatus();
-  }
+  if (now - lastStatusMs_ >= NewoConfig::CLOUD_STATUS_INTERVAL_MS) sendStatus();
 }
 
-bool NewoCloud::connected() const {
-  return connected_;
-}
+bool NewoCloud::connected() const { return connected_; }
 
 bool NewoCloud::consumeVoiceRequest(VoiceRequest& request) {
   if (voiceRequestCount_ == 0) return false;
@@ -136,7 +122,6 @@ void NewoCloud::sendVoiceAck(const char* requestId, NewoVoiceState state, bool v
 }
 
 void NewoCloud::recordStack(const char* point) {
-  // ESP-IDF on ESP32-S3 returns this high-water mark in bytes.
   const uint32_t bytes = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
   if (bytes < minimumLoopStackBytes_) minimumLoopStackBytes_ = bytes;
   Serial.printf("[stack] %s: %lu bytes free (low %lu)\n", point,
@@ -153,7 +138,6 @@ void NewoCloud::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
       sendHello();
       sendStatus();
       break;
-
     case WStype_DISCONNECTED:
       if (connected_) {
         ++disconnectCount_;
@@ -163,16 +147,13 @@ void NewoCloud::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
       authenticated_ = false;
       started_ = false;
       break;
-
     case WStype_TEXT:
       handleTextMessage(payload, length);
       break;
-
     case WStype_ERROR:
       ++errorCount_;
       NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::CLOUD, "CLOUD_WS_ERROR");
       break;
-
     default:
       break;
   }
@@ -196,20 +177,17 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
   }
 
   if (strcmp(type, "ping") == 0) {
-    const char* requestId = doc["request_id"] | "";
-    sendStatus(requestId, true);
+    sendStatus(doc["request_id"] | "", true);
     return;
   }
 
   if (strcmp(type, "status_request") == 0) {
-    const char* requestId = doc["request_id"] | "";
-    sendStatus(requestId, false);
+    sendStatus(doc["request_id"] | "", false);
     return;
   }
 
   if (strcmp(type, "reboot") == 0) {
-    const char* requestId = doc["request_id"] | "";
-    sendRebootAck(requestId);
+    sendRebootAck(doc["request_id"] | "");
     return;
   }
 
@@ -217,15 +195,42 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     const char* requestId = doc["request_id"] | "";
     const char* mode = doc["mode"] | "";
     const char* text = doc["text"] | "";
+
+    bool faceSelection = true;
+    NewoFaceStyle faceStyle = NewoFaceStyle::DEFAULT;
+    if (strcmp(mode, "default") == 0) faceStyle = NewoFaceStyle::DEFAULT;
+    else if (strcmp(mode, "happy") == 0) faceStyle = NewoFaceStyle::HAPPY;
+    else if (strcmp(mode, "angry") == 0) faceStyle = NewoFaceStyle::ANGRY;
+    else if (strcmp(mode, "tired") == 0) faceStyle = NewoFaceStyle::TIRED;
+    else if (strcmp(mode, "curious") == 0) faceStyle = NewoFaceStyle::CURIOUS;
+    else if (strcmp(mode, "confused") == 0) faceStyle = NewoFaceStyle::CONFUSED;
+    else if (strcmp(mode, "laugh") == 0) faceStyle = NewoFaceStyle::LAUGH;
+    else if (strcmp(mode, "sweat") == 0) faceStyle = NewoFaceStyle::SWEAT;
+    else if (strcmp(mode, "cyclops") == 0) faceStyle = NewoFaceStyle::CYCLOPS;
+    else faceSelection = false;
+
+    if (faceSelection) {
+      if (!display_.setFaceStyle(faceStyle)) {
+        NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "DISPLAY_INVALID_PAYLOAD");
+        return;
+      }
+      sendDisplayAck(requestId, mode);
+      return;
+    }
+
     NewoDisplayMode displayMode = NewoDisplayMode::MESSAGE;
     if (strcmp(mode, "idle") == 0) displayMode = NewoDisplayMode::IDLE;
     else if (strcmp(mode, "listening") == 0) displayMode = NewoDisplayMode::LISTENING;
     else if (strcmp(mode, "thinking") == 0) displayMode = NewoDisplayMode::THINKING;
     else if (strcmp(mode, "speaking") == 0) displayMode = NewoDisplayMode::SPEAKING;
     else if (strcmp(mode, "error") == 0) displayMode = NewoDisplayMode::ERROR;
-    else if (strcmp(mode, "message") != 0) { NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "DISPLAY_INVALID_MODE"); return; }
+    else if (strcmp(mode, "message") != 0) {
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "DISPLAY_INVALID_MODE");
+      return;
+    }
     if (strlen(text) > 96 || !display_.setMode(displayMode, text, doc["temporary"] | false)) {
-      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "DISPLAY_INVALID_PAYLOAD"); return;
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "DISPLAY_INVALID_PAYLOAD");
+      return;
     }
     sendDisplayAck(requestId, mode);
     return;
@@ -238,7 +243,6 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
   }
 
   if (strcmp(type, "voice_status") == 0) {
-    // Status is read-only and must not wait behind a streaming cancellation.
     sendVoiceAck(doc["request_id"] | "", voiceState_, voiceConnected_, voiceWakes_, voiceSessions_);
     return;
   }
@@ -251,7 +255,10 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     if (strcmp(action, "on") == 0) request.action = VoiceRequest::Action::ON;
     else if (strcmp(action, "off") == 0) request.action = VoiceRequest::Action::OFF;
     else if (strcmp(action, "toggle") == 0) request.action = VoiceRequest::Action::TOGGLE;
-    else { NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "VOICE_INVALID_ACTION"); return; }
+    else {
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "VOICE_INVALID_ACTION");
+      return;
+    }
     if (voiceRequestCount_ == kVoiceRequestQueueDepth) {
       NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "VOICE_CONTROL_QUEUE_FULL");
       return;
@@ -280,16 +287,12 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
 
 void NewoCloud::sendHello() {
 #if NEWO_HAS_LOCAL_SECRETS
-  if (!connected_) {
-    return;
-  }
-
+  if (!connected_) return;
   JsonDocument doc;
   doc["type"] = "hello";
   doc["device"] = NewoSecrets::DEVICE_ID;
   doc["firmware"] = NewoConfig::FIRMWARE_VERSION;
   doc["chip"] = ESP.getChipModel();
-
   String body;
   serializeJson(doc, body);
   webSocket_.sendTXT(body);
@@ -297,21 +300,15 @@ void NewoCloud::sendHello() {
 }
 
 void NewoCloud::sendStatus(const char* requestId, bool pong) {
-  if (!connected_) {
-    return;
-  }
-
+  if (!connected_) return;
   JsonDocument doc;
   doc["type"] = pong ? "pong" : "status";
-  if (requestId && requestId[0] != '\0') {
-    doc["request_id"] = requestId;
-  }
+  if (requestId && requestId[0] != '\0') doc["request_id"] = requestId;
   doc["uptime_ms"] = millis();
   doc["rssi"] = wifi_.rssi();
   doc["ssid"] = wifi_.connectedSsid();
   doc["free_heap"] = ESP.getFreeHeap();
   doc["free_psram"] = ESP.getFreePsram();
-
   String body;
   serializeJson(doc, body);
   webSocket_.sendTXT(body);
@@ -320,7 +317,6 @@ void NewoCloud::sendStatus(const char* requestId, bool pong) {
 
 void NewoCloud::sendHealth(const char* requestId) {
   if (!connected_ || !requestId || requestId[0] == '\0') return;
-
   recordStack("before health");
   const NewoLog::Stats logs = NewoLog::stats();
   recordStack("during health");
@@ -362,7 +358,6 @@ void NewoCloud::sendHealth(const char* requestId) {
   logger["warnings"] = logs.warnings;
   logger["errors"] = logs.errors;
   doc["loop_stack_low_bytes"] = minimumLoopStackBytes_;
-
   String body;
   serializeJson(doc, body);
   webSocket_.sendTXT(body);
@@ -371,15 +366,13 @@ void NewoCloud::sendHealth(const char* requestId) {
 
 void NewoCloud::sendLogs(const char* requestId, uint8_t limit, const char* minLevel) {
   if (!connected_ || !requestId || requestId[0] == '\0') return;
-
   recordStack("before logs");
   NewoLog::Level minimum = NewoLog::Level::INFO;
   if (strcmp(minLevel, "warn") == 0) minimum = NewoLog::Level::WARN;
   if (strcmp(minLevel, "error") == 0) minimum = NewoLog::Level::ERROR;
 
   const size_t exportBytes = static_cast<size_t>(limit) * sizeof(NewoLog::Entry);
-  NewoLog::Entry* entries = static_cast<NewoLog::Entry*>(
-      heap_caps_malloc(exportBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  NewoLog::Entry* entries = static_cast<NewoLog::Entry*>(heap_caps_malloc(exportBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (!entries) entries = static_cast<NewoLog::Entry*>(malloc(exportBytes));
 
   NewoLog::Stats logStats = {};
@@ -441,23 +434,16 @@ void NewoCloud::sendDisplayAck(const char* requestId, const char* mode) {
 }
 
 void NewoCloud::sendRebootAck(const char* requestId) {
-  if (!connected_ || !requestId || requestId[0] == '\0') {
-    return;
-  }
-
+  if (!connected_ || !requestId || requestId[0] == '\0') return;
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::SYSTEM, "SYSTEM_REBOOT_REQUESTED");
   JsonDocument doc;
   doc["type"] = "reboot_ack";
   doc["request_id"] = requestId;
-
   String body;
   serializeJson(doc, body);
   if (!webSocket_.sendTXT(body)) {
     NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::CLOUD, "CLOUD_REBOOT_ACK_FAILED");
     return;
   }
-
-  // sendTXT accepted the complete frame for transmission. Keep servicing the
-  // socket for a short drain interval before restarting.
   rebootAtMs_ = millis() + NewoConfig::REMOTE_REBOOT_DELAY_MS;
 }
