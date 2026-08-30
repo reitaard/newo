@@ -14,12 +14,13 @@ class FakeEsp extends EventEmitter {
     else if (text?.includes("speaker_end")) this.chain = this.chain.then(() => { this.end = true; this.expected = JSON.parse(text).bytes; this.drain(); });
     done?.();
   }
-  async begin(message) { this.id = message.playback_id; this.codec = message.codec ?? "pcm"; this.expected = 0; this.admitted = this.received = this.consumed = this.buffered = this.wire = this.packets = 0; this.sequence = 0; this.end = this.complete = false; if (this.codec === "opus") this.decoder = await createDecoder({ sampleRate: 24000, channels: 1, maxFrameSize: 960 }); this.flow(); }
+  async begin(message) { this.id = message.playback_id; this.codec = message.codec ?? "pcm"; this.expected = 0; this.admitted = this.received = this.consumed = this.buffered = this.wire = this.packets = 0; this.sequence = 0; this.end = this.complete = this.draining = false; if (this.codec === "opus") this.decoder = await createDecoder({ sampleRate: 24000, channels: 1, maxFrameSize: 960 }); this.flow(); }
   async packet(packet) {
     if (this.complete) throw new Error("late packet"); this.wire += packet.length;
     let valid = packet.length;
     if (this.codec === "opus") { assert.equal(packet.subarray(0, 4).toString(), "NWOP"); assert.equal(packet.readUInt16LE(4), this.sequence++); valid = packet.readUInt16LE(6); assert.ok(valid > 0 && valid <= 1920); const decoded = this.decoder.decode(packet.subarray(8)); assert.equal(decoded.length, 960); }
     this.admitted += valid; this.received += valid; this.buffered += valid; this.packets += 1;
+    if (!this.draining) { this.draining = true; this.drain(); }
   }
   flow() { if (this.complete || this.readyState !== 1) return; this.emit("message", Buffer.from(JSON.stringify({ type: "speaker_flow", playback_id: this.id, received_bytes: this.received, consumed_bytes: this.consumed, buffered_bytes: this.buffered, capacity_bytes: 24576 })), false); this.flowTimer = setTimeout(() => this.flow(), this.flowMs); }
   drain() { if (this.complete || this.readyState !== 1) return; const bytes = Math.min(this.buffered, 480); this.buffered -= bytes; this.consumed += bytes; if (this.end && this.buffered === 0) { assert.equal(this.received, this.expected); assert.equal(this.consumed, this.expected); this.complete = true; clearTimeout(this.flowTimer); this.decoder?.free(); this.onResult?.({ type: "speaker_complete", playback_id: this.id, bytes: this.consumed }); return; } this.drainTimer = setTimeout(() => this.drain(), 10); }
@@ -36,4 +37,12 @@ for (const opus of [true, false]) test(`native runtime ${opus ? "Opus" : "PCM fa
   const begin = JSON.parse(begins[0].data); assert.equal(begin.codec ?? "pcm", opus ? "opus" : "pcm");
   if (opus) { assert.equal(begin.opus_frame_ms, 40); assert.equal(begin.opus_bitrate, 24000); }
   assert.equal(ws.complete, true); assert.equal(ws.received, ws.consumed); runtime.close(); process.env.SPEAKER_CODEC = saved;
+});
+test("native Opus flow credit progresses while realtime drain is active", async () => {
+  const saved = process.env.SPEAKER_CODEC; process.env.SPEAKER_CODEC = "opus";
+  const ws = new FakeEsp(true); const runtime = createSpeakerRuntime({ logger, backend: { ...backend, async synthesize() { return Buffer.alloc(48_000, 3); } }, enabled: true, getDevice: () => ({ ws }), sendControl: async () => true, resultTimeoutMs: 3000, flowTimeoutMs: 500 }); ws.onResult = (m) => runtime.handleResult("device", m);
+  runtime.handleConnection(ws, "device"); ws.emit("message", Buffer.from(JSON.stringify({ type: "speaker_ready", codecs: ["pcm", "opus"] })), false);
+  await runtime.speak("Long flow-credit test.").completion;
+  assert.ok(ws.packets > 12); assert.equal(ws.received, 48_000); assert.equal(ws.consumed, 48_000); assert.equal(ws.buffered, 0);
+  runtime.close(); process.env.SPEAKER_CODEC = saved;
 });

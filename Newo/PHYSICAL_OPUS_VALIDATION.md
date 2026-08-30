@@ -1,10 +1,16 @@
 # Opus physical validation checklist
 
-Do not run this until Sol approves `opus-prototype`. The first firmware baseline is fixed: 40 ms Opus frames, 24 kbps, 12,288-byte (256 ms) decoded prebuffer, 16 x 4,000-byte compressed queue.
+Do not run this until Sol approves `opus-final-integration`. The first firmware baseline is fixed: 40 ms Opus frames, 24 kbps, 12,288-byte (256 ms) decoded prebuffer, 16 x 4,000-byte compressed queue.
 
 ## Flash and deploy
 
-Build/application-only upload (preserves ESP_SR model partition):
+Compile the application into the upload directory (preserves ESP_SR model partition):
+
+```sh
+arduino-cli compile --fqbn 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=esp_sr_16,UploadSpeed=921600' --build-path /tmp/newo-esp-sr-build Newo
+```
+
+Then application-only upload (preserves ESP_SR model partition):
 
 ```sh
 arduino-cli upload --fqbn 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=esp_sr_16,UploadSpeed=921600' --input-dir /tmp/newo-esp-sr-build --port <PORT>
@@ -30,7 +36,7 @@ The old preload is prototype/rollback only: `NODE_OPTIONS=--import=/opt/newo/ser
 
 ## Five-run baseline
 
-Boot the device and confirm firmware `0.4.3-dev`, PSRAM, persistent speaker connection, and `codecs=["pcm","opus"]`. Then run five times:
+Boot the device and confirm firmware `0.4.4-dev`, PSRAM, persistent speaker connection, and `codecs=["pcm","opus"]`. Then run five times:
 
 > Hello, I'm Newo. This is a realtime voice latency test.
 
