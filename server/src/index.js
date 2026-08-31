@@ -704,7 +704,7 @@ wss.on("connection", (ws, request, deviceId) => {
   // A fresh device session must never inherit a stale thinking indicator.
   ws.send(JSON.stringify({ type: "assistant_state", state: "idle" }));
   void speakerRuntime.handleDeviceConnected(deviceId, state);
-  const speakerSync = sendDeviceRequest("speaker_control", "speaker_ack", { action: "set_enabled", enabled: automaticSpeakerEnabled });
+  const speakerSync = sendDeviceRequest("speaker_control", "speaker_ack", { action: "set_enabled", enabled: automaticSpeakerEnabled, led_feedback: false });
   if (speakerSync.kind === "sent") void speakerSync.promise.then((result) => app.log.info({ device_id: deviceId, enabled: automaticSpeakerEnabled, result: result.kind }, "Speaker mode synchronized"));
 });
 

@@ -106,7 +106,7 @@ test("/vs represents a disabled assistant with clean never values", async () => 
 test("/speaker toggles OFF with terse non-spoken confirmation", async () => {
   const harness = createHarness((type, responseType, fields) => {
     assert.equal(type, "speaker_control");
-    assert.deepEqual(fields, { action: "set_enabled", enabled: false });
+    assert.deepEqual(fields, { action: "set_enabled", enabled: false, led_feedback: true });
     return response({ ...speakerAck, enabled: false, connection: "Disconnected" });
   });
   await harness.handlers.speaker({ match: "" });
@@ -118,7 +118,7 @@ test("/speaker toggles OFF with terse non-spoken confirmation", async () => {
 test("/speaker toggles ON with terse non-spoken confirmation", async () => {
   const harness = createHarness((type, responseType, fields) => {
     assert.equal(type, "speaker_control");
-    assert.deepEqual(fields, { action: "set_enabled", enabled: true });
+    assert.deepEqual(fields, { action: "set_enabled", enabled: true, led_feedback: true });
     return response({ ...speakerAck, enabled: true, connection: "Ready" });
   }, { speakerEnabled: false });
   await harness.handlers.speaker({ match: "" });

@@ -324,6 +324,7 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     } else if (strcmp(action, "set_enabled") == 0 && requestId[0] && doc["enabled"].is<bool>()) {
       request.action = SpeakerControlRequest::Action::SET_ENABLED;
       request.enabled = doc["enabled"].as<bool>();
+      request.ledFeedback = doc["led_feedback"].is<bool>() && doc["led_feedback"].as<bool>();
     } else if (strcmp(action, "temporary_connect") == 0) {
       request.action = SpeakerControlRequest::Action::TEMPORARY_CONNECT;
     } else {

@@ -59,7 +59,7 @@ void setup() {
 
 void loop() {
   struct VoiceAck { char requestId[40]; bool applied; };
-  struct SpeakerAck { char requestId[40]; bool targetEnabled; bool applied; uint32_t startedMs; };
+  struct SpeakerAck { char requestId[40]; bool targetEnabled; bool applied; bool ledFeedback; uint32_t startedMs; };
   static VoiceAck pendingVoiceAcks[8] = {};
   static uint8_t pendingVoiceAckCount = 0;
   static SpeakerAck pendingSpeakerAcks[4] = {};
@@ -124,14 +124,17 @@ void loop() {
           strlcpy(pending.requestId, speakerControlRequest.requestId, sizeof(pending.requestId));
           pending.targetEnabled = speakerControlRequest.enabled;
           pending.applied = true;
+          pending.ledFeedback = speakerControlRequest.ledFeedback;
           pending.startedMs = millis();
           deferAck = true;
         } else {
           applied = false;
         }
       }
-      if (speakerStateConfirmed) newoLed.flashSpeakerEnabled(speakerControlRequest.enabled);
-      else if (!applied) newoLed.flashError();
+      if (speakerControlRequest.ledFeedback) {
+        if (speakerStateConfirmed) newoLed.flashSpeakerEnabled(speakerControlRequest.enabled);
+        else if (!applied) newoLed.flashError();
+      }
     } else if (speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::TEMPORARY_CONNECT) {
       applied = newoSpeaker.requestTemporaryConnection();
       deferAck = true;  // The uncorrelated manual-test request needs no /device acknowledgement.
@@ -156,8 +159,10 @@ void loop() {
     const bool timedOut = millis() - pending.startedMs >= 6'500;
     if (!complete && !timedOut) { ++i; continue; }
     const bool confirmed = pending.applied && complete;
-    if (confirmed) newoLed.flashSpeakerEnabled(pending.targetEnabled);
-    else newoLed.flashError();
+    if (pending.ledFeedback) {
+      if (confirmed) newoLed.flashSpeakerEnabled(pending.targetEnabled);
+      else newoLed.flashError();
+    }
     newoCloud.sendSpeakerAck(pending.requestId, newoSpeaker.enabled(), newoSpeaker.connectionStatus(),
                              newoSpeaker.volume(), newoSpeaker.muted(), confirmed,
                              newoSpeaker.lastPlayback(), newoSpeaker.lastUnderruns(),

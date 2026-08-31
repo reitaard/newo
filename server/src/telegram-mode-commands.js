@@ -160,7 +160,7 @@ export function createPrimaryModeHandlers({
       setSpeakerAccepting(false);
     }
 
-    const status = await requestSpeakerStatus(ctx, "set_enabled", { enabled });
+    const status = await requestSpeakerStatus(ctx, "set_enabled", { enabled, led_feedback: true });
     if (!enabled) {
       try { await persistSpeakerEnabled(false); }
       catch { return commandReply(ctx, unavailable("speaker", "Speaker is OFF but state could not be saved"), "persistence_error", status.request.requestId ?? null, { newoSpeak: false }); }
