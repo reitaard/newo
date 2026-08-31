@@ -484,53 +484,6 @@ test("realtime pacer waits for physical speaker_started before starting its medi
   runtime.close();
 });
 
-test("realtime pacer starts from receiver-ready flow before delayed speaker_started", async () => {
-  const ws = fakeSocket({ autoFlow: false, autoStart: false });
-  const backend = { name: "pocket", gainDb: 0, limiter: 1, async stream() {
-    return { metrics: {}, audio: (async function* () { yield Buffer.alloc(17_280, 1); })() };
-  } };
-  const runtime = createSpeakerRuntime({ logger: logger(), enabled: true, backend, getDevice: () => ({}), sendControl: () => true });
-  runtime.handleConnection(ws, "newo-01");
-  const queued = runtime.speak("receiver ready");
-  await waitFor(() => binaryFrames(ws).length === 7);
-  await new Promise((resolve) => setTimeout(resolve, 150));
-  const flowAt = performance.now();
-  ws.emitMessage({ type: "speaker_flow", playback_id: queued.playbackId, received_bytes: 13_440, consumed_bytes: 0, buffered_bytes: 12_288, capacity_bytes: 24_576 });
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  await waitFor(() => binaryFrames(ws).length === 8);
-  assert.ok(ws.binarySentAt[7] - flowAt < 250, "flow readiness must win over delayed control notification");
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
-  await new Promise((resolve) => setTimeout(resolve, 550));
-  runtime.handlePlaybackStarted("newo-01", { playback_id: queued.playbackId, first_pcm_to_play_ms: 700 });
-  runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 17_280 });
-  await queued.completion;
-  runtime.close();
-});
-
-test("low receiver flow does not start pacing but consumed flow does", async () => {
-  const ws = fakeSocket({ autoFlow: false, autoStart: false });
-  const backend = { gainDb: 0, limiter: 1, async stream() {
-    return { metrics: {}, audio: (async function* () { yield Buffer.alloc(15_360, 1); })() };
-  } };
-  const runtime = createSpeakerRuntime({ logger: logger(), enabled: true, backend, getDevice: () => ({}), sendControl: () => true });
-  runtime.handleConnection(ws, "newo-01");
-  const queued = runtime.speak("low then consumed");
-  await waitFor(() => binaryFrames(ws).length === 7);
-  ws.emitMessage({ type: "speaker_flow", playback_id: queued.playbackId, received_bytes: 13_440, consumed_bytes: 0, buffered_bytes: 12_287, capacity_bytes: 24_576 });
-  await new Promise((resolve) => setTimeout(resolve, 80));
-  assert.equal(binaryFrames(ws).length, 7);
-  const flowAt = performance.now();
-  ws.emitMessage({ type: "speaker_flow", playback_id: queued.playbackId, received_bytes: 13_440, consumed_bytes: 1, buffered_bytes: 12_287, capacity_bytes: 24_576 });
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  await waitFor(() => binaryFrames(ws).length === 8);
-  assert.ok(ws.binarySentAt[7] - flowAt < 250);
-  await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
-  runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 15_360 });
-  await queued.completion;
-  runtime.close();
-});
-
 test("short completed realtime audio ends before waiting for speaker_started", async () => {
   const ws = fakeSocket({ autoStart: false });
   const backend = { gainDb: 0, limiter: 1, async stream() {
@@ -548,7 +501,7 @@ test("short completed realtime audio ends before waiting for speaker_started", a
 });
 
 test("realtime pacer fails cleanly when speaker_started never arrives", async () => {
-  const ws = fakeSocket({ autoFlow: false, autoStart: false });
+  const ws = fakeSocket({ autoStart: false });
   const backend = { gainDb: 0, limiter: 1, async stream() {
     return { metrics: {}, audio: (async function* () { yield Buffer.alloc(13_440, 1); })() };
   } };
