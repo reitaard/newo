@@ -69,6 +69,11 @@ export const SPEAKER_FLOW_TIMEOUT_MS = 3_000;
 export const SPEAKER_STREAM_MAX_BYTES = 2_880_000;
 export const SPEAKER_STREAM_NO_PROGRESS_MS = 10_000;
 export const SPEAKER_STREAM_ABSOLUTE_MS = 70_000;
+export const SPEAKER_MEDIA_FRAME_BYTES = 1_920;
+export const SPEAKER_MEDIA_FRAME_MS = 40;
+export const SPEAKER_MEDIA_STARTUP_BYTES = 13_440;
+export const SPEAKER_PCM_PRODUCER_QUEUE_MAX_BYTES = 65_536;
+export const SPEAKER_REALTIME_HIGH_WATER_BYTES = SPEAKER_RECEIVER_CAPACITY_BYTES - 2_048;
 
 export function speakerAudioFilter(gainDb = SPEAKER_GAIN_DB, limiter = SPEAKER_LIMITER) {
   if (!Number.isFinite(gainDb) || gainDb < -12 || gainDb > 18) throw new Error("invalid speaker gain");
@@ -574,6 +579,10 @@ export function createSpeakerRuntime({
     for (const waiter of job.flowWaiters) { clearTimeout(waiter.timer); waiter.reject(error); }
     job.flowWaiters.clear();
   }
+  function rejectPacerWaiters(job, error) {
+    for (const waiter of job.pacerWaiters) { clearTimeout(waiter.timer); waiter.reject(error); }
+    job.pacerWaiters.clear();
+  }
   function logContinuity(job, result) {
     logger.info({
       event: "SPEAKER_CONTINUITY", playback_id: job.id, tts_backend: backend.name ?? "unknown",
@@ -598,6 +607,7 @@ export function createSpeakerRuntime({
     job.settled = true;
     clearTimeout(job.resultTimer);
     rejectFlowWaiters(job, new Error(result.error ?? result.kind));
+    rejectPacerWaiters(job, new Error(result.error ?? result.kind));
     jobs.delete(job.id);
     allJobs.delete(job);
     if (result.kind !== "complete") void job.cancelSource?.();
@@ -694,11 +704,11 @@ export function createSpeakerRuntime({
     }
     return message?.type === "speaker_flow" ? handleFlow(current, message) : false;
   }
-  function recordOutstanding(job) {
+  function recordOutstanding(job, enforceWindow = true) {
     const state = speakerDeliveryState(job.bytesSent, job.receivedBytes, job.consumedBytes, job.reportedBufferedBytes);
     job.maxNetworkInFlightBytes = Math.max(job.maxNetworkInFlightBytes, state.networkInFlightBytes);
     job.totalOutstandingHighWaterBytes = Math.max(job.totalOutstandingHighWaterBytes, state.receiverOutstandingBytes);
-    if (state.networkInFlightBytes > networkInFlightLimitBytes || state.receiverOutstandingBytes > maxOutstandingBytes) {
+    if (enforceWindow && (state.networkInFlightBytes > networkInFlightLimitBytes || state.receiverOutstandingBytes > maxOutstandingBytes)) {
       throw new Error("speaker flow window exceeded");
     }
   }
@@ -706,16 +716,16 @@ export function createSpeakerRuntime({
     job[`${prefix}MaxMs`] = Math.max(job[`${prefix}MaxMs`], elapsedMs);
     for (const threshold of thresholds) if (elapsedMs > threshold) job[`${prefix}Over${threshold}`] += 1;
   }
-  async function sendPcmChunk(job, current, chunk) {
+  async function sendPcmChunk(job, current, chunk, { enforceFlowWindow = true } = {}) {
     if (!chunk.length || (chunk.length & 1)) throw new Error("invalid_pcm");
     if (job.settled || connection !== current || current.ws.readyState !== 1) throw new Error("speaker disconnected");
     if (job.bytesSent + chunk.length > maxStreamBytes) throw new Error("speaker stream exceeded limit");
-    if (job.bytesSent + chunk.length - job.consumedBytes > maxOutstandingBytes) throw new Error("speaker flow window exceeded");
+    if (enforceFlowWindow && job.bytesSent + chunk.length - job.consumedBytes > maxOutstandingBytes) throw new Error("speaker flow window exceeded");
     // Account before awaiting the socket callback so an exceptionally fast ESP
     // flow report cannot appear to acknowledge bytes the sender has not recorded.
     job.bytesSent += chunk.length;
     job.statistics.add(chunk);
-    recordOutstanding(job);
+    recordOutstanding(job, enforceFlowWindow);
     await job.transport.sendPcm((data, options) => sendFrame(current.ws, data, options), chunk);
     const sentAt = performance.now();
     if (job.lastSuccessfulPcmSendAt !== null) {
@@ -728,7 +738,7 @@ export function createSpeakerRuntime({
       }
     }
     job.lastSuccessfulPcmSendAt = sentAt;
-    recordOutstanding(job);
+    recordOutstanding(job, enforceFlowWindow);
     if (job.firstPcmSentAt === null) {
       job.firstPcmSentAt = performance.now();
       logger.info({ playback_id: job.id, begin_to_first_pcm_ms: Math.round(job.firstPcmSentAt - job.beginSentAt) }, "Speaker first PCM sent");
@@ -763,9 +773,19 @@ export function createSpeakerRuntime({
   }
   async function streamRealtime(job, current, source) {
     const iterator = source.audio[Symbol.asyncIterator]();
+    const queued = [];
+    const queueWaiters = new Set();
+    let queuedBytes = 0;
+    let producerDone = false;
+    let producerError = null;
     let sourceCompleted = false;
+    let cancelled = false;
     let cancellationPromise = null;
+    const wakeQueue = () => { for (const waiter of queueWaiters) waiter(); queueWaiters.clear(); };
+    const waitQueue = () => new Promise((resolve) => queueWaiters.add(resolve));
     const cancelSource = () => {
+      cancelled = true;
+      wakeQueue();
       source.cancel?.();
       if (typeof iterator.return !== "function") return Promise.resolve();
       cancellationPromise ??= iterator.return().catch((error) => {
@@ -773,10 +793,72 @@ export function createSpeakerRuntime({
       });
       return cancellationPromise;
     };
+    const producer = (async () => {
+      let first = true;
+      try {
+        while (!cancelled) {
+          const sourceWaitStartedAt = performance.now();
+          const part = await iterator.next();
+          const sourceWaitMs = performance.now() - sourceWaitStartedAt;
+          if (part.done) { sourceCompleted = true; break; }
+          if (!Buffer.isBuffer(part.value) || !part.value.length || (part.value.length & 1)) throw new Error("invalid_pcm");
+          if (!first) recordThresholdGap(job, "sourceWait", sourceWaitMs, [40, 80, 120, 200]);
+          first = false;
+          if (part.value.length > SPEAKER_PCM_PRODUCER_QUEUE_MAX_BYTES) throw new Error("PCM source chunk exceeded producer queue limit");
+          while (!cancelled && queuedBytes + part.value.length > SPEAKER_PCM_PRODUCER_QUEUE_MAX_BYTES) await waitQueue();
+          if (cancelled) break;
+          queued.push(part.value);
+          queuedBytes += part.value.length;
+          job.producerQueueHighWaterBytes = Math.max(job.producerQueueHighWaterBytes, queuedBytes);
+          wakeQueue();
+        }
+      } catch (error) { if (!cancelled) producerError = error; }
+      finally { producerDone = true; wakeQueue(); }
+    })();
+    const take = async (maximum) => {
+      // Coalesce backend chunk boundaries into media quanta. Only natural stream
+      // completion permits a short final frame.
+      while (queuedBytes < maximum && !producerDone && !cancelled) await waitQueue();
+      if (producerError) throw producerError;
+      if (!queuedBytes) return null;
+      const length = Math.min(maximum, queuedBytes);
+      const parts = [];
+      let remaining = length;
+      while (remaining) {
+        const head = queued[0];
+        const used = Math.min(remaining, head.length);
+        parts.push(head.subarray(0, used));
+        if (used === head.length) queued.shift(); else queued[0] = head.subarray(used);
+        queuedBytes -= used;
+        remaining -= used;
+      }
+      wakeQueue();
+      return parts.length === 1 ? parts[0] : Buffer.concat(parts, length);
+    };
+    const waitUntil = (deadline) => {
+      const delay = deadline - performance.now();
+      if (delay <= 0) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const waiter = { timer: null, reject };
+        waiter.timer = setTimeout(() => { job.pacerWaiters.delete(waiter); resolve(); }, delay);
+        waiter.timer.unref();
+        job.pacerWaiters.add(waiter);
+      });
+    };
+    const brakeHighWater = async () => {
+      while (job.reportedBufferedBytes >= SPEAKER_REALTIME_HIGH_WATER_BYTES) {
+        const startedAt = performance.now();
+        await waitForFlow(job);
+        const elapsed = performance.now() - startedAt;
+        job.highWaterBrakeCount += 1;
+        job.highWaterBrakeMaxMs = Math.max(job.highWaterBrakeMaxMs, elapsed);
+      }
+    };
     job.cancelSource = cancelSource;
     try {
-      const first = await iterator.next();
-      if (first.done || !Buffer.isBuffer(first.value) || !first.value.length) throw new Error("invalid_pcm");
+      while (!producerDone && queuedBytes < SPEAKER_MEDIA_STARTUP_BYTES) await waitQueue();
+      if (producerError) throw producerError;
+      if (!queuedBytes) throw new Error("invalid_pcm");
       job.backendMetrics = source.metrics;
       beginJob(job);
       const begin = { type: "speaker_begin", playback_id: job.id, sample_rate: format.sampleRate, channels: 1, bits_per_sample: 16, streaming: true, max_bytes: maxStreamBytes };
@@ -785,14 +867,35 @@ export function createSpeakerRuntime({
       job.beginSentAt = performance.now();
       await sendFrame(current.ws, JSON.stringify(job.transport.beginMessage(begin)));
       logger.info({ device_id: current.deviceId, playback_id: job.id, streaming: true, max_pcm_bytes: maxStreamBytes }, "Speaker begin sent");
-      await sendWithFlow(job, current, first.value);
+      let initialBytes = 0;
+      while (initialBytes < SPEAKER_MEDIA_STARTUP_BYTES) {
+        const frame = await take(Math.min(SPEAKER_MEDIA_FRAME_BYTES, SPEAKER_MEDIA_STARTUP_BYTES - initialBytes));
+        if (!frame) break;
+        await sendPcmChunk(job, current, frame, { enforceFlowWindow: false });
+        initialBytes += frame.length;
+        job.pacerFramesSent += 1;
+      }
+      job.pacerInitialPcmBytes = initialBytes;
+      let frameIndex = 1;
+      let catchupsThisTurn = 0;
+      const pacingStart = performance.now();
       while (true) {
-        const sourceWaitStartedAt = performance.now();
-        const part = await iterator.next();
-        const sourceWaitMs = performance.now() - sourceWaitStartedAt;
-        if (part.done) { sourceCompleted = true; break; }
-        recordThresholdGap(job, "sourceWait", sourceWaitMs, [40, 80, 120, 200]);
-        await sendWithFlow(job, current, part.value);
+        const frame = await take(SPEAKER_MEDIA_FRAME_BYTES);
+        if (!frame) break;
+        await brakeHighWater();
+        const deadline = pacingStart + frameIndex * SPEAKER_MEDIA_FRAME_MS;
+        const lateMs = performance.now() - deadline;
+        if (lateMs > 0) {
+          job.maxScheduleLateMs = Math.max(job.maxScheduleLateMs, lateMs);
+          job.lateOver20Ms += lateMs > 20;
+          job.lateOver40Ms += lateMs > 40;
+          job.lateOver80Ms += lateMs > 80;
+          if (catchupsThisTurn >= 2) { await new Promise((resolve) => setImmediate(resolve)); catchupsThisTurn = 0; }
+          else { catchupsThisTurn += 1; job.catchupFrames += 1; }
+        } else { await waitUntil(deadline); catchupsThisTurn = 0; }
+        await sendPcmChunk(job, current, frame, { enforceFlowWindow: false });
+        job.pacerFramesSent += 1;
+        frameIndex += 1;
       }
       if (!job.bytesSent || (job.bytesSent & 1)) throw new Error("invalid_pcm");
       job.ttsCompletedAt = source.metrics.completedAt ?? performance.now();
@@ -805,6 +908,7 @@ export function createSpeakerRuntime({
     } finally {
       if (!sourceCompleted) await cancelSource();
       else if (cancellationPromise) await cancellationPromise;
+      await producer;
       job.cancelSource = null;
     }
   }
@@ -834,6 +938,15 @@ export function createSpeakerRuntime({
         frame_ms: OPUS_TRANSPORT.frameMs, bitrate: OPUS_TRANSPORT.bitrate,
         compression_ratio: wire.wireBytes ? Number((wire.rawPcmBytes / wire.wireBytes).toFixed(2)) : null }, "SPEAKER_OPUS_WIRE");
     }
+    logger.info({
+      event: "SPEAKER_PACER", playback_id: job.id, codec: job.transport?.enabled ? "opus" : "pcm",
+      frames_sent: job.pacerFramesSent, initial_pcm_bytes: job.pacerInitialPcmBytes,
+      producer_queue_high_water_bytes: job.producerQueueHighWaterBytes,
+      max_schedule_late_ms: Math.round(job.maxScheduleLateMs), late_over_20_ms: job.lateOver20Ms,
+      late_over_40_ms: job.lateOver40Ms, late_over_80_ms: job.lateOver80Ms,
+      catchup_frames: job.catchupFrames, high_water_brake_count: job.highWaterBrakeCount,
+      high_water_brake_max_ms: Math.round(job.highWaterBrakeMaxMs), pcm_bytes: job.bytesSent,
+    }, "SPEAKER_PACER");
     logger.info({
       event: "SPEAKER_AUDIO", playback_id: job.id,
       peak_dbfs: Number.isFinite(audio.peakDbfs) ? Number(audio.peakDbfs.toFixed(1)) : "-inf",
@@ -897,8 +1010,11 @@ export function createSpeakerRuntime({
       synthesisStartedAt: null, ttsCompletedAt: null, beginSentAt: null, firstPcmSentAt: null,
       backendMetrics: null, playbackStartedAt: null, firstPcmToPlayMs: null, cancelSource: null,
       resolve, reject, completion, bytesSent: 0, receivedBytes: 0, consumedBytes: 0, reportedBufferedBytes: 0,
-      flowVersion: 0, flowWaiters: new Set(), flowReports: 0, receivedFlowReports: 0, lastFlowReceivedBytes: 0,
+      flowVersion: 0, flowWaiters: new Set(), pacerWaiters: new Set(), flowReports: 0, receivedFlowReports: 0, lastFlowReceivedBytes: 0,
       maxNetworkInFlightBytes: 0, totalOutstandingHighWaterBytes: 0, endSent: false,
+      pacerFramesSent: 0, pacerInitialPcmBytes: 0, producerQueueHighWaterBytes: 0,
+      maxScheduleLateMs: 0, lateOver20Ms: 0, lateOver40Ms: 0, lateOver80Ms: 0, catchupFrames: 0,
+      highWaterBrakeCount: 0, highWaterBrakeMaxMs: 0,
       sourceWaitMaxMs: 0, sourceWaitOver40: 0, sourceWaitOver80: 0, sourceWaitOver120: 0, sourceWaitOver200: 0,
       flowWaitMaxMs: 0, flowWaitTotalMs: 0, flowWaitCount: 0, flowWaitOver40: 0, flowWaitOver80: 0, flowWaitOver120: 0,
       sendGapMaxMs: 0, sendGapOver40: 0, sendGapOver80: 0, sendGapOver120: 0, sendGapOver200: 0,
