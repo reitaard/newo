@@ -134,6 +134,7 @@ class NewoSpeaker {
   volatile bool playbackStarted_ = false;
   PlaybackStarted playbackStartedEvent_ = {};
   bool playbackStateApplied_ = false;
+  bool displaySpeakingApplied_ = false;
   volatile uint32_t minimumTaskStackBytes_ = UINT32_MAX;
   volatile uint32_t i2sSentEventCount_ = 0;
   uint32_t lastFlowSentReceivedBytes_ = 0;

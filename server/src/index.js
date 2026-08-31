@@ -348,17 +348,33 @@ function commandTrace(ctx) { return ctx.newoTrace ?? null; }
 async function commandReply(ctx, text, category = "reply", requestId = null, options = {}) {
   const trace = commandTrace(ctx);
   if (trace) { trace.replyCategory = category; trace.requestId = requestId; }
-  const { newoSpeak = true, newoSpeakMaxChars, ...telegramOptions } = options;
+  const { newoSpeak = true, newoSpeakMaxChars, onNewoSpeechSettled, ...telegramOptions } = options;
   const replyReadyAt = performance.now();
   // Start Telegram first, then immediately start independent TTS without waiting
   // for Telegram's network request. Neither failure path is allowed to poison the other.
   return startTelegramAndSpeech(
     () => ctx.reply(text, { parse_mode: "HTML", ...telegramOptions }),
     () => {
-      if (!newoSpeak || !automaticSpeakerEnabled || (trace && trace.speechQueued)) return;
+      const notifySpeechSettled = () => {
+        if (typeof onNewoSpeechSettled === "function") onNewoSpeechSettled();
+      };
+      if (!newoSpeak || !automaticSpeakerEnabled || (trace && trace.speechQueued)) {
+        notifySpeechSettled();
+        return;
+      }
       if (trace) trace.speechQueued = true;
       const speech = speakerRuntime.speak(text, { maxChars: newoSpeakMaxChars, replyReadyAt });
-      if (speech.kind === "queued") void speech.completion.catch((error) => app.log.warn({ playback_id: speech.playbackId, error_message: error.message }, "Asynchronous Telegram speech failed"));
+      if (speech.kind !== "queued") {
+        notifySpeechSettled();
+        return;
+      }
+      void speech.completion.then(
+        notifySpeechSettled,
+        (error) => {
+          app.log.warn({ playback_id: speech.playbackId, error_message: error.message }, "Asynchronous Telegram speech failed");
+          notifySpeechSettled();
+        },
+      );
     },
   );
 }
@@ -518,7 +534,11 @@ async function handlePingCommand(ctx) {
   const request = sendDeviceRequest("ping", "pong", {}, commandTrace(ctx));
   if (request.kind === "offline") return commandReply(ctx, statusMessage("ping", "offline"), "offline");
   const result = await request.promise;
-  if (result.kind === "response") { showDisplay(`PING\n${result.elapsedMs} ms`); return commandReply(ctx, commandMessage("ping", [quote([`Latency: ${bold(result.elapsedMs)} ${italic("ms")}`])]), "response", request.requestId); }
+  if (result.kind === "response") {
+    const displayText = `PING\n${result.elapsedMs} ms`;
+    return commandReply(ctx, commandMessage("ping", [quote([`Latency: ${bold(result.elapsedMs)} ${italic("ms")}`])]),
+      "response", request.requestId, { onNewoSpeechSettled: () => showDisplay(displayText) });
+  }
   if (result.kind === "timeout") return commandReply(ctx, timeoutMessage("ping"), "timeout", request.requestId);
   return commandReply(ctx, getConnectedDeviceState() ? timeoutMessage("ping") : statusMessage("ping", "offline"), "unavailable", request.requestId);
 }

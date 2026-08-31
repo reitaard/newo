@@ -294,12 +294,11 @@ bool NewoSpeaker::startPlayback(const Request& request) {
   }
   opusSawPartialFrame_ = false;
   playbackStateApplied_ = true;
+  displaySpeakingApplied_ = false;
   playbackStartedEventReady_ = false;
   playbackStarted_ = false;
-  display_.setSpeaking(true);
   if (xTaskCreatePinnedToCore(taskEntry, "newo-speaker", 8192, this, 2, &task_, 1) != pdPASS) {
     task_ = nullptr;
-    display_.setSpeaking(false);
     audio_.setPlaybackActive(false);
     playbackStateApplied_ = false;
     // The decoder task exclusively owns opusDecoder_ and queue slots.
@@ -703,6 +702,13 @@ void NewoSpeaker::loop(bool cloudReady) {
   }
   if (started_) webSocket_.loop();
 
+  // The worker raises this only after its prebuffer threshold is reached and
+  // it is about to send PCM to I2S. Keep display ownership in this loop task.
+  if (playbackStartedEventReady_ && !displaySpeakingApplied_) {
+    display_.setSpeaking(true);
+    displaySpeakingApplied_ = true;
+  }
+
   if (playing() && connected_ && buffer_) {
     const uint32_t received = receivedBytes_;
     const uint32_t consumed = consumedBytes_;
@@ -724,7 +730,8 @@ void NewoSpeaker::loop(bool cloudReady) {
     task_ = nullptr;
     // The decoder task owns/destroys its Opus state; it may still be draining.
     if (playbackStateApplied_) {
-      display_.setSpeaking(false);
+      if (displaySpeakingApplied_) display_.setSpeaking(false);
+      displaySpeakingApplied_ = false;
       audio_.setPlaybackActive(false);
       playbackStateApplied_ = false;
     }
