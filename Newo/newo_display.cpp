@@ -62,46 +62,15 @@ bool NewoDisplay::setMode(NewoDisplayMode mode, const char* text, bool temporary
   }
   temporary_ = temporary;
   restoreAtMs_ = temporary ? millis() + kTemporaryMs : 0;
-  if (speakerOverride_) {
-    const uint32_t now = millis();
-    speakerSavedMode_ = mode_;
-    strlcpy(speakerSavedText_, text_, sizeof(speakerSavedText_));
-    speakerSavedTemporary_ = temporary_;
-    speakerSavedRestoreRemainingMs_ = temporary_ ? kTemporaryMs : 0;
-    mode_ = NewoDisplayMode::SPEAKING;
-    text_[0] = '\0';
-    temporary_ = false;
-    restoreAtMs_ = 0;
-    modeStartedMs_ = now;
-  }
   dirty_ = true;
   return true;
 }
 
-void NewoDisplay::setSpeaking(bool active) {
-  if (active == speakerOverride_) return;
-  const uint32_t now = millis();
-  if (active) {
-    speakerSavedMode_ = mode_;
-    strlcpy(speakerSavedText_, text_, sizeof(speakerSavedText_));
-    speakerSavedTemporary_ = temporary_;
-    speakerSavedRestoreRemainingMs_ = temporary_ && static_cast<int32_t>(restoreAtMs_ - now) > 0
-        ? restoreAtMs_ - now : 0;
-    speakerOverride_ = true;
-    mode_ = NewoDisplayMode::SPEAKING;
-    text_[0] = '\0';
-    temporary_ = false;
-    restoreAtMs_ = 0;
-  } else {
-    speakerOverride_ = false;
-    mode_ = speakerSavedMode_;
-    strlcpy(text_, speakerSavedText_, sizeof(text_));
-    temporary_ = speakerSavedTemporary_ && speakerSavedRestoreRemainingMs_ > 0;
-    restoreAtMs_ = temporary_ ? now + speakerSavedRestoreRemainingMs_ : 0;
-  }
-  modeStartedMs_ = now;
-  resetFaceMotion(now);
-  dirty_ = true;
+void NewoDisplay::setSpeakerActive(bool active) {
+  if (active == speakerActive_) return;
+  // Do not dirty/redraw text or ECO pages. The normal face frame path observes
+  // this hint and can adjust only its bounded animation cadence/activity mark.
+  speakerActive_ = active;
 }
 
 bool NewoDisplay::setFaceStyle(NewoFaceStyle style) {
@@ -118,13 +87,6 @@ bool NewoDisplay::setFaceStyle(NewoFaceStyle style) {
   nextEcoPageMs_ = 0;
   modeStartedMs_ = millis();
   resetFaceMotion(modeStartedMs_);
-  if (speakerOverride_) {
-    speakerSavedMode_ = mode_;
-    strlcpy(speakerSavedText_, text_, sizeof(speakerSavedText_));
-    speakerSavedTemporary_ = false;
-    speakerSavedRestoreRemainingMs_ = 0;
-    mode_ = NewoDisplayMode::SPEAKING;
-  }
   dirty_ = true;
   return true;
 }
@@ -143,13 +105,6 @@ void NewoDisplay::toggleEco() {
     resetFaceMotion(millis());
     strncpy(text_, persistentText_, sizeof(text_) - 1);
     text_[sizeof(text_) - 1] = '\0';
-  }
-  if (speakerOverride_) {
-    speakerSavedMode_ = mode_;
-    strlcpy(speakerSavedText_, text_, sizeof(speakerSavedText_));
-    speakerSavedTemporary_ = false;
-    speakerSavedRestoreRemainingMs_ = 0;
-    mode_ = NewoDisplayMode::SPEAKING;
   }
   dirty_ = true;
 }
@@ -179,9 +134,9 @@ void NewoDisplay::loop() {
   if (dirty_) render();
   if (!temporary_ && mode_ != NewoDisplayMode::ECO && mode_ != NewoDisplayMode::MESSAGE &&
       static_cast<int32_t>(now - nextFaceFrameMs_) >= 0) {
-    // The speaker task has higher RTOS priority, and the speaking override also
-    // reduces bounded SPI canvas blits while preserving both eyes and waveform.
-    nextFaceFrameMs_ = now + (speakerOverride_ ? kSpeakingFaceFrameMs : kNormalFaceFrameMs);
+    // Audio playback is only a hint: lower face-frame SPI work without taking
+    // ownership of the active display mode, text, ECO page, or timer.
+    nextFaceFrameMs_ = now + (speakerActive_ ? kSpeakingFaceFrameMs : kNormalFaceFrameMs);
     drawFaceFrame(now);
   }
 }
@@ -332,7 +287,7 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   updateGaze(now);
 
   const float phase = static_cast<float>(now % 3000) / 3000.0f * 6.2831853f;
-  const int16_t floatY = static_cast<int16_t>(sinf(phase) * (mode_ == NewoDisplayMode::SPEAKING ? 2.0f : 1.0f));
+  const int16_t floatY = static_cast<int16_t>(sinf(phase) * (speakerActive_ ? 2.0f : 1.0f));
 
   int16_t leftW = 60;
   int16_t rightW = 60;
@@ -545,7 +500,7 @@ void NewoDisplay::drawStateAnimation(uint32_t now) {
       const int16_t rise = static_cast<int16_t>((sinf(phase * 1.5f + i * 1.4f) + 1.0f) * 3.0f);
       activityCanvas_.fillCircle(36 + i * 12, 15 - rise, 2, 1);
     }
-  } else if (mode_ == NewoDisplayMode::SPEAKING) {
+  } else if (mode_ == NewoDisplayMode::SPEAKING || (speakerActive_ && mode_ == NewoDisplayMode::IDLE)) {
     int16_t lastY = 172;
     for (int16_t x = 0; x <= 72; x += 4) {
       const int16_t y = 172 + static_cast<int16_t>(sinf(phase * 2.0f + x * 0.16f) * 6.0f);

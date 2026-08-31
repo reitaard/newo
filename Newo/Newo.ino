@@ -59,7 +59,7 @@ void setup() {
 
 void loop() {
   struct VoiceAck { char requestId[40]; bool applied; };
-  struct SpeakerAck { char requestId[40]; bool targetEnabled; bool applied; uint32_t startedMs; };
+  struct SpeakerAck { char requestId[40]; bool targetEnabled; bool applied; bool ledFeedback; uint32_t startedMs; };
   static VoiceAck pendingVoiceAcks[8] = {};
   static uint8_t pendingVoiceAckCount = 0;
   static SpeakerAck pendingSpeakerAcks[4] = {};
@@ -109,6 +109,7 @@ void loop() {
   while (newoCloud.consumeSpeakerControlRequest(speakerControlRequest)) {
     bool applied = true;
     bool deferAck = false;
+    bool speakerStateConfirmed = false;
     if (speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::SET_VOLUME) {
       applied = newoSpeaker.setVolume(speakerControlRequest.volume);
     } else if (speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::TOGGLE_MUTE) {
@@ -116,17 +117,23 @@ void loop() {
     } else if (speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::SET_ENABLED) {
       applied = newoSpeaker.setEnabled(speakerControlRequest.enabled);
       const bool complete = speakerControlRequest.enabled ? newoSpeaker.ready() : newoSpeaker.released();
+      speakerStateConfirmed = applied && complete;
       if (applied && !complete) {
         if (pendingSpeakerAckCount < sizeof(pendingSpeakerAcks) / sizeof(pendingSpeakerAcks[0])) {
           SpeakerAck& pending = pendingSpeakerAcks[pendingSpeakerAckCount++];
           strlcpy(pending.requestId, speakerControlRequest.requestId, sizeof(pending.requestId));
           pending.targetEnabled = speakerControlRequest.enabled;
           pending.applied = true;
+          pending.ledFeedback = speakerControlRequest.ledFeedback;
           pending.startedMs = millis();
           deferAck = true;
         } else {
           applied = false;
         }
+      }
+      if (speakerControlRequest.ledFeedback) {
+        if (speakerStateConfirmed) newoLed.flashSpeakerEnabled(speakerControlRequest.enabled);
+        else if (!applied) newoLed.flashError();
       }
     } else if (speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::TEMPORARY_CONNECT) {
       applied = newoSpeaker.requestTemporaryConnection();
@@ -136,8 +143,6 @@ void loop() {
       newoLed.flashVolume(newoSpeaker.volume());
     } else if (applied && speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::TOGGLE_MUTE) {
       newoLed.flashMute(newoSpeaker.muted());
-    } else if (applied && speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::SET_ENABLED) {
-      newoLed.flashSpeakerEnabled(newoSpeaker.enabled());
     }
     if (!deferAck) {
       newoCloud.sendSpeakerAck(speakerControlRequest.requestId, newoSpeaker.enabled(),
@@ -153,8 +158,13 @@ void loop() {
     const bool complete = pending.targetEnabled ? newoSpeaker.ready() : newoSpeaker.released();
     const bool timedOut = millis() - pending.startedMs >= 6'500;
     if (!complete && !timedOut) { ++i; continue; }
+    const bool confirmed = pending.applied && complete;
+    if (pending.ledFeedback) {
+      if (confirmed) newoLed.flashSpeakerEnabled(pending.targetEnabled);
+      else newoLed.flashError();
+    }
     newoCloud.sendSpeakerAck(pending.requestId, newoSpeaker.enabled(), newoSpeaker.connectionStatus(),
-                             newoSpeaker.volume(), newoSpeaker.muted(), pending.applied && complete,
+                             newoSpeaker.volume(), newoSpeaker.muted(), confirmed,
                              newoSpeaker.lastPlayback(), newoSpeaker.lastUnderruns(),
                              newoSpeaker.lastOverflows());
     pendingSpeakerAcks[i] = pendingSpeakerAcks[--pendingSpeakerAckCount];
@@ -176,7 +186,7 @@ void loop() {
     }
     pendingVoiceAckCount = 0;
   }
-  if (newoSpeaker.playing()) newoLed.setState(NewoLed::State::SPEAKING);
+  if (newoSpeaker.audiblePlaybackActive()) newoLed.setState(NewoLed::State::SPEAKING);
   else if (newoAudio.state() == NewoVoiceState::STREAMING) newoLed.setState(NewoLed::State::LISTENING);
   else if (newoCloud.assistantThinking()) newoLed.setState(NewoLed::State::THINKING);
   else newoLed.setState(NewoLed::State::IDLE);

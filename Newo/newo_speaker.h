@@ -35,6 +35,8 @@ class NewoSpeaker {
   bool consumePlaybackStarted(PlaybackStarted& started);
 
   bool playing() const { return task_ != nullptr || decoderTask_ != nullptr; }
+  // True only from the prebuffer/I2S playback boundary through final drain.
+  bool audiblePlaybackActive() const { return playbackStarted_; }
   bool enabled() const { return enabled_; }
   bool ready() const { return connected_; }
   bool released() const { return !started_ && !connected_ && !buffer_ && !playing(); }
@@ -134,7 +136,7 @@ class NewoSpeaker {
   volatile bool playbackStarted_ = false;
   PlaybackStarted playbackStartedEvent_ = {};
   bool playbackStateApplied_ = false;
-  bool displaySpeakingApplied_ = false;
+  bool displaySpeakerActiveApplied_ = false;
   volatile uint32_t minimumTaskStackBytes_ = UINT32_MAX;
   volatile uint32_t i2sSentEventCount_ = 0;
   uint32_t lastFlowSentReceivedBytes_ = 0;

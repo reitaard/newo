@@ -7,6 +7,7 @@ constexpr uint32_t kFrameMs = 25;
 constexpr uint32_t kConnectivityGraceMs = 3000;
 constexpr uint8_t kRed = 7;
 constexpr uint8_t kGreen = 7;
+constexpr uint8_t kSpeakingGreen = 5;
 // Blue is perceptually weaker on this confirmed onboard LED.
 constexpr uint8_t kBlue = 10;
 constexpr uint8_t kAmberRed = 9;
@@ -62,7 +63,7 @@ uint8_t NewoLed::pulse(uint32_t elapsed, uint32_t duration, uint8_t peak) {
 }
 
 NewoLed::Rgb NewoLed::renderBase(uint32_t now) {
-  if (state_ == State::SPEAKING) return {0, kGreen, 0};
+  if (state_ == State::SPEAKING) return {0, kSpeakingGreen, 0};
   if (state_ == State::LISTENING) {
     // Asymmetric gentle pulse; capture/task timing remains untouched.
     const uint32_t phase = now % 1200;
@@ -103,8 +104,9 @@ bool NewoLed::renderOverlay(uint32_t elapsed, Rgb& color) const {
     case Overlay::SPEAKER_OFF:
       if (elapsed >= 300) return false;
       if (inPulse(elapsed, 0, 70) || inPulse(elapsed, 140, 100)) {
-        const uint8_t v = overlay_ == Overlay::SPEAKER_ON ? (elapsed < 100 ? 4 : kGreen) : (elapsed < 100 ? kGreen : 4);
-        color = {0, v, 0};
+        const bool on = overlay_ == Overlay::SPEAKER_ON;
+        const uint8_t v = on ? (elapsed < 100 ? 4 : kGreen) : (elapsed < 100 ? kRed : 4);
+        color = on ? Rgb{0, v, 0} : Rgb{v, 0, 0};
       } else color = {0, 0, 0};
       return true;
     case Overlay::MUTE_ON: if (elapsed >= 160) return false; color = {kAmberRed, 2, 0}; return true;
@@ -112,11 +114,19 @@ bool NewoLed::renderOverlay(uint32_t elapsed, Rgb& color) const {
     case Overlay::VOLUME:
       if (elapsed >= 160) return false;
       color = {0, static_cast<uint8_t>(2 + (overlayValue_ * (kGreen - 2)) / 100), 0}; return true;
-    case Overlay::REBOOT:
-      if (elapsed >= 760) return false;
-      if (inPulse(elapsed, 0, 90) || inPulse(elapsed, 190, 80) || inPulse(elapsed, 350, 70)) color = {kWhite, kWhite, kWhite};
-      else color = {0, 0, 0};
+    case Overlay::REBOOT: {
+      // One deliberate non-blocking green breath inside the existing reboot delay.
+      constexpr uint32_t kRebootBreathMs = 900;
+      constexpr uint8_t kRebootMinGreen = 2;
+      constexpr uint8_t kRebootPeakGreen = 12;
+      if (elapsed >= kRebootBreathMs) return false;
+      const uint32_t half = kRebootBreathMs / 2;
+      const uint32_t distance = elapsed < half ? elapsed : kRebootBreathMs - elapsed;
+      const uint8_t green = static_cast<uint8_t>(kRebootMinGreen +
+          (distance * (kRebootPeakGreen - kRebootMinGreen)) / half);
+      color = {0, green, 0};
       return true;
+    }
     case Overlay::PROV_ACCEPTED:
     case Overlay::PROV_SAVED:
       if (elapsed >= 300) return false;

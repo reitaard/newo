@@ -106,7 +106,7 @@ test("/vs represents a disabled assistant with clean never values", async () => 
 test("/speaker toggles OFF with terse non-spoken confirmation", async () => {
   const harness = createHarness((type, responseType, fields) => {
     assert.equal(type, "speaker_control");
-    assert.deepEqual(fields, { action: "set_enabled", enabled: false });
+    assert.deepEqual(fields, { action: "set_enabled", enabled: false, led_feedback: true });
     return response({ ...speakerAck, enabled: false, connection: "Disconnected" });
   });
   await harness.handlers.speaker({ match: "" });
@@ -118,12 +118,21 @@ test("/speaker toggles OFF with terse non-spoken confirmation", async () => {
 test("/speaker toggles ON with terse non-spoken confirmation", async () => {
   const harness = createHarness((type, responseType, fields) => {
     assert.equal(type, "speaker_control");
-    assert.deepEqual(fields, { action: "set_enabled", enabled: true });
+    assert.deepEqual(fields, { action: "set_enabled", enabled: true, led_feedback: true });
     return response({ ...speakerAck, enabled: true, connection: "Ready" });
   }, { speakerEnabled: false });
   await harness.handlers.speaker({ match: "" });
   assert.equal(harness.speakerEnabled, true);
   assert.equal(harness.replies[0].text, "Speaker turned on.");
+  assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
+});
+
+test("/speaker does not claim success until firmware confirms the requested state", async () => {
+  const harness = createHarness(() => response({ ...speakerAck, enabled: true, connection: "Connecting", applied: false }),
+    { speakerEnabled: false });
+  await harness.handlers.speaker({ match: "" });
+  assert.equal(harness.replies[0].text, "Speaker change was not confirmed.");
+  assert.equal(harness.replies[0].category, "device_error");
   assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
 });
 
@@ -139,6 +148,7 @@ test("/eco toggles then refreshes detailed device telemetry", async () => {
   assert.match(harness.replies[0].text, /ECO: <b>ON<\/b>/);
   assert.match(harness.replies[0].text, /RSSI: <b>-56 dBm<\/b>/);
   assert.match(harness.replies[0].text, /PSRAM: <b>4\.00 MB<\/b>/);
+  assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
 });
 
 test("/volume reads, sets, and rejects invalid values", async () => {
@@ -160,6 +170,7 @@ test("/volume reads, sets, and rejects invalid values", async () => {
   assert.deepEqual(calls[1].fields, { action: "set_volume", volume: 65 });
   assert.match(harness.replies[1].text, /Volume: <b>65%<\/b>/);
   assert.equal(harness.replies[2].category, "usage");
+  for (const reply of harness.replies) assert.deepEqual(reply.options, { newoSpeak: false });
 });
 
 test("/mute toggles and reports mute plus retained volume", async () => {
@@ -171,4 +182,5 @@ test("/mute toggles and reports mute plus retained volume", async () => {
   await harness.handlers.mute({ match: "" });
   assert.match(harness.replies[0].text, /Mute: <b>ON<\/b>/);
   assert.match(harness.replies[0].text, /Volume: <b>70%<\/b>/);
+  assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
 });

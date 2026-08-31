@@ -18,7 +18,6 @@ void NewoDisplay::updateClock() {
   static time_t lastMinute = -1;
   static NewoDisplayMode lastMode = NewoDisplayMode::ECO;
   static NewoFaceStyle lastStyle = NewoFaceStyle::NEUTRAL;
-  static bool lastSpeakerOverride = false;
 
   if (!timeConfigured) {
     configTzTime(kTimeZone, "pool.ntp.org", "time.nist.gov");
@@ -33,7 +32,6 @@ void NewoDisplay::updateClock() {
     lastMinute = -1;  // Force a redraw as soon as the face view returns.
     lastMode = mode_;
     lastStyle = faceStyle_;
-    lastSpeakerOverride = speakerOverride_;
     return;
   }
 
@@ -41,8 +39,7 @@ void NewoDisplay::updateClock() {
   if (now < 1'700'000'000) return;  // SNTP has not synchronized yet.
 
   const time_t minute = now / 60;
-  if (minute == lastMinute && mode_ == lastMode && faceStyle_ == lastStyle &&
-      speakerOverride_ == lastSpeakerOverride) {
+  if (minute == lastMinute && mode_ == lastMode && faceStyle_ == lastStyle) {
     return;
   }
 
@@ -66,5 +63,4 @@ void NewoDisplay::updateClock() {
   lastMinute = minute;
   lastMode = mode_;
   lastStyle = faceStyle_;
-  lastSpeakerOverride = speakerOverride_;
 }
