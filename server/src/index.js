@@ -348,33 +348,17 @@ function commandTrace(ctx) { return ctx.newoTrace ?? null; }
 async function commandReply(ctx, text, category = "reply", requestId = null, options = {}) {
   const trace = commandTrace(ctx);
   if (trace) { trace.replyCategory = category; trace.requestId = requestId; }
-  const { newoSpeak = true, newoSpeakMaxChars, onNewoSpeechSettled, ...telegramOptions } = options;
+  const { newoSpeak = true, newoSpeakMaxChars, ...telegramOptions } = options;
   const replyReadyAt = performance.now();
   // Start Telegram first, then immediately start independent TTS without waiting
   // for Telegram's network request. Neither failure path is allowed to poison the other.
   return startTelegramAndSpeech(
     () => ctx.reply(text, { parse_mode: "HTML", ...telegramOptions }),
     () => {
-      const notifySpeechSettled = () => {
-        if (typeof onNewoSpeechSettled === "function") onNewoSpeechSettled();
-      };
-      if (!newoSpeak || !automaticSpeakerEnabled || (trace && trace.speechQueued)) {
-        notifySpeechSettled();
-        return;
-      }
+      if (!newoSpeak || !automaticSpeakerEnabled || (trace && trace.speechQueued)) return;
       if (trace) trace.speechQueued = true;
       const speech = speakerRuntime.speak(text, { maxChars: newoSpeakMaxChars, replyReadyAt });
-      if (speech.kind !== "queued") {
-        notifySpeechSettled();
-        return;
-      }
-      void speech.completion.then(
-        notifySpeechSettled,
-        (error) => {
-          app.log.warn({ playback_id: speech.playbackId, error_message: error.message }, "Asynchronous Telegram speech failed");
-          notifySpeechSettled();
-        },
-      );
+      if (speech.kind === "queued") void speech.completion.catch((error) => app.log.warn({ playback_id: speech.playbackId, error_message: error.message }, "Asynchronous Telegram speech failed"));
     },
   );
 }
@@ -532,15 +516,15 @@ async function handleLogsCommand(ctx, forceProblems = false) {
 }
 async function handlePingCommand(ctx) {
   const request = sendDeviceRequest("ping", "pong", {}, commandTrace(ctx));
-  if (request.kind === "offline") return commandReply(ctx, statusMessage("ping", "offline"), "offline");
+  if (request.kind === "offline") return commandReply(ctx, statusMessage("ping", "offline"), "offline", null, { newoSpeak: false });
   const result = await request.promise;
   if (result.kind === "response") {
-    const displayText = `PING\n${result.elapsedMs} ms`;
+    showDisplay(`PING\n${result.elapsedMs} ms`);
     return commandReply(ctx, commandMessage("ping", [quote([`Latency: ${bold(result.elapsedMs)} ${italic("ms")}`])]),
-      "response", request.requestId, { onNewoSpeechSettled: () => showDisplay(displayText) });
+      "response", request.requestId, { newoSpeak: false });
   }
-  if (result.kind === "timeout") return commandReply(ctx, timeoutMessage("ping"), "timeout", request.requestId);
-  return commandReply(ctx, getConnectedDeviceState() ? timeoutMessage("ping") : statusMessage("ping", "offline"), "unavailable", request.requestId);
+  if (result.kind === "timeout") return commandReply(ctx, timeoutMessage("ping"), "timeout", request.requestId, { newoSpeak: false });
+  return commandReply(ctx, getConnectedDeviceState() ? timeoutMessage("ping") : statusMessage("ping", "offline"), "unavailable", request.requestId, { newoSpeak: false });
 }
 function trackPendingReboot(chatId, messageId, deviceId) {
   if (pendingReboot?.timer) clearTimeout(pendingReboot.timer);
@@ -575,16 +559,16 @@ async function handleSpeakCommand(ctx) {
 
 async function handleRebootCommand(ctx) {
   const request = sendDeviceRequest("reboot", "reboot_ack", {}, commandTrace(ctx));
-  if (request.kind === "offline") return commandReply(ctx, statusMessage("reboot", "offline"), "offline");
+  if (request.kind === "offline") return commandReply(ctx, statusMessage("reboot", "offline"), "offline", null, { newoSpeak: false });
   const result = await request.promise;
   if (result.kind === "response") {
     showDisplay("REBOOTING");
-    const message = await commandReply(ctx, statusMessage("reboot", "Restarting"), "response", request.requestId);
+    const message = await commandReply(ctx, statusMessage("reboot", "Restarting"), "response", request.requestId, { newoSpeak: false });
     trackPendingReboot(ctx.chat.id, message.message_id, env.NEWO_DEVICE_ID);
     return;
   }
-  if (result.kind === "timeout") return commandReply(ctx, statusMessage("reboot", "Restart was not acknowledged"), "timeout", request.requestId);
-  return commandReply(ctx, getConnectedDeviceState() ? statusMessage("reboot", "Restart was not acknowledged") : statusMessage("reboot", "offline"), "unavailable", request.requestId);
+  if (result.kind === "timeout") return commandReply(ctx, statusMessage("reboot", "Restart was not acknowledged"), "timeout", request.requestId, { newoSpeak: false });
+  return commandReply(ctx, getConnectedDeviceState() ? statusMessage("reboot", "Restart was not acknowledged") : statusMessage("reboot", "offline"), "unavailable", request.requestId, { newoSpeak: false });
 }
 
 const primaryModeHandlers = createPrimaryModeHandlers({
@@ -720,7 +704,7 @@ wss.on("connection", (ws, request, deviceId) => {
   // A fresh device session must never inherit a stale thinking indicator.
   ws.send(JSON.stringify({ type: "assistant_state", state: "idle" }));
   void speakerRuntime.handleDeviceConnected(deviceId, state);
-  const speakerSync = sendDeviceRequest("speaker_control", "speaker_ack", { action: "set_enabled", enabled: automaticSpeakerEnabled });
+  const speakerSync = sendDeviceRequest("speaker_control", "speaker_ack", { action: "set_enabled", enabled: automaticSpeakerEnabled, led_feedback: false });
   if (speakerSync.kind === "sent") void speakerSync.promise.then((result) => app.log.info({ device_id: deviceId, enabled: automaticSpeakerEnabled, result: result.kind }, "Speaker mode synchronized"));
 });
 

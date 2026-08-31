@@ -20,6 +20,8 @@ class NewoCloud {
     Action action;
     uint8_t volume;
     bool enabled;
+    // Speaker command LEDs are opt-in; reconnect synchronization stays silent.
+    bool ledFeedback = false;
     char requestId[40];
   };
   bool consumeVoiceRequest(VoiceRequest& request);

@@ -294,7 +294,7 @@ bool NewoSpeaker::startPlayback(const Request& request) {
   }
   opusSawPartialFrame_ = false;
   playbackStateApplied_ = true;
-  displaySpeakingApplied_ = false;
+  displaySpeakerActiveApplied_ = false;
   playbackStartedEventReady_ = false;
   playbackStartedDirectSent_ = false;
   playbackStarted_ = false;
@@ -720,12 +720,12 @@ void NewoSpeaker::loop(bool cloudReady) {
   if (started_) webSocket_.loop();
 
   // The worker raises this only after its prebuffer threshold is reached and
-  // it is about to send PCM to I2S. Send the low-latency socket notification
-  // before display work; Newo.ino still consumes this event for /device.
+  // it is about to send PCM to I2S. Notify the dedicated socket before the
+  // non-owning display hint; Newo.ino retains the /device notification.
   sendPlaybackStartedDirect();
-  if (playbackStartedEventReady_ && !displaySpeakingApplied_) {
-    display_.setSpeaking(true);
-    displaySpeakingApplied_ = true;
+  if (playbackStartedEventReady_ && !displaySpeakerActiveApplied_) {
+    display_.setSpeakerActive(true);
+    displaySpeakerActiveApplied_ = true;
   }
 
   if (playing() && connected_ && buffer_) {
@@ -749,8 +749,8 @@ void NewoSpeaker::loop(bool cloudReady) {
     task_ = nullptr;
     // The decoder task owns/destroys its Opus state; it may still be draining.
     if (playbackStateApplied_) {
-      if (displaySpeakingApplied_) display_.setSpeaking(false);
-      displaySpeakingApplied_ = false;
+      if (displaySpeakerActiveApplied_) display_.setSpeakerActive(false);
+      displaySpeakerActiveApplied_ = false;
       audio_.setPlaybackActive(false);
       playbackStateApplied_ = false;
     }
