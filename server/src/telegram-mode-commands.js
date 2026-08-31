@@ -167,43 +167,50 @@ export function createPrimaryModeHandlers({
     }
 
     // `/speaker` is intentionally terse and never speaks its own toggle reply.
-    // Detailed speaker telemetry remains available to the status/control helpers.
+    // Only claim success after firmware confirmed its ready/released boundary.
+    const confirmed = status.device?.applied === true && status.device.enabled === enabled &&
+      (enabled ? status.device.connection === "Ready" : status.device.connection === "Disconnected");
+    if (!confirmed) {
+      const text = status.device ? "Speaker change was not confirmed." : "Speaker unavailable.";
+      return commandReply(ctx, text, status.device ? "device_error" : "device_unavailable",
+                          status.request.requestId ?? null, { newoSpeak: false });
+    }
     const text = enabled ? "Speaker turned on." : "Speaker turned off.";
-    return commandReply(ctx, text, status.device ? "response" : "device_unavailable", status.request.requestId ?? null, { newoSpeak: false });
+    return commandReply(ctx, text, "response", status.request.requestId ?? null, { newoSpeak: false });
   }
 
   async function speaker(ctx) {
-    if (String(ctx.match ?? "").trim()) return commandReply(ctx, message("speaker", ["Usage: /speaker"]), "usage");
+    if (String(ctx.match ?? "").trim()) return commandReply(ctx, message("speaker", ["Usage: /speaker"]), "usage", null, { newoSpeak: false });
     const operation = speakerToggleQueue.then(() => applySpeakerToggle(ctx));
     speakerToggleQueue = operation.catch(() => {});
     return operation;
   }
 
   async function eco(ctx) {
-    if (String(ctx.match ?? "").trim()) return commandReply(ctx, message("eco", ["Usage: /eco"]), "usage");
+    if (String(ctx.match ?? "").trim()) return commandReply(ctx, message("eco", ["Usage: /eco"]), "usage", null, { newoSpeak: false });
     const toggle = sendDeviceRequest("eco_toggle", "display_ack", {}, commandTrace(ctx));
-    if (toggle.kind !== "sent") return commandReply(ctx, unavailable("eco", "offline"), "offline");
+    if (toggle.kind !== "sent") return commandReply(ctx, unavailable("eco", "offline"), "offline", null, { newoSpeak: false });
     const toggled = await toggle.promise;
-    if (toggled.kind !== "response") return commandReply(ctx, unavailable("eco", toggled.kind === "timeout" ? "No reply" : "offline"), toggled.kind, toggle.requestId);
+    if (toggled.kind !== "response") return commandReply(ctx, unavailable("eco", toggled.kind === "timeout" ? "No reply" : "offline"), toggled.kind, toggle.requestId, { newoSpeak: false });
     const enabled = toggled.message.mode === "eco_on";
     const telemetry = sendDeviceRequest("status_request", "status", {}, commandTrace(ctx));
     if (telemetry.kind === "sent") await telemetry.promise;
-    return commandReply(ctx, formatEcoStatus(enabled, getDeviceSnapshot()), "response", toggle.requestId);
+    return commandReply(ctx, formatEcoStatus(enabled, getDeviceSnapshot()), "response", toggle.requestId, { newoSpeak: false });
   }
 
   async function volume(ctx) {
     const parsed = parseVolumeArgument(ctx.match);
-    if (parsed.kind === "invalid") return commandReply(ctx, message("volume", ["Usage: /volume [0-100]"]), "usage");
+    if (parsed.kind === "invalid") return commandReply(ctx, message("volume", ["Usage: /volume [0-100]"]), "usage", null, { newoSpeak: false });
     const status = await requestSpeakerStatus(ctx, parsed.kind === "set" ? "set_volume" : null, parsed.kind === "set" ? { volume: parsed.volume } : {});
-    if (!status.device) return commandReply(ctx, unavailable("volume", status.result?.kind === "timeout" ? "No reply" : "offline"), status.result?.kind ?? "offline", status.request.requestId ?? null);
-    return commandReply(ctx, formatVolumeStatus(status.device), status.device.applied === false ? "device_error" : "response", status.request.requestId);
+    if (!status.device) return commandReply(ctx, unavailable("volume", status.result?.kind === "timeout" ? "No reply" : "offline"), status.result?.kind ?? "offline", status.request.requestId ?? null, { newoSpeak: false });
+    return commandReply(ctx, formatVolumeStatus(status.device), status.device.applied === false ? "device_error" : "response", status.request.requestId, { newoSpeak: false });
   }
 
   async function mute(ctx) {
-    if (String(ctx.match ?? "").trim()) return commandReply(ctx, message("mute", ["Usage: /mute"]), "usage");
+    if (String(ctx.match ?? "").trim()) return commandReply(ctx, message("mute", ["Usage: /mute"]), "usage", null, { newoSpeak: false });
     const status = await requestSpeakerStatus(ctx, "toggle_mute");
-    if (!status.device) return commandReply(ctx, unavailable("mute", status.result?.kind === "timeout" ? "No reply" : "offline"), status.result?.kind ?? "offline", status.request.requestId ?? null);
-    return commandReply(ctx, formatMuteStatus(status.device), status.device.applied === false ? "device_error" : "response", status.request.requestId);
+    if (!status.device) return commandReply(ctx, unavailable("mute", status.result?.kind === "timeout" ? "No reply" : "offline"), status.result?.kind ?? "offline", status.request.requestId ?? null, { newoSpeak: false });
+    return commandReply(ctx, formatMuteStatus(status.device), status.device.applied === false ? "device_error" : "response", status.request.requestId, { newoSpeak: false });
   }
 
   return { voice, voiceStatus, speaker, eco, volume, mute };

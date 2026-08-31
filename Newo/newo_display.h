@@ -16,7 +16,8 @@ class NewoDisplay {
   void updateClock();
   bool setMode(NewoDisplayMode mode, const char* text = nullptr, bool temporary = false);
   bool setFaceStyle(NewoFaceStyle style);
-  void setSpeaking(bool active);
+  // Playback is an animation hint only; it never owns display content or timing.
+  void setSpeakerActive(bool active);
   void toggleEco();
   bool ecoEnabled() const { return ecoEnabled_; }
   void updateTelemetry(bool wifiConnected, int32_t rssi, bool cloudConnected, uint32_t uptimeMs,
@@ -52,11 +53,7 @@ class NewoDisplay {
   char persistentText_[97] = {};
   bool ecoEnabled_ = false;
   bool temporary_ = false;
-  bool speakerOverride_ = false;
-  NewoDisplayMode speakerSavedMode_ = NewoDisplayMode::IDLE;
-  char speakerSavedText_[97] = {};
-  bool speakerSavedTemporary_ = false;
-  uint32_t speakerSavedRestoreRemainingMs_ = 0;
+  bool speakerActive_ = false;
   bool dirty_ = true;
   uint32_t restoreAtMs_ = 0;
   uint32_t nextEcoPageMs_ = 0;
