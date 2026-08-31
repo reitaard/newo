@@ -25,6 +25,9 @@ class NewoWiFi {
   uint32_t connectFailureCount() const;
   uint32_t disconnectCount() const;
   const char* lastDisconnectReason() const;
+  bool provisioningActive() const { return provisioningActive_; }
+  enum class LedEvent : uint8_t { NONE, ACCEPTED, REJECTED, SAVED, TIMEOUT };
+  LedEvent consumeLedEvent();
 
  private:
   struct VisibleSavedNetwork {
@@ -64,4 +67,5 @@ class NewoWiFi {
   char pendingProvisioningPassword_[65] = {};
   volatile bool provisioningCredentialsPending_ = false;
   volatile bool provisioningCredentialsSucceeded_ = false;
+  volatile LedEvent pendingLedEvent_ = LedEvent::NONE;
 };

@@ -110,6 +110,12 @@ bool NewoCloud::consumeSpeakerControlRequest(SpeakerControlRequest& request) {
   return true;
 }
 
+NewoCloud::LedEvent NewoCloud::consumeLedEvent() {
+  const LedEvent event = pendingLedEvent_;
+  pendingLedEvent_ = LedEvent::NONE;
+  return event;
+}
+
 void NewoCloud::sendSpeakerStarted(const char* playbackId, uint32_t firstPcmToPlayMs) {
   if (!connected_ || !playbackId || !playbackId[0]) return;
   JsonDocument doc;
@@ -195,6 +201,7 @@ void NewoCloud::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
       }
       connected_ = false;
       authenticated_ = false;
+      assistantThinking_ = false;
       started_ = false;
       break;
     case WStype_TEXT:
@@ -227,7 +234,16 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
   }
 
   if (strcmp(type, "ping") == 0) {
+    pendingLedEvent_ = LedEvent::PING;
     sendStatus(doc["request_id"] | "", true);
+    return;
+  }
+
+  if (strcmp(type, "assistant_state") == 0) {
+    const char* state = doc["state"] | "";
+    if (strcmp(state, "thinking") == 0) assistantThinking_ = true;
+    else if (strcmp(state, "idle") == 0) assistantThinking_ = false;
+    else NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "ASSISTANT_STATE_INVALID");
     return;
   }
 
@@ -237,6 +253,7 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
   }
 
   if (strcmp(type, "reboot") == 0) {
+    pendingLedEvent_ = LedEvent::REBOOT;
     sendRebootAck(doc["request_id"] | "");
     return;
   }

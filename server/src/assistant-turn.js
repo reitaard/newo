@@ -2,7 +2,7 @@
  * Joins a finalized ASR stream to the bounded assistant and existing speaker
  * runtime. It deliberately owns no audio transport or queue.
  */
-export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersistentSpeakerEnabled, maxReplyChars, logger }) {
+export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersistentSpeakerEnabled, maxReplyChars, logger, setAssistantState = () => {} }) {
   const active = new Map();
   let closing = false;
   let latest = { result: "n/a", llmMs: null, streamId: null, at: null, ttsQueuedMs: null, totalMs: null, asrFinalMs: null };
@@ -33,6 +33,7 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
     }
     const finalAt = performance.now();
     record("busy", turn);
+    setAssistantState(turn.deviceId, "thinking");
     const completion = (async () => {
       const answer = await assistant.respond(turn);
       if (answer.kind !== "response") {
@@ -77,6 +78,9 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
     active.set(turn.deviceId, completion);
     completion.finally(() => {
       if (active.get(turn.deviceId) === completion) active.delete(turn.deviceId);
+      // Every terminal assistant path clears this state. Local speaker playback
+      // independently outranks it on the ESP while it is physically active.
+      setAssistantState(turn.deviceId, "idle");
     }).catch(() => {});
     return { kind: "started", completion };
   }
