@@ -72,6 +72,7 @@ export const SPEAKER_STREAM_ABSOLUTE_MS = 70_000;
 export const SPEAKER_MEDIA_FRAME_BYTES = 1_920;
 export const SPEAKER_MEDIA_FRAME_MS = 40;
 export const SPEAKER_MEDIA_STARTUP_BYTES = 13_440;
+export const SPEAKER_FIRMWARE_PREBUFFER_BYTES = 12_288;
 export const SPEAKER_PCM_PRODUCER_QUEUE_MAX_BYTES = 65_536;
 export const SPEAKER_REALTIME_HIGH_WATER_BYTES = SPEAKER_RECEIVER_CAPACITY_BYTES - 2_048;
 
@@ -898,6 +899,18 @@ export function createSpeakerRuntime({
         job.pacerFramesSent += 1;
       }
       job.pacerInitialPcmBytes = initialBytes;
+      // A naturally completed short utterance cannot reach firmware's prebuffer.
+      // End it now so firmware may take its exact-all-PCM startup path.
+      if (producerDone && queuedBytes === 0 && initialBytes < SPEAKER_FIRMWARE_PREBUFFER_BYTES) {
+        if (!job.bytesSent || (job.bytesSent & 1)) throw new Error("invalid_pcm");
+        job.ttsCompletedAt = source.metrics.completedAt ?? performance.now();
+        job.audio = job.statistics.result(backend.limiter ?? SPEAKER_LIMITER);
+        job.endSent = true;
+        await job.transport.finish((data, options) => sendFrame(current.ws, data, options));
+        await sendFrame(current.ws, JSON.stringify({ type: "speaker_end", playback_id: job.id, bytes: job.bytesSent }));
+        logStreamComplete(job, current);
+        return job.completion;
+      }
       // Firmware's speaker_started is authoritative: it is sent only after its
       // physical prebuffer has arrived and I2S playback is about to drain.
       await waitForPlaybackStart(job, playbackStartTimeoutMs);

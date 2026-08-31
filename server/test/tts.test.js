@@ -484,6 +484,22 @@ test("realtime pacer waits for physical speaker_started before starting its medi
   runtime.close();
 });
 
+test("short completed realtime audio ends before waiting for speaker_started", async () => {
+  const ws = fakeSocket({ autoStart: false });
+  const backend = { gainDb: 0, limiter: 1, async stream() {
+    return { metrics: {}, audio: (async function* () { yield Buffer.alloc(4_096, 1); })() };
+  } };
+  const runtime = createSpeakerRuntime({ logger: logger(), enabled: true, backend, getDevice: () => ({}), sendControl: () => true, playbackStartTimeoutMs: 20 });
+  runtime.handleConnection(ws, "newo-01");
+  const queued = runtime.speak("short completed audio");
+  await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
+  assert.equal(binaryFrames(ws).reduce((total, frame) => total + frame.length, 0), 4_096);
+  runtime.handlePlaybackStarted("newo-01", { playback_id: queued.playbackId, first_pcm_to_play_ms: 0 });
+  runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 4_096 });
+  await queued.completion;
+  runtime.close();
+});
+
 test("realtime pacer fails cleanly when speaker_started never arrives", async () => {
   const ws = fakeSocket({ autoStart: false });
   const backend = { gainDb: 0, limiter: 1, async stream() {
