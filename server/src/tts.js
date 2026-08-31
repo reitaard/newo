@@ -72,6 +72,7 @@ export const SPEAKER_STREAM_ABSOLUTE_MS = 70_000;
 export const SPEAKER_MEDIA_FRAME_BYTES = 1_920;
 export const SPEAKER_MEDIA_FRAME_MS = 40;
 export const SPEAKER_MEDIA_STARTUP_BYTES = 13_440;
+export const SPEAKER_FIRMWARE_PREBUFFER_BYTES = 12_288;
 export const SPEAKER_PCM_PRODUCER_QUEUE_MAX_BYTES = 65_536;
 export const SPEAKER_REALTIME_HIGH_WATER_BYTES = SPEAKER_RECEIVER_CAPACITY_BYTES - 2_048;
 
@@ -552,7 +553,7 @@ export function createSpeakerRuntime({
   logger, backend, enabled, getDevice, sendControl, isPersistentEnabled = () => true,
   format = { sampleRate: 24_000, channels: 1, bitsPerSample: 16 }, chunkBytes = 2_048,
   maxTextChars = 300, maxStreamBytes = SPEAKER_STREAM_MAX_BYTES, connectionTimeoutMs = 9_000,
-  resultTimeoutMs = 75_000, flowTimeoutMs = SPEAKER_FLOW_TIMEOUT_MS,
+  resultTimeoutMs = 75_000, flowTimeoutMs = SPEAKER_FLOW_TIMEOUT_MS, playbackStartTimeoutMs = 5_000,
   receiverCapacityBytes = SPEAKER_RECEIVER_CAPACITY_BYTES,
   receiverBufferTargetBytes = SPEAKER_RECEIVER_BUFFER_TARGET_BYTES,
   networkInFlightLimitBytes = SPEAKER_NETWORK_INFLIGHT_LIMIT_BYTES,
@@ -583,6 +584,26 @@ export function createSpeakerRuntime({
     for (const waiter of job.pacerWaiters) { clearTimeout(waiter.timer); waiter.reject(error); }
     job.pacerWaiters.clear();
   }
+  function rejectPlaybackStartWaiter(job, error) {
+    const waiter = job.playbackStartWaiter;
+    if (!waiter) return;
+    job.playbackStartWaiter = null;
+    clearTimeout(waiter.timer);
+    waiter.reject(error);
+  }
+  function waitForPlaybackStart(job, timeoutMs = 5_000) {
+    if (job.playbackStartedAt !== null) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const waiter = { timer: null, resolve, reject };
+      waiter.timer = setTimeout(() => {
+        if (job.playbackStartWaiter !== waiter) return;
+        job.playbackStartWaiter = null;
+        reject(timeoutError("speaker_start_timeout"));
+      }, timeoutMs);
+      waiter.timer.unref();
+      job.playbackStartWaiter = waiter;
+    });
+  }
   function logContinuity(job, result) {
     logger.info({
       event: "SPEAKER_CONTINUITY", playback_id: job.id, tts_backend: backend.name ?? "unknown",
@@ -608,6 +629,7 @@ export function createSpeakerRuntime({
     clearTimeout(job.resultTimer);
     rejectFlowWaiters(job, new Error(result.error ?? result.kind));
     rejectPacerWaiters(job, new Error(result.error ?? result.kind));
+    rejectPlaybackStartWaiter(job, new Error(result.error ?? result.kind));
     jobs.delete(job.id);
     allJobs.delete(job);
     if (result.kind !== "complete") void job.cancelSource?.();
@@ -702,6 +724,7 @@ export function createSpeakerRuntime({
       logger.info({ device_id: current.deviceId, codecs: [...current.codecs] }, "Speaker codecs negotiated");
       return true;
     }
+    if (message?.type === "speaker_started") return handlePlaybackStarted(current.deviceId, message);
     return message?.type === "speaker_flow" ? handleFlow(current, message) : false;
   }
   function recordOutstanding(job, enforceWindow = true) {
@@ -876,6 +899,21 @@ export function createSpeakerRuntime({
         job.pacerFramesSent += 1;
       }
       job.pacerInitialPcmBytes = initialBytes;
+      // A naturally completed short utterance cannot reach firmware's prebuffer.
+      // End it now so firmware may take its exact-all-PCM startup path.
+      if (producerDone && queuedBytes === 0 && initialBytes < SPEAKER_FIRMWARE_PREBUFFER_BYTES) {
+        if (!job.bytesSent || (job.bytesSent & 1)) throw new Error("invalid_pcm");
+        job.ttsCompletedAt = source.metrics.completedAt ?? performance.now();
+        job.audio = job.statistics.result(backend.limiter ?? SPEAKER_LIMITER);
+        job.endSent = true;
+        await job.transport.finish((data, options) => sendFrame(current.ws, data, options));
+        await sendFrame(current.ws, JSON.stringify({ type: "speaker_end", playback_id: job.id, bytes: job.bytesSent }));
+        logStreamComplete(job, current);
+        return job.completion;
+      }
+      // Firmware's speaker_started is authoritative: it is sent only after its
+      // physical prebuffer has arrived and I2S playback is about to drain.
+      await waitForPlaybackStart(job, playbackStartTimeoutMs);
       let frameIndex = 1;
       let catchupsThisTurn = 0;
       const pacingStart = performance.now();
@@ -1020,6 +1058,7 @@ export function createSpeakerRuntime({
       sendGapMaxMs: 0, sendGapOver40: 0, sendGapOver80: 0, sendGapOver120: 0, sendGapOver200: 0,
       sendGapWorstBufferedBytes: null, sendGapWorstReceivedBytes: null, sendGapWorstConsumedBytes: null,
       lastSuccessfulPcmSendAt: null,
+      playbackStartWaiter: null,
       minReportedBufferedBytes: Number.POSITIVE_INFINITY, maxReportedBufferedBytes: 0, statistics: pcmStatistics(), audio: null,
     };
     allJobs.add(job);
@@ -1040,6 +1079,7 @@ export function createSpeakerRuntime({
       for (const job of jobs.values()) {
         void job.cancelSource?.();
         rejectFlowWaiters(job, new Error("speaker disconnected"));
+        rejectPlaybackStartWaiter(job, new Error("speaker disconnected"));
       }
       logger.info({ device_id: deviceId }, "Persistent speaker stream disconnected");
     });
@@ -1057,8 +1097,17 @@ export function createSpeakerRuntime({
   function handlePlaybackStarted(deviceId, message) {
     const job = jobs.get(message.playback_id);
     if (!job || job.firstPcmSentAt === null) return false;
+    // The dedicated speaker socket is the low-latency source. The existing
+    // device notification may arrive later with the same authoritative event.
+    if (job.playbackStartedAt !== null) return true;
     job.firstPcmToPlayMs = message.first_pcm_to_play_ms;
     job.playbackStartedAt = performance.now();
+    const startWaiter = job.playbackStartWaiter;
+    if (startWaiter) {
+      job.playbackStartWaiter = null;
+      clearTimeout(startWaiter.timer);
+      startWaiter.resolve();
+    }
     logger.info({
       event: "SPEAKER_TTFA", device_id: deviceId, playback_id: job.id, tts_backend: backend.name ?? "unknown",
       tts_request_to_first_pcm_ms: job.backendMetrics?.conditionerFirstOutputAt == null ? null : Math.round(job.backendMetrics.conditionerFirstOutputAt - job.backendMetrics.requestStartedAt),

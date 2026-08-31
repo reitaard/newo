@@ -91,6 +91,7 @@ class NewoSpeaker {
   bool resetOpusQueue();
   void releaseOpusQueue();
   void sendFlowReport(bool force = false);
+  void sendPlaybackStartedDirect();
   void logMemory(const char* stage, const MemorySnapshot& snapshot, const MemorySnapshot* comparison = nullptr);
   MemorySnapshot memorySnapshot() const;
   void fail(const char* error);
@@ -133,6 +134,7 @@ class NewoSpeaker {
   const char* volatile failureReason_ = nullptr;
   bool resultReady_ = false;
   volatile bool playbackStartedEventReady_ = false;
+  bool playbackStartedDirectSent_ = false;
   volatile bool playbackStarted_ = false;
   PlaybackStarted playbackStartedEvent_ = {};
   bool playbackStateApplied_ = false;

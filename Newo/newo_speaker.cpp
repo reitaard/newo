@@ -296,6 +296,7 @@ bool NewoSpeaker::startPlayback(const Request& request) {
   playbackStateApplied_ = true;
   displaySpeakerActiveApplied_ = false;
   playbackStartedEventReady_ = false;
+  playbackStartedDirectSent_ = false;
   playbackStarted_ = false;
   if (xTaskCreatePinnedToCore(taskEntry, "newo-speaker", 8192, this, 2, &task_, 1) != pdPASS) {
     task_ = nullptr;
@@ -538,6 +539,22 @@ void NewoSpeaker::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
   }
 }
 
+void NewoSpeaker::sendPlaybackStartedDirect() {
+  if (!playbackStartedEventReady_ || playbackStartedDirectSent_) return;
+  playbackStartedDirectSent_ = true;
+  if (!connected_) return;
+  StaticJsonDocument<160> doc;
+  doc["type"] = "speaker_started";
+  doc["playback_id"] = playbackStartedEvent_.playbackId;
+  doc["first_pcm_to_play_ms"] = playbackStartedEvent_.firstPcmToPlayMs;
+  String body;
+  serializeJson(doc, body);
+  if (!webSocket_.sendTXT(body)) {
+    NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO,
+                 "SPEAKER_START_DIRECT_FAILED", playbackStartedEvent_.playbackId);
+  }
+}
+
 void NewoSpeaker::sendFlowReport(bool force) {
   if (!connected_ || !playing() || !buffer_) return;
   const uint32_t received = receivedBytes_;
@@ -703,7 +720,9 @@ void NewoSpeaker::loop(bool cloudReady) {
   if (started_) webSocket_.loop();
 
   // The worker raises this only after its prebuffer threshold is reached and
-  // it is about to send PCM to I2S. Apply only a non-owning display hint here.
+  // it is about to send PCM to I2S. Notify the dedicated socket before the
+  // non-owning display hint; Newo.ino retains the /device notification.
+  sendPlaybackStartedDirect();
   if (playbackStartedEventReady_ && !displaySpeakerActiveApplied_) {
     display_.setSpeakerActive(true);
     displaySpeakerActiveApplied_ = true;
