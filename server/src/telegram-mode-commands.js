@@ -126,21 +126,24 @@ export function createPrimaryModeHandlers({
   }
 
   async function voice(ctx) {
-    if (String(ctx.match ?? "").trim()) return commandReply(ctx, message("voice", ["Usage: /voice"]), "usage");
+    if (String(ctx.match ?? "").trim()) return commandReply(ctx, "Usage: /voice", "usage", null, { newoSpeak: false });
     const request = sendDeviceRequest("voice_control", "voice_ack", { action: "manual_toggle" }, commandTrace(ctx));
-    if (request.kind !== "sent") return commandReply(ctx, unavailable("voice", "offline"), "offline");
+    if (request.kind !== "sent") return commandReply(ctx, "Voice offline.", "offline", null, { newoSpeak: false });
     const result = await request.promise;
-    if (result.kind === "response" && result.message.applied === false) return commandReply(ctx, unavailable("voice", "busy"), "busy", request.requestId);
-    if (result.kind === "response") return commandReply(ctx, formatVoiceStatus(result.message, getAssistantInfo()), "response", request.requestId);
-    return commandReply(ctx, unavailable("voice", result.kind === "timeout" ? "No reply" : "offline"), result.kind, request.requestId);
+    if (result.kind === "response" && result.message.applied === false) return commandReply(ctx, "Voice busy.", "busy", request.requestId, { newoSpeak: false });
+    if (result.kind === "response") {
+      const text = result.message.state === "streaming" ? "Listening." : "Stopped.";
+      return commandReply(ctx, text, "response", request.requestId, { newoSpeak: false });
+    }
+    return commandReply(ctx, "Voice offline.", result.kind, request.requestId, { newoSpeak: false });
   }
 
   async function voiceStatus(ctx) {
     const request = sendDeviceRequest("voice_status", "voice_ack", {}, commandTrace(ctx));
-    if (request.kind !== "sent") return commandReply(ctx, unavailable("voice", "offline"), "offline");
+    if (request.kind !== "sent") return commandReply(ctx, unavailable("voice", "offline"), "offline", null, { newoSpeak: false });
     const result = await request.promise;
-    if (result.kind === "response") return commandReply(ctx, formatVoiceStatus(result.message, getAssistantInfo()), "response", request.requestId);
-    return commandReply(ctx, unavailable("voice", result.kind === "timeout" ? "No reply" : "offline"), result.kind, request.requestId);
+    if (result.kind === "response") return commandReply(ctx, formatVoiceStatus(result.message, getAssistantInfo()), "response", request.requestId, { newoSpeak: false });
+    return commandReply(ctx, unavailable("voice", result.kind === "timeout" ? "No reply" : "offline"), result.kind, request.requestId, { newoSpeak: false });
   }
 
   let speakerToggleQueue = Promise.resolve();

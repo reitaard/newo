@@ -33,26 +33,39 @@ const speakerAck = {
   underruns: 0, overflows: 0, buffer_bytes: 24_576,
 };
 
-test("/voice toggles and returns detailed current status", async () => {
+test("/v sends manual_toggle and returns a terse silent start reply", async () => {
   const requests = [];
   const harness = createHarness((type, responseType, fields) => {
     requests.push({ type, responseType, fields });
-    return response({ state: "armed", voice_connected: true, wake_count: 4, session_count: 12, failures: 0, timeouts: 0 });
+    return response({ state: "streaming", voice_connected: false, wake_count: 4, session_count: 12, failures: 0, timeouts: 0 });
   });
   await harness.handlers.voice({ match: "" });
   assert.deepEqual(requests[0], { type: "voice_control", responseType: "voice_ack", fields: { action: "manual_toggle" } });
-  assert.match(harness.replies[0].text, /Voice: <b>ARMED<\/b>/);
-  assert.match(harness.replies[0].text, /Trigger: <b>Manual \(\/v\)<\/b>/);
-  assert.match(harness.replies[0].text, /Wake word: <b>Deferred<\/b>/);
-  assert.match(harness.replies[0].text, /Sessions: <b>12<\/b>/);
-  assert.match(harness.replies[0].text, /Timeouts: <b>0<\/b>/);
+  assert.equal(harness.replies[0].text, "Listening.");
+  assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
+  assert.doesNotMatch(harness.replies[0].text, /Voice:|Trigger:|Sessions:/);
 });
 
-test("/v reports manual microphone contention cleanly", async () => {
+test("/v returns a terse silent cancel reply", async () => {
+  const harness = createHarness(() => response({ state: "off", voice_connected: false, wake_count: 0, session_count: 1, failures: 0, timeouts: 0 }));
+  await harness.handlers.voice({ match: "" });
+  assert.equal(harness.replies[0].text, "Stopped.");
+  assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
+});
+
+test("/v reports manual microphone contention tersely and silently", async () => {
   const harness = createHarness(() => response({ state: "off", voice_connected: false, wake_count: 0, session_count: 0, failures: 0, timeouts: 0, applied: false }));
   await harness.handlers.voice({ match: "" });
   assert.equal(harness.replies[0].category, "busy");
-  assert.match(harness.replies[0].text, /Status: <b>busy<\/b>/);
+  assert.equal(harness.replies[0].text, "Voice busy.");
+  assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
+});
+
+test("/v reports an offline device tersely and silently", async () => {
+  const harness = createHarness(() => ({ kind: "offline" }));
+  await harness.handlers.voice({ match: "" });
+  assert.equal(harness.replies[0].text, "Voice offline.");
+  assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
 });
 
 test("/vs reads bounded assistant telemetry without invoking chat", async () => {
@@ -75,6 +88,7 @@ test("/vs reads bounded assistant telemetry without invoking chat", async () => 
   assert.match(harness.replies[0].text, /Last LLM: <b>143 ms<\/b>/);
   assert.match(harness.replies[0].text, /Last turn: <b>timeout<\/b>/);
   assert.match(harness.replies[0].text, /ASR final: <b>n\/a<\/b>/);
+  assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
 });
 
 test("/vs represents a disabled assistant with clean never values", async () => {

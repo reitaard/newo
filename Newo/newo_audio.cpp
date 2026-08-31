@@ -149,7 +149,10 @@ bool NewoAudio::beginStreaming(bool rearmAfterStream) {
   streamEndReason_ = nullptr;
   streamStartedMs_ = millis();
   ++sessionCount_;
-  if (xTaskCreatePinnedToCore(streamTaskEntry, "newo-voice", 6144, this, 2, &streamTask_, 1) != pdPASS) {
+  // TLS/WebSocket setup and two PCM frame buffers share this task's stack.
+  // Match the proven speaker task allocation rather than using the smaller
+  // temporary-stream allocation.
+  if (xTaskCreatePinnedToCore(streamTaskEntry, "newo-voice", 8192, this, 2, &streamTask_, 1) != pdPASS) {
     ++failures_;
     streamEndReason_ = "task_failed";
     streamFinished_ = true;
@@ -186,6 +189,7 @@ void NewoAudio::streamTask() {
   headers += F("X-Newo-Device-Id: "); headers += NewoSecrets::DEVICE_ID;
   headers += F("\r\nAuthorization: Bearer "); headers += NewoSecrets::DEVICE_SECRET;
   voiceWebSocket_.setExtraHeaders(headers.c_str());
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_CONNECTING");
   voiceWebSocket_.beginSslWithCA(NewoConfig::CLOUD_HOST, NewoConfig::CLOUD_PORT,
                                  NewoConfig::VOICE_PATH, NewoSecrets::CLOUD_CA_CERT, "");
   int16_t stereo[NewoConfig::AUDIO_SAMPLES_PER_FRAME * 2];
@@ -238,12 +242,18 @@ void NewoAudio::finishStreaming(const char* reason) {
 }
 
 void NewoAudio::handleVoiceEvent(WStype_t type, uint8_t* payload, size_t length) {
-  if (type == WStype_CONNECTED) voiceConnected_ = true;
-  else if (type == WStype_DISCONNECTED) {
+  if (type == WStype_CONNECTED) {
+    voiceConnected_ = true;
+    NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_CONNECTED");
+  } else if (type == WStype_DISCONNECTED) {
     voiceConnected_ = false;
+    NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO, "VOICE_WS_DISCONNECTED");
     if (!stopStreaming_) { streamEndReason_ = "disconnected"; stopStreaming_ = true; }
   }
-  else if (type == WStype_ERROR) { streamEndReason_ = "socket_error"; stopStreaming_ = true; }
+  else if (type == WStype_ERROR) {
+    NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::AUDIO, "VOICE_WS_ERROR");
+    streamEndReason_ = "socket_error"; stopStreaming_ = true;
+  }
   else if (type == WStype_TEXT && length) {
     // Payload is not required to be NUL terminated. Keep parsing allocation-free.
     static constexpr char kFinal[] = "\"type\":\"final\"";
