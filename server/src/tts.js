@@ -237,6 +237,7 @@ export class KokoroTtsBackend {
     gainDb = SPEAKER_GAIN_DB, limiter = SPEAKER_LIMITER, logger = null,
   } = {}) {
     if (!Number.isFinite(speed) || speed < 0.25 || speed > 4) throw new Error("invalid Kokoro speed");
+    this.name = "kokoro";
     this.baseUrl = String(baseUrl).replace(/\/+$/, "");
     this.voice = voice;
     this.speed = speed;
@@ -460,6 +461,7 @@ export class KokoroTtsBackend {
 /** Explicit local fallback. It retains known-length framing. */
 export class EspeakTtsBackend {
   constructor({ voice = "en", rate = 155, maxPcmBytes = SPEAKER_STREAM_MAX_BYTES, gainDb = ESPEAK_GAIN_DB, limiter = SPEAKER_LIMITER } = {}) {
+    this.name = "espeak";
     this.voice = voice;
     this.rate = rate;
     this.maxPcmBytes = maxPcmBytes;
@@ -818,7 +820,7 @@ export function createSpeakerRuntime({
     if (typeof backend.stream === "function") {
       // A backend can have opened a local streaming response while speaker connection
       // negotiation fails. Explicitly cancel it rather than leaving Pocket producing.
-      const sourcePromise = backend.stream(job.text, format);
+      const sourcePromise = backend.stream(job.text, format, { playbackId: job.id });
       let source = null;
       try {
         const result = await Promise.all([sourcePromise, connectionPromise]);
@@ -892,9 +894,11 @@ export function createSpeakerRuntime({
     job.firstPcmToPlayMs = message.first_pcm_to_play_ms;
     job.playbackStartedAt = performance.now();
     logger.info({
-      event: "SPEAKER_TTFA", device_id: deviceId, playback_id: job.id,
+      event: "SPEAKER_TTFA", device_id: deviceId, playback_id: job.id, tts_backend: backend.name ?? "unknown",
       tts_request_to_first_pcm_ms: job.backendMetrics?.conditionerFirstOutputAt == null ? null : Math.round(job.backendMetrics.conditionerFirstOutputAt - job.backendMetrics.requestStartedAt),
-      kokoro_first_audio_byte_ms: job.backendMetrics?.firstAudioByteAt == null ? null : Math.round(job.backendMetrics.firstAudioByteAt - job.backendMetrics.requestStartedAt),
+      tts_first_audio_byte_ms: job.backendMetrics?.firstAudioByteAt == null ? null : Math.round(job.backendMetrics.firstAudioByteAt - job.backendMetrics.requestStartedAt),
+      // Retained for existing Kokoro log consumers; generic field above applies to all backends.
+      kokoro_first_audio_byte_ms: backend.name === "kokoro" && job.backendMetrics?.firstAudioByteAt != null ? Math.round(job.backendMetrics.firstAudioByteAt - job.backendMetrics.requestStartedAt) : null,
       conditioning_first_output_ms: job.backendMetrics?.conditionerFirstOutputAt == null ? null : Math.round(job.backendMetrics.conditionerFirstOutputAt - job.backendMetrics.firstAudioByteAt),
       reply_ready_to_first_pcm_send_ms: Math.round(job.firstPcmSentAt - job.replyReadyAt),
       first_pcm_to_play_ms: job.firstPcmToPlayMs,
@@ -927,9 +931,10 @@ export function createSpeakerRuntime({
     }, "SPEAKER_FLOW_FINAL");
     if (result.kind === "complete") {
       logger.info({
-        event: "SPEAKER_TTFA_FINAL", device_id: deviceId, playback_id: job.id,
+        event: "SPEAKER_TTFA_FINAL", device_id: deviceId, playback_id: job.id, tts_backend: backend.name ?? "unknown",
         tts_request_to_first_pcm_ms: job.backendMetrics?.conditionerFirstOutputAt == null ? null : Math.round(job.backendMetrics.conditionerFirstOutputAt - job.backendMetrics.requestStartedAt),
-        conditioning_first_output_ms: job.backendMetrics?.conditionerFirstOutputAt == null ? null : Math.round(job.backendMetrics.conditionerFirstOutputAt - job.backendMetrics.firstAudioByteAt),
+        tts_first_audio_byte_ms: job.backendMetrics?.firstAudioByteAt == null ? null : Math.round(job.backendMetrics.firstAudioByteAt - job.backendMetrics.requestStartedAt),
+        conditioning_first_output_ms: job.backendMetrics?.conditionerFirstOutputAt == null || job.backendMetrics?.firstAudioByteAt == null ? null : Math.round(job.backendMetrics.conditionerFirstOutputAt - job.backendMetrics.firstAudioByteAt),
         reply_ready_to_first_pcm_send_ms: job.firstPcmSentAt == null ? null : Math.round(job.firstPcmSentAt - job.replyReadyAt),
         first_pcm_to_play_ms: job.firstPcmToPlayMs,
         estimated_reply_ready_to_audible_ms: job.firstPcmSentAt == null || job.firstPcmToPlayMs == null ? null : Math.round(job.firstPcmSentAt - job.replyReadyAt + job.firstPcmToPlayMs),

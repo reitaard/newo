@@ -72,9 +72,11 @@ Pocket is the default backend: run the local-only warm service from the isolated
 cd /opt/newo
 HF_HOME=/opt/newo-pocket-tts-proto/cache/huggingface \
   /opt/newo-pocket-tts-proto/.venv/bin/python server/pocket-tts-service.py --port 8123
+# In a second terminal, only proceed after this succeeds:
+curl -fsS --retry 30 --retry-delay 1 http://127.0.0.1:8123/healthz
 ```
 
-Set `TTS_ENABLED=true`, `TTS_BACKEND=pocket`, `SPEAKER_CODEC=opus`, and `POCKET_BASE_URL=http://127.0.0.1:8123`. The service loads one CPU FP32 model, applies Pocket's dynamic INT8 quantization once (`torch.ao` when `torchao` is absent), and prepares only the evaluated `michael` state once. It binds only to loopback and serializes generation because Pocket is not thread-safe. No authentication is required for the released without-voice-cloning fallback model/state already present in the isolated cache.
+Set `TTS_ENABLED=true`, `TTS_BACKEND=pocket`, `SPEAKER_CODEC=opus`, and `POCKET_BASE_URL=http://127.0.0.1:8123`. Keep `TTS_VOICE=am_michael`: Pocket intentionally ignores it and stays on Michael, while it remains the ready Kokoro rollback voice. The service loads one CPU FP32 model, applies Pocket's dynamic INT8 quantization once (`torch.ao` when `torchao` is absent), and prepares only the evaluated `michael` state once. It binds only to loopback and serializes generation because Pocket is not thread-safe. No authentication is required for the released without-voice-cloning fallback model/state already present in the isolated cache.
 
 Pocket returns native 24 kHz mono f32le in a genuinely streamed HTTP response. Newo validates the audio headers and incrementally carries 0–3 split float bytes, rejects non-finite/incomplete samples, clips safely to PCM16LE, and immediately feeds canonical PCM16 into the unchanged native Opus path (24 kbps, 40 ms/960-sample frames). It does not resample, invoke FFmpeg, write WAVs, collect the utterance, or apply the Kokoro high-pass/gain/limiter. `POCKET_REQUEST`, `POCKET_FIRST_PCM`, and `POCKET_DONE` logs distinguish request-to-first PCM, total generation, and generated audio duration. Pocket receives the natural bounded reply text intact; Newo's 28-character Kokoro opening segmentation is not used. Pocket retains its upstream roughly 50-token split policy; unusually long boundary-free text can produce its upstream skipped-word warning.
 

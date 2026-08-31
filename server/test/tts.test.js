@@ -63,7 +63,7 @@ function logger() { return { info() {}, warn() {} }; }
 function binaryFrames(ws) { return ws.frames.filter(Buffer.isBuffer); }
 
 test("Pocket is selectable and Kokoro remains an explicit rollback backend", () => {
-  const base = { TTS_VOICE: undefined, TTS_GAIN_DB: undefined, TTS_SPEED: 1, TTS_RATE: 155, TTS_MAX_PCM_BYTES: 2_880_000,
+  const base = { TTS_VOICE: "am_michael", TTS_GAIN_DB: undefined, TTS_SPEED: 1, TTS_RATE: 155, TTS_MAX_PCM_BYTES: 2_880_000,
     POCKET_BASE_URL: "http://127.0.0.1:8123", POCKET_REQUEST_TIMEOUT_MS: 30_000, POCKET_STREAM_NO_PROGRESS_MS: 10_000, POCKET_STREAM_ABSOLUTE_MS: 70_000,
     KOKORO_BASE_URL: "http://127.0.0.1:8010", KOKORO_REQUEST_TIMEOUT_MS: 30_000, KOKORO_STREAM_NO_PROGRESS_MS: 10_000, KOKORO_STREAM_ABSOLUTE_MS: 70_000 };
   const pocket = createTtsBackend({ ...base, TTS_BACKEND: "pocket" });

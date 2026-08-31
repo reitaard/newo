@@ -41,6 +41,7 @@ export class PocketTtsBackend {
     baseUrl = "http://127.0.0.1:8123", voice = "michael", requestTimeoutMs = 30_000,
     streamNoProgressMs = 10_000, streamAbsoluteMs = 70_000, maxPcmBytes = 2_880_000, logger = null,
   } = {}) {
+    this.name = "pocket";
     this.baseUrl = String(baseUrl).replace(/\/+$/, "");
     this.voice = voice;
     this.requestTimeoutMs = requestTimeoutMs;
@@ -53,7 +54,7 @@ export class PocketTtsBackend {
     this.limiter = 1;
   }
 
-  async stream(text, format) {
+  async stream(text, format, { playbackId = null } = {}) {
     if (format?.sampleRate !== POCKET_SAMPLE_RATE || format?.channels !== 1 || format?.bitsPerSample !== 16) {
       throw new Error("Pocket requires canonical mono 24000 Hz PCM16 speaker output");
     }
@@ -64,7 +65,7 @@ export class PocketTtsBackend {
     const requestTimer = setTimeout(() => controller.abort(abortError("pocket_request_timeout")), this.requestTimeoutMs);
     const absoluteTimer = setTimeout(() => controller.abort(abortError("pocket_stream_timeout")), this.streamAbsoluteMs);
     requestTimer.unref(); absoluteTimer.unref();
-    this.logger?.info({ event: "POCKET_REQUEST", voice: this.voice, text_chars: String(text).length }, "Pocket synthesis requested");
+    this.logger?.info({ event: "POCKET_REQUEST", playback_id: playbackId, voice: this.voice, text_chars: String(text).length }, "Pocket synthesis requested");
     let response;
     try {
       response = await fetch(`${this.baseUrl}/v1/audio/newo-stream`, {
@@ -117,7 +118,7 @@ export class PocketTtsBackend {
           if (metrics.conditionedPcmBytes > backend.maxPcmBytes) throw new Error("Pocket output exceeded limit");
           if (metrics.conditionerFirstOutputAt === null) {
             metrics.conditionerFirstOutputAt = performance.now();
-            backend.logger?.info({ event: "POCKET_FIRST_PCM", voice: backend.voice,
+            backend.logger?.info({ event: "POCKET_FIRST_PCM", playback_id: playbackId, voice: backend.voice,
               request_to_first_pcm_ms: Math.round(metrics.conditionerFirstOutputAt - metrics.requestStartedAt) }, "Pocket first PCM converted");
           }
           yield pcm;
@@ -125,7 +126,7 @@ export class PocketTtsBackend {
         converter.finish();
         if (!metrics.conditionedPcmBytes) throw new Error("Pocket returned empty audio");
         metrics.completedAt = performance.now();
-        backend.logger?.info({ event: "POCKET_DONE", voice: backend.voice,
+        backend.logger?.info({ event: "POCKET_DONE", playback_id: playbackId, voice: backend.voice,
           request_to_first_pcm_ms: Math.round(metrics.conditionerFirstOutputAt - metrics.requestStartedAt),
           synthesis_ms: Math.round(metrics.completedAt - metrics.requestStartedAt),
           audio_ms: Math.round(metrics.conditionedPcmBytes / 48), pcm_bytes: metrics.conditionedPcmBytes }, "Pocket synthesis completed");
