@@ -453,6 +453,30 @@ test("continuity telemetry aggregates source and flow waits without changing str
   runtime.close();
 });
 
+test("continuity telemetry excludes a delayed terminal source completion", async () => {
+  const events = [];
+  const capturedLogger = { info(value) { events.push(value); }, warn(value) { events.push(value); } };
+  const ws = fakeSocket();
+  const backend = { name: "pocket", gainDb: 0, limiter: 1, async stream() {
+    return { metrics: {}, audio: (async function* () {
+      yield Buffer.alloc(2_048, 1);
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    })() };
+  } };
+  const runtime = createSpeakerRuntime({ logger: capturedLogger, enabled: true, backend, getDevice: () => ({}), sendControl: () => true });
+  runtime.handleConnection(ws, "newo-01");
+  const queued = runtime.speak("delayed terminal completion");
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
+  runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 2_048 });
+  await queued.completion;
+  const continuity = events.find((event) => event.event === "SPEAKER_CONTINUITY");
+  assert.equal(continuity.source_wait_max_ms, 0);
+  assert.equal(continuity.source_wait_over_40, 0);
+  assert.equal(continuity.source_wait_over_80, 0);
+  runtime.close();
+});
+
 test("continuity telemetry separately records delivery-credit waits", async () => {
   const events = [];
   const capturedLogger = { info(value) { events.push(value); }, warn(value) { events.push(value); } };

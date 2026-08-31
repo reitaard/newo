@@ -746,8 +746,9 @@ export function createSpeakerRuntime({
       if (credit < nextLength) {
         const waitStartedAt = performance.now();
         await waitForFlow(job);
-        recordThresholdGap(job, "flowWait", performance.now() - waitStartedAt, [40, 80, 120]);
-        job.flowWaitTotalMs += performance.now() - waitStartedAt;
+        const flowWaitMs = performance.now() - waitStartedAt;
+        recordThresholdGap(job, "flowWait", flowWaitMs, [40, 80, 120]);
+        job.flowWaitTotalMs += flowWaitMs;
         job.flowWaitCount += 1;
         continue;
       }
@@ -788,8 +789,9 @@ export function createSpeakerRuntime({
       while (true) {
         const sourceWaitStartedAt = performance.now();
         const part = await iterator.next();
-        recordThresholdGap(job, "sourceWait", performance.now() - sourceWaitStartedAt, [40, 80, 120, 200]);
+        const sourceWaitMs = performance.now() - sourceWaitStartedAt;
         if (part.done) { sourceCompleted = true; break; }
+        recordThresholdGap(job, "sourceWait", sourceWaitMs, [40, 80, 120, 200]);
         await sendWithFlow(job, current, part.value);
       }
       if (!job.bytesSent || (job.bytesSent & 1)) throw new Error("invalid_pcm");
