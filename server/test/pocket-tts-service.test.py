@@ -2,7 +2,10 @@
 """Focused ownership test; run with the isolated Pocket virtual environment."""
 from __future__ import annotations
 import importlib.util
+import io
 import threading
+import time
+from contextlib import redirect_stdout
 from pathlib import Path
 import torch
 
@@ -27,7 +30,7 @@ class FakeModel:
 
 model = FakeModel()
 lock = threading.Lock()
-first = service.serialized_native_stream(model, {}, "first", lock)
+first = service.serialized_native_stream(model, {}, "first", playback_id="cancel-test", lock=lock)
 assert next(first), "first consumer must receive its first native chunk"
 
 close_thread = threading.Thread(target=first.close)
@@ -36,7 +39,7 @@ assert model.drain_started.wait(1), "close must drain the remaining Pocket itera
 
 second_entered = threading.Event()
 def second_request():
-    second = service.serialized_native_stream(model, {}, "second", lock)
+    second = service.serialized_native_stream(model, {}, "second", playback_id="second-test", lock=lock)
     next(second)
     second_entered.set()
     second.close()
@@ -51,4 +54,17 @@ second_thread.join(2)
 assert not close_thread.is_alive() and not second_thread.is_alive()
 assert second_entered.is_set()
 assert model.entered == ["first", "second"]
+class DelayedModel:
+    def generate_audio_stream(self, _state, _text):
+        yield torch.tensor([0.25], dtype=torch.float32)
+        time.sleep(0.12)
+        yield torch.tensor([0.5], dtype=torch.float32)
+
+continuity_log = io.StringIO()
+with redirect_stdout(continuity_log):
+    assert list(service.serialized_native_stream(DelayedModel(), {}, "continuity", playback_id="native-gap", lock=threading.Lock()))
+line = continuity_log.getvalue()
+assert "POCKET_NATIVE_CONTINUITY playback_id=native-gap outcome=completed chunks=2" in line
+assert "over_80=1" in line
 print("PASS: cancelled client stream drains before exclusive model ownership is released")
+print("PASS: native Pocket continuity aggregates delayed tensor gaps")

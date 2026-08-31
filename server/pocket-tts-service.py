@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 import threading
+import time
 from contextlib import contextmanager
 from typing import Iterator
 
@@ -26,6 +27,7 @@ generation_lock = threading.Lock()
 class SynthesisRequest(BaseModel):
     input: str
     voice: str = VOICE
+    playback_id: str | None = None
 
 @contextmanager
 def exclusive_generation():
@@ -38,7 +40,8 @@ def exclusive_generation():
 def float32le(chunk: torch.Tensor) -> bytes:
     return chunk.detach().to(device="cpu", dtype=torch.float32).contiguous().numpy().tobytes()
 
-def serialized_native_stream(tts_model, state: dict, text: str, lock: threading.Lock = generation_lock) -> Iterator[bytes]:
+def serialized_native_stream(tts_model, state: dict, text: str, playback_id: str | None = None,
+                             lock: threading.Lock = generation_lock) -> Iterator[bytes]:
     """Yield native audio, draining Pocket completely before releasing model ownership.
 
     StreamingResponse closes this generator on client disconnect. Pocket has no hard
@@ -48,14 +51,45 @@ def serialized_native_stream(tts_model, state: dict, text: str, lock: threading.
     with lock:
         upstream = iter(tts_model.generate_audio_stream(state, text))
         exhausted = False
+        chunks = max_gap_ms = over_40 = over_80 = over_120 = over_200 = 0
+        def next_native():
+            nonlocal chunks, max_gap_ms, over_40, over_80, over_120, over_200
+            # Time the actual upstream next() call. Time spent suspended at our HTTP
+            # yield is intentionally excluded: it is consumer backpressure, not Pocket.
+            waited_from = time.monotonic()
+            chunk = next(upstream)
+            gap_ms = (time.monotonic() - waited_from) * 1_000
+            if chunks:
+                max_gap_ms = max(max_gap_ms, gap_ms)
+                over_40 += gap_ms > 40
+                over_80 += gap_ms > 80
+                over_120 += gap_ms > 120
+                over_200 += gap_ms > 200
+            chunks += 1
+            return chunk
         try:
-            for chunk in upstream:
-                yield float32le(chunk)
-            exhausted = True
+            while True:
+                try:
+                    yield float32le(next_native())
+                except StopIteration:
+                    exhausted = True
+                    break
         finally:
+            outcome = "completed"
             if not exhausted:
-                for _discarded_chunk in upstream:
-                    pass
+                outcome = "drained_after_client_cancel"
+                while True:
+                    try:
+                        next_native()
+                    except StopIteration:
+                        break
+            print(
+                "POCKET_NATIVE_CONTINUITY"
+                f" playback_id={playback_id or '-'} outcome={outcome} chunks={chunks}"
+                f" max_gap_ms={max_gap_ms:.1f} over_40={over_40} over_80={over_80}"
+                f" over_120={over_120} over_200={over_200}",
+                flush=True,
+            )
 
 @app.get("/healthz")
 def healthz():
@@ -71,7 +105,7 @@ def stream(request: SynthesisRequest):
     if request.voice != VOICE:
         raise HTTPException(400, "this service is configured only for michael")
     assert model is not None and voice_state is not None
-    return StreamingResponse(serialized_native_stream(model, voice_state, request.input), media_type="application/octet-stream", headers={
+    return StreamingResponse(serialized_native_stream(model, voice_state, request.input, request.playback_id), media_type="application/octet-stream", headers={
         "X-Audio-Sample-Rate": str(SAMPLE_RATE), "X-Audio-Channels": "1",
         "X-Audio-Format": "pcm_f32le", "Cache-Control": "no-store",
     })

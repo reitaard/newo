@@ -70,7 +70,7 @@ export class PocketTtsBackend {
     try {
       response = await fetch(`${this.baseUrl}/v1/audio/newo-stream`, {
         method: "POST", headers: { "content-type": "application/json", accept: "application/octet-stream" },
-        body: JSON.stringify({ input: text, voice: this.voice }), signal: controller.signal,
+        body: JSON.stringify({ input: text, voice: this.voice, ...(playbackId ? { playback_id: playbackId } : {}) }), signal: controller.signal,
       });
     } catch (error) {
       clearTimeout(requestTimer); clearTimeout(absoluteTimer);

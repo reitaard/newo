@@ -574,8 +574,27 @@ export function createSpeakerRuntime({
     for (const waiter of job.flowWaiters) { clearTimeout(waiter.timer); waiter.reject(error); }
     job.flowWaiters.clear();
   }
+  function logContinuity(job, result) {
+    logger.info({
+      event: "SPEAKER_CONTINUITY", playback_id: job.id, tts_backend: backend.name ?? "unknown",
+      completed: result.kind === "complete", error: result.kind === "complete" ? null : (result.error ?? result.kind),
+      source_wait_max_ms: Math.round(job.sourceWaitMaxMs), source_wait_over_40: job.sourceWaitOver40,
+      source_wait_over_80: job.sourceWaitOver80, source_wait_over_120: job.sourceWaitOver120,
+      source_wait_over_200: job.sourceWaitOver200,
+      flow_wait_max_ms: Math.round(job.flowWaitMaxMs), flow_wait_total_ms: Math.round(job.flowWaitTotalMs),
+      flow_wait_count: job.flowWaitCount, flow_wait_over_40: job.flowWaitOver40,
+      flow_wait_over_80: job.flowWaitOver80, flow_wait_over_120: job.flowWaitOver120,
+      send_gap_max_ms: Math.round(job.sendGapMaxMs), send_gap_over_40: job.sendGapOver40,
+      send_gap_over_80: job.sendGapOver80, send_gap_over_120: job.sendGapOver120,
+      send_gap_over_200: job.sendGapOver200,
+      send_gap_worst_buffered_bytes: job.sendGapWorstBufferedBytes,
+      send_gap_worst_received_bytes: job.sendGapWorstReceivedBytes,
+      send_gap_worst_consumed_bytes: job.sendGapWorstConsumedBytes,
+    }, "SPEAKER_CONTINUITY");
+  }
   function settle(job, result) {
     if (job.settled) return;
+    logContinuity(job, result);
     job.settled = true;
     clearTimeout(job.resultTimer);
     rejectFlowWaiters(job, new Error(result.error ?? result.kind));
@@ -683,6 +702,10 @@ export function createSpeakerRuntime({
       throw new Error("speaker flow window exceeded");
     }
   }
+  function recordThresholdGap(job, prefix, elapsedMs, thresholds) {
+    job[`${prefix}MaxMs`] = Math.max(job[`${prefix}MaxMs`], elapsedMs);
+    for (const threshold of thresholds) if (elapsedMs > threshold) job[`${prefix}Over${threshold}`] += 1;
+  }
   async function sendPcmChunk(job, current, chunk) {
     if (!chunk.length || (chunk.length & 1)) throw new Error("invalid_pcm");
     if (job.settled || connection !== current || current.ws.readyState !== 1) throw new Error("speaker disconnected");
@@ -694,6 +717,17 @@ export function createSpeakerRuntime({
     job.statistics.add(chunk);
     recordOutstanding(job);
     await job.transport.sendPcm((data, options) => sendFrame(current.ws, data, options), chunk);
+    const sentAt = performance.now();
+    if (job.lastSuccessfulPcmSendAt !== null) {
+      const gapMs = sentAt - job.lastSuccessfulPcmSendAt;
+      recordThresholdGap(job, "sendGap", gapMs, [40, 80, 120, 200]);
+      if (gapMs >= job.sendGapMaxMs) {
+        job.sendGapWorstBufferedBytes = job.reportedBufferedBytes;
+        job.sendGapWorstReceivedBytes = job.receivedBytes;
+        job.sendGapWorstConsumedBytes = job.consumedBytes;
+      }
+    }
+    job.lastSuccessfulPcmSendAt = sentAt;
     recordOutstanding(job);
     if (job.firstPcmSentAt === null) {
       job.firstPcmSentAt = performance.now();
@@ -709,7 +743,14 @@ export function createSpeakerRuntime({
         job.bytesSent, job.receivedBytes, job.consumedBytes, job.reportedBufferedBytes,
         { receiverBufferTargetBytes, networkInFlightLimitBytes, maxOutstandingBytes },
       );
-      if (credit < nextLength) { await waitForFlow(job); continue; }
+      if (credit < nextLength) {
+        const waitStartedAt = performance.now();
+        await waitForFlow(job);
+        recordThresholdGap(job, "flowWait", performance.now() - waitStartedAt, [40, 80, 120]);
+        job.flowWaitTotalMs += performance.now() - waitStartedAt;
+        job.flowWaitCount += 1;
+        continue;
+      }
       await sendPcmChunk(job, current, chunk.subarray(offset, offset + nextLength));
       offset += nextLength;
     }
@@ -745,7 +786,9 @@ export function createSpeakerRuntime({
       logger.info({ device_id: current.deviceId, playback_id: job.id, streaming: true, max_pcm_bytes: maxStreamBytes }, "Speaker begin sent");
       await sendWithFlow(job, current, first.value);
       while (true) {
+        const sourceWaitStartedAt = performance.now();
         const part = await iterator.next();
+        recordThresholdGap(job, "sourceWait", performance.now() - sourceWaitStartedAt, [40, 80, 120, 200]);
         if (part.done) { sourceCompleted = true; break; }
         await sendWithFlow(job, current, part.value);
       }
@@ -854,6 +897,11 @@ export function createSpeakerRuntime({
       resolve, reject, completion, bytesSent: 0, receivedBytes: 0, consumedBytes: 0, reportedBufferedBytes: 0,
       flowVersion: 0, flowWaiters: new Set(), flowReports: 0, receivedFlowReports: 0, lastFlowReceivedBytes: 0,
       maxNetworkInFlightBytes: 0, totalOutstandingHighWaterBytes: 0, endSent: false,
+      sourceWaitMaxMs: 0, sourceWaitOver40: 0, sourceWaitOver80: 0, sourceWaitOver120: 0, sourceWaitOver200: 0,
+      flowWaitMaxMs: 0, flowWaitTotalMs: 0, flowWaitCount: 0, flowWaitOver40: 0, flowWaitOver80: 0, flowWaitOver120: 0,
+      sendGapMaxMs: 0, sendGapOver40: 0, sendGapOver80: 0, sendGapOver120: 0, sendGapOver200: 0,
+      sendGapWorstBufferedBytes: null, sendGapWorstReceivedBytes: null, sendGapWorstConsumedBytes: null,
+      lastSuccessfulPcmSendAt: null,
       minReportedBufferedBytes: Number.POSITIVE_INFINITY, maxReportedBufferedBytes: 0, statistics: pcmStatistics(), audio: null,
     };
     allJobs.add(job);
