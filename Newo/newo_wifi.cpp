@@ -239,6 +239,7 @@ void NewoWiFi::handleWiFiEvent(arduino_event_id_t eventId, const arduino_event_i
     case ARDUINO_EVENT_PROV_CRED_SUCCESS:
       portENTER_CRITICAL(&provisioningMux_);
       provisioningCredentialsSucceeded_ = true;
+      pendingLedEvent_ = LedEvent::ACCEPTED;
       portEXIT_CRITICAL(&provisioningMux_);
       NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_CREDENTIALS_ACCEPTED");
       break;
@@ -246,6 +247,7 @@ void NewoWiFi::handleWiFiEvent(arduino_event_id_t eventId, const arduino_event_i
     case ARDUINO_EVENT_PROV_CRED_FAIL:
       portENTER_CRITICAL(&provisioningMux_);
       provisioningCredentialsPending_ = false;
+      pendingLedEvent_ = LedEvent::REJECTED;
       provisioningCredentialsSucceeded_ = false;
       portEXIT_CRITICAL(&provisioningMux_);
       NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::PROV, "PROV_CREDENTIALS_REJECTED");
@@ -291,6 +293,7 @@ void NewoWiFi::processProvisioningHandoff() {
 
   stopBleProvisioning();
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_SAVED");
+  pendingLedEvent_ = LedEvent::SAVED;
   scheduleReboot();
 }
 
@@ -336,6 +339,7 @@ void NewoWiFi::loop() {
   if (provisioningActive_) {
     if (provisioningTimedOut()) {
       NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::PROV, "PROV_TIMEOUT");
+      pendingLedEvent_ = LedEvent::TIMEOUT;
       stopBleProvisioning();
     }
     return;
@@ -376,3 +380,11 @@ uint32_t NewoWiFi::connectSuccessCount() const { return connectSuccessCount_; }
 uint32_t NewoWiFi::connectFailureCount() const { return connectFailureCount_; }
 uint32_t NewoWiFi::disconnectCount() const { return disconnectCount_; }
 const char* NewoWiFi::lastDisconnectReason() const { return lastDisconnectReason_; }
+
+NewoWiFi::LedEvent NewoWiFi::consumeLedEvent() {
+  portENTER_CRITICAL(&provisioningMux_);
+  const LedEvent event = pendingLedEvent_;
+  pendingLedEvent_ = LedEvent::NONE;
+  portEXIT_CRITICAL(&provisioningMux_);
+  return event;
+}

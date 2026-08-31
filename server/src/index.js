@@ -158,6 +158,12 @@ const assistantTurnRuntime = createAssistantTurnRuntime({
   isPersistentSpeakerEnabled: () => automaticSpeakerEnabled,
   maxReplyChars: env.ASSISTANT_MAX_REPLY_CHARS,
   logger: app.log,
+  setAssistantState(deviceId, state) {
+    const device = devices.get(deviceId);
+    if (!device || device.ws.readyState !== WebSocket.OPEN) return false;
+    try { device.ws.send(JSON.stringify({ type: "assistant_state", state })); return true; }
+    catch { return false; }
+  },
 });
 const voiceRuntime = createVoiceRuntime({
   logger: app.log,
@@ -693,6 +699,8 @@ wss.on("connection", (ws, request, deviceId) => {
   });
   ws.on("error", () => app.log.warn({ device_id: deviceId }, "Newo WebSocket error"));
   ws.send(JSON.stringify({ type: "hello_ack", device: deviceId, server_time: new Date().toISOString() }));
+  // A fresh device session must never inherit a stale thinking indicator.
+  ws.send(JSON.stringify({ type: "assistant_state", state: "idle" }));
   void speakerRuntime.handleDeviceConnected(deviceId, state);
   const speakerSync = sendDeviceRequest("speaker_control", "speaker_ack", { action: "set_enabled", enabled: automaticSpeakerEnabled });
   if (speakerSync.kind === "sent") void speakerSync.promise.then((result) => app.log.info({ device_id: deviceId, enabled: automaticSpeakerEnabled, result: result.kind }, "Speaker mode synchronized"));

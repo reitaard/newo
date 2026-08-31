@@ -5,12 +5,14 @@
 #include "newo_config.h"
 #include "newo_display.h"
 #include "newo_log.h"
+#include "newo_led.h"
 #include "newo_speaker.h"
 #include "newo_storage.h"
 #include "newo_wifi.h"
 
 NewoStorage newoStorage;
 NewoWiFi newoWiFi(newoStorage);
+NewoLed newoLed;
 NewoDisplay newoDisplay;
 NewoCloud newoCloud(newoWiFi, newoDisplay);
 NewoAudio newoAudio(newoWiFi, newoDisplay);
@@ -31,11 +33,9 @@ void printHardwareInfo() {
 }
 
 void setup() {
-  // Keep the confirmed onboard RGB LED dark.
-  rgbLedWrite(NewoConfig::RGB_LED_PIN, 0, 0, 0);
-
   Serial.begin(115200);
   delay(1200);
+  newoLed.begin();
   printHardwareInfo();
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::BOOT, "BOOT_START");
   newoDisplay.begin();
@@ -70,6 +70,20 @@ void loop() {
   NewoSpeaker::Result speakerResult;
   newoWiFi.loop();
   newoCloud.loop();
+  newoLed.setProvisioning(newoWiFi.provisioningActive());
+  newoLed.setConnectivity(newoWiFi.connected() && newoCloud.connected());
+  switch (newoWiFi.consumeLedEvent()) {
+    case NewoWiFi::LedEvent::ACCEPTED: newoLed.flashProvisioningAccepted(); break;
+    case NewoWiFi::LedEvent::REJECTED: newoLed.flashProvisioningRejected(); break;
+    case NewoWiFi::LedEvent::SAVED: newoLed.flashProvisioningSaved(); break;
+    case NewoWiFi::LedEvent::TIMEOUT: newoLed.flashProvisioningTimeout(); break;
+    case NewoWiFi::LedEvent::NONE: break;
+  }
+  switch (newoCloud.consumeLedEvent()) {
+    case NewoCloud::LedEvent::PING: newoLed.flashPing(); break;
+    case NewoCloud::LedEvent::REBOOT: newoLed.startRebootSequence(); break;
+    case NewoCloud::LedEvent::NONE: break;
+  }
   // Consume every queued control request now. In particular, an OFF/toggle is
   // never held behind a prior request waiting for a streaming task to exit.
   while (newoCloud.consumeVoiceRequest(voiceRequest)) {
@@ -118,6 +132,13 @@ void loop() {
       applied = newoSpeaker.requestTemporaryConnection();
       deferAck = true;  // The uncorrelated manual-test request needs no /device acknowledgement.
     }
+    if (applied && speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::SET_VOLUME) {
+      newoLed.flashVolume(newoSpeaker.volume());
+    } else if (applied && speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::TOGGLE_MUTE) {
+      newoLed.flashMute(newoSpeaker.muted());
+    } else if (applied && speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::SET_ENABLED) {
+      newoLed.flashSpeakerEnabled(newoSpeaker.enabled());
+    }
     if (!deferAck) {
       newoCloud.sendSpeakerAck(speakerControlRequest.requestId, newoSpeaker.enabled(),
                                newoSpeaker.connectionStatus(), newoSpeaker.volume(), newoSpeaker.muted(),
@@ -155,6 +176,11 @@ void loop() {
     }
     pendingVoiceAckCount = 0;
   }
+  if (newoSpeaker.playing()) newoLed.setState(NewoLed::State::SPEAKING);
+  else if (newoAudio.state() == NewoVoiceState::STREAMING) newoLed.setState(NewoLed::State::LISTENING);
+  else if (newoCloud.assistantThinking()) newoLed.setState(NewoLed::State::THINKING);
+  else newoLed.setState(NewoLed::State::IDLE);
+  newoLed.loop();
   newoDisplay.updateTelemetry(newoWiFi.connected(), newoWiFi.rssi(), newoCloud.connected(), millis(),
                               ESP.getFreeHeap(), ESP.getFreePsram(), NewoLog::stats());
   newoDisplay.loop();
