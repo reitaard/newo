@@ -1097,6 +1097,9 @@ export function createSpeakerRuntime({
   function handlePlaybackStarted(deviceId, message) {
     const job = jobs.get(message.playback_id);
     if (!job || job.firstPcmSentAt === null) return false;
+    // The dedicated speaker socket is the low-latency source. The existing
+    // device notification may arrive later with the same authoritative event.
+    if (job.playbackStartedAt !== null) return true;
     job.firstPcmToPlayMs = message.first_pcm_to_play_ms;
     job.playbackStartedAt = performance.now();
     const startWaiter = job.playbackStartWaiter;

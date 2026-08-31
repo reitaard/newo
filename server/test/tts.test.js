@@ -484,6 +484,29 @@ test("realtime pacer waits for physical speaker_started before starting its medi
   runtime.close();
 });
 
+test("dedicated speaker_started wins over a later device duplicate", async () => {
+  const events = [];
+  const capturedLogger = { info(value) { events.push(value); }, warn(value) { events.push(value); } };
+  const ws = fakeSocket({ autoFlow: false, autoStart: false });
+  const backend = { name: "pocket", gainDb: 0, limiter: 1, async stream() {
+    return { metrics: {}, audio: (async function* () { yield Buffer.alloc(17_280, 1); })() };
+  } };
+  const runtime = createSpeakerRuntime({ logger: capturedLogger, enabled: true, backend, getDevice: () => ({}), sendControl: () => true });
+  runtime.handleConnection(ws, "newo-01");
+  const queued = runtime.speak("direct start");
+  await waitFor(() => binaryFrames(ws).length === 7);
+  ws.emitMessage({ type: "speaker_started", playback_id: queued.playbackId, first_pcm_to_play_ms: 100 });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  runtime.handlePlaybackStarted("newo-01", { playback_id: queued.playbackId, first_pcm_to_play_ms: 500 });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
+  assert.equal(events.filter((event) => event.event === "SPEAKER_TTFA").length, 1);
+  assert.equal(events.find((event) => event.event === "SPEAKER_TTFA").first_pcm_to_play_ms, 100);
+  runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 17_280 });
+  await queued.completion;
+  runtime.close();
+});
+
 test("short completed realtime audio ends before waiting for speaker_started", async () => {
   const ws = fakeSocket({ autoStart: false });
   const backend = { gainDb: 0, limiter: 1, async stream() {
