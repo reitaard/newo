@@ -591,8 +591,15 @@ export function createSpeakerRuntime({
     clearTimeout(waiter.timer);
     waiter.reject(error);
   }
+  function resolvePlaybackStartWaiter(job) {
+    const waiter = job.playbackStartWaiter;
+    if (!waiter) return;
+    job.playbackStartWaiter = null;
+    clearTimeout(waiter.timer);
+    waiter.resolve();
+  }
   function waitForPlaybackStart(job, timeoutMs = 5_000) {
-    if (job.playbackStartedAt !== null) return Promise.resolve();
+    if (job.playbackStartedAt !== null || job.receiverReadyAt !== null) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const waiter = { timer: null, resolve, reject };
       waiter.timer = setTimeout(() => {
@@ -711,6 +718,10 @@ export function createSpeakerRuntime({
     const state = speakerDeliveryState(job.bytesSent, receivedBytes, consumedBytes, bufferedBytes);
     job.maxNetworkInFlightBytes = Math.max(job.maxNetworkInFlightBytes, state.networkInFlightBytes);
     job.totalOutstandingHighWaterBytes = Math.max(job.totalOutstandingHighWaterBytes, state.receiverOutstandingBytes);
+    if (bufferedBytes >= SPEAKER_FIRMWARE_PREBUFFER_BYTES || consumedBytes > 0) {
+      job.receiverReadyAt ??= performance.now();
+      resolvePlaybackStartWaiter(job);
+    }
     signalFlow(job);
     return true;
   }
@@ -1058,7 +1069,7 @@ export function createSpeakerRuntime({
       sendGapMaxMs: 0, sendGapOver40: 0, sendGapOver80: 0, sendGapOver120: 0, sendGapOver200: 0,
       sendGapWorstBufferedBytes: null, sendGapWorstReceivedBytes: null, sendGapWorstConsumedBytes: null,
       lastSuccessfulPcmSendAt: null,
-      playbackStartWaiter: null,
+      playbackStartWaiter: null, receiverReadyAt: null,
       minReportedBufferedBytes: Number.POSITIVE_INFINITY, maxReportedBufferedBytes: 0, statistics: pcmStatistics(), audio: null,
     };
     allJobs.add(job);
@@ -1099,12 +1110,7 @@ export function createSpeakerRuntime({
     if (!job || job.firstPcmSentAt === null) return false;
     job.firstPcmToPlayMs = message.first_pcm_to_play_ms;
     job.playbackStartedAt = performance.now();
-    const startWaiter = job.playbackStartWaiter;
-    if (startWaiter) {
-      job.playbackStartWaiter = null;
-      clearTimeout(startWaiter.timer);
-      startWaiter.resolve();
-    }
+    resolvePlaybackStartWaiter(job);
     logger.info({
       event: "SPEAKER_TTFA", device_id: deviceId, playback_id: job.id, tts_backend: backend.name ?? "unknown",
       tts_request_to_first_pcm_ms: job.backendMetrics?.conditionerFirstOutputAt == null ? null : Math.round(job.backendMetrics.conditionerFirstOutputAt - job.backendMetrics.requestStartedAt),
