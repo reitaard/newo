@@ -39,11 +39,13 @@ function fakeSocket({ autoFlow = true } = {}) {
   return {
     readyState: 1,
     frames: [],
+    binarySentAt: [],
     closeCount: 0,
     deliveredBytes: 0,
     on(name, callback) { listeners.set(name, callback); },
     send(data, options, callback) {
       this.frames.push(data);
+      if (Buffer.isBuffer(data)) this.binarySentAt.push(performance.now());
       if (autoFlow && Buffer.isBuffer(data)) {
         this.deliveredBytes += data.length;
         listeners.get("message")?.(Buffer.from(JSON.stringify({
@@ -404,7 +406,7 @@ test("streaming speaker framing emits PCM before synthesis ends", async () => {
     async stream() {
       const metrics = { requestStartedAt: performance.now(), firstAudioByteAt: performance.now(), conditionerFirstOutputAt: performance.now(), completedAt: null };
       return { metrics, audio: (async function* () {
-        yield Buffer.alloc(8_192, 1);
+        yield Buffer.alloc(13_440, 1);
         await new Promise((resolve) => { releaseTail = resolve; });
         yield Buffer.alloc(4_096, 2);
         metrics.completedAt = performance.now();
@@ -420,9 +422,35 @@ test("streaming speaker framing emits PCM before synthesis ends", async () => {
   assert.equal(begin.max_bytes, 2_880_000);
   assert.equal(ws.frames.some((frame) => String(frame).includes("speaker_end")), false);
   releaseTail();
+  await new Promise((resolve) => setTimeout(resolve, 150));
   await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
-  runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 12_288 });
+  runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 17_536 });
   await queued.completion;
+  runtime.close();
+});
+
+test("realtime media pacer sends a seven-frame prompt then 40 ms PCM quanta despite stale flow", async () => {
+  const events = [];
+  const capturedLogger = { info(value) { events.push(value); }, warn(value) { events.push(value); } };
+  const ws = fakeSocket({ autoFlow: false });
+  const backend = { name: "pocket", gainDb: 0, limiter: 1, async stream() {
+    return { metrics: {}, audio: (async function* () { yield Buffer.alloc(38_400, 1); })() };
+  } };
+  const runtime = createSpeakerRuntime({ logger: capturedLogger, enabled: true, backend, getDevice: () => ({}), sendControl: () => true });
+  runtime.handleConnection(ws, "newo-01");
+  const queued = runtime.speak("media clock");
+  // No speaker_flow for more than 500 ms: stale low reports must not stop media.
+  await new Promise((resolve) => setTimeout(resolve, 550));
+  await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
+  assert.equal(binaryFrames(ws).length, 20);
+  assert.ok(ws.binarySentAt[7] - ws.binarySentAt[6] >= 25, "first paced frame must not join the prompt burst");
+  assert.ok(ws.binarySentAt[8] - ws.binarySentAt[7] >= 25, "paced PCM must not burst while flow is stale");
+  const pacer = events.find((event) => event.event === "SPEAKER_PACER");
+  assert.equal(pacer.initial_pcm_bytes, 13_440);
+  assert.equal(pacer.frames_sent, 20);
+  runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 38_400 });
+  await queued.completion;
+  assert.equal(events.find((event) => event.event === "SPEAKER_CONTINUITY").flow_wait_count, 0);
   runtime.close();
 });
 
@@ -448,8 +476,8 @@ test("continuity telemetry aggregates source and flow waits without changing str
   assert.ok(continuity.source_wait_max_ms >= 80);
   assert.ok(continuity.source_wait_over_80 >= 1);
   assert.equal(continuity.flow_wait_count, 0);
-  assert.equal(continuity.send_gap_over_40 >= 1, true);
-  assert.equal(binaryFrames(ws).length, 2);
+  assert.equal(continuity.send_gap_over_40, 0, "short audio remains inside the prompt startup burst");
+  assert.equal(binaryFrames(ws).length, 3);
   runtime.close();
 });
 
@@ -477,29 +505,25 @@ test("continuity telemetry excludes a delayed terminal source completion", async
   runtime.close();
 });
 
-test("continuity telemetry separately records delivery-credit waits", async () => {
+test("continuity telemetry does not gate normal realtime PCM on stale flow", async () => {
   const events = [];
   const capturedLogger = { info(value) { events.push(value); }, warn(value) { events.push(value); } };
   const ws = fakeSocket({ autoFlow: false });
   const backend = { name: "pocket", gainDb: 0, limiter: 1, async stream() {
     return { metrics: {}, audio: (async function* () { yield Buffer.alloc(4_096, 1); })() };
   } };
-  const runtime = createSpeakerRuntime({ logger: capturedLogger, enabled: true, backend, getDevice: () => ({}), sendControl: () => true,
-    receiverBufferTargetBytes: 2_048, networkInFlightLimitBytes: 2_048, maxOutstandingBytes: 2_048, flowTimeoutMs: 500 });
+  const runtime = createSpeakerRuntime({ logger: capturedLogger, enabled: true, backend, getDevice: () => ({}), sendControl: () => true, flowTimeoutMs: 500 });
   runtime.handleConnection(ws, "newo-01");
   const queued = runtime.speak("flow delay");
-  await waitFor(() => binaryFrames(ws).length === 1);
-  await new Promise((resolve) => setTimeout(resolve, 120));
-  ws.emitMessage({ type: "speaker_flow", playback_id: queued.playbackId, received_bytes: 2_048, consumed_bytes: 2_048, buffered_bytes: 0, capacity_bytes: 24_576 });
   await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
   runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 4_096 });
   await queued.completion;
   const continuity = events.find((event) => event.event === "SPEAKER_CONTINUITY");
   assert.equal(continuity.source_wait_over_40, 0);
-  assert.ok(continuity.flow_wait_max_ms >= 80);
-  assert.ok(continuity.flow_wait_total_ms >= 80);
-  assert.equal(continuity.flow_wait_count, 1);
-  assert.equal(binaryFrames(ws).length, 2);
+  assert.equal(continuity.flow_wait_max_ms, 0);
+  assert.equal(continuity.flow_wait_total_ms, 0);
+  assert.equal(continuity.flow_wait_count, 0);
+  assert.equal(binaryFrames(ws).length, 3);
   runtime.close();
 });
 
@@ -535,6 +559,8 @@ test("speaker failure cancels an active source before the next queued job", asyn
   });
   runtime.handleConnection(ws, "newo-01");
   const failed = runtime.speak("cancel this stream");
+  await waitFor(() => binaryFrames(ws).length >= 7);
+  ws.emitMessage({ type: "speaker_flow", playback_id: failed.playbackId, received_bytes: 0, consumed_bytes: 0, buffered_bytes: 22_528, capacity_bytes: 24_576 });
   await assert.rejects(failed.completion, /flow_timeout/);
   assert.equal(cancelled, true, "source finally must run before failed playback settles");
   const producedAtCancel = produced;
