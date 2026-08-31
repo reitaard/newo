@@ -34,7 +34,7 @@ async function waitFor(predicate, attempts = 200) {
   throw new Error("condition not reached");
 }
 
-function fakeSocket({ autoFlow = true } = {}) {
+function fakeSocket({ autoFlow = true, autoStart = true } = {}) {
   const listeners = new Map();
   return {
     readyState: 1,
@@ -45,6 +45,12 @@ function fakeSocket({ autoFlow = true } = {}) {
     on(name, callback) { listeners.set(name, callback); },
     send(data, options, callback) {
       this.frames.push(data);
+      if (autoStart && !Buffer.isBuffer(data)) {
+        const message = JSON.parse(String(data));
+        if (message.type === "speaker_begin") setTimeout(() => listeners.get("message")?.(Buffer.from(JSON.stringify({
+          type: "speaker_started", playback_id: message.playback_id, first_pcm_to_play_ms: 0,
+        })), false), 0);
+      }
       if (Buffer.isBuffer(data)) this.binarySentAt.push(performance.now());
       if (autoFlow && Buffer.isBuffer(data)) {
         this.deliveredBytes += data.length;
@@ -451,6 +457,43 @@ test("realtime media pacer sends a seven-frame prompt then 40 ms PCM quanta desp
   runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 38_400 });
   await queued.completion;
   assert.equal(events.find((event) => event.event === "SPEAKER_CONTINUITY").flow_wait_count, 0);
+  runtime.close();
+});
+
+test("realtime pacer waits for physical speaker_started before starting its media clock", async () => {
+  const events = [];
+  const capturedLogger = { info(value) { events.push(value); }, warn(value) { events.push(value); } };
+  const ws = fakeSocket({ autoFlow: false, autoStart: false });
+  const backend = { name: "pocket", gainDb: 0, limiter: 1, async stream() {
+    return { metrics: {}, audio: (async function* () { yield Buffer.alloc(17_280, 1); })() };
+  } };
+  const runtime = createSpeakerRuntime({ logger: capturedLogger, enabled: true, backend, getDevice: () => ({}), sendControl: () => true });
+  runtime.handleConnection(ws, "newo-01");
+  const queued = runtime.speak("prebuffer start");
+  await waitFor(() => binaryFrames(ws).length === 7);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(binaryFrames(ws).length, 7, "no paced frame may precede physical prebuffer start");
+  runtime.handlePlaybackStarted("newo-01", { playback_id: queued.playbackId, first_pcm_to_play_ms: 400 });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
+  assert.equal(binaryFrames(ws).length, 9);
+  assert.ok(ws.binarySentAt[7] - ws.binarySentAt[6] >= 25);
+  runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 17_280 });
+  await queued.completion;
+  assert.equal(events.find((event) => event.event === "SPEAKER_CONTINUITY").flow_wait_count, 0);
+  runtime.close();
+});
+
+test("realtime pacer fails cleanly when speaker_started never arrives", async () => {
+  const ws = fakeSocket({ autoStart: false });
+  const backend = { gainDb: 0, limiter: 1, async stream() {
+    return { metrics: {}, audio: (async function* () { yield Buffer.alloc(13_440, 1); })() };
+  } };
+  const runtime = createSpeakerRuntime({ logger: logger(), enabled: true, backend, getDevice: () => ({}), sendControl: () => true, playbackStartTimeoutMs: 20 });
+  runtime.handleConnection(ws, "newo-01");
+  const queued = runtime.speak("missing start");
+  await assert.rejects(queued.completion, /speaker_start_timeout/);
+  assert.equal(binaryFrames(ws).length, 7);
   runtime.close();
 });
 
