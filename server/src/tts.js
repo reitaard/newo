@@ -816,8 +816,19 @@ export function createSpeakerRuntime({
     connectionPromise.catch(() => {});
     job.synthesisStartedAt = performance.now();
     if (typeof backend.stream === "function") {
-      const [source, current] = await Promise.all([backend.stream(job.text, format), connectionPromise]);
-      return streamRealtime(job, current, source);
+      // A backend can have opened a local streaming response while speaker connection
+      // negotiation fails. Explicitly cancel it rather than leaving Pocket producing.
+      const sourcePromise = backend.stream(job.text, format);
+      let source = null;
+      try {
+        const result = await Promise.all([sourcePromise, connectionPromise]);
+        source = result[0];
+        return await streamRealtime(job, result[1], source);
+      } catch (error) {
+        source ??= await sourcePromise.catch(() => null);
+        source?.cancel?.();
+        throw error;
+      }
     }
     const [pcm, current] = await Promise.all([backend.synthesize(job.text, format), connectionPromise]);
     job.ttsCompletedAt = performance.now();

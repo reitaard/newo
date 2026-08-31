@@ -66,9 +66,19 @@ docker compose -f docker-compose.kokoro.yml up -d
 curl -fsS http://127.0.0.1:8010/healthz
 ```
 
-Configure Newo with `TTS_ENABLED=true`, `TTS_BACKEND=kokoro`, `TTS_VOICE=am_michael`, `TTS_SPEED=1.0`, `TTS_SAMPLE_RATE=24000`, `TTS_GAIN_DB=2`, and `KOKORO_BASE_URL=http://127.0.0.1:8010`. Voice and speed remain configurable; American alternatives include `am_eric`, `am_fenrir`, and `af_heart`. Set `TTS_BACKEND=espeak`, `TTS_VOICE=en`, and normally `TTS_GAIN_DB=6` for the local fallback. An individual Kokoro failure is reported and never silently replaced with eSpeak.
+Pocket is the default backend: run the local-only warm service from the isolated Pocket virtual environment before starting Newo:
 
-Kokoro is requested through `/v1/audio/realtime` with `response_format=pcm`. Upstream converts its mono float waveform to signed little-endian PCM16 at the model's native 24 kHz before streaming it. Short and medium replies stay intact; longer replies are divided only at natural sentence boundaries so their first sentence can synthesize and play while later sentences generate into a strictly bounded producer queue. Newo accepts only non-empty, even-length `application/octet-stream`, then incrementally pipes it through FFmpeg's 110 Hz high-pass, configurable gain, and 0.95 limiter with auto-gain disabled. Compressed and malformed responses are rejected. Peak/RMS, clipping, first Kokoro byte, first conditioned output, full generation time, and reply-ready-to-audible estimates are logged.
+```bash
+cd /opt/newo
+HF_HOME=/opt/newo-pocket-tts-proto/cache/huggingface \
+  /opt/newo-pocket-tts-proto/.venv/bin/python server/pocket-tts-service.py --port 8123
+```
+
+Set `TTS_ENABLED=true`, `TTS_BACKEND=pocket`, `SPEAKER_CODEC=opus`, and `POCKET_BASE_URL=http://127.0.0.1:8123`. The service loads one CPU FP32 model, applies Pocket's dynamic INT8 quantization once (`torch.ao` when `torchao` is absent), and prepares only the evaluated `michael` state once. It binds only to loopback and serializes generation because Pocket is not thread-safe. No authentication is required for the released without-voice-cloning fallback model/state already present in the isolated cache.
+
+Pocket returns native 24 kHz mono f32le in a genuinely streamed HTTP response. Newo validates the audio headers and incrementally carries 0–3 split float bytes, rejects non-finite/incomplete samples, clips safely to PCM16LE, and immediately feeds canonical PCM16 into the unchanged native Opus path (24 kbps, 40 ms/960-sample frames). It does not resample, invoke FFmpeg, write WAVs, collect the utterance, or apply the Kokoro high-pass/gain/limiter. `POCKET_REQUEST`, `POCKET_FIRST_PCM`, and `POCKET_DONE` logs distinguish request-to-first PCM, total generation, and generated audio duration. Pocket receives the natural bounded reply text intact; Newo's 28-character Kokoro opening segmentation is not used. Pocket retains its upstream roughly 50-token split policy; unusually long boundary-free text can produce its upstream skipped-word warning.
+
+`TTS_BACKEND=kokoro` remains the rollback: configure `TTS_VOICE=am_michael`, `TTS_SPEED=1.0`, `TTS_GAIN_DB=2`, and `KOKORO_BASE_URL=http://127.0.0.1:8010`. Kokoro continues to use its existing FFmpeg high-pass/gain/limiter path. `TTS_BACKEND=espeak` remains a separate explicit fallback. A Pocket failure is reported to the job and never silently substitutes a different voice/backend.
 
 Telegram network send starts first and TTS starts immediately afterward without awaiting Telegram. Neither operation blocks or poisons the other. Bounded text handling remains at 300 characters. `/speaker` persists automatic spoken replies on the VPS and in ESP NVS; `/speak <text>` (alias `/sp`) uses a temporary authenticated stream while automatic replies are OFF.
 

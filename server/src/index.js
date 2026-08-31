@@ -9,7 +9,8 @@ import { z } from "zod";
 import { createAssistantRuntime } from "./assistant.js";
 import { createAssistantTurnRuntime } from "./assistant-turn.js";
 import { createRuntimeStateStore } from "./runtime-state.js";
-import { createSpeakerRuntime, EspeakTtsBackend, KokoroTtsBackend, startTelegramAndSpeech, ESPEAK_GAIN_DB, SPEAKER_GAIN_DB } from "./tts.js";
+import { createSpeakerRuntime, startTelegramAndSpeech } from "./tts.js";
+import { createTtsBackend } from "./tts-backend.js";
 import { createPrimaryModeHandlers } from "./telegram-mode-commands.js";
 import { createVoiceRuntime, NullAsrBackend, WorkerAsrBackend } from "./voice.js";
 
@@ -59,7 +60,8 @@ const EnvSchema = z.object({
   ASSISTANT_MAX_OUTPUT_TOKENS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(8).max(128).default(48)),
   ASSISTANT_MAX_REPLY_CHARS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(40).max(500).default(240)),
   TTS_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
-  TTS_BACKEND: z.preprocess(emptyToUndefined, z.enum(["kokoro", "espeak"]).default("kokoro")),
+  SPEAKER_CODEC: z.preprocess(emptyToUndefined, z.enum(["opus", "pcm"]).default("opus")),
+  TTS_BACKEND: z.preprocess(emptyToUndefined, z.enum(["pocket", "kokoro", "espeak"]).default("pocket")),
   TTS_VOICE: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   TTS_SPEED: z.preprocess(emptyToUndefined, z.coerce.number().min(0.25).max(4).default(1)),
   TTS_SAMPLE_RATE: z.preprocess(emptyToUndefined, z.coerce.number().int().refine((value) => value === 24_000, "speaker output must be 24000 Hz").default(24_000)),
@@ -71,10 +73,16 @@ const EnvSchema = z.object({
   KOKORO_REQUEST_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(120_000).default(30_000)),
   KOKORO_STREAM_NO_PROGRESS_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(30_000).default(10_000)),
   KOKORO_STREAM_ABSOLUTE_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(10_000).max(75_000).default(70_000)),
+  POCKET_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://127.0.0.1:8123")),
+  POCKET_REQUEST_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(120_000).default(30_000)),
+  POCKET_STREAM_NO_PROGRESS_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(30_000).default(10_000)),
+  POCKET_STREAM_ABSOLUTE_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(10_000).max(75_000).default(70_000)),
   RUNTIME_STATE_FILE: z.preprocess(emptyToUndefined, z.string().default("data/runtime-state.json")),
 });
 
 const env = EnvSchema.parse(process.env);
+// OpusPlaybackTransport reads this existing process setting directly.
+process.env.SPEAKER_CODEC = env.SPEAKER_CODEC;
 if (env.TELEGRAM_BOT_TOKEN && !env.TELEGRAM_WEBHOOK_SECRET) throw new Error("TELEGRAM_WEBHOOK_SECRET is required when TELEGRAM_BOT_TOKEN is set");
 
 const parseIdSet = (value) => new Set((value ?? "").split(",").map((item) => item.trim()).filter(Boolean));
@@ -111,17 +119,7 @@ let shuttingDown = false;
 const runtimeState = createRuntimeStateStore({ filePath: env.RUNTIME_STATE_FILE, logger: app.log });
 let automaticSpeakerEnabled = runtimeState.speakerEnabled;
 
-const ttsVoice = env.TTS_VOICE ?? (env.TTS_BACKEND === "kokoro" ? "am_michael" : "en");
-const ttsGainDb = env.TTS_GAIN_DB ?? (env.TTS_BACKEND === "kokoro" ? SPEAKER_GAIN_DB : ESPEAK_GAIN_DB);
-const ttsBackend = env.TTS_BACKEND === "kokoro"
-  ? new KokoroTtsBackend({
-    baseUrl: env.KOKORO_BASE_URL, voice: ttsVoice, speed: env.TTS_SPEED,
-    requestTimeoutMs: env.KOKORO_REQUEST_TIMEOUT_MS,
-    streamNoProgressMs: env.KOKORO_STREAM_NO_PROGRESS_MS,
-    streamAbsoluteMs: env.KOKORO_STREAM_ABSOLUTE_MS,
-    gainDb: ttsGainDb, maxPcmBytes: env.TTS_MAX_PCM_BYTES, logger: app.log,
-  })
-  : new EspeakTtsBackend({ voice: ttsVoice, rate: env.TTS_RATE, gainDb: ttsGainDb, maxPcmBytes: env.TTS_MAX_PCM_BYTES });
+const ttsBackend = createTtsBackend(env, app.log);
 
 const speakerRuntime = createSpeakerRuntime({
   logger: app.log,

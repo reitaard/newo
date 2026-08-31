@@ -22,6 +22,8 @@ import {
   startTelegramAndSpeech,
   telegramHtmlToSpeech,
 } from "../src/tts.js";
+import { Float32ToPcm16, PocketTtsBackend } from "../src/pocket-tts.js";
+import { createTtsBackend } from "../src/tts-backend.js";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 async function waitFor(predicate, attempts = 200) {
@@ -59,6 +61,83 @@ function fakeSocket({ autoFlow = true } = {}) {
 
 function logger() { return { info() {}, warn() {} }; }
 function binaryFrames(ws) { return ws.frames.filter(Buffer.isBuffer); }
+
+test("Pocket is selectable and Kokoro remains an explicit rollback backend", () => {
+  const base = { TTS_VOICE: undefined, TTS_GAIN_DB: undefined, TTS_SPEED: 1, TTS_RATE: 155, TTS_MAX_PCM_BYTES: 2_880_000,
+    POCKET_BASE_URL: "http://127.0.0.1:8123", POCKET_REQUEST_TIMEOUT_MS: 30_000, POCKET_STREAM_NO_PROGRESS_MS: 10_000, POCKET_STREAM_ABSOLUTE_MS: 70_000,
+    KOKORO_BASE_URL: "http://127.0.0.1:8010", KOKORO_REQUEST_TIMEOUT_MS: 30_000, KOKORO_STREAM_NO_PROGRESS_MS: 10_000, KOKORO_STREAM_ABSOLUTE_MS: 70_000 };
+  const pocket = createTtsBackend({ ...base, TTS_BACKEND: "pocket" });
+  assert.ok(pocket instanceof PocketTtsBackend); assert.equal(pocket.voice, "michael"); assert.equal(pocket.gainDb, 0);
+  const kokoro = createTtsBackend({ ...base, TTS_BACKEND: "kokoro" });
+  assert.ok(kokoro instanceof KokoroTtsBackend); assert.equal(kokoro.voice, "am_michael");
+});
+
+test("Pocket float32 converter preserves samples across arbitrary network boundaries", () => {
+  const raw = Buffer.alloc(20);
+  [-1, -0.5, 0, 0.5, 1].forEach((value, index) => raw.writeFloatLE(value, index * 4));
+  const converter = new Float32ToPcm16();
+  const pcm = Buffer.concat([converter.push(raw.subarray(0, 3)), converter.push(raw.subarray(3, 11)), converter.push(raw.subarray(11))]);
+  converter.finish();
+  assert.deepEqual([...Array(5).keys()].map((index) => pcm.readInt16LE(index * 2)), [-32768, -16384, 0, 16384, 32767]);
+  const incomplete = new Float32ToPcm16();
+  incomplete.push(Buffer.from([0, 0, 0]));
+  assert.throws(() => incomplete.finish(), /incomplete/);
+  const invalid = new Float32ToPcm16();
+  const nan = Buffer.alloc(4); nan.writeFloatLE(Number.NaN, 0);
+  assert.throws(() => invalid.push(nan), /invalid Pocket float32 sample/);
+});
+
+test("Pocket backend streams unsegmented natural text and converts before response end", async () => {
+  let requestBody;
+  let finishResponse;
+  const first = Buffer.alloc(8); first.writeFloatLE(0.25, 0); first.writeFloatLE(-0.25, 4);
+  const server = createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      response.writeHead(200, { "content-type": "application/octet-stream", "x-audio-sample-rate": "24000", "x-audio-channels": "1", "x-audio-format": "pcm_f32le" });
+      response.write(first.subarray(0, 3)); response.write(first.subarray(3));
+      finishResponse = () => response.end(Buffer.from(first));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const backend = new PocketTtsBackend({ baseUrl: `http://127.0.0.1:${server.address().port}`, voice: "michael" });
+  try {
+    const text = "Hello, I'm Newo. The speaker is connected and ready.";
+    const source = await backend.stream(text, { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
+    const iterator = source.audio[Symbol.asyncIterator]();
+    const firstOutput = await iterator.next();
+    assert.equal(firstOutput.done, false);
+    assert.equal(firstOutput.value.length, 4, "first PCM is available before stream completion");
+    assert.deepEqual(requestBody, { input: text, voice: "michael" }, "Pocket receives natural text, not Kokoro 28-char segments");
+    finishResponse();
+    const rest = await iterator.next();
+    assert.equal(rest.value.length, 4);
+    assert.equal((await iterator.next()).done, true);
+    assert.equal(source.metrics.conditionedPcmBytes, 8);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+
+test("Pocket backend reports service failure and cancellation closes its HTTP stream", async () => {
+  const unavailable = new PocketTtsBackend({ baseUrl: "http://127.0.0.1:1", requestTimeoutMs: 1_000 });
+  await assert.rejects(unavailable.stream("test", { sampleRate: 24_000, channels: 1, bitsPerSample: 16 }), /Pocket unavailable/);
+  let closed = false;
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/octet-stream", "x-audio-sample-rate": "24000", "x-audio-channels": "1", "x-audio-format": "pcm_f32le" });
+    const timer = setInterval(() => response.write(Buffer.from([0, 0, 0, 0])), 5);
+    response.on("close", () => { clearInterval(timer); closed = true; });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const backend = new PocketTtsBackend({ baseUrl: `http://127.0.0.1:${server.address().port}` });
+  try {
+    const source = await backend.stream("cancel", { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
+    const iterator = source.audio[Symbol.asyncIterator]();
+    await iterator.next();
+    source.cancel(); await iterator.return();
+    await waitFor(() => closed);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
 
 test("Telegram HTML becomes bounded natural speech", () => {
   assert.equal(
@@ -628,6 +707,20 @@ test("speaker completion verifies playback ID and final byte count", async () =>
   assert.equal(runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: "00000000-0000-4000-8000-000000000000", bytes: 4_096 }), false);
   runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 2_048 });
   await assert.rejects(queued.completion, /truncated/);
+  runtime.close();
+});
+
+test("speaker connection failure cancels a started streaming backend", async () => {
+  let cancelled = false;
+  const runtime = createSpeakerRuntime({
+    logger: logger(), enabled: true, getDevice: () => ({}), sendControl: () => true, connectionTimeoutMs: 20,
+    backend: { gainDb: 0, limiter: 1, async stream() { return { metrics: {}, audio: (async function* () { yield Buffer.alloc(2); })(), cancel() { cancelled = true; } }; } },
+  });
+  const queued = runtime.speak("cancel opened backend");
+  const keepAlive = setTimeout(() => {}, 100);
+  await assert.rejects(queued.completion, /speaker connection timeout/);
+  clearTimeout(keepAlive);
+  assert.equal(cancelled, true);
   runtime.close();
 });
 
