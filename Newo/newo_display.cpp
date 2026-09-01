@@ -330,11 +330,7 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
         gap = 22;
         break;
       case NewoFaceStyle::CONFUSED:
-        leftW = 66;
-        rightW = 52;
-        baseHeight = 37;
-        gap = 23;
-        verticalOffset = -1;
+        // Keep neutral geometry: the upstream horizontal flicker is the expression.
         break;
       case NewoFaceStyle::LAUGH:
         leftW = rightW = 67;
@@ -419,7 +415,7 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   if (mode_ == NewoDisplayMode::ERROR && now - modeStartedMs_ < 520) {
     shake = static_cast<int16_t>(sinf(static_cast<float>(now - modeStartedMs_) * 0.075f) * 4.0f);
   }
-  const uint32_t styleBurstMs = now % 2200; // 500 ms RoboEyes burst, then calm.
+  const uint32_t styleBurstMs = (now - modeStartedMs_) % 2200; // selection-relative 500 ms burst, then calm.
   if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CONFUSED && styleBurstMs < 500) {
     // Upstream anim_confused: approximately 20 px horizontal flicker.
     shake += static_cast<int16_t>(sinf(static_cast<float>(styleBurstMs) * 0.075f) * 20.0f);
@@ -448,18 +444,15 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
     int16_t leftX = (kEyeCanvasWidth - totalWidth) / 2 + gazeX_ + shake;
     int16_t rightX = leftX + leftW + gap;
     int16_t y = (kEyeCanvasHeight - baseHeight) / 2 + gazeY_ + floatY + verticalOffset;
-    if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CONFUSED) {
-      y -= 2;
-    }
     y += (baseHeight - height) / 2;
     const int16_t radius = height > 3 ? height / 2 : 1;
 
     int16_t leftHeight = height;
     int16_t rightHeight = height;
     int16_t leftY = y;
-    int16_t rightY = mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CONFUSED ? y + 6 : y;
-    if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::WINK_LEFT) leftHeight = 3;
-    if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::WINK_RIGHT) rightHeight = 3;
+    int16_t rightY = y;
+    if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::WINK_LEFT) { leftHeight = 3; leftY += (baseHeight - leftHeight) / 2; }
+    if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::WINK_RIGHT) { rightHeight = 3; rightY += (baseHeight - rightHeight) / 2; }
     if (height >= 8 && curiousLeftLift) {
       leftHeight += curiousLeftLift;
       leftY -= curiousLeftLift / 2;
@@ -474,13 +467,14 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
     applyEyeExpression(leftX, rightX, y, leftW, rightW, height);
 
     if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::SWEAT && height >= 8) {
-      const int16_t dropX = rightX + rightW + 7;
-      const int16_t dropBob = static_cast<int16_t>((sinf(static_cast<float>(now % 900) / 900.0f * 6.2831853f) + 1.0f) * 2.0f);
-      const int16_t dropY = y + 5 + dropBob;
+      // Three independent phase offsets across the forehead; each falls, grows, then shrinks.
       for (uint8_t drop = 0; drop < 3; ++drop) {
-        const int16_t dy = static_cast<int16_t>((dropBob + drop * 6) % 18);
-        eyeCanvas_.fillCircle(dropX + drop * 4, dropY + dy + 3, 2, 1);
-        eyeCanvas_.fillTriangle(dropX + drop * 4, dropY + dy - 2, dropX + drop * 4 - 2, dropY + dy + 3, dropX + drop * 4 + 2, dropY + dy + 3, 1);
+        const uint16_t phase = static_cast<uint16_t>((now / 9 + drop * 31) % 100);
+        const int16_t dropX = 42 + drop * 58;
+        const int16_t dropY = 3 + phase / 4;
+        const int16_t radius = phase < 50 ? 1 + phase / 25 : 1 + (99 - phase) / 25;
+        eyeCanvas_.fillCircle(dropX, dropY + radius, radius, 1);
+        eyeCanvas_.fillTriangle(dropX, dropY - radius - 1, dropX - radius, dropY + radius, dropX + radius, dropY + radius, 1);
       }
     }
   }
