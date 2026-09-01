@@ -198,11 +198,11 @@ void NewoDisplay::updateGaze(uint32_t now) {
         int16_t rangeY = 6;
         uint16_t minDelay = 1'300;
         uint16_t maxDelay = 3'401;
-        if (faceStyle_ == NewoFaceStyle::TIRED) {
-          rangeX = 8;
-          rangeY = 3;
-          minDelay = 2'000;
-          maxDelay = 4'201;
+        if (faceStyle_ == NewoFaceStyle::TIRED || faceStyle_ == NewoFaceStyle::SLEEPY) {
+          rangeX = faceStyle_ == NewoFaceStyle::SLEEPY ? 3 : 8;
+          rangeY = faceStyle_ == NewoFaceStyle::SLEEPY ? 1 : 3;
+          minDelay = faceStyle_ == NewoFaceStyle::SLEEPY ? 3'500 : 2'000;
+          maxDelay = faceStyle_ == NewoFaceStyle::SLEEPY ? 6'001 : 4'201;
         } else if (faceStyle_ == NewoFaceStyle::CURIOUS || faceStyle_ == NewoFaceStyle::CONFUSED) {
           rangeX = 17;
           rangeY = 7;
@@ -262,7 +262,7 @@ void NewoDisplay::applyEyeExpression(int16_t leftX, int16_t rightX, int16_t y, i
   bool happy = mode_ == NewoDisplayMode::SPEAKING;
   bool angry = mode_ == NewoDisplayMode::ERROR;
   if (mode_ == NewoDisplayMode::IDLE) {
-    tired = faceStyle_ == NewoFaceStyle::TIRED;
+    tired = faceStyle_ == NewoFaceStyle::TIRED || faceStyle_ == NewoFaceStyle::SLEEPY;
     happy = faceStyle_ == NewoFaceStyle::HAPPY || faceStyle_ == NewoFaceStyle::LAUGH;
     angry = faceStyle_ == NewoFaceStyle::ANGRY;
   }
@@ -419,14 +419,14 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   if (mode_ == NewoDisplayMode::ERROR && now - modeStartedMs_ < 520) {
     shake = static_cast<int16_t>(sinf(static_cast<float>(now - modeStartedMs_) * 0.075f) * 4.0f);
   }
-  if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CONFUSED) {
-    // Upstream anim_confused is a horizontal eye shake.
-    shake += static_cast<int16_t>(sinf(static_cast<float>(now % 420) / 420.0f * 6.2831853f * 2.0f) * 5.0f);
+  const uint32_t styleBurstMs = now % 2200; // 500 ms RoboEyes burst, then calm.
+  if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CONFUSED && styleBurstMs < 500) {
+    // Upstream anim_confused: approximately 20 px horizontal flicker.
+    shake += static_cast<int16_t>(sinf(static_cast<float>(styleBurstMs) * 0.075f) * 20.0f);
   }
-  if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::LAUGH) {
-    // Upstream anim_laugh is a vertical shake; make it visibly stronger than
-    // the normal one-pixel idle float while keeping the same bounded canvas.
-    verticalOffset += static_cast<int16_t>(sinf(static_cast<float>(now % 420) / 420.0f * 6.2831853f * 2.0f) * 5.0f);
+  if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::LAUGH && styleBurstMs < 500) {
+    // Upstream anim_laugh: approximately 5 px vertical flicker; HAPPY rests between bursts.
+    verticalOffset += static_cast<int16_t>(sinf(static_cast<float>(styleBurstMs) * 0.075f) * 5.0f);
   }
 
   int16_t height = baseHeight;
@@ -462,11 +462,11 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
     if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::WINK_RIGHT) rightHeight = 3;
     if (height >= 8 && curiousLeftLift) {
       leftHeight += curiousLeftLift;
-      leftY -= curiousLeftLift;
+      leftY -= curiousLeftLift / 2;
     }
     if (height >= 8 && curiousRightLift) {
       rightHeight += curiousRightLift;
-      rightY -= curiousRightLift;
+      rightY -= curiousRightLift / 2;
     }
 
     eyeCanvas_.fillRoundRect(leftX, leftY, leftW, leftHeight, leftHeight > 3 ? leftHeight / 2 : 1, 1);
