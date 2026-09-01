@@ -17,6 +17,9 @@ constexpr uint32_t kTemporaryMs = 7'000;
 constexpr uint32_t kEcoPageMs = 5'000;
 constexpr uint32_t kNormalFaceFrameMs = 50;    // ~20 FPS.
 constexpr uint32_t kSpeakingFaceFrameMs = 120;  // ~8.3 FPS while audio has priority.
+constexpr uint32_t kWinkBurstMs = 240;
+constexpr uint32_t kWinkCalmMinMs = 2'000;
+constexpr uint32_t kWinkCalmMaxMs = 4'001;
 constexpr uint16_t kWhite = ST77XX_WHITE;
 constexpr int16_t kEyeCanvasWidth = 200;
 constexpr int16_t kEyeCanvasHeight = 82;
@@ -173,6 +176,9 @@ void NewoDisplay::resetFaceMotion(uint32_t now) {
   blinkFramesRemaining_ = 0;
   verificationBlink_ = true;
   nextBlinkMs_ = now + 1'000;
+  nextWinkMs_ = now + static_cast<uint32_t>(random(kWinkCalmMinMs, kWinkCalmMaxMs));
+  winkStartedMs_ = 0;
+  winkActive_ = false;
   gazeX_ = 0;
   gazeY_ = 0;
   gazeTargetX_ = 0;
@@ -186,11 +192,15 @@ void NewoDisplay::updateGaze(uint32_t now) {
     switch (mode_) {
       case NewoDisplayMode::IDLE: {
         // Fixed RoboEyes positions reuse the normal gaze state; no idle randomness.
-        if (faceStyle_ >= NewoFaceStyle::LOOK_LEFT && faceStyle_ <= NewoFaceStyle::LOOK_UP_RIGHT) {
-          gazeTargetX_ = (faceStyle_ == NewoFaceStyle::LOOK_LEFT || faceStyle_ == NewoFaceStyle::LOOK_UP_LEFT) ? -14 :
-                         (faceStyle_ == NewoFaceStyle::LOOK_RIGHT || faceStyle_ == NewoFaceStyle::LOOK_UP_RIGHT) ? 14 : 0;
-          gazeTargetY_ = (faceStyle_ == NewoFaceStyle::LOOK_UP || faceStyle_ == NewoFaceStyle::LOOK_UP_LEFT || faceStyle_ == NewoFaceStyle::LOOK_UP_RIGHT) ? -8 :
-                         faceStyle_ == NewoFaceStyle::LOOK_DOWN ? 8 : 0;
+        if (faceStyle_ >= NewoFaceStyle::LOOK_LEFT && faceStyle_ <= NewoFaceStyle::LOOK_DOWN_RIGHT) {
+          gazeTargetX_ = (faceStyle_ == NewoFaceStyle::LOOK_LEFT || faceStyle_ == NewoFaceStyle::LOOK_UP_LEFT ||
+                          faceStyle_ == NewoFaceStyle::LOOK_DOWN_LEFT) ? -14 :
+                         (faceStyle_ == NewoFaceStyle::LOOK_RIGHT || faceStyle_ == NewoFaceStyle::LOOK_UP_RIGHT ||
+                          faceStyle_ == NewoFaceStyle::LOOK_DOWN_RIGHT) ? 14 : 0;
+          gazeTargetY_ = (faceStyle_ == NewoFaceStyle::LOOK_UP || faceStyle_ == NewoFaceStyle::LOOK_UP_LEFT ||
+                          faceStyle_ == NewoFaceStyle::LOOK_UP_RIGHT) ? -8 :
+                         (faceStyle_ == NewoFaceStyle::LOOK_DOWN || faceStyle_ == NewoFaceStyle::LOOK_DOWN_LEFT ||
+                          faceStyle_ == NewoFaceStyle::LOOK_DOWN_RIGHT) ? 8 : 0;
           nextGazeMs_ = now + 1000;
           break;
         }
@@ -296,9 +306,23 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   const uint32_t frameStartedUs = micros();
   eyeCanvas_.fillScreen(0);
 
-  if (blinkPhase_ == BlinkPhase::OPEN && static_cast<int32_t>(now - nextBlinkMs_) >= 0) {
-    blinkPhase_ = BlinkPhase::HALF_CLOSED;
-    blinkFramesRemaining_ = 1;
+  const bool winkStyle = mode_ == NewoDisplayMode::IDLE &&
+                         (faceStyle_ == NewoFaceStyle::WINK_LEFT || faceStyle_ == NewoFaceStyle::WINK_RIGHT);
+  if (winkActive_ && now - winkStartedMs_ >= kWinkBurstMs) {
+    winkActive_ = false;
+    nextWinkMs_ = now + static_cast<uint32_t>(random(kWinkCalmMinMs, kWinkCalmMaxMs));
+    // Do not start a delayed autoblink immediately after a wink burst.
+    nextBlinkMs_ = now + static_cast<uint32_t>(random(2'500, 5'501));
+  }
+  if (blinkPhase_ == BlinkPhase::OPEN && !winkActive_) {
+    if (winkStyle && static_cast<int32_t>(now - nextWinkMs_) >= 0) {
+      winkActive_ = true;
+      winkStartedMs_ = now;
+    } else if (static_cast<int32_t>(now - nextBlinkMs_) >= 0) {
+      // Autoblink always animates both eyes; a pending wink waits for it to finish.
+      blinkPhase_ = BlinkPhase::HALF_CLOSED;
+      blinkFramesRemaining_ = 1;
+    }
   }
   updateGaze(now);
 
@@ -353,12 +377,6 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
         break;
       case NewoFaceStyle::CLOSED:
         baseHeight = 4;
-        break;
-      case NewoFaceStyle::WINK_LEFT:
-        baseHeight = 36;
-        break;
-      case NewoFaceStyle::WINK_RIGHT:
-        baseHeight = 36;
         break;
       case NewoFaceStyle::SURPRISED:
         leftW = rightW = 54; baseHeight = 54; gap = 28;
@@ -458,8 +476,20 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
     int16_t rightHeight = height;
     int16_t leftY = y;
     int16_t rightY = y;
-    if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::WINK_LEFT) { leftHeight = 3; leftY += (baseHeight - leftHeight) / 2; }
-    if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::WINK_RIGHT) { rightHeight = 3; rightY += (baseHeight - rightHeight) / 2; }
+    if (winkActive_) {
+      const uint32_t winkElapsedMs = now - winkStartedMs_;
+      int16_t winkHeight = baseHeight;
+      if (winkElapsedMs < 60 || winkElapsedMs >= 180) winkHeight = static_cast<int16_t>(baseHeight * 0.40f);
+      else winkHeight = static_cast<int16_t>(baseHeight * 0.07f);
+      if (winkHeight < 2) winkHeight = 2;
+      if (faceStyle_ == NewoFaceStyle::WINK_LEFT) {
+        leftHeight = winkHeight;
+        leftY += (baseHeight - winkHeight) / 2;
+      } else {
+        rightHeight = winkHeight;
+        rightY += (baseHeight - winkHeight) / 2;
+      }
+    }
     if (height >= 8 && curiousLeftLift) {
       leftHeight += curiousLeftLift;
       leftY -= curiousLeftLift / 2;

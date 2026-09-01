@@ -283,6 +283,8 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     else if (strcmp(mode, "look_down") == 0) faceStyle = NewoFaceStyle::LOOK_DOWN;
     else if (strcmp(mode, "look_up_left") == 0) faceStyle = NewoFaceStyle::LOOK_UP_LEFT;
     else if (strcmp(mode, "look_up_right") == 0) faceStyle = NewoFaceStyle::LOOK_UP_RIGHT;
+    else if (strcmp(mode, "look_down_left") == 0) faceStyle = NewoFaceStyle::LOOK_DOWN_LEFT;
+    else if (strcmp(mode, "look_down_right") == 0) faceStyle = NewoFaceStyle::LOOK_DOWN_RIGHT;
     else if (strcmp(mode, "surprised") == 0) faceStyle = NewoFaceStyle::SURPRISED;
     else if (strcmp(mode, "sleepy") == 0) faceStyle = NewoFaceStyle::SLEEPY;
     else faceSelection = false;

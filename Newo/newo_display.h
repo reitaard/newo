@@ -6,7 +6,7 @@
 #include "newo_log.h"
 
 enum class NewoDisplayMode : uint8_t { IDLE, LISTENING, THINKING, SPEAKING, ERROR, MESSAGE, ECO };
-enum class NewoFaceStyle : uint8_t { NEUTRAL, HAPPY, ANGRY, TIRED, CURIOUS, CONFUSED, LAUGH, SWEAT, CYCLOPS, CLOSED, WINK_LEFT, WINK_RIGHT, LOOK_LEFT, LOOK_RIGHT, LOOK_UP, LOOK_DOWN, LOOK_UP_LEFT, LOOK_UP_RIGHT, SURPRISED, SLEEPY };
+enum class NewoFaceStyle : uint8_t { NEUTRAL, HAPPY, ANGRY, TIRED, CURIOUS, CONFUSED, LAUGH, SWEAT, CYCLOPS, CLOSED, WINK_LEFT, WINK_RIGHT, LOOK_LEFT, LOOK_RIGHT, LOOK_UP, LOOK_DOWN, LOOK_UP_LEFT, LOOK_UP_RIGHT, LOOK_DOWN_LEFT, LOOK_DOWN_RIGHT, SURPRISED, SLEEPY };
 
 class NewoDisplay {
  public:
@@ -65,6 +65,9 @@ class NewoDisplay {
   BlinkPhase blinkPhase_ = BlinkPhase::OPEN;
   uint8_t blinkFramesRemaining_ = 0;
   bool verificationBlink_ = true;
+  uint32_t nextWinkMs_ = 0;
+  uint32_t winkStartedMs_ = 0;
+  bool winkActive_ = false;
   int16_t gazeX_ = 0;
   int16_t gazeY_ = 0;
   int16_t gazeTargetX_ = 0;
