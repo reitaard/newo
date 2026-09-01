@@ -8,7 +8,8 @@ Newo/Newo.ino
   +-- newo_wifi      scan/rank/connect/recover plus BLE WiFiProv
   +-- newo_cloud     authenticated outbound WSS, telemetry, commands
   +-- newo_audio     local ESP_SR WakeNet plus temporary authenticated WSS PCM sender
-  +-- future: display, AI, update
+  +-- newo_display   ST7789 state, face, and autonomous-eye rendering
+  +-- future: AI, update
 ```
 
 Telegram is cloud-side and never a firmware dependency.
@@ -31,6 +32,10 @@ boot
 Existing saved networks are preserved when provisioning adds or updates one entry. Storage is capped at eight. Runtime disconnects trigger bounded scan-first recovery rather than relying on `WiFiMulti` or an arbitrary last-used network.
 
 BLE is provisioning-only. Normal operation is Wi-Fi plus outbound WSS. The firmware contains no SoftAP, captive DNS, local web server, or mDNS service.
+
+## Autonomous eyes
+
+Only the neutral IDLE face receives autonomous behavior. A 20 FPS display-loop state machine chooses a center-biased gaze target, makes a quick bounded saccade, fixes on it, and may make one 1–3 px correction. Its bilateral blink scheduler keeps normal 2.5–6 second intervals, rare double and longer blinks, plus occasional post-saccade blinks; periodic one-eye wink styles remain separate and take priority. Four volatile `uint8_t` values—energy, curiosity, social, and stress—update every three seconds from existing LISTENING, THINKING, SPEAKING, ERROR, and changed-face transitions plus inactivity. They only make small neutral-IDLE adjustments to target weighting, fixation, and blink timing. They do not persist, create tasks, hold audio resources, alter fixed/special faces or operational display modes, or require new cloud/Telegram controls. A direct USB-Serial `EYES_STATE` diagnostic is rate-limited to once per minute.
 
 ## Cloud boundary
 
