@@ -203,11 +203,18 @@ void NewoDisplay::updateGaze(uint32_t now) {
           rangeY = faceStyle_ == NewoFaceStyle::SLEEPY ? 1 : 3;
           minDelay = faceStyle_ == NewoFaceStyle::SLEEPY ? 3'500 : 2'000;
           maxDelay = faceStyle_ == NewoFaceStyle::SLEEPY ? 6'001 : 4'201;
-        } else if (faceStyle_ == NewoFaceStyle::CURIOUS || faceStyle_ == NewoFaceStyle::CONFUSED) {
+        } else if (faceStyle_ == NewoFaceStyle::CURIOUS) {
           rangeX = 17;
           rangeY = 7;
           minDelay = 900;
           maxDelay = 2'201;
+        } else if (faceStyle_ == NewoFaceStyle::CONFUSED) {
+          // Neutral eyes leave 29 px per side. Keep horizontal gaze centered so
+          // the upstream ±20 px flicker remains wholly inside the 200 px canvas.
+          rangeX = 0;
+          rangeY = 3;
+          minDelay = 1'400;
+          maxDelay = 2'801;
         } else if (faceStyle_ == NewoFaceStyle::HAPPY || faceStyle_ == NewoFaceStyle::LAUGH) {
           rangeX = 10;
           rangeY = 4;
