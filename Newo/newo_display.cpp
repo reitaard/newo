@@ -519,7 +519,14 @@ void NewoDisplay::updateAutonomousBehavior(uint32_t now) {
     case AutonomousBehavior::CURIOSITY_LIFT:
     case AutonomousBehavior::HAPPY_SQUINT:
     case AutonomousBehavior::REST_CLOSE:
-      if (static_cast<int32_t>(now - autonomousBehaviorUntilMs_) >= 0) finishAutonomousBehavior(now);
+      if (static_cast<int32_t>(now - autonomousBehaviorUntilMs_) >= 0) {
+        const bool restCloseCanResetBlink = autonomousBehavior_ == AutonomousBehavior::REST_CLOSE &&
+                                            blinkPhase_ == BlinkPhase::OPEN &&
+                                            blinkSchedulerState_ == BlinkSchedulerState::WAITING &&
+                                            !postSaccadeBlinkPending_ && !winkActive_;
+        finishAutonomousBehavior(now);
+        if (restCloseCanResetBlink) scheduleNextBilateralBlink(now);
+      }
       return;
     case AutonomousBehavior::WINK:
       if (!winkActive_) finishAutonomousBehavior(now);
