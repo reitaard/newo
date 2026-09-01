@@ -18,6 +18,7 @@ void NewoDisplay::updateClock() {
   static time_t lastMinute = -1;
   static NewoDisplayMode lastMode = NewoDisplayMode::ECO;
   static NewoFaceStyle lastStyle = NewoFaceStyle::NEUTRAL;
+  static bool clockDrawn = false;
 
   if (!timeConfigured) {
     configTzTime(kTimeZone, "pool.ntp.org", "time.nist.gov");
@@ -26,10 +27,19 @@ void NewoDisplay::updateClock() {
 
   // Keep text pages and ECO untouched. The clock belongs only to the face view,
   // and yields the lower screen whenever a face response is being shown.
-  const bool visible = !temporary_ && mode_ != NewoDisplayMode::ECO &&
-                       mode_ != NewoDisplayMode::MESSAGE && text_[0] == '\0';
-  if (!visible) {
+  const bool faceVisible = !temporary_ && mode_ != NewoDisplayMode::ECO &&
+                           mode_ != NewoDisplayMode::MESSAGE && text_[0] == '\0';
+  if (!faceVisible) {
     lastMinute = -1;  // Force a redraw as soon as the face view returns.
+    lastMode = mode_;
+    lastStyle = faceStyle_;
+    clockDrawn = false;
+    return;
+  }
+  if (!clockEnabled_) {
+    if (clockDrawn) display_.fillRect(kClockClearX, kClockClearY, kClockClearW, kClockClearH, ST77XX_BLACK);
+    clockDrawn = false;
+    lastMinute = -1;
     lastMode = mode_;
     lastStyle = faceStyle_;
     return;
@@ -63,4 +73,5 @@ void NewoDisplay::updateClock() {
   lastMinute = minute;
   lastMode = mode_;
   lastStyle = faceStyle_;
+  clockDrawn = true;
 }

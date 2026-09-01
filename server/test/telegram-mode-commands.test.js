@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createPrimaryModeHandlers, parseVolumeArgument } from "../src/telegram-mode-commands.js";
+import { createPrimaryModeHandlers, parseClockArgument, parseVolumeArgument } from "../src/telegram-mode-commands.js";
 
 function response(message) {
   return { kind: "sent", requestId: "request-1", promise: Promise.resolve({ kind: "response", message }) };
@@ -148,6 +148,52 @@ test("/eco toggles then refreshes detailed device telemetry", async () => {
   assert.match(harness.replies[0].text, /ECO: <b>ON<\/b>/);
   assert.match(harness.replies[0].text, /RSSI: <b>-56 dBm<\/b>/);
   assert.match(harness.replies[0].text, /PSRAM: <b>4\.00 MB<\/b>/);
+  assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
+});
+
+test("/clock toggles, sets, reports status, and rejects malformed input after firmware ACK", async () => {
+  assert.deepEqual(parseClockArgument(""), { kind: "toggle" });
+  assert.deepEqual(parseClockArgument("ON"), { kind: "on" });
+  assert.deepEqual(parseClockArgument("off"), { kind: "off" });
+  assert.deepEqual(parseClockArgument("status"), { kind: "status" });
+  assert.deepEqual(parseClockArgument("later"), { kind: "invalid" });
+
+  const calls = [];
+  const enabledByAction = { toggle: false, on: true, off: false, status: false };
+  const harness = createHarness((type, responseType, fields) => {
+    calls.push({ type, responseType, fields });
+    return response({ enabled: enabledByAction[fields.action], applied: true });
+  });
+  await harness.handlers.clock({ match: "" });
+  await harness.handlers.clock({ match: "on" });
+  await harness.handlers.clock({ match: "off" });
+  await harness.handlers.clock({ match: "status" });
+  await harness.handlers.clock({ match: "bad" });
+  assert.deepEqual(calls, [
+    { type: "clock_control", responseType: "clock_ack", fields: { action: "toggle" } },
+    { type: "clock_control", responseType: "clock_ack", fields: { action: "on" } },
+    { type: "clock_control", responseType: "clock_ack", fields: { action: "off" } },
+    { type: "clock_control", responseType: "clock_ack", fields: { action: "status" } },
+  ]);
+  assert.deepEqual(harness.replies.slice(0, 4).map((reply) => reply.text),
+                   ["Clock OFF.", "Clock ON.", "Clock OFF.", "Clock OFF."]);
+  assert.equal(harness.replies[4].text, "Usage: /clock [on|off|status]");
+  for (const reply of harness.replies) assert.deepEqual(reply.options, { newoSpeak: false });
+});
+
+test("/clock does not claim success without a firmware ACK", async () => {
+  const harness = createHarness(() => response({ enabled: true, applied: false }));
+  await harness.handlers.clock({ match: "on" });
+  assert.equal(harness.replies[0].text, "Clock unavailable.");
+  assert.equal(harness.replies[0].category, "response");
+  assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
+});
+
+test("/clock reports an offline device without issuing a control request", async () => {
+  const harness = createHarness(() => ({ kind: "offline" }));
+  await harness.handlers.clock({ match: "status" });
+  assert.equal(harness.replies[0].text, "Clock offline.");
+  assert.equal(harness.replies[0].category, "offline");
   assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
 });
 

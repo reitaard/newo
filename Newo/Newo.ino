@@ -16,7 +16,7 @@ NewoUsbStorage newoUsbStorage;
 NewoWiFi newoWiFi(newoStorage);
 NewoLed newoLed;
 NewoDisplay newoDisplay;
-NewoCloud newoCloud(newoWiFi, newoDisplay);
+NewoCloud newoCloud(newoWiFi, newoDisplay, newoStorage);
 NewoAudio newoAudio(newoWiFi, newoDisplay);
 NewoSpeaker newoSpeaker(newoWiFi, newoDisplay, newoAudio, newoStorage);
 
@@ -45,6 +45,7 @@ void setup() {
   if (!newoStorage.begin()) {
     NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::STORAGE, "STORAGE_FAILED");
   } else {
+    newoDisplay.setClockEnabled(newoStorage.clockEnabled());
     char detail[48];
     snprintf(detail, sizeof(detail), "saved_networks=%u", static_cast<unsigned>(newoStorage.count()));
     NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::STORAGE, "STORAGE_READY", detail);

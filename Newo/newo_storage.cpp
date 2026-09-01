@@ -12,6 +12,7 @@ constexpr char kNetworksKey[] = "networks";
 constexpr char kSpeakerVolumeKey[] = "speaker-vol";
 constexpr char kSpeakerMutedKey[] = "speaker-mute";
 constexpr char kSpeakerEnabledKey[] = "speaker-on";
+constexpr char kClockEnabledKey[] = "clock-on";
 }
 
 bool NewoStorage::begin() {
@@ -29,6 +30,7 @@ bool NewoStorage::begin() {
   if (speakerVolume_ > 100) speakerVolume_ = 100;
   speakerMuted_ = preferences_.getBool(kSpeakerMutedKey, false);
   speakerEnabled_ = preferences_.getBool(kSpeakerEnabledKey, true);
+  clockEnabled_ = preferences_.getBool(kClockEnabledKey, true);
   return loadNetworks();
 }
 
@@ -132,6 +134,13 @@ bool NewoStorage::setSpeakerEnabled(bool enabled) {
   if (!started_ || enabled == speakerEnabled_) return started_;
   if (preferences_.putBool(kSpeakerEnabledKey, enabled) != sizeof(enabled)) return false;
   speakerEnabled_ = enabled;
+  return true;
+}
+
+bool NewoStorage::setClockEnabled(bool enabled) {
+  if (!started_ || enabled == clockEnabled_) return started_;
+  if (preferences_.putBool(kClockEnabledKey, enabled) != sizeof(enabled)) return false;
+  clockEnabled_ = enabled;
   return true;
 }
 

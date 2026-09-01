@@ -103,6 +103,13 @@ export function parseVolumeArgument(match) {
   return volume <= 100 ? { kind: "set", volume } : { kind: "invalid" };
 }
 
+export function parseClockArgument(match) {
+  const input = String(match ?? "").trim().toLowerCase();
+  if (!input) return { kind: "toggle" };
+  if (input === "on" || input === "off" || input === "status") return { kind: input };
+  return { kind: "invalid" };
+}
+
 export function createPrimaryModeHandlers({
   sendDeviceRequest,
   commandReply,
@@ -198,6 +205,21 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, formatEcoStatus(enabled, getDeviceSnapshot()), "response", toggle.requestId, { newoSpeak: false });
   }
 
+  async function clock(ctx) {
+    const parsed = parseClockArgument(ctx.match);
+    if (parsed.kind === "invalid") {
+      return commandReply(ctx, "Usage: /clock [on|off|status]", "usage", null, { newoSpeak: false });
+    }
+    const request = sendDeviceRequest("clock_control", "clock_ack", { action: parsed.kind }, commandTrace(ctx));
+    if (request.kind !== "sent") return commandReply(ctx, "Clock offline.", "offline", null, { newoSpeak: false });
+    const result = await request.promise;
+    if (result.kind === "response" && result.message.applied !== false) {
+      return commandReply(ctx, `Clock ${result.message.enabled ? "ON" : "OFF"}.`, "response", request.requestId,
+                          { newoSpeak: false });
+    }
+    return commandReply(ctx, "Clock unavailable.", result.kind, request.requestId, { newoSpeak: false });
+  }
+
   async function volume(ctx) {
     const parsed = parseVolumeArgument(ctx.match);
     if (parsed.kind === "invalid") return commandReply(ctx, message("volume", ["Usage: /volume [0-100]"]), "usage", null, { newoSpeak: false });
@@ -213,5 +235,5 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, formatMuteStatus(status.device), status.device.applied === false ? "device_error" : "response", status.request.requestId, { newoSpeak: false });
   }
 
-  return { voice, voiceStatus, speaker, eco, volume, mute };
+  return { voice, voiceStatus, speaker, eco, clock, volume, mute };
 }

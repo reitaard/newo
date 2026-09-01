@@ -193,6 +193,7 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
     logs: z.object({ stored: z.number().int(), capacity: z.number().int(), warnings: z.number(), errors: z.number() }),
   }),
   z.object({ type: z.literal("display_ack"), request_id: z.string().optional(), mode: z.string().max(16) }).passthrough(),
+  z.object({ type: z.literal("clock_ack"), request_id: z.string(), enabled: z.boolean(), applied: z.boolean() }).passthrough(),
   z.object({ type: z.literal("speaker_ack"), request_id: z.string(), enabled: z.boolean(), connection: z.enum(["Ready", "Connecting", "Disconnected"]), volume: z.number().int().min(0).max(100), muted: z.boolean(), applied: z.boolean(), last_playback: z.enum(["None", "Playing", "Complete", "Failed"]), underruns: z.number().int().nonnegative(), overflows: z.number().int().nonnegative(), buffer_bytes: z.number().int().positive() }).passthrough(),
   z.object({ type: z.literal("speaker_started"), playback_id: z.string().uuid(), first_pcm_to_play_ms: z.number().int().nonnegative() }).passthrough(),
   z.object({ type: z.literal("speaker_complete"), playback_id: z.string().uuid(), bytes: z.number().int().nonnegative() }).passthrough(),
@@ -629,6 +630,7 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["face", "f"], handleFaceCommand);
   for (const style of FACE_STYLES) bot.command(`face_${style}`, (ctx) => handleFaceCommand(ctx, style));
   bot.command("eco", primaryModeHandlers.eco);
+  bot.command("clock", primaryModeHandlers.clock);
   bot.command(["voice", "v"], primaryModeHandlers.voice);
   bot.command("vs", primaryModeHandlers.voiceStatus);
   bot.command("speaker", primaryModeHandlers.speaker);

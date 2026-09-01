@@ -7,9 +7,11 @@
 #include "newo_voice_state.h"
 #include "newo_wifi.h"
 
+class NewoStorage;
+
 class NewoCloud {
  public:
-  NewoCloud(NewoWiFi& wifi, NewoDisplay& display);
+  NewoCloud(NewoWiFi& wifi, NewoDisplay& display, NewoStorage& storage);
 
   void begin();
   void loop();
@@ -52,9 +54,11 @@ class NewoCloud {
   void sendLogs(const char* requestId, uint8_t limit, const char* minLevel);
   void sendRebootAck(const char* requestId);
   void sendDisplayAck(const char* requestId, const char* mode);
+  void sendClockAck(const char* requestId, bool enabled, bool applied);
 
   NewoWiFi& wifi_;
   NewoDisplay& display_;
+  NewoStorage& storage_;
   WebSocketsClient webSocket_;
   bool configured_ = false;
   bool started_ = false;

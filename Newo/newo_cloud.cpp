@@ -7,6 +7,7 @@
 
 #include "newo_config.h"
 #include "newo_log.h"
+#include "newo_storage.h"
 
 #if __has_include("newo_secrets.h")
 #include "newo_secrets.h"
@@ -15,7 +16,8 @@
 #define NEWO_HAS_LOCAL_SECRETS 0
 #endif
 
-NewoCloud::NewoCloud(NewoWiFi& wifi, NewoDisplay& display) : wifi_(wifi), display_(display) {}
+NewoCloud::NewoCloud(NewoWiFi& wifi, NewoDisplay& display, NewoStorage& storage)
+    : wifi_(wifi), display_(display), storage_(storage) {}
 
 void NewoCloud::begin() {
 #if !NEWO_HAS_LOCAL_SECRETS
@@ -255,6 +257,34 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
   if (strcmp(type, "reboot") == 0) {
     pendingLedEvent_ = LedEvent::REBOOT;
     sendRebootAck(doc["request_id"] | "");
+    return;
+  }
+
+  if (strcmp(type, "clock_control") == 0) {
+    const char* requestId = doc["request_id"] | "";
+    const char* action = doc["action"] | "";
+    if (!requestId[0]) {
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "CLOCK_INVALID_REQUEST");
+      return;
+    }
+
+    bool enabled = storage_.clockEnabled();
+    bool applied = true;
+    if (strcmp(action, "toggle") == 0) {
+      enabled = !enabled;
+      applied = storage_.setClockEnabled(enabled);
+    } else if (strcmp(action, "on") == 0) {
+      enabled = true;
+      applied = storage_.setClockEnabled(enabled);
+    } else if (strcmp(action, "off") == 0) {
+      enabled = false;
+      applied = storage_.setClockEnabled(enabled);
+    } else if (strcmp(action, "status") != 0) {
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "CLOCK_INVALID_ACTION");
+      return;
+    }
+    if (applied) display_.setClockEnabled(enabled);
+    sendClockAck(requestId, display_.clockEnabled(), applied);
     return;
   }
 
@@ -545,6 +575,16 @@ void NewoCloud::sendDisplayAck(const char* requestId, const char* mode) {
   doc["type"] = "display_ack";
   doc["request_id"] = requestId;
   doc["mode"] = mode;
+  String body; serializeJson(doc, body); webSocket_.sendTXT(body);
+}
+
+void NewoCloud::sendClockAck(const char* requestId, bool enabled, bool applied) {
+  if (!connected_ || !requestId || requestId[0] == '\0') return;
+  JsonDocument doc;
+  doc["type"] = "clock_ack";
+  doc["request_id"] = requestId;
+  doc["enabled"] = enabled;
+  doc["applied"] = applied;
   String body; serializeJson(doc, body); webSocket_.sendTXT(body);
 }
 
