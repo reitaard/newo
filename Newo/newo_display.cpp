@@ -30,6 +30,11 @@ constexpr uint32_t kAutonomousStateLogMs = 60'000;
 constexpr uint32_t kInactivityBeforeDriftMs = 30'000;
 constexpr uint8_t kCuriosityBaseline = 42;
 
+bool isOngoingEngagement(NewoDisplayMode mode) {
+  return mode == NewoDisplayMode::LISTENING || mode == NewoDisplayMode::THINKING ||
+         mode == NewoDisplayMode::SPEAKING;
+}
+
 uint8_t saturatingAdd(uint8_t value, uint8_t amount) {
   const uint16_t result = static_cast<uint16_t>(value) + amount;
   return result > 100 ? 100 : static_cast<uint8_t>(result);
@@ -261,7 +266,8 @@ void NewoDisplay::noteInteraction(uint32_t now, uint8_t energyGain, uint8_t curi
 }
 
 void NewoDisplay::noteError() {
-  stress_ = saturatingAdd(stress_, 8);
+  // A single completed ERROR remains just above the subtle neutral-IDLE threshold briefly.
+  stress_ = saturatingAdd(stress_, 12);
 }
 
 void NewoDisplay::updateAutonomousState(uint32_t now) {
@@ -271,7 +277,11 @@ void NewoDisplay::updateAutonomousState(uint32_t now) {
     if (curiosity_ < kCuriosityBaseline) ++curiosity_;
     if (stress_ > 0) --stress_;
 
-    if (now - lastInteractionMs_ >= kInactivityBeforeDriftMs) {
+    if (isOngoingEngagement(mode_)) {
+      // Active conversation refreshes only inactivity; entry transitions own personality gains.
+      lastInteractionMs_ = now;
+      idleDriftTicks_ = 0;
+    } else if (now - lastInteractionMs_ >= kInactivityBeforeDriftMs) {
       if (++idleDriftTicks_ >= 4) {
         idleDriftTicks_ = 0;
         if (energy_ > 40) --energy_;
