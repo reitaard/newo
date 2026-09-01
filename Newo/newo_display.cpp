@@ -379,9 +379,13 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
     }
   }
 
+  int16_t curiousLeftLift = 0;
+  int16_t curiousRightLift = 0;
   if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CURIOUS) {
-    if (gazeX_ < -7) leftW += 9;
-    if (gazeX_ > 7) rightW += 9;
+    // RoboEyes curiosity is directional: the outer eye grows vertically when
+    // the gaze reaches an edge rather than merely widening both eyes.
+    if (gazeX_ < -7) curiousLeftLift = 8;
+    if (gazeX_ > 7) curiousRightLift = 8;
   } else if (mode_ == NewoDisplayMode::THINKING) {
     if (gazeX_ < -7) leftW += 7;
     if (gazeX_ > 7) rightW += 7;
@@ -391,8 +395,14 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   if (mode_ == NewoDisplayMode::ERROR && now - modeStartedMs_ < 520) {
     shake = static_cast<int16_t>(sinf(static_cast<float>(now - modeStartedMs_) * 0.075f) * 4.0f);
   }
+  if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CONFUSED) {
+    // Upstream anim_confused is a horizontal eye shake.
+    shake += static_cast<int16_t>(sinf(static_cast<float>(now % 420) / 420.0f * 6.2831853f * 2.0f) * 5.0f);
+  }
   if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::LAUGH) {
-    verticalOffset += static_cast<int16_t>(sinf(static_cast<float>(now % 500) / 500.0f * 6.2831853f) * 2.0f);
+    // Upstream anim_laugh is a vertical shake; make it visibly stronger than
+    // the normal one-pixel idle float while keeping the same bounded canvas.
+    verticalOffset += static_cast<int16_t>(sinf(static_cast<float>(now % 420) / 420.0f * 6.2831853f * 2.0f) * 5.0f);
   }
 
   int16_t height = baseHeight;
@@ -419,14 +429,28 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
     }
     y += (baseHeight - height) / 2;
     const int16_t radius = height > 3 ? height / 2 : 1;
-    eyeCanvas_.fillRoundRect(leftX, y, leftW, height, radius, 1);
-    const int16_t rightY = mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CONFUSED ? y + 6 : y;
-    eyeCanvas_.fillRoundRect(rightX, rightY, rightW, height, radius, 1);
+
+    int16_t leftHeight = height;
+    int16_t rightHeight = height;
+    int16_t leftY = y;
+    int16_t rightY = mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CONFUSED ? y + 6 : y;
+    if (height >= 8 && curiousLeftLift) {
+      leftHeight += curiousLeftLift;
+      leftY -= curiousLeftLift;
+    }
+    if (height >= 8 && curiousRightLift) {
+      rightHeight += curiousRightLift;
+      rightY -= curiousRightLift;
+    }
+
+    eyeCanvas_.fillRoundRect(leftX, leftY, leftW, leftHeight, leftHeight > 3 ? leftHeight / 2 : 1, 1);
+    eyeCanvas_.fillRoundRect(rightX, rightY, rightW, rightHeight, rightHeight > 3 ? rightHeight / 2 : 1, 1);
     applyEyeExpression(leftX, rightX, y, leftW, rightW, height);
 
     if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::SWEAT && height >= 8) {
       const int16_t dropX = rightX + rightW + 7;
-      const int16_t dropY = y + 7;
+      const int16_t dropBob = static_cast<int16_t>((sinf(static_cast<float>(now % 900) / 900.0f * 6.2831853f) + 1.0f) * 2.0f);
+      const int16_t dropY = y + 5 + dropBob;
       eyeCanvas_.fillCircle(dropX, dropY + 4, 3, 1);
       eyeCanvas_.fillTriangle(dropX, dropY - 3, dropX - 3, dropY + 4, dropX + 3, dropY + 4, 1);
     }
