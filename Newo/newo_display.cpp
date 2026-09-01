@@ -59,6 +59,7 @@ void NewoDisplay::begin() {
 bool NewoDisplay::setMode(NewoDisplayMode mode, const char* text, bool temporary) {
   if (mode > NewoDisplayMode::ECO) return false;
   if (mode_ != mode) {
+    mode_ = mode;
     modeStartedMs_ = millis();
     resetFaceMotion(modeStartedMs_);
   }
@@ -183,9 +184,16 @@ void NewoDisplay::drawFace() {
 
 void NewoDisplay::resetFaceMotion(uint32_t now) {
   blinkPhase_ = BlinkPhase::OPEN;
+  blinkSchedulerState_ = BlinkSchedulerState::WAITING;
   blinkFramesRemaining_ = 0;
-  verificationBlink_ = true;
-  nextBlinkMs_ = now + 1'000;
+  longBlink_ = false;
+  postSaccadeBlinkPending_ = false;
+  if (autonomousIdle()) {
+    scheduleNextBilateralBlink(now);
+  } else {
+    // Keep non-autonomous mode/style entry timing unchanged.
+    nextBlinkMs_ = now + 1'000;
+  }
   nextWinkMs_ = now + static_cast<uint32_t>(random(kWinkCalmMinMs, kWinkCalmMaxMs));
   winkStartedMs_ = 0;
   winkActive_ = false;
@@ -193,12 +201,38 @@ void NewoDisplay::resetFaceMotion(uint32_t now) {
   fixationUntilMs_ = 0;
   microCorrectionAtMs_ = 0;
   microCorrectionPending_ = false;
+  autonomousGazeLargeShift_ = false;
   gazeX_ = 0;
   gazeY_ = 0;
   gazeTargetX_ = 0;
   gazeTargetY_ = 0;
   nextGazeMs_ = now;
   nextFaceFrameMs_ = 0;
+}
+
+bool NewoDisplay::autonomousIdle() const {
+  return mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::NEUTRAL;
+}
+
+void NewoDisplay::scheduleNextBilateralBlink(uint32_t now) {
+  nextBlinkMs_ = now + static_cast<uint32_t>(random(2'500, autonomousIdle() ? 6'001 : 5'501));
+}
+
+void NewoDisplay::startBilateralBlink(bool allowAutonomousVariation) {
+  longBlink_ = allowAutonomousVariation && random(100) < 2;
+  blinkSchedulerState_ = allowAutonomousVariation && !longBlink_ && random(100) < 7
+      ? BlinkSchedulerState::DOUBLE_PAUSE
+      : BlinkSchedulerState::WAITING;
+  postSaccadeBlinkPending_ = false;
+  blinkPhase_ = BlinkPhase::HALF_CLOSED;
+  blinkFramesRemaining_ = 1;
+}
+
+void NewoDisplay::queuePostSaccadeBlink(uint32_t now) {
+  if (!autonomousGazeLargeShift_ || blinkPhase_ != BlinkPhase::OPEN || winkActive_ ||
+      blinkSchedulerState_ != BlinkSchedulerState::WAITING || random(100) >= 25) return;
+  postSaccadeBlinkPending_ = true;
+  nextBlinkMs_ = now + static_cast<uint32_t>(random(150, 351));
 }
 
 void NewoDisplay::chooseAutonomousGazeTarget() {
@@ -220,6 +254,11 @@ void NewoDisplay::chooseAutonomousGazeTarget() {
     gazeTargetX_ = static_cast<int16_t>(random(-6, 7));
     gazeTargetY_ = static_cast<int16_t>(random(4, 8));
   }
+  const int16_t deltaX = gazeTargetX_ - gazeX_;
+  const int16_t deltaY = gazeTargetY_ - gazeY_;
+  const int16_t magnitudeX = deltaX < 0 ? -deltaX : deltaX;
+  const int16_t magnitudeY = deltaY < 0 ? -deltaY : deltaY;
+  autonomousGazeLargeShift_ = magnitudeX >= 11 || magnitudeY >= 6;
   autonomousGazePhase_ = AutonomousGazePhase::MOVING;
 }
 
@@ -232,6 +271,8 @@ void NewoDisplay::updateAutonomousIdleGaze(uint32_t now) {
       gazeX_ = easeAutonomousGaze(gazeX_, gazeTargetX_);
       gazeY_ = easeAutonomousGaze(gazeY_, gazeTargetY_);
       if (gazeX_ != gazeTargetX_ || gazeY_ != gazeTargetY_) return;
+      queuePostSaccadeBlink(now);
+      autonomousGazeLargeShift_ = false;
       {
         const long durationChoice = random(100);
         const uint32_t fixationMs = durationChoice < 15 ? static_cast<uint32_t>(random(350, 701))
@@ -407,14 +448,19 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
     // Do not start a delayed autoblink immediately after a wink burst.
     nextBlinkMs_ = now + static_cast<uint32_t>(random(2'500, 5'501));
   }
+  const bool deliberatelyClosed = mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CLOSED;
   if (blinkPhase_ == BlinkPhase::OPEN && !winkActive_) {
     if (winkStyle && static_cast<int32_t>(now - nextWinkMs_) >= 0) {
+      // A wink wins over and cancels any pending bilateral sequence.
+      blinkSchedulerState_ = BlinkSchedulerState::WAITING;
+      longBlink_ = false;
+      postSaccadeBlinkPending_ = false;
       winkActive_ = true;
       winkStartedMs_ = now;
-    } else if (static_cast<int32_t>(now - nextBlinkMs_) >= 0) {
-      // Autoblink always animates both eyes; a pending wink waits for it to finish.
-      blinkPhase_ = BlinkPhase::HALF_CLOSED;
-      blinkFramesRemaining_ = 1;
+    } else if (!deliberatelyClosed && static_cast<int32_t>(now - nextBlinkMs_) >= 0) {
+      // One scheduler owns bilateral events; winks have priority and never share its phases.
+      const bool doubleSecond = blinkSchedulerState_ == BlinkSchedulerState::DOUBLE_SECOND;
+      startBilateralBlink(autonomousIdle() && !postSaccadeBlinkPending_ && !doubleSecond);
     }
   }
   updateGaze(now);
@@ -615,14 +661,20 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
     if (--blinkFramesRemaining_ == 0) {
       if (blinkPhase_ == BlinkPhase::HALF_CLOSED) {
         blinkPhase_ = BlinkPhase::CLOSED;
-        blinkFramesRemaining_ = verificationBlink_ ? 2 : 1;
+        blinkFramesRemaining_ = longBlink_ ? 3 : 1;
       } else if (blinkPhase_ == BlinkPhase::CLOSED) {
         blinkPhase_ = BlinkPhase::HALF_OPEN;
         blinkFramesRemaining_ = 1;
       } else {
         blinkPhase_ = BlinkPhase::OPEN;
-        verificationBlink_ = false;
-        nextBlinkMs_ = now + static_cast<uint32_t>(random(2'500, 5'501));
+        longBlink_ = false;
+        if (blinkSchedulerState_ == BlinkSchedulerState::DOUBLE_PAUSE) {
+          blinkSchedulerState_ = BlinkSchedulerState::DOUBLE_SECOND;
+          nextBlinkMs_ = now + static_cast<uint32_t>(random(120, 251));
+        } else {
+          blinkSchedulerState_ = BlinkSchedulerState::WAITING;
+          scheduleNextBilateralBlink(now);
+        }
       }
     }
   }

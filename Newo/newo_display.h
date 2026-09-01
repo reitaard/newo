@@ -32,6 +32,10 @@ class NewoDisplay {
   void updateGaze(uint32_t now);
   void updateAutonomousIdleGaze(uint32_t now);
   void chooseAutonomousGazeTarget();
+  bool autonomousIdle() const;
+  void scheduleNextBilateralBlink(uint32_t now);
+  void startBilateralBlink(bool allowAutonomousVariation);
+  void queuePostSaccadeBlink(uint32_t now);
   void resetFaceMotion(uint32_t now);
   void applyEyeExpression(int16_t leftX, int16_t rightX, int16_t y, int16_t leftW, int16_t rightW,
                           int16_t height);
@@ -63,11 +67,14 @@ class NewoDisplay {
   uint32_t nextFaceFrameMs_ = 0;
   uint32_t modeStartedMs_ = 0;
   enum class BlinkPhase : uint8_t { OPEN, HALF_CLOSED, CLOSED, HALF_OPEN };
+  enum class BlinkSchedulerState : uint8_t { WAITING, DOUBLE_PAUSE, DOUBLE_SECOND };
   enum class AutonomousGazePhase : uint8_t { CHOOSE_TARGET, MOVING, FIXATING, MICRO_CORRECTION };
   uint32_t nextBlinkMs_ = 0;
   BlinkPhase blinkPhase_ = BlinkPhase::OPEN;
+  BlinkSchedulerState blinkSchedulerState_ = BlinkSchedulerState::WAITING;
   uint8_t blinkFramesRemaining_ = 0;
-  bool verificationBlink_ = true;
+  bool longBlink_ = false;
+  bool postSaccadeBlinkPending_ = false;
   uint32_t nextWinkMs_ = 0;
   uint32_t winkStartedMs_ = 0;
   bool winkActive_ = false;
@@ -75,6 +82,7 @@ class NewoDisplay {
   uint32_t fixationUntilMs_ = 0;
   uint32_t microCorrectionAtMs_ = 0;
   bool microCorrectionPending_ = false;
+  bool autonomousGazeLargeShift_ = false;
   int16_t gazeX_ = 0;
   int16_t gazeY_ = 0;
   int16_t gazeTargetX_ = 0;
