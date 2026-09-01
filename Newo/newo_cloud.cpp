@@ -274,6 +274,17 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     else if (strcmp(mode, "laugh") == 0) faceStyle = NewoFaceStyle::LAUGH;
     else if (strcmp(mode, "sweat") == 0) faceStyle = NewoFaceStyle::SWEAT;
     else if (strcmp(mode, "cyclops") == 0) faceStyle = NewoFaceStyle::CYCLOPS;
+    else if (strcmp(mode, "closed") == 0) faceStyle = NewoFaceStyle::CLOSED;
+    else if (strcmp(mode, "wink_left") == 0) faceStyle = NewoFaceStyle::WINK_LEFT;
+    else if (strcmp(mode, "wink_right") == 0) faceStyle = NewoFaceStyle::WINK_RIGHT;
+    else if (strcmp(mode, "look_left") == 0) faceStyle = NewoFaceStyle::LOOK_LEFT;
+    else if (strcmp(mode, "look_right") == 0) faceStyle = NewoFaceStyle::LOOK_RIGHT;
+    else if (strcmp(mode, "look_up") == 0) faceStyle = NewoFaceStyle::LOOK_UP;
+    else if (strcmp(mode, "look_down") == 0) faceStyle = NewoFaceStyle::LOOK_DOWN;
+    else if (strcmp(mode, "look_up_left") == 0) faceStyle = NewoFaceStyle::LOOK_UP_LEFT;
+    else if (strcmp(mode, "look_up_right") == 0) faceStyle = NewoFaceStyle::LOOK_UP_RIGHT;
+    else if (strcmp(mode, "surprised") == 0) faceStyle = NewoFaceStyle::SURPRISED;
+    else if (strcmp(mode, "sleepy") == 0) faceStyle = NewoFaceStyle::SLEEPY;
     else faceSelection = false;
 
     if (faceSelection) {

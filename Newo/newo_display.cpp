@@ -74,7 +74,7 @@ void NewoDisplay::setSpeakerActive(bool active) {
 }
 
 bool NewoDisplay::setFaceStyle(NewoFaceStyle style) {
-  if (style > NewoFaceStyle::CYCLOPS) return false;
+  if (style > NewoFaceStyle::SLEEPY) return false;
   faceStyle_ = style;
   mode_ = NewoDisplayMode::IDLE;
   persistentMode_ = NewoDisplayMode::IDLE;
@@ -185,6 +185,15 @@ void NewoDisplay::updateGaze(uint32_t now) {
   if (static_cast<int32_t>(now - nextGazeMs_) >= 0) {
     switch (mode_) {
       case NewoDisplayMode::IDLE: {
+        // Fixed RoboEyes positions reuse the normal gaze state; no idle randomness.
+        if (faceStyle_ >= NewoFaceStyle::LOOK_LEFT && faceStyle_ <= NewoFaceStyle::LOOK_UP_RIGHT) {
+          gazeTargetX_ = (faceStyle_ == NewoFaceStyle::LOOK_LEFT || faceStyle_ == NewoFaceStyle::LOOK_UP_LEFT) ? -14 :
+                         (faceStyle_ == NewoFaceStyle::LOOK_RIGHT || faceStyle_ == NewoFaceStyle::LOOK_UP_RIGHT) ? 14 : 0;
+          gazeTargetY_ = (faceStyle_ == NewoFaceStyle::LOOK_UP || faceStyle_ == NewoFaceStyle::LOOK_UP_LEFT || faceStyle_ == NewoFaceStyle::LOOK_UP_RIGHT) ? -8 :
+                         faceStyle_ == NewoFaceStyle::LOOK_DOWN ? 8 : 0;
+          nextGazeMs_ = now + 1000;
+          break;
+        }
         int16_t rangeX = 14;
         int16_t rangeY = 6;
         uint16_t minDelay = 1'300;
@@ -339,6 +348,21 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
         baseHeight = 36;
         gap = 23;
         break;
+      case NewoFaceStyle::CLOSED:
+        baseHeight = 4;
+        break;
+      case NewoFaceStyle::WINK_LEFT:
+        baseHeight = 36;
+        break;
+      case NewoFaceStyle::WINK_RIGHT:
+        baseHeight = 36;
+        break;
+      case NewoFaceStyle::SURPRISED:
+        leftW = rightW = 54; baseHeight = 54; gap = 28;
+        break;
+      case NewoFaceStyle::SLEEPY:
+        leftW = rightW = 62; baseHeight = 20; verticalOffset = 5;
+        break;
       case NewoFaceStyle::CYCLOPS:
         leftW = 78;
         rightW = 0;
@@ -434,6 +458,8 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
     int16_t rightHeight = height;
     int16_t leftY = y;
     int16_t rightY = mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CONFUSED ? y + 6 : y;
+    if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::WINK_LEFT) leftHeight = 3;
+    if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::WINK_RIGHT) rightHeight = 3;
     if (height >= 8 && curiousLeftLift) {
       leftHeight += curiousLeftLift;
       leftY -= curiousLeftLift;
@@ -451,8 +477,11 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
       const int16_t dropX = rightX + rightW + 7;
       const int16_t dropBob = static_cast<int16_t>((sinf(static_cast<float>(now % 900) / 900.0f * 6.2831853f) + 1.0f) * 2.0f);
       const int16_t dropY = y + 5 + dropBob;
-      eyeCanvas_.fillCircle(dropX, dropY + 4, 3, 1);
-      eyeCanvas_.fillTriangle(dropX, dropY - 3, dropX - 3, dropY + 4, dropX + 3, dropY + 4, 1);
+      for (uint8_t drop = 0; drop < 3; ++drop) {
+        const int16_t dy = static_cast<int16_t>((dropBob + drop * 6) % 18);
+        eyeCanvas_.fillCircle(dropX + drop * 4, dropY + dy + 3, 2, 1);
+        eyeCanvas_.fillTriangle(dropX + drop * 4, dropY + dy - 2, dropX + drop * 4 - 2, dropY + dy + 3, dropX + drop * 4 + 2, dropY + dy + 3, 1);
+      }
     }
   }
 
