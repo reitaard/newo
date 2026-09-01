@@ -31,6 +31,16 @@ void formatUptime(char* out, size_t size, uint32_t ms) {
   snprintf(out, size, "%luh %02lum", static_cast<unsigned long>(seconds / 3600),
            static_cast<unsigned long>((seconds / 60) % 60));
 }
+
+int16_t easeAutonomousGaze(int16_t current, int16_t target) {
+  const int16_t delta = target - current;
+  const int16_t magnitude = delta < 0 ? -delta : delta;
+  if (magnitude < 2) return target;
+  int16_t step = magnitude / 2;
+  if (step > 8) step = 8;
+  if (step < 1) step = 1;
+  return current + (delta > 0 ? step : -step);
+}
 }  // namespace
 
 NewoDisplay::NewoDisplay()
@@ -179,6 +189,10 @@ void NewoDisplay::resetFaceMotion(uint32_t now) {
   nextWinkMs_ = now + static_cast<uint32_t>(random(kWinkCalmMinMs, kWinkCalmMaxMs));
   winkStartedMs_ = 0;
   winkActive_ = false;
+  autonomousGazePhase_ = AutonomousGazePhase::CHOOSE_TARGET;
+  fixationUntilMs_ = 0;
+  microCorrectionAtMs_ = 0;
+  microCorrectionPending_ = false;
   gazeX_ = 0;
   gazeY_ = 0;
   gazeTargetX_ = 0;
@@ -187,7 +201,86 @@ void NewoDisplay::resetFaceMotion(uint32_t now) {
   nextFaceFrameMs_ = 0;
 }
 
+void NewoDisplay::chooseAutonomousGazeTarget() {
+  const long choice = random(100);
+  if (choice < 52) {
+    // Most idle glances stay near the forward/center area.
+    gazeTargetX_ = static_cast<int16_t>(random(-5, 6));
+    gazeTargetY_ = static_cast<int16_t>(random(-3, 4));
+  } else if (choice < 82) {
+    // Side attention is common, but still less likely than center fixation.
+    const int16_t side = random(0, 2) ? 1 : -1;
+    gazeTargetX_ = static_cast<int16_t>(side * random(8, 15));
+    gazeTargetY_ = static_cast<int16_t>(random(-3, 4));
+  } else if (choice < 95) {
+    gazeTargetX_ = static_cast<int16_t>(random(-8, 9));
+    gazeTargetY_ = static_cast<int16_t>(random(-8, -3));
+  } else {
+    // Downward glances are deliberately uncommon and remain within the canvas.
+    gazeTargetX_ = static_cast<int16_t>(random(-6, 7));
+    gazeTargetY_ = static_cast<int16_t>(random(4, 8));
+  }
+  autonomousGazePhase_ = AutonomousGazePhase::MOVING;
+}
+
+void NewoDisplay::updateAutonomousIdleGaze(uint32_t now) {
+  switch (autonomousGazePhase_) {
+    case AutonomousGazePhase::CHOOSE_TARGET:
+      chooseAutonomousGazeTarget();
+      return;
+    case AutonomousGazePhase::MOVING:
+      gazeX_ = easeAutonomousGaze(gazeX_, gazeTargetX_);
+      gazeY_ = easeAutonomousGaze(gazeY_, gazeTargetY_);
+      if (gazeX_ != gazeTargetX_ || gazeY_ != gazeTargetY_) return;
+      {
+        const long durationChoice = random(100);
+        const uint32_t fixationMs = durationChoice < 15 ? static_cast<uint32_t>(random(350, 701))
+                                    : durationChoice < 25 ? static_cast<uint32_t>(random(2'200, 3'501))
+                                                          : static_cast<uint32_t>(random(700, 2'201));
+        fixationUntilMs_ = now + fixationMs;
+        microCorrectionPending_ = random(100) < 30;
+        microCorrectionAtMs_ = microCorrectionPending_
+            ? now + static_cast<uint32_t>(random(200, static_cast<long>(fixationMs * 2 / 3)))
+            : 0;
+        autonomousGazePhase_ = AutonomousGazePhase::FIXATING;
+      }
+      return;
+    case AutonomousGazePhase::FIXATING:
+      if (static_cast<int32_t>(now - fixationUntilMs_) >= 0) {
+        autonomousGazePhase_ = AutonomousGazePhase::CHOOSE_TARGET;
+        return;
+      }
+      if (!microCorrectionPending_ || static_cast<int32_t>(now - microCorrectionAtMs_) < 0) return;
+      microCorrectionPending_ = false;
+      {
+        const int16_t shift = static_cast<int16_t>(random(1, 4));
+        const int16_t direction = random(0, 2) ? 1 : -1;
+        if (random(100) < 70) {
+          const int16_t candidate = gazeTargetX_ + direction * shift;
+          gazeTargetX_ = candidate >= -14 && candidate <= 14 ? candidate : gazeTargetX_ - direction * shift;
+        } else {
+          const int16_t candidate = gazeTargetY_ + direction * shift;
+          gazeTargetY_ = candidate >= -8 && candidate <= 8 ? candidate : gazeTargetY_ - direction * shift;
+        }
+        autonomousGazePhase_ = AutonomousGazePhase::MICRO_CORRECTION;
+      }
+      return;
+    case AutonomousGazePhase::MICRO_CORRECTION:
+      gazeX_ = easeAutonomousGaze(gazeX_, gazeTargetX_);
+      gazeY_ = easeAutonomousGaze(gazeY_, gazeTargetY_);
+      if (gazeX_ != gazeTargetX_ || gazeY_ != gazeTargetY_) return;
+      autonomousGazePhase_ = static_cast<int32_t>(now - fixationUntilMs_) >= 0
+          ? AutonomousGazePhase::CHOOSE_TARGET
+          : AutonomousGazePhase::FIXATING;
+      return;
+  }
+}
+
 void NewoDisplay::updateGaze(uint32_t now) {
+  if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::NEUTRAL) {
+    updateAutonomousIdleGaze(now);
+    return;
+  }
   if (static_cast<int32_t>(now - nextGazeMs_) >= 0) {
     switch (mode_) {
       case NewoDisplayMode::IDLE: {
