@@ -28,6 +28,12 @@ constexpr int16_t kEyeCanvasY = 40;
 constexpr uint32_t kAutonomousStateUpdateMs = 3'000;
 constexpr uint32_t kAutonomousStateLogMs = 60'000;
 constexpr uint32_t kInactivityBeforeDriftMs = 30'000;
+constexpr uint32_t kRelaxedInactivityMs = 120'000;
+constexpr uint32_t kDrowsyInactivityMs = 300'000;
+constexpr uint32_t kAutonomousBehaviorMinMs = 4'000;
+constexpr uint32_t kAutonomousBehaviorMaxMs = 9'000;
+constexpr uint8_t kForceDoubleBlink = 1;
+constexpr uint8_t kForceLongBlink = 2;
 constexpr uint8_t kCuriosityBaseline = 42;
 
 bool isOngoingEngagement(NewoDisplayMode mode) {
@@ -119,6 +125,12 @@ void NewoDisplay::setSpeakerActive(bool active) {
   speakerActive_ = active;
 }
 
+void NewoDisplay::setClockEnabled(bool enabled) {
+  if (clockEnabled_ == enabled) return;
+  clockEnabled_ = enabled;
+  // updateClock() clears or redraws only its own lower face-view region.
+}
+
 bool NewoDisplay::setFaceStyle(NewoFaceStyle style) {
   if (style > NewoFaceStyle::SLEEPY) return false;
   const bool styleChanged = style != faceStyle_;
@@ -140,17 +152,19 @@ bool NewoDisplay::setFaceStyle(NewoFaceStyle style) {
 }
 
 void NewoDisplay::toggleEco() {
+  const uint32_t now = millis();
   temporary_ = false;
   if (!ecoEnabled_) {
     ecoEnabled_ = true;
     mode_ = NewoDisplayMode::ECO;
+    resetAutonomousBehavior(now);
     text_[0] = '\0';
     ecoPage_ = 0;
-    nextEcoPageMs_ = millis() + kEcoPageMs;
+    nextEcoPageMs_ = now + kEcoPageMs;
   } else {
     ecoEnabled_ = false;
     mode_ = persistentMode_;
-    resetFaceMotion(millis());
+    resetFaceMotion(now);
     strncpy(text_, persistentText_, sizeof(text_) - 1);
     text_[sizeof(text_) - 1] = '\0';
   }
@@ -232,6 +246,7 @@ void NewoDisplay::resetFaceMotion(uint32_t now) {
   nextWinkMs_ = now + static_cast<uint32_t>(random(kWinkCalmMinMs, kWinkCalmMaxMs));
   winkStartedMs_ = 0;
   winkActive_ = false;
+  winkLeft_ = false;
   autonomousGazePhase_ = AutonomousGazePhase::CHOOSE_TARGET;
   fixationUntilMs_ = 0;
   microCorrectionAtMs_ = 0;
@@ -243,6 +258,7 @@ void NewoDisplay::resetFaceMotion(uint32_t now) {
   gazeTargetY_ = 0;
   nextGazeMs_ = now;
   nextFaceFrameMs_ = 0;
+  resetAutonomousBehavior(now);
 }
 
 void NewoDisplay::initializeAutonomousState(uint32_t now) {
@@ -300,6 +316,217 @@ void NewoDisplay::updateAutonomousState(uint32_t now) {
   }
 }
 
+void NewoDisplay::resetAutonomousBehavior(uint32_t now) {
+  autonomousBehavior_ = AutonomousBehavior::WAITING;
+  autonomousBehaviorUntilMs_ = 0;
+  autonomousBehaviorHoldMs_ = 0;
+  autonomousBehaviorReturningToCenter_ = false;
+  autonomousBehaviorBlinkStarted_ = false;
+  if (autonomousIdle()) scheduleNextAutonomousBehavior(now);
+  else nextAutonomousBehaviorMs_ = 0;
+}
+
+void NewoDisplay::scheduleNextAutonomousBehavior(uint32_t now) {
+  if (!autonomousIdle()) {
+    nextAutonomousBehaviorMs_ = 0;
+    return;
+  }
+
+  int32_t minimumMs = kAutonomousBehaviorMinMs;
+  int32_t maximumMs = kAutonomousBehaviorMaxMs;
+  const uint32_t inactiveMs = now - lastInteractionMs_;
+  if (energy_ > 80) maximumMs -= 500;
+  else if (energy_ < 55) minimumMs += 300;
+  if (inactiveMs >= kDrowsyInactivityMs) minimumMs += 1'000;
+  else if (inactiveMs >= kRelaxedInactivityMs) minimumMs += 500;
+  if (minimumMs > 8'500) minimumMs = 8'500;
+  if (maximumMs < minimumMs + 1) maximumMs = minimumMs + 1;
+  nextAutonomousBehaviorMs_ = now + static_cast<uint32_t>(random(minimumMs, maximumMs + 1));
+}
+
+void NewoDisplay::finishAutonomousBehavior(uint32_t now) {
+  autonomousBehavior_ = AutonomousBehavior::WAITING;
+  autonomousBehaviorUntilMs_ = 0;
+  autonomousBehaviorHoldMs_ = 0;
+  autonomousBehaviorReturningToCenter_ = false;
+  autonomousBehaviorBlinkStarted_ = false;
+  scheduleNextAutonomousBehavior(now);
+}
+
+void NewoDisplay::beginAutonomousBehaviorGaze(uint32_t now, int16_t targetX, int16_t targetY,
+                                               uint16_t holdMs) {
+  gazeTargetX_ = targetX;
+  gazeTargetY_ = targetY;
+  autonomousGazeLargeShift_ = false;
+  microCorrectionPending_ = false;
+  microCorrectionAtMs_ = 0;
+  autonomousBehaviorHoldMs_ = holdMs;
+  autonomousBehaviorUntilMs_ = 0;
+  autonomousBehaviorReturningToCenter_ = false;
+  autonomousGazePhase_ = AutonomousGazePhase::MOVING;
+  nextGazeMs_ = now;
+}
+
+void NewoDisplay::chooseAutonomousBehavior(uint32_t now) {
+  if (!autonomousIdle() || blinkPhase_ != BlinkPhase::OPEN || winkActive_ ||
+      blinkSchedulerState_ != BlinkSchedulerState::WAITING || postSaccadeBlinkPending_ ||
+      static_cast<int32_t>(now - nextBlinkMs_) >= 0) {
+    scheduleNextAutonomousBehavior(now);
+    return;
+  }
+
+  const uint32_t inactiveMs = now - lastInteractionMs_;
+  const InactivityStage stage = inactiveMs >= kDrowsyInactivityMs ? InactivityStage::DROWSY
+                              : inactiveMs >= kRelaxedInactivityMs ? InactivityStage::RELAXED
+                                                                    : InactivityStage::ACTIVE;
+  int noneWeight = 70;
+  int gazeWeight = 16;
+  int blinkWeight = 7;
+  int expressionWeight = 5;
+  int winkWeight = 1;
+  int restWeight = 1;
+  const auto shiftWeight = [](int& from, int& to, int amount) {
+    if (amount > from) amount = from;
+    from -= amount;
+    to += amount;
+  };
+
+  if (energy_ > 80) shiftWeight(noneWeight, gazeWeight, 3);
+  else if (energy_ < 55) {
+    shiftWeight(gazeWeight, noneWeight, 2);
+    shiftWeight(noneWeight, blinkWeight, 1);
+    shiftWeight(noneWeight, restWeight, 1);
+  }
+  if (curiosity_ > 55) {
+    shiftWeight(noneWeight, gazeWeight, 3);
+    shiftWeight(noneWeight, expressionWeight, 1);
+  }
+  if (social_ > 55) shiftWeight(gazeWeight, noneWeight, 2);
+  if (stress_ > 8) {
+    shiftWeight(noneWeight, gazeWeight, 2);
+    shiftWeight(noneWeight, blinkWeight, 2);
+  }
+  if (stage == InactivityStage::RELAXED) {
+    shiftWeight(gazeWeight, noneWeight, 3);
+    shiftWeight(expressionWeight, noneWeight, 1);
+    shiftWeight(noneWeight, blinkWeight, 1);
+  } else if (stage == InactivityStage::DROWSY) {
+    shiftWeight(gazeWeight, noneWeight, 4);
+    shiftWeight(expressionWeight, restWeight, 2);
+    shiftWeight(noneWeight, blinkWeight, 1);
+  }
+
+  const long choice = random(100);
+  int threshold = noneWeight;
+  if (choice < threshold) {
+    scheduleNextAutonomousBehavior(now);
+    return;
+  }
+  threshold += gazeWeight;
+  if (choice < threshold) {
+    int16_t rangeX = stage == InactivityStage::DROWSY ? 5 : stage == InactivityStage::RELAXED ? 9 : 13;
+    if (energy_ < 55 && rangeX > 5) --rangeX;
+    if (energy_ > 80 && rangeX < 14) ++rangeX;
+    if (social_ > 55 && rangeX > 5) --rangeX;
+    const int16_t centerChance = social_ > 55 ? 28 : 8;
+    const int16_t downChance = stage == InactivityStage::DROWSY ? 15 : 4;
+    const int16_t upChance = stage == InactivityStage::DROWSY ? 8 : curiosity_ > 55 ? 24 : 14;
+    const long direction = random(100);
+    const uint16_t holdMs = stage == InactivityStage::DROWSY ? static_cast<uint16_t>(random(1'200, 2'201))
+                          : stage == InactivityStage::RELAXED ? static_cast<uint16_t>(random(900, 1'701))
+                                                               : static_cast<uint16_t>(random(500, 1'101));
+    if (direction < centerChance) {
+      autonomousBehavior_ = AutonomousBehavior::CENTER_FIXATION;
+      beginAutonomousBehaviorGaze(now, 0, 0, static_cast<uint16_t>(holdMs + 500));
+    } else if (direction < centerChance + downChance) {
+      autonomousBehavior_ = AutonomousBehavior::GLANCE_DOWN;
+      beginAutonomousBehaviorGaze(now, static_cast<int16_t>(random(-rangeX / 2, rangeX / 2 + 1)),
+                                  static_cast<int16_t>(random(3, 7)), holdMs);
+    } else if (direction < centerChance + downChance + upChance) {
+      autonomousBehavior_ = AutonomousBehavior::GLANCE_UP;
+      beginAutonomousBehaviorGaze(now, static_cast<int16_t>(random(-rangeX / 2, rangeX / 2 + 1)),
+                                  static_cast<int16_t>(random(-7, -3)), holdMs);
+    } else if (random(0, 2) == 0) {
+      autonomousBehavior_ = AutonomousBehavior::GLANCE_LEFT;
+      beginAutonomousBehaviorGaze(now, -rangeX, static_cast<int16_t>(random(-2, 3)), holdMs);
+    } else {
+      autonomousBehavior_ = AutonomousBehavior::GLANCE_RIGHT;
+      beginAutonomousBehaviorGaze(now, rangeX, static_cast<int16_t>(random(-2, 3)), holdMs);
+    }
+    return;
+  }
+  threshold += blinkWeight;
+  if (choice < threshold) {
+    autonomousBehavior_ = (stage == InactivityStage::DROWSY || energy_ < 55 || random(100) < 45)
+        ? AutonomousBehavior::LONG_BLINK
+        : AutonomousBehavior::DOUBLE_BLINK;
+    return;
+  }
+  threshold += expressionWeight;
+  if (choice < threshold) {
+    autonomousBehavior_ = curiosity_ > 55 && random(100) < 65
+        ? AutonomousBehavior::CURIOSITY_LIFT
+        : AutonomousBehavior::HAPPY_SQUINT;
+    autonomousBehaviorUntilMs_ = now + static_cast<uint32_t>(random(350, 601));
+    return;
+  }
+  threshold += winkWeight;
+  if (choice < threshold) {
+    autonomousBehavior_ = AutonomousBehavior::WINK;
+    winkActive_ = true;
+    winkLeft_ = random(0, 2) == 0;
+    winkStartedMs_ = now;
+    return;
+  }
+  (void)restWeight;
+  autonomousBehavior_ = AutonomousBehavior::REST_CLOSE;
+  autonomousBehaviorUntilMs_ = now + static_cast<uint32_t>(random(500, 1'201));
+}
+
+void NewoDisplay::updateAutonomousBehavior(uint32_t now) {
+  if (!autonomousIdle()) {
+    if (autonomousBehavior_ != AutonomousBehavior::WAITING) resetAutonomousBehavior(now);
+    return;
+  }
+
+  switch (autonomousBehavior_) {
+    case AutonomousBehavior::WAITING:
+      if (static_cast<int32_t>(now - nextAutonomousBehaviorMs_) >= 0) chooseAutonomousBehavior(now);
+      return;
+    case AutonomousBehavior::GLANCE_LEFT:
+    case AutonomousBehavior::GLANCE_RIGHT:
+    case AutonomousBehavior::GLANCE_UP:
+    case AutonomousBehavior::GLANCE_DOWN:
+    case AutonomousBehavior::CENTER_FIXATION:
+      if (autonomousBehaviorUntilMs_ == 0 || static_cast<int32_t>(now - autonomousBehaviorUntilMs_) < 0) return;
+      if (autonomousBehavior_ == AutonomousBehavior::CENTER_FIXATION) {
+        autonomousGazePhase_ = AutonomousGazePhase::CHOOSE_TARGET;
+        finishAutonomousBehavior(now);
+      } else {
+        gazeTargetX_ = 0;
+        gazeTargetY_ = 0;
+        autonomousGazeLargeShift_ = false;
+        microCorrectionPending_ = false;
+        autonomousBehaviorReturningToCenter_ = true;
+        autonomousGazePhase_ = AutonomousGazePhase::MOVING;
+      }
+      return;
+    case AutonomousBehavior::DOUBLE_BLINK:
+    case AutonomousBehavior::LONG_BLINK:
+      if (autonomousBehaviorBlinkStarted_ && blinkPhase_ == BlinkPhase::OPEN &&
+          blinkSchedulerState_ == BlinkSchedulerState::WAITING) finishAutonomousBehavior(now);
+      return;
+    case AutonomousBehavior::CURIOSITY_LIFT:
+    case AutonomousBehavior::HAPPY_SQUINT:
+    case AutonomousBehavior::REST_CLOSE:
+      if (static_cast<int32_t>(now - autonomousBehaviorUntilMs_) >= 0) finishAutonomousBehavior(now);
+      return;
+    case AutonomousBehavior::WINK:
+      if (!winkActive_) finishAutonomousBehavior(now);
+      return;
+  }
+}
+
 uint32_t NewoDisplay::adjustAutonomousFixation(uint32_t fixationMs) const {
   int32_t adjusted = static_cast<int32_t>(fixationMs);
   if (energy_ < 55) adjusted += static_cast<int32_t>(55 - energy_) * 8;
@@ -329,21 +556,25 @@ void NewoDisplay::scheduleNextBilateralBlink(uint32_t now) {
   nextBlinkMs_ = now + static_cast<uint32_t>(intervalMs);
 }
 
-void NewoDisplay::startBilateralBlink(bool allowAutonomousVariation) {
+void NewoDisplay::startBilateralBlink(bool allowAutonomousVariation, uint8_t forcedBlink) {
   uint8_t longBlinkChance = 2;
   if (energy_ < 55) ++longBlinkChance;
-  longBlink_ = allowAutonomousVariation && random(100) < longBlinkChance;
-  blinkSchedulerState_ = allowAutonomousVariation && !longBlink_ && random(100) < 7
+  longBlink_ = forcedBlink == kForceLongBlink ||
+               (forcedBlink == 0 && allowAutonomousVariation && random(100) < longBlinkChance);
+  blinkSchedulerState_ = forcedBlink == kForceDoubleBlink
       ? BlinkSchedulerState::DOUBLE_PAUSE
-      : BlinkSchedulerState::WAITING;
+      : allowAutonomousVariation && !longBlink_ && random(100) < 7
+          ? BlinkSchedulerState::DOUBLE_PAUSE
+          : BlinkSchedulerState::WAITING;
   postSaccadeBlinkPending_ = false;
   blinkPhase_ = BlinkPhase::HALF_CLOSED;
   blinkFramesRemaining_ = 1;
 }
 
 void NewoDisplay::queuePostSaccadeBlink(uint32_t now) {
-  if (!autonomousGazeLargeShift_ || blinkPhase_ != BlinkPhase::OPEN || winkActive_ ||
-      blinkSchedulerState_ != BlinkSchedulerState::WAITING || random(100) >= 25) return;
+  if (autonomousBehavior_ != AutonomousBehavior::WAITING || !autonomousGazeLargeShift_ ||
+      blinkPhase_ != BlinkPhase::OPEN || winkActive_ || blinkSchedulerState_ != BlinkSchedulerState::WAITING ||
+      random(100) >= 25) return;
   postSaccadeBlinkPending_ = true;
   nextBlinkMs_ = now + static_cast<uint32_t>(random(150, 351));
 }
@@ -395,6 +626,11 @@ void NewoDisplay::chooseAutonomousGazeTarget() {
 }
 
 void NewoDisplay::updateAutonomousIdleGaze(uint32_t now) {
+  const bool behaviorOwnsGaze = autonomousBehavior_ == AutonomousBehavior::GLANCE_LEFT ||
+                                autonomousBehavior_ == AutonomousBehavior::GLANCE_RIGHT ||
+                                autonomousBehavior_ == AutonomousBehavior::GLANCE_UP ||
+                                autonomousBehavior_ == AutonomousBehavior::GLANCE_DOWN ||
+                                autonomousBehavior_ == AutonomousBehavior::CENTER_FIXATION;
   switch (autonomousGazePhase_) {
     case AutonomousGazePhase::CHOOSE_TARGET:
       chooseAutonomousGazeTarget();
@@ -403,6 +639,19 @@ void NewoDisplay::updateAutonomousIdleGaze(uint32_t now) {
       gazeX_ = easeAutonomousGaze(gazeX_, gazeTargetX_);
       gazeY_ = easeAutonomousGaze(gazeY_, gazeTargetY_);
       if (gazeX_ != gazeTargetX_ || gazeY_ != gazeTargetY_) return;
+      if (behaviorOwnsGaze) {
+        if (autonomousBehaviorReturningToCenter_) {
+          autonomousGazePhase_ = AutonomousGazePhase::CHOOSE_TARGET;
+          finishAutonomousBehavior(now);
+          return;
+        }
+        fixationUntilMs_ = now + autonomousBehaviorHoldMs_;
+        autonomousBehaviorUntilMs_ = fixationUntilMs_;
+        microCorrectionPending_ = false;
+        microCorrectionAtMs_ = 0;
+        autonomousGazePhase_ = AutonomousGazePhase::FIXATING;
+        return;
+      }
       queuePostSaccadeBlink(now);
       autonomousGazeLargeShift_ = false;
       {
@@ -547,7 +796,8 @@ void NewoDisplay::applyEyeExpression(int16_t leftX, int16_t rightX, int16_t y, i
   bool angry = mode_ == NewoDisplayMode::ERROR;
   if (mode_ == NewoDisplayMode::IDLE) {
     tired = faceStyle_ == NewoFaceStyle::TIRED || faceStyle_ == NewoFaceStyle::SLEEPY;
-    happy = faceStyle_ == NewoFaceStyle::HAPPY || faceStyle_ == NewoFaceStyle::LAUGH;
+    happy = faceStyle_ == NewoFaceStyle::HAPPY || faceStyle_ == NewoFaceStyle::LAUGH ||
+            (faceStyle_ == NewoFaceStyle::NEUTRAL && autonomousBehavior_ == AutonomousBehavior::HAPPY_SQUINT);
     angry = faceStyle_ == NewoFaceStyle::ANGRY;
   }
 
@@ -581,17 +831,29 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
     // Do not start a delayed autoblink immediately after a wink burst.
     nextBlinkMs_ = now + static_cast<uint32_t>(random(2'500, 5'501));
   }
+  updateAutonomousBehavior(now);
   const bool deliberatelyClosed = mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CLOSED;
+  const bool phaseDBehaviorActive = autonomousBehavior_ != AutonomousBehavior::WAITING;
   if (blinkPhase_ == BlinkPhase::OPEN && !winkActive_) {
-    if (winkStyle && static_cast<int32_t>(now - nextWinkMs_) >= 0) {
+    if ((autonomousBehavior_ == AutonomousBehavior::DOUBLE_BLINK ||
+         autonomousBehavior_ == AutonomousBehavior::LONG_BLINK) && !autonomousBehaviorBlinkStarted_) {
+      startBilateralBlink(false, autonomousBehavior_ == AutonomousBehavior::DOUBLE_BLINK
+                                     ? kForceDoubleBlink : kForceLongBlink);
+      autonomousBehaviorBlinkStarted_ = true;
+    } else if (autonomousBehavior_ == AutonomousBehavior::DOUBLE_BLINK && autonomousBehaviorBlinkStarted_ &&
+               blinkSchedulerState_ == BlinkSchedulerState::DOUBLE_SECOND &&
+               static_cast<int32_t>(now - nextBlinkMs_) >= 0) {
+      startBilateralBlink(false);
+    } else if (!phaseDBehaviorActive && winkStyle && static_cast<int32_t>(now - nextWinkMs_) >= 0) {
       // A wink wins over and cancels any pending bilateral sequence.
       blinkSchedulerState_ = BlinkSchedulerState::WAITING;
       longBlink_ = false;
       postSaccadeBlinkPending_ = false;
       winkActive_ = true;
+      winkLeft_ = faceStyle_ == NewoFaceStyle::WINK_LEFT;
       winkStartedMs_ = now;
-    } else if (!deliberatelyClosed && static_cast<int32_t>(now - nextBlinkMs_) >= 0) {
-      // One scheduler owns bilateral events; winks have priority and never share its phases.
+    } else if (!phaseDBehaviorActive && !deliberatelyClosed && static_cast<int32_t>(now - nextBlinkMs_) >= 0) {
+      // One scheduler owns bilateral events; Phase D only requests this existing scheduler.
       const bool doubleSecond = blinkSchedulerState_ == BlinkSchedulerState::DOUBLE_SECOND;
       startBilateralBlink(autonomousIdle() && !postSaccadeBlinkPending_ && !doubleSecond);
     }
@@ -698,11 +960,15 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
 
   int16_t curiousLeftLift = 0;
   int16_t curiousRightLift = 0;
-  if (mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CURIOUS) {
+  const bool microCuriosityLift = mode_ == NewoDisplayMode::IDLE &&
+                                  faceStyle_ == NewoFaceStyle::NEUTRAL &&
+                                  autonomousBehavior_ == AutonomousBehavior::CURIOSITY_LIFT;
+  if (mode_ == NewoDisplayMode::IDLE && (faceStyle_ == NewoFaceStyle::CURIOUS || microCuriosityLift)) {
     // RoboEyes curiosity is directional: the outer eye grows vertically when
     // the gaze reaches an edge rather than merely widening both eyes.
-    if (gazeX_ < -7) curiousLeftLift = 8;
-    if (gazeX_ > 7) curiousRightLift = 8;
+    const int16_t lift = microCuriosityLift ? 4 : 8;
+    if (microCuriosityLift || gazeX_ < -7) curiousLeftLift = lift;
+    if (microCuriosityLift || gazeX_ > 7) curiousRightLift = lift;
   } else if (mode_ == NewoDisplayMode::THINKING) {
     if (gazeX_ < -7) leftW += 7;
     if (gazeX_ > 7) rightW += 7;
@@ -726,6 +992,10 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   if (blinkPhase_ == BlinkPhase::HALF_CLOSED || blinkPhase_ == BlinkPhase::HALF_OPEN) {
     height = static_cast<int16_t>(baseHeight * 0.40f);
   } else if (blinkPhase_ == BlinkPhase::CLOSED) {
+    height = static_cast<int16_t>(baseHeight * 0.07f);
+    if (height < 2) height = 2;
+  }
+  if (autonomousBehavior_ == AutonomousBehavior::REST_CLOSE) {
     height = static_cast<int16_t>(baseHeight * 0.07f);
     if (height < 2) height = 2;
   }
@@ -754,7 +1024,7 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
       if (winkElapsedMs < 60 || winkElapsedMs >= 180) winkHeight = static_cast<int16_t>(baseHeight * 0.40f);
       else winkHeight = static_cast<int16_t>(baseHeight * 0.07f);
       if (winkHeight < 2) winkHeight = 2;
-      if (faceStyle_ == NewoFaceStyle::WINK_LEFT) {
+      if (winkLeft_) {
         leftHeight = winkHeight;
         leftY += (baseHeight - winkHeight) / 2;
       } else {
