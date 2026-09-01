@@ -651,7 +651,7 @@ void NewoSpeaker::playbackTask() {
         }
         const size_t stereoBytes = samples * 2 * sizeof(int16_t);
         if (stereoBytes > sizeof(stereoWorking_) ||
-            i2s_.write(stereoWorking_, stereoBytes) != stereoBytes) {
+            i2s_.write(reinterpret_cast<const uint8_t*>(stereoWorking_), stereoBytes) != stereoBytes) {
           fail("i2s_write_failed");
         } else {
           consumedBytes_ += static_cast<uint32_t>(count);
@@ -675,7 +675,7 @@ void NewoSpeaker::playbackTask() {
     }
 
     // I2SClass::write() only guarantees that PCM was copied into the TX DMA ring.
-    // Arduino-ESP32 3.3.11 uses six 240-frame descriptors. Waiting for a full
+    // The Arduino-ESP32 I2S TX path uses six 240-frame descriptors. Waiting for a full
     // ring plus one additional TX EOF after the final write guarantees the
     // descriptor containing the last audio samples and the hardware FIFO tail
     // have actually drained before SPEAKER_COMPLETE can be emitted.

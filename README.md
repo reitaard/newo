@@ -5,7 +5,7 @@ Newo is an ESP32-S3 portable assistant platform. Firmware is split into provisio
 ## Hardware and toolchain
 
 - ESP32-S3 N16R8, 16 MB flash, 8 MB OPI PSRAM, 240 MHz
-- Arduino-ESP32 3.3.11
+- Arduino-ESP32 3.3.10 (ESP-IDF 5.5.4)
 - ArduinoJson 7.4.3
 - WebSockets 2.7.2
 - Adafruit GFX Library 1.12.6
@@ -22,6 +22,10 @@ Use `ESP32S3 Dev Module`, QIO 80 MHz, 16 MB flash, OPI PSRAM, **`ESP SR 16M (3MB
 ## Display test
 
 A 240x240 ST7789 display is wired over SPI: SCK GPIO42, MOSI GPIO41, RST GPIO40, DC GPIO38, and CS GPIO2. VCC and BLK connect to 3V3; GND connects to GND. The display initializes in the confirmed physical rotation and renders the Newo face/dashboard UI. Microphone GPIO4/5/6 and RGB GPIO48 remain unchanged.
+
+## Native USB host storage
+
+Newo uses the ESP32-S3 native OTG port as a USB host. The IDF USB Host Library, hub support, and Espressif MSC BOT/SCSI driver mount one FAT/FAT32 flash drive at `/usb`; both a direct OTG flash drive and one drive through an external hub are supported. Host, class-driver, discovery, and mount work run in dedicated FreeRTOS tasks, and unplug unmounts/releases the MSC device. GPIO19 (D-) and GPIO20 (D+) remain dedicated to the native USB PHY and are not repurposed as GPIOs. No Lua or Telegram USB controls are included.
 
 ## Wi-Fi and provisioning
 
@@ -92,7 +96,7 @@ Speaker output uses a dedicated MAX98357A I2S TX instance: BCLK GPIO21, LRC GPIO
 
 Speaker ON keeps one authenticated `/speaker` WSS connected after `/device` and reuses it with `speaker_begin` / binary PCM / `speaker_end` framing. Kokoro realtime playback uses explicit unknown-length framing (`streaming: true`, bounded `max_bytes`, and exact final `speaker_end.bytes`); known-length framing remains supported for the eSpeak fallback. Speaker OFF stops playback, restores WakeNet/display state, closes the WSS, and releases its dynamic StreamBuffer and TLS/network resources. The mode, volume, and mute settings are persisted in ESP32 NVS; automatic-reply mode is also persisted on the VPS. Manual `/speak` while OFF uses a temporary stream and leaves Speaker OFF.
 
-Open `Newo/Newo.ino`. Build with Arduino-ESP32 3.3.11 and `esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=esp_sr_16,UploadSpeed=921600`. The ESP_SR model partition is mandatory. Arduino-ESP32 copies its packaged `srmodels.bin` into the build output when ESP_SR is used; on Newo's confirmed 3.3.11 + built-in `esp_sr_16` Arduino IDE configuration, a normal upload has also been observed to write that model image to the model partition. `Newo/flash_esp_sr.sh <serial-port>` remains the explicit recovery/manual path when the model partition must be written separately. A future Neo WakeNet model will require an `srmodels.bin` containing that model; changing a firmware string is not sufficient. Hidden allowlisted Telegram controls wait for correlated `/device` acknowledgements. `/voice` (`/v`) is a terse manual microphone toggle (`Listening.`/`Stopped.`); `/vs` retains detailed voice and assistant telemetry. Both are Telegram-only and never speak their control output. `/speaker` and `/eco` are primary toggles; `/volume [0-100]` reads or updates the NVS-persisted runtime speaker gain, `/mute` toggles persisted mute, and `/speak <text>` remains a manual TTS playback command independent of the automatic `/speaker` toggle.
+Open `Newo/Newo.ino`. Build with Arduino-ESP32 3.3.10 and `esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=esp_sr_16,UploadSpeed=921600`. The ESP_SR model partition is mandatory. Arduino-ESP32 copies its packaged `srmodels.bin` into the build output when ESP_SR is used; with Newo's built-in `esp_sr_16` Arduino IDE configuration, a normal upload has also been observed to write that model image to the model partition. `Newo/flash_esp_sr.sh <serial-port>` remains the explicit recovery/manual path when the model partition must be written separately. A future Neo WakeNet model will require an `srmodels.bin` containing that model; changing a firmware string is not sufficient. Hidden allowlisted Telegram controls wait for correlated `/device` acknowledgements. `/voice` (`/v`) is a terse manual microphone toggle (`Listening.`/`Stopped.`); `/vs` retains detailed voice and assistant telemetry. Both are Telegram-only and never speak their control output. `/speaker` and `/eco` are primary toggles; `/volume [0-100]` reads or updates the NVS-persisted runtime speaker gain, `/mute` toggles persisted mute, and `/speak <text>` remains a manual TTS playback command independent of the automatic `/speaker` toggle.
 
 ## Repository rule
 

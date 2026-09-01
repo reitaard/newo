@@ -8,9 +8,11 @@
 #include "newo_led.h"
 #include "newo_speaker.h"
 #include "newo_storage.h"
+#include "newo_usb_storage.h"
 #include "newo_wifi.h"
 
 NewoStorage newoStorage;
+NewoUsbStorage newoUsbStorage;
 NewoWiFi newoWiFi(newoStorage);
 NewoLed newoLed;
 NewoDisplay newoDisplay;
@@ -52,6 +54,9 @@ void setup() {
   newoCloud.begin();
   newoAudio.begin();
   newoSpeaker.begin();
+  if (!newoUsbStorage.begin()) {
+    Serial.println("[usb] HOST_FAILED — reason=startup");
+  }
 
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::BOOT, "BOOT_READY");
   newoCloud.recordStack("after boot");

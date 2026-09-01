@@ -74,7 +74,7 @@ constexpr size_t SPEAKER_RECEIVE_REPORT_BYTES = 2'048;
 constexpr size_t SPEAKER_CONSUME_REPORT_BYTES = 1'024;
 constexpr size_t SPEAKER_LOW_WATER_BYTES = 10'240;
 constexpr uint32_t SPEAKER_LOW_WATER_REPORT_INTERVAL_MS = 40;
-// Arduino-ESP32 3.3.11 uses six 240-frame TX DMA descriptors. Waiting for one
+// The Arduino-ESP32 I2S TX path uses six 240-frame DMA descriptors. Waiting for one
 // full ring plus one extra TX EOF after the final write makes completion mean
 // the physical I2S tail has drained, rather than merely that our StreamBuffer is empty.
 constexpr uint8_t SPEAKER_I2S_DRAIN_DMA_EVENTS = 7;
