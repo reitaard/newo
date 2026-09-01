@@ -25,6 +25,15 @@ constexpr int16_t kEyeCanvasWidth = 200;
 constexpr int16_t kEyeCanvasHeight = 82;
 constexpr int16_t kEyeCanvasX = 20;
 constexpr int16_t kEyeCanvasY = 40;
+constexpr uint32_t kAutonomousStateUpdateMs = 3'000;
+constexpr uint32_t kAutonomousStateLogMs = 60'000;
+constexpr uint32_t kInactivityBeforeDriftMs = 30'000;
+constexpr uint8_t kCuriosityBaseline = 42;
+
+uint8_t saturatingAdd(uint8_t value, uint8_t amount) {
+  const uint16_t result = static_cast<uint16_t>(value) + amount;
+  return result > 100 ? 100 : static_cast<uint8_t>(result);
+}
 
 void formatUptime(char* out, size_t size, uint32_t ms) {
   const uint32_t seconds = ms / 1000;
@@ -52,7 +61,9 @@ void NewoDisplay::begin() {
   display_.setRotation(3);
   display_.setTextColor(kWhite);
   display_.setTextWrap(false);
-  resetFaceMotion(millis());
+  const uint32_t now = millis();
+  initializeAutonomousState(now);
+  resetFaceMotion(now);
   render();
 }
 
@@ -62,6 +73,22 @@ bool NewoDisplay::setMode(NewoDisplayMode mode, const char* text, bool temporary
     mode_ = mode;
     modeStartedMs_ = millis();
     resetFaceMotion(modeStartedMs_);
+    switch (mode_) {
+      case NewoDisplayMode::LISTENING:
+        noteInteraction(modeStartedMs_, 3, 5, 4);
+        break;
+      case NewoDisplayMode::THINKING:
+        noteInteraction(modeStartedMs_, 2, 3, 3);
+        break;
+      case NewoDisplayMode::SPEAKING:
+        noteInteraction(modeStartedMs_, 2, 2, 3);
+        break;
+      case NewoDisplayMode::ERROR:
+        noteError();
+        break;
+      default:
+        break;
+    }
   }
   mode_ = mode;
   strncpy(text_, text ? text : "", sizeof(text_) - 1);
@@ -89,6 +116,7 @@ void NewoDisplay::setSpeakerActive(bool active) {
 
 bool NewoDisplay::setFaceStyle(NewoFaceStyle style) {
   if (style > NewoFaceStyle::SLEEPY) return false;
+  const bool styleChanged = style != faceStyle_;
   faceStyle_ = style;
   mode_ = NewoDisplayMode::IDLE;
   persistentMode_ = NewoDisplayMode::IDLE;
@@ -100,6 +128,7 @@ bool NewoDisplay::setFaceStyle(NewoFaceStyle style) {
   ecoPage_ = 0;
   nextEcoPageMs_ = 0;
   modeStartedMs_ = millis();
+  if (styleChanged) noteInteraction(modeStartedMs_, 1, 2, 2);
   resetFaceMotion(modeStartedMs_);
   dirty_ = true;
   return true;
@@ -145,6 +174,7 @@ void NewoDisplay::loop() {
     ecoPage_ = (ecoPage_ + 1) % 3;
     dirty_ = true;
   }
+  updateAutonomousState(now);
   if (dirty_) render();
   if (!temporary_ && mode_ != NewoDisplayMode::ECO && mode_ != NewoDisplayMode::MESSAGE &&
       static_cast<int32_t>(now - nextFaceFrameMs_) >= 0) {
@@ -210,16 +240,89 @@ void NewoDisplay::resetFaceMotion(uint32_t now) {
   nextFaceFrameMs_ = 0;
 }
 
+void NewoDisplay::initializeAutonomousState(uint32_t now) {
+  energy_ = 70;
+  curiosity_ = kCuriosityBaseline;
+  social_ = 38;
+  stress_ = 5;
+  idleDriftTicks_ = 0;
+  lastInteractionMs_ = now;
+  nextAutonomousStateMs_ = now + kAutonomousStateUpdateMs;
+  nextAutonomousStateLogMs_ = now + kAutonomousStateLogMs;
+}
+
+void NewoDisplay::noteInteraction(uint32_t now, uint8_t energyGain, uint8_t curiosityGain, uint8_t socialGain) {
+  lastInteractionMs_ = now;
+  idleDriftTicks_ = 0;
+  energy_ = saturatingAdd(energy_, energyGain);
+  curiosity_ = saturatingAdd(curiosity_, curiosityGain);
+  social_ = saturatingAdd(social_, socialGain);
+  if (stress_ > 0) --stress_;
+}
+
+void NewoDisplay::noteError() {
+  stress_ = saturatingAdd(stress_, 8);
+}
+
+void NewoDisplay::updateAutonomousState(uint32_t now) {
+  if (static_cast<int32_t>(now - nextAutonomousStateMs_) >= 0) {
+    nextAutonomousStateMs_ = now + kAutonomousStateUpdateMs;
+    if (curiosity_ > kCuriosityBaseline) --curiosity_;
+    if (curiosity_ < kCuriosityBaseline) ++curiosity_;
+    if (stress_ > 0) --stress_;
+
+    if (now - lastInteractionMs_ >= kInactivityBeforeDriftMs) {
+      if (++idleDriftTicks_ >= 4) {
+        idleDriftTicks_ = 0;
+        if (energy_ > 40) --energy_;
+        if (social_ > 25) --social_;
+      }
+    } else {
+      idleDriftTicks_ = 0;
+    }
+  }
+
+  if (static_cast<int32_t>(now - nextAutonomousStateLogMs_) >= 0) {
+    Serial.printf("[system] EYES_STATE energy=%u curiosity=%u social=%u stress=%u\n",
+                  static_cast<unsigned>(energy_), static_cast<unsigned>(curiosity_),
+                  static_cast<unsigned>(social_), static_cast<unsigned>(stress_));
+    nextAutonomousStateLogMs_ = now + kAutonomousStateLogMs;
+  }
+}
+
+uint32_t NewoDisplay::adjustAutonomousFixation(uint32_t fixationMs) const {
+  int32_t adjusted = static_cast<int32_t>(fixationMs);
+  if (energy_ < 55) adjusted += static_cast<int32_t>(55 - energy_) * 8;
+  if (energy_ > 80) adjusted -= static_cast<int32_t>(energy_ - 80) * 6;
+  if (curiosity_ > 55) adjusted -= static_cast<int32_t>(curiosity_ - 55) * 4;
+  if (stress_ > 8) adjusted -= static_cast<int32_t>(stress_ - 8) * 6;
+  if (adjusted < 300) return 300;
+  if (adjusted > 3'500) return 3'500;
+  return static_cast<uint32_t>(adjusted);
+}
+
 bool NewoDisplay::autonomousIdle() const {
   return mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::NEUTRAL;
 }
 
 void NewoDisplay::scheduleNextBilateralBlink(uint32_t now) {
-  nextBlinkMs_ = now + static_cast<uint32_t>(random(2'500, autonomousIdle() ? 6'001 : 5'501));
+  if (!autonomousIdle()) {
+    nextBlinkMs_ = now + static_cast<uint32_t>(random(2'500, 5'501));
+    return;
+  }
+  int32_t intervalMs = random(2'500, 6'001);
+  if (energy_ < 55) intervalMs += static_cast<int32_t>(55 - energy_) * 12;
+  if (energy_ > 80) intervalMs -= static_cast<int32_t>(energy_ - 80) * 8;
+  if (stress_ > 8) intervalMs -= static_cast<int32_t>(stress_ - 8) * 10;
+  if (intervalMs < 2'200) intervalMs = 2'200;
+  if (intervalMs > 6'200) intervalMs = 6'200;
+  nextBlinkMs_ = now + static_cast<uint32_t>(intervalMs);
 }
 
 void NewoDisplay::startBilateralBlink(bool allowAutonomousVariation) {
-  longBlink_ = allowAutonomousVariation && random(100) < 2;
+  uint8_t longBlinkChance = 2;
+  if (energy_ < 55) ++longBlinkChance;
+  longBlink_ = allowAutonomousVariation && random(100) < longBlinkChance;
   blinkSchedulerState_ = allowAutonomousVariation && !longBlink_ && random(100) < 7
       ? BlinkSchedulerState::DOUBLE_PAUSE
       : BlinkSchedulerState::WAITING;
@@ -236,22 +339,41 @@ void NewoDisplay::queuePostSaccadeBlink(uint32_t now) {
 }
 
 void NewoDisplay::chooseAutonomousGazeTarget() {
+  const auto clampWeight = [](int16_t value, int16_t minimum, int16_t maximum) -> int16_t {
+    if (value < minimum) return minimum;
+    return value > maximum ? maximum : value;
+  };
+  const int16_t curiosityOffset = static_cast<int16_t>(curiosity_) - kCuriosityBaseline;
+  const int16_t socialOffset = static_cast<int16_t>(social_) - 38;
+  const int16_t centerWeight = clampWeight(52 + socialOffset / 3 - curiosityOffset / 4, 45, 60);
+  int16_t sideWeight = clampWeight(30 + curiosityOffset / 4 - socialOffset / 5, 24, 35);
+  // Reserve at least 10% upper attention and 4% downward attention.
+  if (centerWeight + sideWeight > 86) sideWeight = 86 - centerWeight;
+  int16_t upperWeight = clampWeight(13 + curiosityOffset / 8, 10, 16);
+  const int16_t maximumUpperWeight = 96 - centerWeight - sideWeight;
+  if (upperWeight > maximumUpperWeight) upperWeight = maximumUpperWeight;
+  const int16_t energyRange = energy_ < 55 ? -1 : energy_ > 80 ? 1 : 0;
+  const int16_t socialRangeLimit = social_ > 55 ? 1 : 0;
+  const int16_t centerRangeX = clampWeight(5 + energyRange, 4, 6);
+  const int16_t centerRangeY = clampWeight(3 + energyRange, 2, 4);
+  const int16_t sideRangeX = clampWeight(14 + energyRange - socialRangeLimit, 10, 14);
+  const int16_t upperRangeX = clampWeight(8 + energyRange - socialRangeLimit, 6, 9);
+
   const long choice = random(100);
-  if (choice < 52) {
-    // Most idle glances stay near the forward/center area.
-    gazeTargetX_ = static_cast<int16_t>(random(-5, 6));
-    gazeTargetY_ = static_cast<int16_t>(random(-3, 4));
-  } else if (choice < 82) {
-    // Side attention is common, but still less likely than center fixation.
+  if (choice < centerWeight) {
+    // Social attention reinforces forward fixation; curiosity shifts weight outward.
+    gazeTargetX_ = static_cast<int16_t>(random(-centerRangeX, centerRangeX + 1));
+    gazeTargetY_ = static_cast<int16_t>(random(-centerRangeY, centerRangeY + 1));
+  } else if (choice < centerWeight + sideWeight) {
     const int16_t side = random(0, 2) ? 1 : -1;
-    gazeTargetX_ = static_cast<int16_t>(side * random(8, 15));
-    gazeTargetY_ = static_cast<int16_t>(random(-3, 4));
-  } else if (choice < 95) {
-    gazeTargetX_ = static_cast<int16_t>(random(-8, 9));
+    gazeTargetX_ = static_cast<int16_t>(side * random(8, sideRangeX + 1));
+    gazeTargetY_ = static_cast<int16_t>(random(-centerRangeY, centerRangeY + 1));
+  } else if (choice < centerWeight + sideWeight + upperWeight) {
+    gazeTargetX_ = static_cast<int16_t>(random(-upperRangeX, upperRangeX + 1));
     gazeTargetY_ = static_cast<int16_t>(random(-8, -3));
   } else {
-    // Downward glances are deliberately uncommon and remain within the canvas.
-    gazeTargetX_ = static_cast<int16_t>(random(-6, 7));
+    // Downward glances stay uncommon regardless of personality state.
+    gazeTargetX_ = static_cast<int16_t>(random(-centerRangeX - 1, centerRangeX + 2));
     gazeTargetY_ = static_cast<int16_t>(random(4, 8));
   }
   const int16_t deltaX = gazeTargetX_ - gazeX_;
@@ -275,9 +397,10 @@ void NewoDisplay::updateAutonomousIdleGaze(uint32_t now) {
       autonomousGazeLargeShift_ = false;
       {
         const long durationChoice = random(100);
-        const uint32_t fixationMs = durationChoice < 15 ? static_cast<uint32_t>(random(350, 701))
-                                    : durationChoice < 25 ? static_cast<uint32_t>(random(2'200, 3'501))
-                                                          : static_cast<uint32_t>(random(700, 2'201));
+        const uint32_t baseFixationMs = durationChoice < 15 ? static_cast<uint32_t>(random(350, 701))
+                                        : durationChoice < 25 ? static_cast<uint32_t>(random(2'200, 3'501))
+                                                              : static_cast<uint32_t>(random(700, 2'201));
+        const uint32_t fixationMs = adjustAutonomousFixation(baseFixationMs);
         fixationUntilMs_ = now + fixationMs;
         microCorrectionPending_ = random(100) < 30;
         microCorrectionAtMs_ = microCorrectionPending_

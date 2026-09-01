@@ -32,6 +32,11 @@ class NewoDisplay {
   void updateGaze(uint32_t now);
   void updateAutonomousIdleGaze(uint32_t now);
   void chooseAutonomousGazeTarget();
+  void initializeAutonomousState(uint32_t now);
+  void updateAutonomousState(uint32_t now);
+  void noteInteraction(uint32_t now, uint8_t energyGain, uint8_t curiosityGain, uint8_t socialGain);
+  void noteError();
+  uint32_t adjustAutonomousFixation(uint32_t fixationMs) const;
   bool autonomousIdle() const;
   void scheduleNextBilateralBlink(uint32_t now);
   void startBilateralBlink(bool allowAutonomousVariation);
@@ -83,6 +88,14 @@ class NewoDisplay {
   uint32_t microCorrectionAtMs_ = 0;
   bool microCorrectionPending_ = false;
   bool autonomousGazeLargeShift_ = false;
+  uint8_t energy_ = 70;
+  uint8_t curiosity_ = 42;
+  uint8_t social_ = 38;
+  uint8_t stress_ = 5;
+  uint8_t idleDriftTicks_ = 0;
+  uint32_t nextAutonomousStateMs_ = 0;
+  uint32_t lastInteractionMs_ = 0;
+  uint32_t nextAutonomousStateLogMs_ = 0;
   int16_t gazeX_ = 0;
   int16_t gazeY_ = 0;
   int16_t gazeTargetX_ = 0;
