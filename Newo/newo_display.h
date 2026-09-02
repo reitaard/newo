@@ -7,7 +7,7 @@
 #include "newo_log.h"
 
 enum class NewoDisplayMode : uint8_t { IDLE, LISTENING, THINKING, SPEAKING, ERROR, MESSAGE, ECO };
-enum class NewoFaceStyle : uint8_t { NEUTRAL, HAPPY, ANGRY, TIRED, CURIOUS, CONFUSED, LAUGH, SWEAT, CYCLOPS, CLOSED, WINK_LEFT, WINK_RIGHT, LOOK_LEFT, LOOK_RIGHT, LOOK_UP, LOOK_DOWN, LOOK_UP_LEFT, LOOK_UP_RIGHT, LOOK_DOWN_LEFT, LOOK_DOWN_RIGHT, SURPRISED, SLEEPY };
+enum class NewoFaceStyle : uint8_t { NEUTRAL, HAPPY, ANGRY, TIRED, CURIOUS, CONFUSED, LAUGH, SWEAT, CYCLOPS, CLOSED, WINK_LEFT, WINK_RIGHT, LOOK_LEFT, LOOK_RIGHT, LOOK_UP, LOOK_DOWN, LOOK_UP_LEFT, LOOK_UP_RIGHT, LOOK_DOWN_LEFT, LOOK_DOWN_RIGHT, SURPRISED, SLEEPY, DETACHED, SLEEPING, SKEPTICAL };
 
 class NewoDisplay {
  public:
@@ -30,6 +30,8 @@ class NewoDisplay {
                        uint32_t freeHeap, uint32_t freePsram, const NewoLog::Stats& logs);
 
  private:
+  enum class SecondaryEffect : uint8_t { NONE, ZZZ, SWEAT };
+
   void render();
   void drawFace();
   void drawFaceFrame(uint32_t now);
@@ -62,6 +64,13 @@ class NewoDisplay {
   NewoEyePose resolveAutonomousEyePose(uint32_t now) const;
   uint16_t eyePoseTransitionMs(NewoDisplayMode mode) const;
   NewoEyeEasing eyePoseEasing(NewoDisplayMode mode) const;
+  SecondaryEffect secondaryEffectFor(uint32_t now, NewoDisplayMode mode) const;
+  void applyResolvedPoseCuts(int16_t leftX, int16_t rightX, int16_t leftY, int16_t rightY,
+                             int16_t leftW, int16_t rightW, int16_t leftHeight,
+                             int16_t rightHeight, const NewoEyePose& pose);
+  void drawClosedEyeCurve(int16_t x, int16_t y, int16_t width);
+  void drawSecondaryEffect(uint32_t now, SecondaryEffect effect);
+  void drawZ(int16_t x, int16_t y, int16_t size);
   void applyEyeExpression(int16_t leftX, int16_t rightX, int16_t y, int16_t leftW, int16_t rightW,
                           int16_t height, NewoDisplayMode mode);
   void blitMonoCanvasFast(GFXcanvas1& canvas, int16_t x, int16_t y, int16_t width, int16_t height);
