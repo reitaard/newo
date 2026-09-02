@@ -4,6 +4,7 @@
 #include <Adafruit_ST7789.h>
 
 #include "newo_eye_pose.h"
+#include "newo_gaze_motion.h"
 #include "newo_log.h"
 
 enum class NewoDisplayMode : uint8_t { IDLE, LISTENING, THINKING, SPEAKING, ERROR, MESSAGE, ECO };
@@ -71,8 +72,6 @@ class NewoDisplay {
   void drawClosedEyeCurve(int16_t x, int16_t y, int16_t width);
   void drawSecondaryEffect(uint32_t now, SecondaryEffect effect);
   void drawZ(int16_t x, int16_t y, int16_t size);
-  void applyEyeExpression(int16_t leftX, int16_t rightX, int16_t y, int16_t leftW, int16_t rightW,
-                          int16_t height, NewoDisplayMode mode);
   void blitMonoCanvasFast(GFXcanvas1& canvas, int16_t x, int16_t y, int16_t width, int16_t height);
   void recordFaceFrame(uint32_t elapsedUs);
   void drawTextPage(const char* heading, const char* body, bool info = false);
@@ -90,6 +89,7 @@ class NewoDisplay {
   NewoDisplayMode persistentMode_ = NewoDisplayMode::IDLE;
   NewoFaceStyle faceStyle_ = NewoFaceStyle::NEUTRAL;
   NewoEyePoseEngine eyePoseEngine_;
+  NewoGazeMotion gazeMotion_;
   bool autoFaceEnabled_ = true;
   NewoDisplayMode lastEffectiveMode_ = NewoDisplayMode::IDLE;
   bool lastEffectiveAutoFace_ = false;
