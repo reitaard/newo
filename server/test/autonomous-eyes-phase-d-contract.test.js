@@ -4,14 +4,17 @@ import { readFile } from "node:fs/promises";
 
 const source = async (path) => readFile(new URL(path, import.meta.url), "utf8");
 
-test("Phase D autonomous behavior is neutral-IDLE owned and reset with face motion", async () => {
+test("Autonomy V2 is neutral-IDLE owned and episode driven", async () => {
   const [header, display] = await Promise.all([
     source("../../Newo/newo_display.h"),
     source("../../Newo/newo_display.cpp"),
   ]);
-  assert.match(header, /enum class AutonomousBehavior[\s\S]*WAITING[\s\S]*GLANCE_LEFT[\s\S]*DOUBLE_BLINK[\s\S]*REST_CLOSE/);
-  assert.match(display, /bool NewoDisplay::autonomousIdle\(\) const \{\s*return mode_ == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::NEUTRAL;/);
-  assert.match(display, /void NewoDisplay::resetFaceMotion\(uint32_t now\)[\s\S]*resetAutonomousBehavior\(now\);/);
-  assert.match(display, /void NewoDisplay::updateAutonomousBehavior\(uint32_t now\) \{\s*if \(!autonomousIdle\(\)\)/);
-  assert.match(display, /void NewoDisplay::queuePostSaccadeBlink\(uint32_t now\) \{\s*if \(autonomousBehavior_ != AutonomousBehavior::WAITING/);
+  assert.match(header, /enum class AutonomousEpisode[\s\S]*WAITING[\s\S]*CURIOUS_SCAN[\s\S]*LOW_ENERGY[\s\S]*SOCIAL_ATTENTION[\s\S]*ALERT_CHECK/);
+  assert.match(display, /bool NewoDisplay::autonomousIdle\(\) const \{\s*return effectiveMode\(millis\(\)\) == NewoDisplayMode::IDLE && autoFaceEnabled_;/);
+  assert.match(display, /void NewoDisplay::resetFaceMotion\(uint32_t now\)[\s\S]*resetAutonomousEpisode\(now\);/);
+  assert.match(display, /constexpr uint32_t kAutonomousEpisodeMinMs = 10'000;[\s\S]*constexpr uint32_t kAutonomousEpisodeMaxMs = 20'000;/);
+  assert.match(display, /void NewoDisplay::updateAutonomousEpisode\(uint32_t now\)[\s\S]*chooseAutonomousEpisode\(now\)/);
+  assert.match(display, /void NewoDisplay::chooseAutonomousGazeTarget\(\)[\s\S]*random\(10, sideRangeX \+ 1\)/);
+  assert.match(display, /startBilateralBlink\(false, kForceLongBlink\)/);
+  assert.match(display, /int16_t easeAutonomousGaze\(int16_t current, int16_t target\)/);
 });

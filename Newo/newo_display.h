@@ -39,12 +39,13 @@ class NewoDisplay {
   void chooseAutonomousGazeTarget();
   void initializeAutonomousState(uint32_t now);
   void updateAutonomousState(uint32_t now);
-  void resetAutonomousBehavior(uint32_t now);
-  void updateAutonomousBehavior(uint32_t now);
-  void scheduleNextAutonomousBehavior(uint32_t now);
-  void chooseAutonomousBehavior(uint32_t now);
-  void finishAutonomousBehavior(uint32_t now);
-  void beginAutonomousBehaviorGaze(uint32_t now, int16_t targetX, int16_t targetY, uint16_t holdMs);
+  void resetAutonomousEpisode(uint32_t now);
+  void updateAutonomousEpisode(uint32_t now);
+  void scheduleNextAutonomousEpisode(uint32_t now);
+  void chooseAutonomousEpisode(uint32_t now);
+  void finishAutonomousEpisode(uint32_t now);
+  void beginAutonomousEpisodeGaze(uint32_t now, int16_t targetX, int16_t targetY, uint16_t holdMs);
+  void advanceAutonomousEpisode(uint32_t now);
   void noteInteraction(uint32_t now, uint8_t energyGain, uint8_t curiosityGain, uint8_t socialGain);
   void noteError();
   uint32_t adjustAutonomousFixation(uint32_t fixationMs) const;
@@ -75,7 +76,7 @@ class NewoDisplay {
   NewoFaceStyle faceStyle_ = NewoFaceStyle::NEUTRAL;
   bool autoFaceEnabled_ = true;
   NewoDisplayMode lastEffectiveMode_ = NewoDisplayMode::IDLE;
-  bool lastEffectiveAutoFace_ = true;
+  bool lastEffectiveAutoFace_ = false;
   char text_[97] = {};
   char persistentText_[97] = {};
   bool ecoEnabled_ = false;
@@ -95,11 +96,12 @@ class NewoDisplay {
   enum class BlinkPhase : uint8_t { OPEN, HALF_CLOSED, CLOSED, HALF_OPEN };
   enum class BlinkSchedulerState : uint8_t { WAITING, DOUBLE_PAUSE, DOUBLE_SECOND };
   enum class AutonomousGazePhase : uint8_t { CHOOSE_TARGET, MOVING, FIXATING, MICRO_CORRECTION };
-  enum class AutonomousBehavior : uint8_t {
-    WAITING, GLANCE_LEFT, GLANCE_RIGHT, GLANCE_UP, GLANCE_DOWN, CENTER_FIXATION,
-    DOUBLE_BLINK, LONG_BLINK, CURIOSITY_LIFT, HAPPY_SQUINT, WINK, REST_CLOSE
-  };
+  enum class AutonomousEpisode : uint8_t { WAITING, CURIOUS_SCAN, LOW_ENERGY, SOCIAL_ATTENTION, ALERT_CHECK };
   enum class InactivityStage : uint8_t { ACTIVE, RELAXED, DROWSY };
+  const char* contextName(NewoDisplayMode mode) const;
+  static const char* episodeName(AutonomousEpisode episode);
+  void recordGazeTarget(uint16_t holdMs);
+  void maybeLogEyeStats(uint32_t now);
   uint32_t nextBlinkMs_ = 0;
   BlinkPhase blinkPhase_ = BlinkPhase::OPEN;
   BlinkSchedulerState blinkSchedulerState_ = BlinkSchedulerState::WAITING;
@@ -111,12 +113,13 @@ class NewoDisplay {
   bool winkActive_ = false;
   bool winkLeft_ = false;
   AutonomousGazePhase autonomousGazePhase_ = AutonomousGazePhase::CHOOSE_TARGET;
-  AutonomousBehavior autonomousBehavior_ = AutonomousBehavior::WAITING;
-  uint32_t nextAutonomousBehaviorMs_ = 0;
-  uint32_t autonomousBehaviorUntilMs_ = 0;
-  uint16_t autonomousBehaviorHoldMs_ = 0;
-  bool autonomousBehaviorReturningToCenter_ = false;
-  bool autonomousBehaviorBlinkStarted_ = false;
+  AutonomousEpisode autonomousEpisode_ = AutonomousEpisode::WAITING;
+  uint32_t nextAutonomousEpisodeMs_ = 0;
+  uint16_t autonomousEpisodeHoldMs_ = 0;
+  uint8_t autonomousEpisodeStep_ = 0;
+  int8_t autonomousEpisodeDirection_ = 1;
+  bool autonomousEpisodeBlinkRequested_ = false;
+  bool autonomousEpisodeBlinkStarted_ = false;
   uint32_t fixationUntilMs_ = 0;
   uint32_t microCorrectionAtMs_ = 0;
   bool microCorrectionPending_ = false;
@@ -129,6 +132,15 @@ class NewoDisplay {
   uint32_t nextAutonomousStateMs_ = 0;
   uint32_t lastInteractionMs_ = 0;
   uint32_t nextAutonomousStateLogMs_ = 0;
+  uint32_t eyeContextChanges_ = 0;
+  uint32_t eyeGazeEvents_ = 0;
+  uint32_t eyeMeaningfulGazeEvents_ = 0;
+  uint32_t eyeBlinkEvents_ = 0;
+  uint32_t eyeDoubleBlinkEvents_ = 0;
+  uint32_t eyeLongBlinkEvents_ = 0;
+  uint32_t eyeEpisodeStarts_ = 0;
+  uint32_t eyeEpisodeCompletions_ = 0;
+  uint32_t eyeErrorEvents_ = 0;
   int16_t gazeX_ = 0;
   int16_t gazeY_ = 0;
   int16_t gazeTargetX_ = 0;
