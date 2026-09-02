@@ -507,7 +507,7 @@ esp_err_t sensor_handler(httpd_req_t *req) {
     }
     const int value = atoi(val) ? 1 : 0;
     if (xSemaphoreTake(g_camera_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
-        return httpd_resp_send_err(req, HTTPD_503_SERVICE_UNAVAILABLE, "camera busy");
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "camera busy");
     }
     sensor_t *sensor = esp_camera_sensor_get();
     int rc = -1;
