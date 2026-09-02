@@ -1,4 +1,4 @@
-# GOOUUU ESP32-S3-CAM vision benchmark
+# GOOUUU ESP32-S3-CAM native-JPEG vision benchmark
 # Target: ESP32-S3-WROOM-1 N16R8 (16 MB flash, 8 MB Octal PSRAM)
 
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
@@ -19,9 +19,13 @@ CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 
-# v3 captures RGB565 directly into PSRAM for the detector. On ESP32-S3,
-# enable camera PSRAM DMA to reduce CPU/memory-copy pressure during raw capture.
-CONFIG_CAMERA_PSRAM_DMA=y
+# OV3660 + JPEG + PSRAM DMA has a known driver issue in esp32-camera 2.1.7.
+# Keep the native-JPEG capture path on the stable non-PSRAM-DMA mode.
+CONFIG_CAMERA_PSRAM_DMA=n
 
-# Keep detector models in flash rodata. SD is intentionally not in the hot path.
+# Pack both detectors so FAST/RANGE can use MSR+MNP and ACCURATE can use ESPDet-224.
 CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA=y
+CONFIG_FLASH_HUMAN_FACE_DETECT_MSRMNP_S8_V1=y
+CONFIG_FLASH_ESPDET_PICO_224_224_FACE=y
+CONFIG_FLASH_ESPDET_PICO_416_416_FACE=n
+CONFIG_HUMAN_FACE_DETECT_MSRMNP_S8_V1=y
