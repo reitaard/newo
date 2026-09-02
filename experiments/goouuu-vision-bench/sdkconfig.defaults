@@ -19,6 +19,9 @@ CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 
-# Keep the detector models inside the application image for this first benchmark.
-# SD is intentionally not part of the hot path yet.
+# v3 captures RGB565 directly into PSRAM for the detector. On ESP32-S3,
+# enable camera PSRAM DMA to reduce CPU/memory-copy pressure during raw capture.
+CONFIG_CAMERA_PSRAM_DMA=y
+
+# Keep detector models in flash rodata. SD is intentionally not in the hot path.
 CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA=y
