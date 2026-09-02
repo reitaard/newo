@@ -204,6 +204,7 @@ void NewoCloud::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
       connected_ = false;
       authenticated_ = false;
       assistantThinking_ = false;
+      display_.setAssistantThinking(false);
       started_ = false;
       break;
     case WStype_TEXT:
@@ -212,6 +213,7 @@ void NewoCloud::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
     case WStype_ERROR:
       ++errorCount_;
       NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::CLOUD, "CLOUD_WS_ERROR");
+      display_.noteSystemError();
       break;
     default:
       break;
@@ -243,8 +245,13 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
 
   if (strcmp(type, "assistant_state") == 0) {
     const char* state = doc["state"] | "";
-    if (strcmp(state, "thinking") == 0) assistantThinking_ = true;
-    else if (strcmp(state, "idle") == 0) assistantThinking_ = false;
+    if (strcmp(state, "thinking") == 0) {
+      assistantThinking_ = true;
+      display_.setAssistantThinking(true);
+    } else if (strcmp(state, "idle") == 0 || strcmp(state, "speaking") == 0) {
+      assistantThinking_ = false;
+      display_.setAssistantThinking(false);
+    }
     else NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "ASSISTANT_STATE_INVALID");
     return;
   }

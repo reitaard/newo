@@ -16,8 +16,11 @@ class NewoDisplay {
   void updateClock();
   bool setMode(NewoDisplayMode mode, const char* text = nullptr, bool temporary = false);
   bool setFaceStyle(NewoFaceStyle style);
-  // Playback is an animation hint only; it never owns display content or timing.
+  // Runtime signals are arbitrated independently of the persistent display mode.
+  void setListeningActive(bool active);
+  void setAssistantThinking(bool active);
   void setSpeakerActive(bool active);
+  void noteSystemError();
   void toggleEco();
   bool ecoEnabled() const { return ecoEnabled_; }
   void setClockEnabled(bool enabled);
@@ -50,8 +53,10 @@ class NewoDisplay {
   void startBilateralBlink(bool allowAutonomousVariation, uint8_t forcedBlink = 0);
   void queuePostSaccadeBlink(uint32_t now);
   void resetFaceMotion(uint32_t now);
+  void syncEffectiveMode(uint32_t now);
+  NewoDisplayMode effectiveMode(uint32_t now) const;
   void applyEyeExpression(int16_t leftX, int16_t rightX, int16_t y, int16_t leftW, int16_t rightW,
-                          int16_t height);
+                          int16_t height, NewoDisplayMode mode);
   void blitMonoCanvasFast(GFXcanvas1& canvas, int16_t x, int16_t y, int16_t width, int16_t height);
   void recordFaceFrame(uint32_t elapsedUs);
   void drawTextPage(const char* heading, const char* body, bool info = false);
@@ -68,6 +73,9 @@ class NewoDisplay {
   NewoDisplayMode mode_ = NewoDisplayMode::IDLE;
   NewoDisplayMode persistentMode_ = NewoDisplayMode::IDLE;
   NewoFaceStyle faceStyle_ = NewoFaceStyle::NEUTRAL;
+  bool autoFaceEnabled_ = true;
+  NewoDisplayMode lastEffectiveMode_ = NewoDisplayMode::IDLE;
+  bool lastEffectiveAutoFace_ = true;
   char text_[97] = {};
   char persistentText_[97] = {};
   bool ecoEnabled_ = false;
@@ -80,6 +88,10 @@ class NewoDisplay {
   uint8_t ecoPage_ = 0;
   uint32_t nextFaceFrameMs_ = 0;
   uint32_t modeStartedMs_ = 0;
+  bool listeningActive_ = false;
+  bool assistantThinking_ = false;
+  bool errorActive_ = false;
+  uint32_t errorUntilMs_ = 0;
   enum class BlinkPhase : uint8_t { OPEN, HALF_CLOSED, CLOSED, HALF_OPEN };
   enum class BlinkSchedulerState : uint8_t { WAITING, DOUBLE_PAUSE, DOUBLE_SECOND };
   enum class AutonomousGazePhase : uint8_t { CHOOSE_TARGET, MOVING, FIXATING, MICRO_CORRECTION };

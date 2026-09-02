@@ -141,7 +141,7 @@ bool NewoAudio::beginStreaming(bool rearmAfterStream) {
   if (!configureI2s()) { ++failures_; return false; }
   rearmAfterStream_ = rearmAfterStream;
   if (!rearmAfterStream_) enabled_ = false;
-  display_.setMode(NewoDisplayMode::LISTENING, "", false);
+  display_.setListeningActive(true);
   state_ = NewoVoiceState::STREAMING;
   transitionPending_ = true;
   streamFinished_ = false;
@@ -156,6 +156,8 @@ bool NewoAudio::beginStreaming(bool rearmAfterStream) {
     ++failures_;
     streamEndReason_ = "task_failed";
     streamFinished_ = true;
+    display_.setListeningActive(false);
+    display_.noteSystemError();
     return false;
   }
   // I2S and the one task are now owned by STREAMING. Ack the control request
@@ -235,7 +237,7 @@ void NewoAudio::finishStreaming(const char* reason) {
   // failed after direct manual I2S acquisition.
   releaseI2s();
   // LISTENING is session-only; recover the normal face before re-arming/OFF.
-  display_.setMode(NewoDisplayMode::IDLE, "", false);
+  display_.setListeningActive(false);
   if (rearmAfterStream_ && enabled_ && startWakeNet()) return;
   rearmAfterStream_ = false;
   state_ = NewoVoiceState::OFF;
@@ -252,6 +254,7 @@ void NewoAudio::handleVoiceEvent(WStype_t type, uint8_t* payload, size_t length)
   }
   else if (type == WStype_ERROR) {
     NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::AUDIO, "VOICE_WS_ERROR");
+    display_.noteSystemError();
     streamEndReason_ = "socket_error"; stopStreaming_ = true;
   }
   else if (type == WStype_TEXT && length) {
