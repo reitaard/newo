@@ -9,9 +9,9 @@ This document records physical bring-up results for the second Newo ESP32-S3 boa
 - CPU: dual-core ESP32-S3 at 240 MHz
 - Flash: 16 MB
 - PSRAM: 8 MB
-- Camera module physically fitted; ribbon is marked `OV3660`. Camera operation is not yet validated.
-- Rear microSD/TF slot present.
-- Onboard addressable RGB/WS2812 is mapped to GPIO48 by the board pinout.
+- Camera module physically fitted and now physically validated as **OV3660**.
+- Rear microSD/TF slot present and physically validated.
+- Onboard addressable RGB/WS2812 is GPIO48 and is deliberately kept dark during bring-up.
 
 Upstream board reference: https://github.com/profharris/GOOUUU_ESP32-S3-CAM
 
@@ -33,7 +33,7 @@ The board was tested alone with only its fitted camera module and microSD card p
 ### Onboard RGB
 
 - GPIO48 is reserved for the onboard addressable RGB LED.
-- The bring-up sketch issues `rgbLedWrite(48, 0, 0, 0)` at boot and periodically afterwards so the Newo2 hardware test keeps the controllable RGB dark.
+- The bring-up sketches issue `rgbLedWrite(48, 0, 0, 0)` at boot and periodically afterwards so the Newo2 hardware test keeps the controllable RGB dark.
 - Do not assign GPIO48 to another Newo2 peripheral.
 
 ### microSD / SDMMC
@@ -62,17 +62,21 @@ Newo SD storage OK
 GOOUUU ESP32-S3-CAM V1.5
 ```
 
-These SD pin assignments are now treated as physically validated for this board and must not be reused by migrated Newo peripherals.
+These SD pin assignments are physically validated for this board and must not be reused by migrated Newo peripherals.
 
-## Test partition note
+## Camera — physically validated
 
-The minimal hardware test does not use ESP-SR. A normal 16 MB Arduino partition scheme should therefore be used for these standalone tests. The existing Newo `ESP SR 16M` scheme expects `srmodels.bin`; use that scheme again only when the real Newo firmware/ESP-SR stack is migrated to Newo2.
+The fitted camera was successfully initialized twice while the microSD card remained mounted. The sensor identified itself as:
 
-## Camera — next validation
+```text
+PID = 0x3660
+sensor = OV3660
+VER = 0x00
+MIDH = 0x00
+MIDL = 0x00
+```
 
-The camera has not yet been initialized in software. Do not mark the camera pin map or sensor operation as validated until the next physical test passes.
-
-The upstream board documentation states that the camera mapping follows the ESP32-S3-EYE style pinout:
+The working camera pin map is therefore treated as physically validated for Newo2:
 
 ```text
 SIOD / SDA -> GPIO4
@@ -93,16 +97,59 @@ PWDN       -> not connected
 RESET      -> not connected
 ```
 
-Next acceptance test:
+Initial camera validation settings:
 
-1. Initialize the camera while SD remains mounted.
-2. Read and print the detected sensor PID.
-3. Capture one JPEG into PSRAM.
-4. Save it to `/newo/camera-test.jpg`.
-5. Confirm a non-zero JPEG file size and inspect the image on a computer.
+- XCLK: 20 MHz
+- Pixel format: JPEG
+- Frame size: SVGA, 800 x 600
+- JPEG quality setting: 12
+- Frame buffers: 1
+- Frame buffer location: PSRAM
+- Grab mode: `CAMERA_GRAB_WHEN_EMPTY`
 
-Only after that passes should camera pins be considered reserved/validated for the Newo2 migration.
+Two consecutive physical capture runs passed:
+
+| Run | Warm-up JPEG | Saved JPEG | Resolution | SD verification |
+| --- | ---: | ---: | --- | --- |
+| 1 | 14,971 bytes | 14,708 bytes | 800 x 600 | exact size match — PASS |
+| 2 | 14,012 bytes | 13,723 bytes | 800 x 600 | exact size match — PASS |
+
+The output file was written to:
+
+```text
+/newo/camera-test.jpg
+```
+
+Camera-to-storage path now physically validated:
+
+```text
+OV3660 -> ESP32-S3 camera interface -> PSRAM framebuffer -> JPEG -> microSD
+```
+
+After camera initialization, reported free PSRAM was approximately 8,063 KB. The running heartbeat after capture reported approximately 303 KB free heap and 8,063 KB free PSRAM.
+
+The camera pin assignments above are now reserved for Newo2 and must not be reused for the migrated microphone, display, speaker, or other external peripherals.
+
+## Combined onboard result
+
+As of 2026-09-02, the following built-in Newo2 hardware is physically proven together:
+
+```text
+ESP32-S3          PASS
+16 MB flash       PASS
+8 MB PSRAM        PASS
+GPIO48 RGB off    PASS
+64 GB microSD     PASS
+OV3660 camera     PASS
+Camera -> SD JPEG PASS
+```
+
+A small amount of garbled serial text was observed around one reset / sketch transition, but the subsequent boot, SD mount, camera initialization, capture, file write, exact-size verification, and heartbeat all completed normally. It is not treated as a hardware failure.
+
+## Test partition note
+
+The standalone Newo2 hardware tests do not use ESP-SR. A normal 16 MB Arduino partition scheme should therefore be used for these bring-up sketches. The existing Newo `ESP SR 16M` scheme expects `srmodels.bin`; switch back to that scheme only when the real Newo firmware/ESP-SR stack is migrated to Newo2.
 
 ## Migration rule
 
-Newo2 bring-up stays incremental: validate onboard hardware first, then decide the final display, microphone, speaker, and other external pin assignments. Existing Newo pin mappings must not be copied blindly onto Newo2 because the camera and SD slot already consume GPIOs used by the original device.
+Newo2 bring-up stays incremental: validate onboard hardware first, then decide final display, microphone, speaker, USB-host, and other external pin assignments. Existing Newo pin mappings must not be copied blindly onto Newo2 because the validated camera and SD slot already consume GPIOs used by the original device.
