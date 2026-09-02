@@ -4,12 +4,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <list>
 
 #include "dl_image_define.hpp"
 #include "esp_camera.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
+#include "esp_jpeg_common.h"
+#include "esp_jpeg_dec.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
@@ -18,7 +21,6 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "human_face_detect.hpp"
-#include "img_converters.h"
 #include "nvs_flash.h"
 
 #include "web_ui.h"
@@ -30,10 +32,14 @@ constexpr const char *AP_SSID = "NEWO-CAM-TEST";
 constexpr const char *AP_PASSWORD = "newovision";
 constexpr int HISTORY_LEN = 100;
 constexpr int MAX_FACES = 8;
-constexpr float DEFAULT_SCORE_THRESHOLD = 0.20f;
+constexpr float DEFAULT_SCORE_THRESHOLD = 0.30f;
 constexpr float MIN_SCORE_THRESHOLD = 0.10f;
 constexpr float MAX_SCORE_THRESHOLD = 0.90f;
-constexpr int STREAM_JPEG_QUALITY = 70;
+constexpr uint16_t SOURCE_W = 640;
+constexpr uint16_t SOURCE_H = 480;
+constexpr uint16_t FAST_W = 320;
+constexpr uint16_t FAST_H = 240;
+constexpr uint8_t CAMERA_JPEG_QUALITY = 12;
 
 // GOOUUU ESP32-S3-CAM v1.5 / ESP32-S3-WROOM-1 N16R8.
 constexpr int CAM_PIN_PWDN = -1;
@@ -57,7 +63,7 @@ const char *STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=frame";
 const char *STREAM_BOUNDARY = "\r\n--frame\r\n";
 const char *STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
-enum class TestMode : uint8_t { VIEW = 0, FAST = 1, RANGE = 2, BENCH = 3 };
+enum class TestMode : uint8_t { VIEW = 0, FAST = 1, RANGE = 2, ACCURATE = 3, BENCH = 4 };
 
 struct FaceBox {
     int x1 = 0;
@@ -67,17 +73,41 @@ struct FaceBox {
     float score = 0.0f;
 };
 
+struct SharedJpeg {
+    uint8_t *data = nullptr;
+    size_t capacity = 0;
+    size_t len = 0;
+    uint16_t width = SOURCE_W;
+    uint16_t height = SOURCE_H;
+    uint32_t seq = 0;
+};
+
+struct JpegSnapshot {
+    uint8_t *data = nullptr;
+    size_t capacity = 0;
+    size_t len = 0;
+    uint16_t width = 0;
+    uint16_t height = 0;
+    uint32_t seq = 0;
+};
+
 struct Metrics {
-    uint32_t width = 0;
-    uint32_t height = 0;
     uint32_t sensor_pid = 0;
+    uint32_t source_width = SOURCE_W;
+    uint32_t source_height = SOURCE_H;
+    uint32_t source_jpeg_bytes = 0;
     uint32_t capture_ms = 0;
+    uint32_t camera_frame_ms = 0;
+    uint32_t stream_frame_ms = 0;
+    uint32_t decode_ms = 0;
     uint32_t prep_ms = 0;
     uint32_t detect_ms = 0;
-    uint32_t vision_ms = 0;
-    uint32_t encode_ms = 0;
+    uint32_t ai_total_ms = 0;
+    uint32_t sweep_ms = 0;
+    uint32_t ai_width = 0;
+    uint32_t ai_height = 0;
+    uint32_t range_tile = 0;
     uint32_t detector_passes = 0;
-    uint32_t frame_bytes = 0;
     uint32_t face_streak = 0;
     uint32_t largest_face_w = 0;
     uint32_t largest_face_h = 0;
@@ -92,12 +122,13 @@ struct Metrics {
 volatile TestMode g_mode = TestMode::FAST;
 float g_score_threshold = DEFAULT_SCORE_THRESHOLD;
 Metrics g_metrics;
+SharedJpeg g_latest;
 portMUX_TYPE g_metrics_mux = portMUX_INITIALIZER_UNLOCKED;
-SemaphoreHandle_t g_detector_mutex = nullptr;
+SemaphoreHandle_t g_frame_mutex = nullptr;
 SemaphoreHandle_t g_camera_mutex = nullptr;
-HumanFaceDetect *g_detector = nullptr;
-uint8_t *g_tile = nullptr;
-size_t g_tile_capacity = 0;
+SemaphoreHandle_t g_detector_mutex = nullptr;
+HumanFaceDetect *g_fast_detector = nullptr;
+HumanFaceDetect *g_accurate_detector = nullptr;
 httpd_handle_t g_httpd = nullptr;
 httpd_handle_t g_stream_httpd = nullptr;
 
@@ -106,32 +137,46 @@ const char *mode_name(TestMode mode) {
         case TestMode::VIEW: return "view";
         case TestMode::FAST: return "fast";
         case TestMode::RANGE: return "range";
+        case TestMode::ACCURATE: return "accurate";
         case TestMode::BENCH: return "bench";
     }
     return "unknown";
 }
 
-framesize_t frame_size_for_mode(TestMode mode) {
-    switch (mode) {
-        case TestMode::VIEW:
-        case TestMode::RANGE:
-            return FRAMESIZE_VGA;
-        case TestMode::FAST:
-        case TestMode::BENCH:
-            return FRAMESIZE_QVGA;
-    }
-    return FRAMESIZE_QVGA;
+const char *model_name(TestMode mode) {
+    return mode == TestMode::ACCURATE ? "ESPDet-224" : "MSR+MNP";
+}
+
+bool ensure_psram_buffer(uint8_t *&ptr, size_t &capacity, size_t required, bool aligned = false) {
+    if (ptr && capacity >= required) return true;
+    size_t next = (required + 65535u) & ~static_cast<size_t>(65535u);
+    if (next < required) next = required;
+    uint8_t *replacement = aligned
+        ? static_cast<uint8_t *>(heap_caps_aligned_alloc(16, next, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT))
+        : static_cast<uint8_t *>(heap_caps_malloc(next, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!replacement) return false;
+    if (ptr) heap_caps_free(ptr);
+    ptr = replacement;
+    capacity = next;
+    return true;
+}
+
+void free_snapshot(JpegSnapshot &s) {
+    if (s.data) heap_caps_free(s.data);
+    s = {};
 }
 
 void reset_history() {
     taskENTER_CRITICAL(&g_metrics_mux);
-    g_metrics.capture_ms = 0;
+    g_metrics.decode_ms = 0;
     g_metrics.prep_ms = 0;
     g_metrics.detect_ms = 0;
-    g_metrics.vision_ms = 0;
-    g_metrics.encode_ms = 0;
+    g_metrics.ai_total_ms = 0;
+    g_metrics.sweep_ms = 0;
+    g_metrics.ai_width = 0;
+    g_metrics.ai_height = 0;
+    g_metrics.range_tile = 0;
     g_metrics.detector_passes = 0;
-    g_metrics.frame_bytes = 0;
     g_metrics.face_streak = 0;
     g_metrics.largest_face_w = 0;
     g_metrics.largest_face_h = 0;
@@ -146,35 +191,22 @@ void reset_history() {
 
 bool set_detector_threshold(float value) {
     value = std::clamp(value, MIN_SCORE_THRESHOLD, MAX_SCORE_THRESHOLD);
-    if (!g_detector || !g_detector_mutex) return false;
+    if (!g_fast_detector || !g_accurate_detector || !g_detector_mutex) return false;
     if (xSemaphoreTake(g_detector_mutex, portMAX_DELAY) != pdTRUE) return false;
-    g_detector->set_score_thr(value, 0);
-    g_detector->set_score_thr(value, 1);
+    g_fast_detector->set_score_thr(value, 0);
+    g_fast_detector->set_score_thr(value, 1);
+    g_accurate_detector->set_score_thr(value, 0);
     g_score_threshold = value;
     xSemaphoreGive(g_detector_mutex);
     reset_history();
-    ESP_LOGI(TAG, "face detector score threshold=%.2f (MSR + MNP)", static_cast<double>(value));
+    ESP_LOGI(TAG, "detector threshold=%.2f", static_cast<double>(value));
     return true;
 }
 
-bool configure_mode(TestMode next) {
-    if (!g_camera_mutex) return false;
-    if (xSemaphoreTake(g_camera_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) return false;
-
-    sensor_t *sensor = esp_camera_sensor_get();
-    const framesize_t size = frame_size_for_mode(next);
-    const int rc = sensor ? sensor->set_framesize(sensor, size) : -1;
-    if (rc == 0) {
-        esp_camera_return_all();
-        g_mode = next;
-    }
-    xSemaphoreGive(g_camera_mutex);
-
-    if (rc != 0) return false;
+void set_mode(TestMode next) {
+    g_mode = next;
     reset_history();
-    ESP_LOGI(TAG, "mode=%s camera=%s RGB565 direct",
-             mode_name(next), (size == FRAMESIZE_VGA) ? "640x480" : "320x240");
-    return true;
+    ESP_LOGI(TAG, "mode=%s source=VGA native JPEG model=%s", mode_name(next), model_name(next));
 }
 
 float box_iou(const FaceBox &a, const FaceBox &b) {
@@ -201,28 +233,54 @@ void add_box_dedup(FaceBox *boxes, int &face_count, const FaceBox &candidate) {
     if (face_count < MAX_FACES) boxes[face_count++] = candidate;
 }
 
-void record_pipeline(uint32_t width,
-                     uint32_t height,
-                     uint32_t capture_ms,
-                     uint32_t prep_ms,
-                     uint32_t detect_ms,
-                     uint32_t vision_ms,
-                     uint32_t encode_ms,
-                     uint32_t detector_passes,
-                     uint32_t frame_bytes,
-                     const FaceBox *boxes,
-                     int face_count,
-                     bool detection_sample) {
+void append_scaled_results(const std::list<dl::detect::result_t> &results,
+                           int input_w,
+                           int input_h,
+                           int source_w,
+                           int source_h,
+                           int offset_x,
+                           int offset_y,
+                           FaceBox *boxes,
+                           int &face_count) {
+    for (const auto &result : results) {
+        if (result.box.size() < 4) continue;
+        FaceBox b;
+        b.x1 = offset_x + (result.box[0] * source_w) / input_w;
+        b.y1 = offset_y + (result.box[1] * source_h) / input_h;
+        b.x2 = offset_x + (result.box[2] * source_w) / input_w;
+        b.y2 = offset_y + (result.box[3] * source_h) / input_h;
+        b.score = result.score;
+        b.x1 = std::clamp(b.x1, 0, SOURCE_W);
+        b.y1 = std::clamp(b.y1, 0, SOURCE_H);
+        b.x2 = std::clamp(b.x2, 0, SOURCE_W);
+        b.y2 = std::clamp(b.y2, 0, SOURCE_H);
+        if (b.x2 <= b.x1 || b.y2 <= b.y1) continue;
+        add_box_dedup(boxes, face_count, b);
+    }
+}
+
+void record_ai(uint32_t decode_ms,
+               uint32_t prep_ms,
+               uint32_t detect_ms,
+               uint32_t ai_total_ms,
+               uint32_t sweep_ms,
+               uint32_t ai_w,
+               uint32_t ai_h,
+               uint32_t range_tile,
+               const FaceBox *boxes,
+               int face_count,
+               bool detection_sample,
+               bool update_boxes) {
     taskENTER_CRITICAL(&g_metrics_mux);
-    g_metrics.width = width;
-    g_metrics.height = height;
-    g_metrics.capture_ms = capture_ms;
+    g_metrics.decode_ms = decode_ms;
     g_metrics.prep_ms = prep_ms;
     g_metrics.detect_ms = detect_ms;
-    g_metrics.vision_ms = vision_ms;
-    g_metrics.encode_ms = encode_ms;
-    g_metrics.detector_passes = detector_passes;
-    g_metrics.frame_bytes = frame_bytes;
+    g_metrics.ai_total_ms = ai_total_ms;
+    g_metrics.sweep_ms = sweep_ms;
+    g_metrics.ai_width = ai_w;
+    g_metrics.ai_height = ai_h;
+    g_metrics.range_tile = range_tile;
+    g_metrics.detector_passes = 1;
 
     if (detection_sample) {
         const bool hit = face_count > 0;
@@ -234,140 +292,130 @@ void record_pipeline(uint32_t width,
         g_metrics.face_streak = hit ? g_metrics.face_streak + 1 : 0;
     }
 
-    g_metrics.face_count = std::min(face_count, MAX_FACES);
-    g_metrics.largest_face_w = 0;
-    g_metrics.largest_face_h = 0;
-    memset(g_metrics.boxes, 0, sizeof(g_metrics.boxes));
-    for (int i = 0; i < g_metrics.face_count; ++i) {
-        g_metrics.boxes[i] = boxes[i];
-        const uint32_t w = boxes[i].x2 > boxes[i].x1 ? static_cast<uint32_t>(boxes[i].x2 - boxes[i].x1) : 0;
-        const uint32_t h = boxes[i].y2 > boxes[i].y1 ? static_cast<uint32_t>(boxes[i].y2 - boxes[i].y1) : 0;
-        if (w * h > g_metrics.largest_face_w * g_metrics.largest_face_h) {
-            g_metrics.largest_face_w = w;
-            g_metrics.largest_face_h = h;
+    if (update_boxes) {
+        g_metrics.face_count = std::min(face_count, MAX_FACES);
+        g_metrics.largest_face_w = 0;
+        g_metrics.largest_face_h = 0;
+        memset(g_metrics.boxes, 0, sizeof(g_metrics.boxes));
+        for (int i = 0; i < g_metrics.face_count; ++i) {
+            g_metrics.boxes[i] = boxes[i];
+            const uint32_t w = boxes[i].x2 > boxes[i].x1 ? static_cast<uint32_t>(boxes[i].x2 - boxes[i].x1) : 0;
+            const uint32_t h = boxes[i].y2 > boxes[i].y1 ? static_cast<uint32_t>(boxes[i].y2 - boxes[i].y1) : 0;
+            if (w * h > g_metrics.largest_face_w * g_metrics.largest_face_h) {
+                g_metrics.largest_face_w = w;
+                g_metrics.largest_face_h = h;
+            }
         }
     }
     taskEXIT_CRITICAL(&g_metrics_mux);
 }
 
-bool append_results(const std::list<dl::detect::result_t> &results,
-                    int offset_x,
-                    int offset_y,
-                    int full_w,
-                    int full_h,
-                    FaceBox *boxes,
-                    int &face_count) {
-    for (const auto &result : results) {
-        if (result.box.size() < 4) continue;
-        FaceBox b;
-        b.x1 = std::clamp(result.box[0] + offset_x, 0, full_w);
-        b.y1 = std::clamp(result.box[1] + offset_y, 0, full_h);
-        b.x2 = std::clamp(result.box[2] + offset_x, 0, full_w);
-        b.y2 = std::clamp(result.box[3] + offset_y, 0, full_h);
-        b.score = result.score;
-        if (b.x2 <= b.x1 || b.y2 <= b.y1) continue;
-        add_box_dedup(boxes, face_count, b);
+void record_capture(uint32_t jpeg_bytes, uint32_t capture_ms, uint32_t frame_ms) {
+    taskENTER_CRITICAL(&g_metrics_mux);
+    g_metrics.source_jpeg_bytes = jpeg_bytes;
+    g_metrics.capture_ms = capture_ms;
+    g_metrics.camera_frame_ms = frame_ms;
+    taskEXIT_CRITICAL(&g_metrics_mux);
+}
+
+void record_stream_interval(uint32_t frame_ms) {
+    taskENTER_CRITICAL(&g_metrics_mux);
+    g_metrics.stream_frame_ms = frame_ms;
+    taskEXIT_CRITICAL(&g_metrics_mux);
+}
+
+bool snapshot_latest(JpegSnapshot &out, uint32_t last_seq) {
+    if (!g_frame_mutex) return false;
+    if (xSemaphoreTake(g_frame_mutex, pdMS_TO_TICKS(200)) != pdTRUE) return false;
+    if (!g_latest.data || g_latest.len == 0 || g_latest.seq == last_seq) {
+        xSemaphoreGive(g_frame_mutex);
+        return false;
     }
+    if (!ensure_psram_buffer(out.data, out.capacity, g_latest.len)) {
+        xSemaphoreGive(g_frame_mutex);
+        return false;
+    }
+    memcpy(out.data, g_latest.data, g_latest.len);
+    out.len = g_latest.len;
+    out.width = g_latest.width;
+    out.height = g_latest.height;
+    out.seq = g_latest.seq;
+    xSemaphoreGive(g_frame_mutex);
     return true;
 }
 
-bool run_direct_detection(camera_fb_t *fb,
-                          FaceBox *boxes,
-                          int &face_count,
-                          uint32_t &prep_ms,
-                          uint32_t &detect_ms,
-                          uint32_t &passes) {
-    face_count = 0;
-    prep_ms = 0;
-    detect_ms = 0;
-    passes = 0;
-    if (!fb || fb->format != PIXFORMAT_RGB565) return false;
-    if (xSemaphoreTake(g_detector_mutex, portMAX_DELAY) != pdTRUE) return false;
+bool decode_jpeg_rgb565(const JpegSnapshot &jpeg,
+                        uint16_t target_w,
+                        uint16_t target_h,
+                        uint8_t *&decoded,
+                        size_t &decoded_capacity,
+                        uint16_t &out_w,
+                        uint16_t &out_h,
+                        uint32_t &decode_ms) {
+    jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
+    config.output_type = JPEG_PIXEL_FORMAT_RGB565_BE;
+    if (target_w && target_h && (target_w != jpeg.width || target_h != jpeg.height)) {
+        config.scale.width = target_w;
+        config.scale.height = target_h;
+    }
 
+    jpeg_dec_handle_t decoder = nullptr;
+    const int64_t started = esp_timer_get_time();
+    if (jpeg_dec_open(&config, &decoder) != JPEG_ERR_OK || !decoder) return false;
+
+    jpeg_dec_io_t io = {};
+    io.inbuf = jpeg.data;
+    io.inbuf_len = static_cast<int>(jpeg.len);
+    jpeg_dec_header_info_t info = {};
+    if (jpeg_dec_parse_header(decoder, &io, &info) != JPEG_ERR_OK) {
+        jpeg_dec_close(decoder);
+        return false;
+    }
+
+    out_w = config.scale.width ? config.scale.width : info.width;
+    out_h = config.scale.height ? config.scale.height : info.height;
+
+    int out_len = 0;
+    if (jpeg_dec_get_outbuf_len(decoder, &out_len) != JPEG_ERR_OK || out_len <= 0) {
+        jpeg_dec_close(decoder);
+        return false;
+    }
+    if (!ensure_psram_buffer(decoded, decoded_capacity, static_cast<size_t>(out_len), true)) {
+        jpeg_dec_close(decoder);
+        return false;
+    }
+
+    io.outbuf = decoded;
+    const jpeg_error_t result = jpeg_dec_process(decoder, &io);
+    jpeg_dec_close(decoder);
+    decode_ms = static_cast<uint32_t>((esp_timer_get_time() - started + 500) / 1000);
+    return result == JPEG_ERR_OK;
+}
+
+bool run_detector(HumanFaceDetect *detector,
+                  uint8_t *rgb565,
+                  int input_w,
+                  int input_h,
+                  FaceBox *boxes,
+                  int &face_count,
+                  int source_w,
+                  int source_h,
+                  int offset_x,
+                  int offset_y,
+                  uint32_t &detect_ms) {
+    if (!detector || !rgb565) return false;
     dl::image::img_t image = {
-        .data = fb->buf,
-        .width = static_cast<uint16_t>(fb->width),
-        .height = static_cast<uint16_t>(fb->height),
+        .data = rgb565,
+        .width = static_cast<uint16_t>(input_w),
+        .height = static_cast<uint16_t>(input_h),
         .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565BE,
     };
 
-    const int64_t detect_start = esp_timer_get_time();
-    auto &results = g_detector->run(image);
-    detect_ms = static_cast<uint32_t>((esp_timer_get_time() - detect_start + 500) / 1000);
-    passes = 1;
-    append_results(results, 0, 0, static_cast<int>(fb->width), static_cast<int>(fb->height), boxes, face_count);
-
-    xSemaphoreGive(g_detector_mutex);
-    return true;
-}
-
-bool ensure_tile_buffer(size_t required) {
-    if (g_tile && required <= g_tile_capacity) return true;
-    if (g_tile) {
-        heap_caps_free(g_tile);
-        g_tile = nullptr;
-        g_tile_capacity = 0;
-    }
-    g_tile = static_cast<uint8_t *>(heap_caps_malloc(required, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!g_tile) {
-        ESP_LOGE(TAG, "Unable to allocate %u-byte RANGE tile in PSRAM", static_cast<unsigned>(required));
-        return false;
-    }
-    g_tile_capacity = required;
-    ESP_LOGI(TAG, "RANGE tile buffer allocated: %u bytes", static_cast<unsigned>(required));
-    return true;
-}
-
-bool run_range_detection(camera_fb_t *fb,
-                         FaceBox *boxes,
-                         int &face_count,
-                         uint32_t &prep_ms,
-                         uint32_t &detect_ms,
-                         uint32_t &passes) {
-    face_count = 0;
-    prep_ms = 0;
-    detect_ms = 0;
-    passes = 0;
-    if (!fb || fb->format != PIXFORMAT_RGB565) return false;
-
-    const int full_w = static_cast<int>(fb->width);
-    const int full_h = static_cast<int>(fb->height);
-    const int tile_w = full_w * 3 / 5;
-    const int tile_h = full_h * 3 / 5;
-    const size_t row_bytes = static_cast<size_t>(tile_w) * 2;
-    const size_t tile_bytes = row_bytes * tile_h;
-    if (tile_w <= 0 || tile_h <= 0 || !ensure_tile_buffer(tile_bytes)) return false;
-
-    const int xs[2] = {0, full_w - tile_w};
-    const int ys[2] = {0, full_h - tile_h};
-
     if (xSemaphoreTake(g_detector_mutex, portMAX_DELAY) != pdTRUE) return false;
-    for (int yi = 0; yi < 2; ++yi) {
-        for (int xi = 0; xi < 2; ++xi) {
-            const int x0 = xs[xi];
-            const int y0 = ys[yi];
-
-            const int64_t prep_start = esp_timer_get_time();
-            for (int y = 0; y < tile_h; ++y) {
-                const uint8_t *src = fb->buf + (static_cast<size_t>(y0 + y) * full_w + x0) * 2;
-                memcpy(g_tile + static_cast<size_t>(y) * row_bytes, src, row_bytes);
-            }
-            prep_ms += static_cast<uint32_t>((esp_timer_get_time() - prep_start + 500) / 1000);
-
-            dl::image::img_t image = {
-                .data = g_tile,
-                .width = static_cast<uint16_t>(tile_w),
-                .height = static_cast<uint16_t>(tile_h),
-                .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565BE,
-            };
-
-            const int64_t detect_start = esp_timer_get_time();
-            auto &results = g_detector->run(image);
-            detect_ms += static_cast<uint32_t>((esp_timer_get_time() - detect_start + 500) / 1000);
-            ++passes;
-            append_results(results, x0, y0, full_w, full_h, boxes, face_count);
-        }
-    }
+    const int64_t started = esp_timer_get_time();
+    auto &results = detector->run(image);
+    detect_ms = static_cast<uint32_t>((esp_timer_get_time() - started + 500) / 1000);
+    append_scaled_results(results, input_w, input_h, source_w, source_h, offset_x, offset_y, boxes, face_count);
     xSemaphoreGive(g_detector_mutex);
     return true;
 }
@@ -393,36 +441,25 @@ esp_err_t init_camera() {
     config.xclk_freq_hz = 20000000;
     config.ledc_timer = LEDC_TIMER_0;
     config.ledc_channel = LEDC_CHANNEL_0;
-    config.pixel_format = PIXFORMAT_RGB565;
-
-    // Allocate for the largest runtime mode up front. Lower modes reuse this buffer.
+    config.pixel_format = PIXFORMAT_JPEG;
     config.frame_size = FRAMESIZE_VGA;
-    config.jpeg_quality = 12;
-    config.fb_count = 1;
+    config.jpeg_quality = CAMERA_JPEG_QUALITY;
+    config.fb_count = 2;
     config.fb_location = CAMERA_FB_IN_PSRAM;
-    config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+    config.grab_mode = CAMERA_GRAB_LATEST;
     config.sccb_i2c_port = 0;
 
-    ESP_LOGI(TAG, "Initializing GOOUUU OV3660 camera in direct RGB565 mode");
-    esp_err_t err = esp_camera_init(&config);
+    ESP_LOGI(TAG, "Initializing OV3660 native JPEG VGA, 2 framebuffers, PSRAM DMA OFF");
+    const esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK) return err;
-
-    // esp32-camera RGB565 is big-endian by default; match the JPEG converter explicitly.
-    jpgSetRgb565BE(true);
 
     sensor_t *sensor = esp_camera_sensor_get();
     if (sensor) {
         taskENTER_CRITICAL(&g_metrics_mux);
         g_metrics.sensor_pid = sensor->id.PID;
-        g_metrics.width = 640;
-        g_metrics.height = 480;
         taskEXIT_CRITICAL(&g_metrics_mux);
         ESP_LOGI(TAG, "Camera sensor PID=0x%04x", sensor->id.PID);
     }
-
-    ESP_LOGI(TAG, "After camera init: PSRAM free=%u largest=%u",
-             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
-             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
     return ESP_OK;
 }
 
@@ -446,8 +483,170 @@ esp_err_t init_wifi_ap() {
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_LOGI(TAG, "AP ready: SSID=%s password=%s", AP_SSID, AP_PASSWORD);
-    ESP_LOGI(TAG, "Open http://192.168.4.1/ on the phone connected to that AP");
     return ESP_OK;
+}
+
+void capture_task(void *) {
+    uint32_t previous_ms = 0;
+    for (;;) {
+        if (xSemaphoreTake(g_camera_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            vTaskDelay(pdMS_TO_TICKS(2));
+            continue;
+        }
+        const int64_t started = esp_timer_get_time();
+        camera_fb_t *fb = esp_camera_fb_get();
+        const uint32_t capture_ms = static_cast<uint32_t>((esp_timer_get_time() - started + 500) / 1000);
+        if (!fb) {
+            xSemaphoreGive(g_camera_mutex);
+            ESP_LOGW(TAG, "camera capture failed");
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+
+        bool copied = false;
+        if (fb->format == PIXFORMAT_JPEG && xSemaphoreTake(g_frame_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+            if (ensure_psram_buffer(g_latest.data, g_latest.capacity, fb->len)) {
+                memcpy(g_latest.data, fb->buf, fb->len);
+                g_latest.len = fb->len;
+                g_latest.width = fb->width;
+                g_latest.height = fb->height;
+                ++g_latest.seq;
+                copied = true;
+            }
+            xSemaphoreGive(g_frame_mutex);
+        }
+
+        const uint32_t bytes = static_cast<uint32_t>(fb->len);
+        esp_camera_fb_return(fb);
+        xSemaphoreGive(g_camera_mutex);
+
+        const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        const uint32_t frame_ms = previous_ms ? now_ms - previous_ms : 0;
+        previous_ms = now_ms;
+        if (copied) record_capture(bytes, capture_ms, frame_ms);
+        taskYIELD();
+    }
+}
+
+void ai_task(void *) {
+    JpegSnapshot jpeg;
+    uint8_t *decoded = nullptr;
+    size_t decoded_capacity = 0;
+    uint8_t *tile = nullptr;
+    size_t tile_capacity = 0;
+    uint32_t last_seq = 0;
+    TestMode previous_mode = TestMode::VIEW;
+    int range_tile = 0;
+    FaceBox sweep_boxes[MAX_FACES] = {};
+    int sweep_face_count = 0;
+    uint32_t sweep_compute_ms = 0;
+
+    for (;;) {
+        const TestMode mode = g_mode;
+        if (mode == TestMode::VIEW) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            previous_mode = mode;
+            continue;
+        }
+        if (mode != previous_mode) {
+            range_tile = 0;
+            sweep_face_count = 0;
+            sweep_compute_ms = 0;
+            memset(sweep_boxes, 0, sizeof(sweep_boxes));
+            previous_mode = mode;
+        }
+
+        if (!snapshot_latest(jpeg, last_seq)) {
+            vTaskDelay(pdMS_TO_TICKS(2));
+            continue;
+        }
+        last_seq = jpeg.seq;
+        const int64_t ai_started = esp_timer_get_time();
+
+        uint32_t decode_ms = 0;
+        uint32_t prep_ms = 0;
+        uint32_t detect_ms = 0;
+        uint16_t decoded_w = 0;
+        uint16_t decoded_h = 0;
+        FaceBox boxes[MAX_FACES] = {};
+        int face_count = 0;
+
+        if (mode == TestMode::RANGE) {
+            if (!decode_jpeg_rgb565(jpeg, jpeg.width, jpeg.height, decoded, decoded_capacity,
+                                    decoded_w, decoded_h, decode_ms)) {
+                ESP_LOGW(TAG, "RANGE jpeg decode failed");
+                continue;
+            }
+
+            const int tile_w = decoded_w * 3 / 5;
+            const int tile_h = decoded_h * 3 / 5;
+            const int xs[2] = {0, static_cast<int>(decoded_w) - tile_w};
+            const int ys[2] = {0, static_cast<int>(decoded_h) - tile_h};
+            const int xi = range_tile & 1;
+            const int yi = (range_tile >> 1) & 1;
+            const int x0 = xs[xi];
+            const int y0 = ys[yi];
+            const size_t row_bytes = static_cast<size_t>(tile_w) * 2;
+            const size_t tile_bytes = row_bytes * tile_h;
+            if (!ensure_psram_buffer(tile, tile_capacity, tile_bytes, true)) {
+                ESP_LOGE(TAG, "RANGE tile allocation failed");
+                continue;
+            }
+
+            const int64_t prep_started = esp_timer_get_time();
+            for (int y = 0; y < tile_h; ++y) {
+                const uint8_t *src = decoded + (static_cast<size_t>(y0 + y) * decoded_w + x0) * 2;
+                memcpy(tile + static_cast<size_t>(y) * row_bytes, src, row_bytes);
+            }
+            prep_ms = static_cast<uint32_t>((esp_timer_get_time() - prep_started + 500) / 1000);
+
+            FaceBox tile_boxes[MAX_FACES] = {};
+            int tile_face_count = 0;
+            if (!run_detector(g_fast_detector, tile, tile_w, tile_h,
+                              tile_boxes, tile_face_count, tile_w, tile_h, x0, y0, detect_ms)) {
+                ESP_LOGW(TAG, "RANGE detector failed");
+                continue;
+            }
+            for (int i = 0; i < tile_face_count; ++i) add_box_dedup(sweep_boxes, sweep_face_count, tile_boxes[i]);
+
+            const uint32_t ai_total_ms = static_cast<uint32_t>((esp_timer_get_time() - ai_started + 500) / 1000);
+            sweep_compute_ms += ai_total_ms;
+            const bool sweep_complete = range_tile == 3;
+            if (sweep_complete) {
+                record_ai(decode_ms, prep_ms, detect_ms, ai_total_ms, sweep_compute_ms,
+                          tile_w, tile_h, range_tile, sweep_boxes, sweep_face_count, true, true);
+                sweep_face_count = 0;
+                sweep_compute_ms = 0;
+                memset(sweep_boxes, 0, sizeof(sweep_boxes));
+            } else {
+                record_ai(decode_ms, prep_ms, detect_ms, ai_total_ms, sweep_compute_ms,
+                          tile_w, tile_h, range_tile, nullptr, 0, false, false);
+            }
+            range_tile = (range_tile + 1) & 3;
+            continue;
+        }
+
+        if (!decode_jpeg_rgb565(jpeg, FAST_W, FAST_H, decoded, decoded_capacity,
+                                decoded_w, decoded_h, decode_ms)) {
+            ESP_LOGW(TAG, "JPEG decode failed in %s", mode_name(mode));
+            continue;
+        }
+
+        HumanFaceDetect *detector = mode == TestMode::ACCURATE ? g_accurate_detector : g_fast_detector;
+        if (!run_detector(detector, decoded, decoded_w, decoded_h,
+                          boxes, face_count, jpeg.width, jpeg.height, 0, 0, detect_ms)) {
+            ESP_LOGW(TAG, "detector failed in %s", mode_name(mode));
+            continue;
+        }
+        const uint32_t ai_total_ms = static_cast<uint32_t>((esp_timer_get_time() - ai_started + 500) / 1000);
+        record_ai(decode_ms, 0, detect_ms, ai_total_ms, 0,
+                  decoded_w, decoded_h, 0, boxes, face_count, true, true);
+    }
+
+    free_snapshot(jpeg);
+    if (decoded) heap_caps_free(decoded);
+    if (tile) heap_caps_free(tile);
+    vTaskDelete(nullptr);
 }
 
 bool get_query_value(httpd_req_t *req, const char *key, char *out, size_t out_len) {
@@ -469,17 +668,12 @@ esp_err_t mode_handler(httpd_req_t *req) {
     if (!get_query_value(req, "name", value, sizeof(value))) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing name");
     }
-
-    TestMode next;
-    if (!strcmp(value, "view")) next = TestMode::VIEW;
-    else if (!strcmp(value, "fast")) next = TestMode::FAST;
-    else if (!strcmp(value, "range")) next = TestMode::RANGE;
-    else if (!strcmp(value, "bench")) next = TestMode::BENCH;
+    if (!strcmp(value, "view")) set_mode(TestMode::VIEW);
+    else if (!strcmp(value, "fast")) set_mode(TestMode::FAST);
+    else if (!strcmp(value, "range")) set_mode(TestMode::RANGE);
+    else if (!strcmp(value, "accurate")) set_mode(TestMode::ACCURATE);
+    else if (!strcmp(value, "bench")) set_mode(TestMode::BENCH);
     else return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad mode");
-
-    if (!configure_mode(next)) {
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "camera mode switch failed");
-    }
     return httpd_resp_sendstr(req, "ok");
 }
 
@@ -550,26 +744,29 @@ esp_err_t metrics_handler(httpd_req_t *req) {
 
     const uint32_t psram_free = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     const uint32_t psram_largest = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
-    const uint32_t internal_free = static_cast<uint32_t>(
-        heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    const uint32_t internal_free = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
 
     char json[4096];
     int n = snprintf(json, sizeof(json),
-        "{\"mode\":\"%s\",\"threshold\":%.2f,\"pixel_format\":\"RGB565BE\""
-        ",\"width\":%" PRIu32 ",\"height\":%" PRIu32 ",\"sensor_pid\":%" PRIu32
-        ",\"faces\":%d,\"face_streak\":%" PRIu32
+        "{\"mode\":\"%s\",\"model\":\"%s\",\"threshold\":%.2f"
+        ",\"source_width\":%" PRIu32 ",\"source_height\":%" PRIu32
+        ",\"sensor_pid\":%" PRIu32 ",\"jpeg_bytes\":%" PRIu32
+        ",\"capture_ms\":%" PRIu32 ",\"camera_frame_ms\":%" PRIu32 ",\"stream_frame_ms\":%" PRIu32
+        ",\"ai_width\":%" PRIu32 ",\"ai_height\":%" PRIu32
+        ",\"decode_ms\":%" PRIu32 ",\"prep_ms\":%" PRIu32 ",\"detect_ms\":%" PRIu32
+        ",\"ai_total_ms\":%" PRIu32 ",\"sweep_ms\":%" PRIu32 ",\"range_tile\":%" PRIu32
+        ",\"detector_passes\":%" PRIu32 ",\"faces\":%d,\"face_streak\":%" PRIu32
         ",\"largest_face_w\":%" PRIu32 ",\"largest_face_h\":%" PRIu32
-        ",\"capture_ms\":%" PRIu32 ",\"prep_ms\":%" PRIu32 ",\"detect_ms\":%" PRIu32
-        ",\"vision_ms\":%" PRIu32 ",\"encode_ms\":%" PRIu32
-        ",\"detector_passes\":%" PRIu32 ",\"frame_bytes\":%" PRIu32
         ",\"detect_avg_ms\":%.2f,\"detect_p95_ms\":%" PRIu32
         ",\"samples\":%u,\"hits\":%" PRIu32 ",\"hit_rate\":%.2f"
-        ",\"internal_free\":%" PRIu32 ",\"psram_free\":%" PRIu32
-        ",\"psram_largest\":%" PRIu32 ",\"boxes\":[",
-        mode_name(g_mode), static_cast<double>(g_score_threshold), snapshot.width, snapshot.height,
-        snapshot.sensor_pid, snapshot.face_count, snapshot.face_streak, snapshot.largest_face_w,
-        snapshot.largest_face_h, snapshot.capture_ms, snapshot.prep_ms, snapshot.detect_ms,
-        snapshot.vision_ms, snapshot.encode_ms, snapshot.detector_passes, snapshot.frame_bytes,
+        ",\"internal_free\":%" PRIu32 ",\"psram_free\":%" PRIu32 ",\"psram_largest\":%" PRIu32
+        ",\"boxes\":[",
+        mode_name(g_mode), model_name(g_mode), static_cast<double>(g_score_threshold),
+        snapshot.source_width, snapshot.source_height, snapshot.sensor_pid, snapshot.source_jpeg_bytes,
+        snapshot.capture_ms, snapshot.camera_frame_ms, snapshot.stream_frame_ms,
+        snapshot.ai_width, snapshot.ai_height, snapshot.decode_ms, snapshot.prep_ms, snapshot.detect_ms,
+        snapshot.ai_total_ms, snapshot.sweep_ms, snapshot.range_tile, snapshot.detector_passes,
+        snapshot.face_count, snapshot.face_streak, snapshot.largest_face_w, snapshot.largest_face_h,
         avg, p95, static_cast<unsigned>(snapshot.hist_count), hits, hit_rate,
         internal_free, psram_free, psram_largest);
 
@@ -579,13 +776,12 @@ esp_err_t metrics_handler(httpd_req_t *req) {
             "%s{\"x1\":%d,\"y1\":%d,\"x2\":%d,\"y2\":%d,\"score\":%.4f}",
             i ? "," : "", b.x1, b.y1, b.x2, b.y2, static_cast<double>(b.score));
     }
-    if (n > 0 && n < static_cast<int>(sizeof(json) - 3)) {
-        json[n++] = ']';
-        json[n++] = '}';
-        json[n] = '\0';
-    } else {
+    if (n <= 0 || n >= static_cast<int>(sizeof(json) - 3)) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "metrics overflow");
     }
+    json[n++] = ']';
+    json[n++] = '}';
+    json[n] = '\0';
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -597,119 +793,34 @@ esp_err_t stream_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    ESP_LOGI(TAG, "stream client connected");
+    ESP_LOGI(TAG, "native JPEG stream client connected");
 
+    JpegSnapshot frame;
+    uint32_t last_seq = 0;
+    uint32_t previous_ms = 0;
     while (true) {
-        const TestMode mode = g_mode;
-        if (mode == TestMode::BENCH) break;
-
-        if (xSemaphoreTake(g_camera_mutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
-            ESP_LOGW(TAG, "stream camera lock timeout");
+        if (g_mode == TestMode::BENCH) break;
+        if (!snapshot_latest(frame, last_seq)) {
+            vTaskDelay(pdMS_TO_TICKS(3));
             continue;
         }
-
-        const int64_t cycle_start = esp_timer_get_time();
-        const int64_t capture_start = esp_timer_get_time();
-        camera_fb_t *fb = esp_camera_fb_get();
-        const uint32_t capture_ms = static_cast<uint32_t>((esp_timer_get_time() - capture_start + 500) / 1000);
-        if (!fb) {
-            xSemaphoreGive(g_camera_mutex);
-            ESP_LOGE(TAG, "camera capture failed");
-            break;
-        }
-
-        const uint32_t width = static_cast<uint32_t>(fb->width);
-        const uint32_t height = static_cast<uint32_t>(fb->height);
-        const uint32_t frame_bytes = static_cast<uint32_t>(fb->len);
-        FaceBox boxes[MAX_FACES] = {};
-        int face_count = 0;
-        uint32_t prep_ms = 0;
-        uint32_t detect_ms = 0;
-        uint32_t passes = 0;
-        bool detection_sample = false;
-
-        if (mode == TestMode::FAST) {
-            detection_sample = run_direct_detection(fb, boxes, face_count, prep_ms, detect_ms, passes);
-        } else if (mode == TestMode::RANGE) {
-            detection_sample = run_range_detection(fb, boxes, face_count, prep_ms, detect_ms, passes);
-        }
-
-        const uint32_t vision_ms = static_cast<uint32_t>((esp_timer_get_time() - cycle_start + 500) / 1000);
-
-        uint8_t *jpg_buf = nullptr;
-        size_t jpg_len = 0;
-        const int64_t encode_start = esp_timer_get_time();
-        const bool jpeg_ok = frame2jpg(fb, STREAM_JPEG_QUALITY, &jpg_buf, &jpg_len);
-        const uint32_t encode_ms = static_cast<uint32_t>((esp_timer_get_time() - encode_start + 500) / 1000);
-        esp_camera_fb_return(fb);
-        xSemaphoreGive(g_camera_mutex);
-
-        record_pipeline(width, height, capture_ms, prep_ms, detect_ms, vision_ms, encode_ms, passes,
-                        frame_bytes, boxes, face_count, detection_sample);
-
-        if (!jpeg_ok || !jpg_buf || !jpg_len) {
-            if (jpg_buf) free(jpg_buf);
-            ESP_LOGE(TAG, "RGB565 -> JPEG stream encoding failed");
-            break;
-        }
+        last_seq = frame.seq;
 
         char part[96];
-        const int part_len = snprintf(part, sizeof(part), STREAM_PART, static_cast<unsigned>(jpg_len));
+        const int part_len = snprintf(part, sizeof(part), STREAM_PART, static_cast<unsigned>(frame.len));
         esp_err_t result = httpd_resp_send_chunk(req, STREAM_BOUNDARY, HTTPD_RESP_USE_STRLEN);
         if (result == ESP_OK) result = httpd_resp_send_chunk(req, part, part_len);
-        if (result == ESP_OK) result = httpd_resp_send_chunk(req, reinterpret_cast<const char *>(jpg_buf), jpg_len);
-        free(jpg_buf);
+        if (result == ESP_OK) result = httpd_resp_send_chunk(req, reinterpret_cast<const char *>(frame.data), frame.len);
         if (result != ESP_OK) break;
+
+        const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        if (previous_ms) record_stream_interval(now_ms - previous_ms);
+        previous_ms = now_ms;
     }
 
-    ESP_LOGI(TAG, "stream client disconnected");
+    free_snapshot(frame);
+    ESP_LOGI(TAG, "native JPEG stream client disconnected");
     return ESP_OK;
-}
-
-void bench_task(void *) {
-    while (true) {
-        if (g_mode != TestMode::BENCH) {
-            vTaskDelay(pdMS_TO_TICKS(20));
-            continue;
-        }
-
-        if (xSemaphoreTake(g_camera_mutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
-        }
-        if (g_mode != TestMode::BENCH) {
-            xSemaphoreGive(g_camera_mutex);
-            continue;
-        }
-
-        const int64_t cycle_start = esp_timer_get_time();
-        const int64_t capture_start = esp_timer_get_time();
-        camera_fb_t *fb = esp_camera_fb_get();
-        const uint32_t capture_ms = static_cast<uint32_t>((esp_timer_get_time() - capture_start + 500) / 1000);
-        if (!fb) {
-            xSemaphoreGive(g_camera_mutex);
-            ESP_LOGE(TAG, "bench capture failed");
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
-        }
-
-        const uint32_t width = static_cast<uint32_t>(fb->width);
-        const uint32_t height = static_cast<uint32_t>(fb->height);
-        const uint32_t frame_bytes = static_cast<uint32_t>(fb->len);
-        FaceBox boxes[MAX_FACES] = {};
-        int face_count = 0;
-        uint32_t prep_ms = 0;
-        uint32_t detect_ms = 0;
-        uint32_t passes = 0;
-        const bool ok = run_direct_detection(fb, boxes, face_count, prep_ms, detect_ms, passes);
-        const uint32_t vision_ms = static_cast<uint32_t>((esp_timer_get_time() - cycle_start + 500) / 1000);
-
-        esp_camera_fb_return(fb);
-        xSemaphoreGive(g_camera_mutex);
-        record_pipeline(width, height, capture_ms, prep_ms, detect_ms, vision_ms, 0, passes,
-                        frame_bytes, boxes, face_count, ok);
-        taskYIELD();
-    }
 }
 
 esp_err_t start_web_servers() {
@@ -754,43 +865,43 @@ extern "C" void app_main(void) {
         ESP_ERROR_CHECK(nvs);
     }
 
-    ESP_LOGI(TAG, "NEWO GOOUUU vision benchmark v3: RGB565 direct + RANGE tiling");
+    ESP_LOGI(TAG, "NEWO GOOUUU vision v4: native JPEG stream + decoupled AI");
     ESP_LOGI(TAG, "PSRAM total=%u free=%u largest=%u",
              static_cast<unsigned>(heap_caps_get_total_size(MALLOC_CAP_SPIRAM)),
              static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
              static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
 
-    g_detector_mutex = xSemaphoreCreateMutex();
+    g_frame_mutex = xSemaphoreCreateMutex();
     g_camera_mutex = xSemaphoreCreateMutex();
-    if (!g_detector_mutex || !g_camera_mutex) {
+    g_detector_mutex = xSemaphoreCreateMutex();
+    if (!g_frame_mutex || !g_camera_mutex || !g_detector_mutex) {
         ESP_LOGE(TAG, "mutex allocation failed");
         abort();
     }
 
-    ESP_LOGI(TAG, "Loading HumanFaceDetect MSR+MNP model...");
-    g_detector = new HumanFaceDetect();
-    if (!g_detector) {
-        ESP_LOGE(TAG, "HumanFaceDetect allocation failed");
+    g_fast_detector = new HumanFaceDetect(HumanFaceDetect::MSRMNP_S8_V1, true);
+    g_accurate_detector = new HumanFaceDetect(HumanFaceDetect::ESPDET_PICO_224_224_FACE, true);
+    if (!g_fast_detector || !g_accurate_detector) {
+        ESP_LOGE(TAG, "detector allocation failed");
         abort();
     }
     if (!set_detector_threshold(DEFAULT_SCORE_THRESHOLD)) {
-        ESP_LOGE(TAG, "Unable to configure detector threshold");
+        ESP_LOGE(TAG, "detector threshold setup failed");
         abort();
     }
 
     ESP_ERROR_CHECK(init_camera());
-    if (!configure_mode(TestMode::FAST)) {
-        ESP_LOGE(TAG, "Unable to enter initial FAST mode");
-        abort();
-    }
     ESP_ERROR_CHECK(init_wifi_ap());
-    ESP_ERROR_CHECK(start_web_servers());
 
-    BaseType_t task_ok = xTaskCreatePinnedToCore(bench_task, "vision_bench", 8192, nullptr, 3, nullptr, 1);
-    if (task_ok != pdPASS) {
-        ESP_LOGE(TAG, "bench task creation failed");
+    if (xTaskCreatePinnedToCore(capture_task, "vision_capture", 6144, nullptr, 4, nullptr, 0) != pdPASS) {
+        ESP_LOGE(TAG, "capture task creation failed");
+        abort();
+    }
+    if (xTaskCreatePinnedToCore(ai_task, "vision_ai", 12288, nullptr, 3, nullptr, 1) != pdPASS) {
+        ESP_LOGE(TAG, "AI task creation failed");
         abort();
     }
 
-    ESP_LOGI(TAG, "READY: connect to %s / %s then open http://192.168.4.1/", AP_SSID, AP_PASSWORD);
+    ESP_ERROR_CHECK(start_web_servers());
+    ESP_LOGI(TAG, "READY: native JPEG preview at http://192.168.4.1/ ; stream :81/stream");
 }
