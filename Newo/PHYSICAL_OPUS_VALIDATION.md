@@ -36,7 +36,7 @@ The old preload is prototype/rollback only: `NODE_OPTIONS=--import=/opt/newo/ser
 
 ## Five-run baseline
 
-Boot the device and confirm firmware `0.4.4-dev`, PSRAM, persistent speaker connection, and `codecs=["pcm","opus"]`. Then run five times:
+Boot the device and confirm firmware `0.5.0-dev`, autonomy revision `2`, PSRAM, persistent speaker connection, and `codecs=["pcm","opus"]`. Then run five times:
 
 > Hello, I'm Newo. This is a realtime voice latency test.
 

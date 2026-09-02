@@ -444,6 +444,7 @@ void NewoCloud::sendHello() {
   doc["type"] = "hello";
   doc["device"] = NewoSecrets::DEVICE_ID;
   doc["firmware"] = NewoConfig::FIRMWARE_VERSION;
+  doc["autonomy_revision"] = NewoConfig::AUTONOMY_REVISION;
   doc["chip"] = ESP.getChipModel();
   String body;
   serializeJson(doc, body);
@@ -476,6 +477,7 @@ void NewoCloud::sendHealth(const char* requestId) {
   doc["type"] = "health";
   doc["request_id"] = requestId;
   doc["firmware"] = NewoConfig::FIRMWARE_VERSION;
+  doc["autonomy_revision"] = NewoConfig::AUTONOMY_REVISION;
   doc["chip"] = ESP.getChipModel();
   doc["uptime_ms"] = millis();
   doc["reset_reason"] = static_cast<uint32_t>(esp_reset_reason());

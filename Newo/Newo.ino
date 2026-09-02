@@ -26,6 +26,7 @@ void printHardwareInfo() {
   Serial.println("            NEWO");
   Serial.println("================================");
   Serial.printf("Firmware: %s\n", NewoConfig::FIRMWARE_VERSION);
+  Serial.printf("Autonomy: V%u\n", static_cast<unsigned>(NewoConfig::AUTONOMY_REVISION));
   Serial.printf("Chip: %s\n", ESP.getChipModel());
   Serial.printf("CPU: %lu MHz\n", static_cast<unsigned long>(ESP.getCpuFreqMHz()));
   Serial.printf("Flash: %lu MB\n", static_cast<unsigned long>(ESP.getFlashChipSize() / 1024 / 1024));

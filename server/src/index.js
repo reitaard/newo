@@ -180,13 +180,13 @@ const voiceRuntime = createVoiceRuntime({
 });
 
 const DeviceMessageSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("hello"), device: z.string().min(1), firmware: z.string().optional(), chip: z.string().optional() }).passthrough(),
+  z.object({ type: z.literal("hello"), device: z.string().min(1), firmware: z.string().optional(), autonomy_revision: z.number().int().nonnegative().optional(), chip: z.string().optional() }).passthrough(),
   z.object({ type: z.literal("pong"), request_id: z.string().optional(), uptime_ms: z.number().nonnegative().optional(), rssi: z.number().optional(), ssid: z.string().optional() }).passthrough(),
   z.object({ type: z.literal("status"), request_id: z.string().optional(), uptime_ms: z.number().nonnegative().optional(), rssi: z.number().optional(), ssid: z.string().optional(), free_heap: z.number().nonnegative().optional(), free_psram: z.number().nonnegative().optional() }).passthrough(),
   z.object({ type: z.literal("reboot_ack"), request_id: z.string().optional() }).passthrough(),
   z.object({ type: z.literal("voice_ack"), request_id: z.string(), state: z.enum(["off", "armed", "streaming"]), voice_connected: z.boolean(), wake_count: z.number().nonnegative(), session_count: z.number().nonnegative(), failures: z.number().nonnegative().optional(), timeouts: z.number().nonnegative().optional(), applied: z.boolean().optional() }).passthrough(),
   z.object({
-    type: z.literal("health"), request_id: z.string(), firmware: z.string(), uptime_ms: z.number().nonnegative(), reset_reason: z.number().int(), ssid: z.string().optional(), rssi: z.number().optional(), cloud_connected: z.boolean(), free_heap: z.number().nonnegative(), min_free_heap: z.number().nonnegative(), free_psram: z.number().nonnegative(), largest_free_internal_block: z.number().nonnegative().optional(),
+    type: z.literal("health"), request_id: z.string(), firmware: z.string(), autonomy_revision: z.number().int().nonnegative().optional(), uptime_ms: z.number().nonnegative(), reset_reason: z.number().int(), ssid: z.string().optional(), rssi: z.number().optional(), cloud_connected: z.boolean(), free_heap: z.number().nonnegative(), min_free_heap: z.number().nonnegative(), free_psram: z.number().nonnegative(), largest_free_internal_block: z.number().nonnegative().optional(),
     voice: z.object({ state: z.enum(["off", "armed", "streaming"]), connected: z.boolean(), wakes: z.number(), sessions: z.number(), failures: z.number(), timeouts: z.number() }).optional(),
     wifi: z.object({ scans: z.number(), connect_attempts: z.number(), connections: z.number(), failed: z.number(), disconnects: z.number(), last_disconnect_reason: z.string() }),
     cloud: z.object({ connections: z.number(), disconnects: z.number(), errors: z.number() }),
@@ -309,6 +309,7 @@ function formatDeviceStatus(snapshot, source = "live") {
     `Signal: ${bold(typeof status.rssi === "number" ? status.rssi : "unknown")}${typeof status.rssi === "number" ? ` ${italic("dBm")}` : ""}`,
     `Uptime: ${boldItalic(formatDuration(status.uptime_ms))}`,
     `Firmware: ${bold(hello.firmware ?? "unknown")}`,
+    `Autonomy: ${bold(hello.autonomy_revision ? `V${hello.autonomy_revision}` : "unknown")}`,
   ])]);
 }
 
@@ -341,7 +342,7 @@ function scheduleOfflineNotification(deviceId, state, ws) {
 app.get("/", async () => ({ service: "newo-cloud", status: "ok" }));
 app.get("/health", async () => {
   const device = getDeviceSnapshot();
-  return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), device: { connected: device.connected, id: device.id, connected_at: device.connected_at, last_seen: device.last_seen, firmware: device.hello?.firmware ?? null, chip: device.hello?.chip ?? null } };
+  return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), device: { connected: device.connected, id: device.id, connected_at: device.connected_at, last_seen: device.last_seen, firmware: device.hello?.firmware ?? null, autonomy_revision: device.hello?.autonomy_revision ?? null, chip: device.hello?.chip ?? null } };
 });
 
 const TELEGRAM_COMMANDS = [];
@@ -687,7 +688,7 @@ wss.on("connection", (ws, request, deviceId) => {
     if (!parsed.success) { app.log.warn({ device_id: deviceId, issues: parsed.error.issues }, "Ignoring invalid device message"); return; }
     const message = parsed.data;
     if (message.type === "hello" && message.device !== deviceId) { app.log.warn({ authenticated_device: deviceId, claimed_device: message.device }, "Device hello identity mismatch"); ws.close(4003, "device identity mismatch"); return; }
-    if (message.type === "hello") state.hello = { device: message.device, firmware: message.firmware ?? null, chip: message.chip ?? null, received_at: state.lastSeen };
+    if (message.type === "hello") state.hello = { device: message.device, firmware: message.firmware ?? null, autonomy_revision: message.autonomy_revision ?? null, chip: message.chip ?? null, received_at: state.lastSeen };
     if (message.type === "status" || message.type === "pong") state.status = { ...(state.status ?? {}), ...message, received_at: state.lastSeen };
     resolvePendingResponse(deviceId, ws, message);
     if (message.type === "speaker_started") speakerRuntime.handlePlaybackStarted(deviceId, message);
