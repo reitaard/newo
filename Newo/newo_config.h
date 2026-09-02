@@ -4,7 +4,7 @@
 
 namespace NewoConfig {
 
-constexpr char FIRMWARE_VERSION[] = "0.5.0-dev";
+constexpr char FIRMWARE_VERSION[] = "0.5.1-dev";
 constexpr uint8_t AUTONOMY_REVISION = 2;
 constexpr char PROVISIONING_DEVICE_NAME[] = "PROV_NEWO";
 
