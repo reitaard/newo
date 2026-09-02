@@ -16,9 +16,10 @@ static const char kIndexHtml[] = R"HTML(
   .viewer { position:relative; width:100%; background:#000; border:1px solid #2a2a2a; border-radius:12px; overflow:hidden; min-height:180px; }
   #stream { width:100%; display:block; }
   #overlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
-  .toolbar { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
+  .toolbar { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; align-items:center; }
+  .label { font-size:11px; opacity:.65; margin-right:2px; }
   button { background:#151515; color:#eee; border:1px solid #333; padding:9px 12px; border-radius:8px; font:inherit; cursor:pointer; }
-  button.active { border-color:#f1f1f1; }
+  button.active { border-color:#f1f1f1; background:#242424; }
   .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; }
   .card { border:1px solid #2a2a2a; border-radius:10px; padding:10px; background:#111; }
   .k { font-size:10px; opacity:.58; text-transform:uppercase; letter-spacing:.08em; }
@@ -30,7 +31,7 @@ static const char kIndexHtml[] = R"HTML(
 <body>
 <main>
   <h1>Newo / GOOUUU vision bench</h1>
-  <div class="sub">Portable live range test · detector = Espressif HumanFaceDetect (MSR + MNP)</div>
+  <div class="sub">Portable live range test · detector = Espressif HumanFaceDetect MSR + MNP</div>
 
   <div class="viewer" id="viewer">
     <img id="stream" alt="camera stream" />
@@ -45,6 +46,15 @@ static const char kIndexHtml[] = R"HTML(
   </div>
 
   <div class="toolbar">
+    <span class="label">Sensitivity</span>
+    <button data-thr="0.50" onclick="setSensitivity(0.50)">0.50 default</button>
+    <button data-thr="0.40" onclick="setSensitivity(0.40)">0.40</button>
+    <button data-thr="0.30" onclick="setSensitivity(0.30)">0.30 balanced</button>
+    <button data-thr="0.20" onclick="setSensitivity(0.20)">0.20 high</button>
+    <button data-thr="0.10" onclick="setSensitivity(0.10)">0.10 tracking</button>
+  </div>
+
+  <div class="toolbar">
     <button onclick="setResolution('qvga')">QVGA 320×240</button>
     <button onclick="setResolution('vga')">VGA 640×480</button>
     <button onclick="setResolution('svga')">SVGA 800×600</button>
@@ -55,6 +65,7 @@ static const char kIndexHtml[] = R"HTML(
 
   <div class="grid">
     <div class="card"><div class="k">Mode</div><div class="v" id="mode">-</div></div>
+    <div class="card"><div class="k">Threshold</div><div class="v" id="threshold">-</div></div>
     <div class="card"><div class="k">Resolution</div><div class="v" id="resolution">-</div></div>
     <div class="card"><div class="k">Faces</div><div class="v" id="faces">-</div></div>
     <div class="card"><div class="k">Detection hit rate</div><div class="v" id="hitRate">-</div></div>
@@ -89,6 +100,10 @@ async function setMode(name){
   currentMode=name;
   document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('active', b.dataset.mode===name));
   if(name==='bench') stopStream(); else startStream();
+}
+async function setSensitivity(value){
+  await fetch(`/sensitivity?value=${Number(value).toFixed(2)}`);
+  document.querySelectorAll('[data-thr]').forEach(b=>b.classList.toggle('active', Number(b.dataset.thr)===Number(value)));
 }
 async function setResolution(name){ await fetch(`/resolution?name=${name}`); if(currentMode!=='bench') startStream(); }
 async function sensorToggle(which){
@@ -125,6 +140,7 @@ async function poll(){
     const m=await (await fetch('/metrics',{cache:'no-store'})).json();
     currentMode=m.mode;
     put('mode',m.mode.toUpperCase());
+    put('threshold',Number(m.threshold).toFixed(2));
     put('resolution',`${m.width}×${m.height}`);
     put('faces',m.faces);
     put('hitRate',m.samples ? `${m.hit_rate.toFixed(1)}% (${m.hits}/${m.samples})` : '-');
@@ -140,6 +156,8 @@ async function poll(){
     put('psram',fmtBytes(m.psram_free));
     put('heap',fmtBytes(m.heap_free));
     put('sensor','0x'+Number(m.sensor_pid).toString(16).padStart(4,'0'));
+    document.querySelectorAll('[data-thr]').forEach(b=>b.classList.toggle('active', Math.abs(Number(b.dataset.thr)-Number(m.threshold))<0.001));
+    document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('active', b.dataset.mode===m.mode));
     drawBoxes(m);
   } catch(e) {}
   setTimeout(poll,250);
