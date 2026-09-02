@@ -3,6 +3,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 
+#include "newo_eye_pose.h"
 #include "newo_log.h"
 
 enum class NewoDisplayMode : uint8_t { IDLE, LISTENING, THINKING, SPEAKING, ERROR, MESSAGE, ECO };
@@ -56,6 +57,11 @@ class NewoDisplay {
   void resetFaceMotion(uint32_t now);
   void syncEffectiveMode(uint32_t now);
   NewoDisplayMode effectiveMode(uint32_t now) const;
+  NewoEyePose resolveEyePose(uint32_t now, NewoDisplayMode mode) const;
+  NewoEyePose resolveManualEyePose(NewoFaceStyle style) const;
+  NewoEyePose resolveAutonomousEyePose(uint32_t now) const;
+  uint16_t eyePoseTransitionMs(NewoDisplayMode mode) const;
+  NewoEyeEasing eyePoseEasing(NewoDisplayMode mode) const;
   void applyEyeExpression(int16_t leftX, int16_t rightX, int16_t y, int16_t leftW, int16_t rightW,
                           int16_t height, NewoDisplayMode mode);
   void blitMonoCanvasFast(GFXcanvas1& canvas, int16_t x, int16_t y, int16_t width, int16_t height);
@@ -74,6 +80,7 @@ class NewoDisplay {
   NewoDisplayMode mode_ = NewoDisplayMode::IDLE;
   NewoDisplayMode persistentMode_ = NewoDisplayMode::IDLE;
   NewoFaceStyle faceStyle_ = NewoFaceStyle::NEUTRAL;
+  NewoEyePoseEngine eyePoseEngine_;
   bool autoFaceEnabled_ = true;
   NewoDisplayMode lastEffectiveMode_ = NewoDisplayMode::IDLE;
   bool lastEffectiveAutoFace_ = false;
