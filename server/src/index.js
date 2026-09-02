@@ -81,7 +81,6 @@ const EnvSchema = z.object({
 });
 
 const env = EnvSchema.parse(process.env);
-// OpusPlaybackTransport reads this existing process setting directly.
 process.env.SPEAKER_CODEC = env.SPEAKER_CODEC;
 if (env.TELEGRAM_BOT_TOKEN && !env.TELEGRAM_WEBHOOK_SECRET) throw new Error("TELEGRAM_WEBHOOK_SECRET is required when TELEGRAM_BOT_TOKEN is set");
 
@@ -112,7 +111,7 @@ const pendingRequests = new Map();
 const DEVICE_REQUEST_TIMEOUT_MS = 5_000;
 const OFFLINE_GRACE_MS = 12_000;
 const REBOOT_RETURN_TIMEOUT_MS = 60_000;
-const FACE_STYLES = ["default", "happy", "angry", "tired", "curious", "confused", "laugh", "sweat", "cyclops", "closed", "wink_left", "wink_right", "look_left", "look_right", "look_up", "look_down", "look_up_left", "look_up_right", "look_down_left", "look_down_right", "surprised", "sleepy"];
+const FACE_STYLES = ["default", "happy", "angry", "tired", "curious", "confused", "laugh", "sweat", "cyclops", "closed", "detached", "sleeping", "skeptical", "wink_left", "wink_right", "look_left", "look_right", "look_up", "look_down", "look_up_left", "look_up_right", "look_down_left", "look_down_right", "surprised", "sleepy"];
 let bot = null;
 let pendingReboot = null;
 let shuttingDown = false;
@@ -352,8 +351,6 @@ async function commandReply(ctx, text, category = "reply", requestId = null, opt
   if (trace) { trace.replyCategory = category; trace.requestId = requestId; }
   const { newoSpeak = true, newoSpeakMaxChars, ...telegramOptions } = options;
   const replyReadyAt = performance.now();
-  // Start Telegram first, then immediately start independent TTS without waiting
-  // for Telegram's network request. Neither failure path is allowed to poison the other.
   return startTelegramAndSpeech(
     () => ctx.reply(text, { parse_mode: "HTML", ...telegramOptions }),
     () => {
@@ -380,12 +377,8 @@ function faceStyleCommand(style) { return `/face_${style}`; }
 
 async function handleFaceCommand(ctx, selectedInput = null) {
   const input = selectedInput ?? String(ctx.match ?? "").trim().toLowerCase();
-  if (!input) {
-    return commandReply(ctx, commandMessage("face", [quote(FACE_STYLES.map(faceStyleCommand))]), "usage");
-  }
-  if (!FACE_STYLES.includes(input)) {
-    return commandReply(ctx, commandMessage("face", [quote(["Choose one:", ...FACE_STYLES.map(faceStyleCommand)])]), "usage");
-  }
+  if (!input) return commandReply(ctx, commandMessage("face", [quote(FACE_STYLES.map(faceStyleCommand))]), "usage");
+  if (!FACE_STYLES.includes(input)) return commandReply(ctx, commandMessage("face", [quote(["Choose one:", ...FACE_STYLES.map(faceStyleCommand)])]), "usage");
   const request = sendDeviceRequest("display_set", "display_ack", { mode: input, text: "" }, commandTrace(ctx));
   if (request.kind === "offline") return commandReply(ctx, statusMessage("face", "offline"), "offline");
   const result = await request.promise;
@@ -522,8 +515,7 @@ async function handlePingCommand(ctx) {
   const result = await request.promise;
   if (result.kind === "response") {
     showDisplay(`PING\n${result.elapsedMs} ms`);
-    return commandReply(ctx, commandMessage("ping", [quote([`Latency: ${bold(result.elapsedMs)} ${italic("ms")}`])]),
-      "response", request.requestId, { newoSpeak: false });
+    return commandReply(ctx, commandMessage("ping", [quote([`Latency: ${bold(result.elapsedMs)} ${italic("ms")}`])]), "response", request.requestId, { newoSpeak: false });
   }
   if (result.kind === "timeout") return commandReply(ctx, timeoutMessage("ping"), "timeout", request.requestId, { newoSpeak: false });
   return commandReply(ctx, getConnectedDeviceState() ? timeoutMessage("ping") : statusMessage("ping", "offline"), "unavailable", request.requestId, { newoSpeak: false });
@@ -637,7 +629,6 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command("speaker", primaryModeHandlers.speaker);
   bot.command("volume", primaryModeHandlers.volume);
   bot.command("mute", primaryModeHandlers.mute);
-  // Hidden physical bring-up command; deliberately omitted from setMyCommands.
   bot.command(["speak", "sp"], handleSpeakCommand);
   void bot.api.setMyCommands(TELEGRAM_COMMANDS).catch(() => app.log.warn("Failed to register the Telegram command menu"));
   app.post("/telegram/webhook", webhookCallback(bot, "fastify", { secretToken: env.TELEGRAM_WEBHOOK_SECRET, onTimeout: "return", timeoutMilliseconds: 9_000 }));
@@ -704,7 +695,6 @@ wss.on("connection", (ws, request, deviceId) => {
   });
   ws.on("error", () => app.log.warn({ device_id: deviceId }, "Newo WebSocket error"));
   ws.send(JSON.stringify({ type: "hello_ack", device: deviceId, server_time: new Date().toISOString() }));
-  // A fresh device session must never inherit a stale thinking indicator.
   ws.send(JSON.stringify({ type: "assistant_state", state: "idle" }));
   void speakerRuntime.handleDeviceConnected(deviceId, state);
   const speakerSync = sendDeviceRequest("speaker_control", "speaker_ack", { action: "set_enabled", enabled: automaticSpeakerEnabled, led_feedback: false });
@@ -753,8 +743,6 @@ process.once("SIGINT", () => handleShutdownSignal("SIGINT"));
 process.once("SIGTERM", () => handleShutdownSignal("SIGTERM"));
 
 await app.listen({ host: env.HOST, port: env.PORT });
-// Probe the local model once without generating text. /vs only reads this
-// bounded snapshot and never waits on Qwen itself.
 void assistantRuntime.refreshHealth();
 app.log.info({
   bind: `${env.HOST}:${env.PORT}`,
