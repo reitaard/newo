@@ -7,6 +7,12 @@ uint8_t clampPercent(int value) {
   if (value < 0) return 0;
   return value > 100 ? 100 : static_cast<uint8_t>(value);
 }
+
+int16_t clampCut(int16_t value, int16_t height) {
+  const int16_t magnitude = value < 0 ? -value : value;
+  const int16_t maximum = height / 2;
+  return magnitude > maximum ? maximum : magnitude;
+}
 }  // namespace
 
 NewoEyePose NewoDisplay::resolveManualEyePose(NewoFaceStyle style) const {
@@ -81,9 +87,32 @@ NewoEyePose NewoDisplay::resolveManualEyePose(NewoFaceStyle style) const {
       pose.gap = 0;
       break;
     case NewoFaceStyle::CLOSED:
-      // Kept as the legacy detached/slit geometry until the dedicated
-      // CLOSED/DETACHED/SLEEPING face commit remaps this style.
+      pose.leftWidth = pose.rightWidth = 58;
+      pose.leftHeight = pose.rightHeight = 12;
+      pose.gap = 24;
+      pose.openness = 0;
+      pose.closureStyle = NewoEyeClosureStyle::CURVED;
+      break;
+    case NewoFaceStyle::DETACHED:
+      // The old CLOSED face is intentionally preserved as its own visual.
       pose.leftHeight = pose.rightHeight = 4;
+      break;
+    case NewoFaceStyle::SLEEPING:
+      pose.leftWidth = pose.rightWidth = 58;
+      pose.leftHeight = pose.rightHeight = 12;
+      pose.gap = 24;
+      pose.leftYOffset = pose.rightYOffset = 4;
+      pose.openness = 0;
+      pose.closureStyle = NewoEyeClosureStyle::CURVED;
+      break;
+    case NewoFaceStyle::SKEPTICAL:
+      pose.leftWidth = 62;
+      pose.leftHeight = 38;
+      pose.rightWidth = 50;
+      pose.rightHeight = 24;
+      pose.gap = 22;
+      pose.rightYOffset = -5;
+      pose.rightTopCut = -4;
       break;
     case NewoFaceStyle::SURPRISED:
       pose.leftWidth = pose.rightWidth = 54;
@@ -179,7 +208,10 @@ uint16_t NewoDisplay::eyePoseTransitionMs(NewoDisplayMode mode) const {
   if (mode == NewoDisplayMode::LISTENING) return 160;
   if (mode == NewoDisplayMode::SPEAKING) return 180;
   if (mode == NewoDisplayMode::THINKING) return 220;
-  if (mode != NewoDisplayMode::IDLE || !autoFaceEnabled_) return 280;
+  if (mode != NewoDisplayMode::IDLE || !autoFaceEnabled_) {
+    if (faceStyle_ == NewoFaceStyle::SLEEPING || faceStyle_ == NewoFaceStyle::CLOSED) return 420;
+    return 280;
+  }
 
   switch (autonomousEpisode_) {
     case AutonomousEpisode::ALERT_CHECK: return 160;
@@ -200,4 +232,83 @@ NewoEyeEasing NewoDisplay::eyePoseEasing(NewoDisplayMode mode) const {
     return NewoEyeEasing::EASE_OUT;
   }
   return NewoEyeEasing::EASE_IN_OUT;
+}
+
+NewoDisplay::SecondaryEffect NewoDisplay::secondaryEffectFor(uint32_t, NewoDisplayMode mode) const {
+  if (mode != NewoDisplayMode::IDLE || autoFaceEnabled_) return SecondaryEffect::NONE;
+  if (faceStyle_ == NewoFaceStyle::SLEEPING) return SecondaryEffect::ZZZ;
+  if (faceStyle_ == NewoFaceStyle::SWEAT) return SecondaryEffect::SWEAT;
+  return SecondaryEffect::NONE;
+}
+
+void NewoDisplay::applyResolvedPoseCuts(int16_t leftX, int16_t rightX, int16_t leftY, int16_t rightY,
+                                        int16_t leftW, int16_t rightW, int16_t leftHeight,
+                                        int16_t rightHeight, const NewoEyePose& pose) {
+  const auto applyTopCut = [this](int16_t x, int16_t y, int16_t width, int16_t height,
+                                  int16_t signedCut, bool leftEye) {
+    if (signedCut == 0 || height < 8) return;
+    const int16_t cut = clampCut(signedCut, height);
+    const bool outerEdge = signedCut > 0;
+    const bool lowerLeft = leftEye ? outerEdge : !outerEdge;
+    if (lowerLeft) {
+      eyeCanvas_.fillTriangle(x, y, x + width, y, x, y + cut, 0);
+    } else {
+      eyeCanvas_.fillTriangle(x, y, x + width, y, x + width, y + cut, 0);
+    }
+  };
+
+  const auto applyBottomCut = [this](int16_t x, int16_t y, int16_t width, int16_t height,
+                                     int16_t cut) {
+    if (cut <= 0 || height < 8) return;
+    const int16_t radius = height / 2 + (cut / 4 > 2 ? cut / 4 : 3);
+    const int16_t centerY = y + height + 4;
+    eyeCanvas_.fillCircle(x + width / 2, centerY, radius, 0);
+  };
+
+  applyTopCut(leftX, leftY, leftW, leftHeight, pose.leftTopCut, true);
+  applyTopCut(rightX, rightY, rightW, rightHeight, pose.rightTopCut, false);
+  applyBottomCut(leftX, leftY, leftW, leftHeight, pose.leftBottomCut);
+  applyBottomCut(rightX, rightY, rightW, rightHeight, pose.rightBottomCut);
+}
+
+void NewoDisplay::drawClosedEyeCurve(int16_t x, int16_t y, int16_t width) {
+  const int16_t middle = x + width / 2;
+  eyeCanvas_.drawLine(x, y, middle, y + 3, 1);
+  eyeCanvas_.drawLine(middle, y + 3, x + width, y, 1);
+  eyeCanvas_.drawLine(x, y + 1, middle, y + 4, 1);
+  eyeCanvas_.drawLine(middle, y + 4, x + width, y + 1, 1);
+}
+
+void NewoDisplay::drawZ(int16_t x, int16_t y, int16_t size) {
+  if (size < 3) return;
+  eyeCanvas_.drawLine(x, y, x + size, y, 1);
+  eyeCanvas_.drawLine(x + size, y, x, y + size, 1);
+  eyeCanvas_.drawLine(x, y + size, x + size, y + size, 1);
+}
+
+void NewoDisplay::drawSecondaryEffect(uint32_t now, SecondaryEffect effect) {
+  if (effect == SecondaryEffect::ZZZ) {
+    const uint16_t cycle = static_cast<uint16_t>(now % 3'000);
+    for (uint8_t index = 0; index < 3; ++index) {
+      const uint16_t local = static_cast<uint16_t>((cycle + index * 1'000) % 3'000);
+      if (local >= 1'850) continue;
+      const int16_t rise = static_cast<int16_t>(local / 140);
+      const int16_t size = static_cast<int16_t>(5 + index * 2);
+      drawZ(static_cast<int16_t>(146 + index * 15),
+            static_cast<int16_t>(22 + index * 3 - rise), size);
+    }
+    return;
+  }
+
+  if (effect == SecondaryEffect::SWEAT) {
+    for (uint8_t drop = 0; drop < 3; ++drop) {
+      const uint16_t phase = static_cast<uint16_t>((now / 9 + drop * 31) % 100);
+      const int16_t dropX = 42 + drop * 58;
+      const int16_t dropY = 3 + phase / 4;
+      const int16_t radius = phase < 50 ? 1 + phase / 25 : 1 + (99 - phase) / 25;
+      eyeCanvas_.fillCircle(dropX, dropY + radius, radius, 1);
+      eyeCanvas_.fillTriangle(dropX, dropY - radius - 1, dropX - radius, dropY + radius,
+                              dropX + radius, dropY + radius, 1);
+    }
+  }
 }
