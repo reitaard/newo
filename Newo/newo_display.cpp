@@ -33,7 +33,7 @@ constexpr uint32_t kDrowsyInactivityMs = 300'000;
 constexpr uint32_t kAutonomousEpisodeMinMs = 8'000;
 constexpr uint32_t kAutonomousEpisodeMaxMs = 18'000;
 constexpr int16_t kAutonomousGazeHardX = 20;
-constexpr int16_t kAutonomousGazeHardY = 10;
+constexpr int16_t kAutonomousGazeHardY = 12;
 constexpr uint8_t kForceDoubleBlink = 1;
 constexpr uint8_t kForceLongBlink = 2;
 constexpr uint8_t kCuriosityBaseline = 42;
@@ -176,7 +176,7 @@ void NewoDisplay::toggleEco() {
     mode_ = persistentMode_;
     resetFaceMotion(now);
     strncpy(text_, persistentText_, sizeof(text_) - 1);
-      text_[sizeof(text_) - 1] = '\0';
+    text_[sizeof(text_) - 1] = '\0';
   }
   syncEffectiveMode(now);
   dirty_ = true;
@@ -530,11 +530,11 @@ void NewoDisplay::chooseAutonomousEpisode(uint32_t now) {
   switch (autonomousEpisode_) {
     case AutonomousEpisode::CURIOUS_SCAN:
       beginAutonomousEpisodeGaze(now, static_cast<int16_t>(autonomousEpisodeDirection_ * random(16, 21)),
-                                 static_cast<int16_t>(random(-3, 4)), static_cast<uint16_t>(random(800, 1'301)));
+                                 static_cast<int16_t>(random(-4, 5)), static_cast<uint16_t>(random(800, 1'301)));
       break;
     case AutonomousEpisode::LOW_ENERGY:
       beginAutonomousEpisodeGaze(now, static_cast<int16_t>(random(-4, 5)),
-                                 static_cast<int16_t>(random(4, 10)),
+                                 static_cast<int16_t>(random(4, 12)),
                                  static_cast<uint16_t>(stage == InactivityStage::DROWSY
                                      ? random(2'200, 3'801) : random(1'600, 2'801)));
       break;
@@ -545,7 +545,7 @@ void NewoDisplay::chooseAutonomousEpisode(uint32_t now) {
       break;
     case AutonomousEpisode::ALERT_CHECK:
       beginAutonomousEpisodeGaze(now, static_cast<int16_t>(autonomousEpisodeDirection_ * random(16, 21)),
-                                 static_cast<int16_t>(random(-4, 3)), static_cast<uint16_t>(random(500, 901)));
+                                 static_cast<int16_t>(random(-5, 4)), static_cast<uint16_t>(random(500, 901)));
       break;
     case AutonomousEpisode::WAITING:
       break;
@@ -558,7 +558,7 @@ void NewoDisplay::advanceAutonomousEpisode(uint32_t now) {
       if (autonomousEpisodeStep_ == 0) {
         autonomousEpisodeStep_ = 1;
         beginAutonomousEpisodeGaze(now, static_cast<int16_t>(autonomousEpisodeDirection_ * kAutonomousGazeHardX),
-                                   static_cast<int16_t>(random(-4, 3)), 550);
+                                   static_cast<int16_t>(random(-5, 4)), 550);
       } else if (autonomousEpisodeStep_ == 1) {
         autonomousEpisodeStep_ = 2;
         beginAutonomousEpisodeGaze(now, 0, 0, 850);
@@ -581,7 +581,7 @@ void NewoDisplay::advanceAutonomousEpisode(uint32_t now) {
       if (autonomousEpisodeStep_ == 0) {
         autonomousEpisodeStep_ = 1;
         beginAutonomousEpisodeGaze(now, static_cast<int16_t>(-autonomousEpisodeDirection_ * 12),
-                                   static_cast<int16_t>(random(-2, 3)), 420);
+                                   static_cast<int16_t>(random(-3, 4)), 420);
       } else if (autonomousEpisodeStep_ == 1) {
         autonomousEpisodeStep_ = 2;
         beginAutonomousEpisodeGaze(now, 0, 0, 650);
@@ -694,13 +694,13 @@ void NewoDisplay::chooseAutonomousGazeTarget() {
   } else if (choice < centerWeight + sideWeight) {
     const int16_t side = random(0, 2) ? 1 : -1;
     gazeTargetX_ = static_cast<int16_t>(side * random(12, sideRangeX + 1));
-    gazeTargetY_ = static_cast<int16_t>(random(-3, 4));
+    gazeTargetY_ = static_cast<int16_t>(random(-4, 5));
   } else if (choice < centerWeight + sideWeight + upperWeight) {
     gazeTargetX_ = static_cast<int16_t>(random(-upperRangeX, upperRangeX + 1));
-    gazeTargetY_ = static_cast<int16_t>(random(-10, -3));
+    gazeTargetY_ = static_cast<int16_t>(random(-12, -3));
   } else {
     gazeTargetX_ = static_cast<int16_t>(random(-8, 9));
-    gazeTargetY_ = static_cast<int16_t>(random(5, 10));
+    gazeTargetY_ = static_cast<int16_t>(random(5, 12));
   }
   const int16_t deltaX = gazeTargetX_ - gazeX_;
   const int16_t deltaY = gazeTargetY_ - gazeY_;
@@ -821,7 +821,7 @@ void NewoDisplay::updateGaze(uint32_t now) {
           maxDelay = faceStyle_ == NewoFaceStyle::SLEEPY ? 6'001 : 4'201;
         } else if (faceStyle_ == NewoFaceStyle::CURIOUS) {
           rangeX = 17;
-          rangeY = 7;
+          rangeY = 8;
           minDelay = 900;
           maxDelay = 2'201;
         } else if (faceStyle_ == NewoFaceStyle::CONFUSED) {
@@ -958,9 +958,9 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   int16_t verticalOffset = 0;
   bool cyclops = false;
 
-  // Autonomous expressions are temporary geometry overlays owned by the active
-  // episode. They never mutate faceStyle_, so manual /face selections remain
-  // persistent and operational contexts still preempt immediately.
+  // Preserve the existing special-case rendering while the shared pose engine
+  // becomes the geometry source. This lets each migration commit remain small
+  // and keeps blink ownership untouched.
   if (activeMode == NewoDisplayMode::IDLE && autoFaceEnabled_) {
     const uint32_t inactiveMs = now - lastInteractionMs_;
     switch (autonomousEpisode_) {
@@ -1027,7 +1027,6 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
         gap = 22;
         break;
       case NewoFaceStyle::CONFUSED:
-        // Keep neutral geometry: the upstream horizontal flicker is the expression.
         break;
       case NewoFaceStyle::LAUGH:
         leftW = rightW = 67;
@@ -1090,17 +1089,19 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
     }
   }
 
-  int16_t curiousLeftLift = 0;
-  int16_t curiousRightLift = 0;
-  const bool autonomousCuriosity = activeMode == NewoDisplayMode::IDLE && autoFaceEnabled_ &&
-                                    autonomousEpisode_ == AutonomousEpisode::CURIOUS_SCAN;
-  if (activeMode == NewoDisplayMode::IDLE && (faceStyle_ == NewoFaceStyle::CURIOUS || autonomousCuriosity)) {
-    // During an autonomous curious scan use the full readable curiosity lift;
-    // a 4 px lift from V2 was too subtle on the physical 240 px display.
-    const int16_t lift = 8;
-    if (gazeX_ < -7 || (autonomousCuriosity && gazeTargetX_ < 0)) curiousLeftLift = lift;
-    if (gazeX_ > 7 || (autonomousCuriosity && gazeTargetX_ > 0)) curiousRightLift = lift;
-  } else if (activeMode == NewoDisplayMode::THINKING) {
+  const NewoEyePose targetPose = resolveEyePose(now, activeMode);
+  eyePoseEngine_.transitionTo(targetPose, now, eyePoseTransitionMs(activeMode), eyePoseEasing(activeMode));
+  const NewoEyePose& pose = eyePoseEngine_.update(now);
+  leftW = pose.leftWidth;
+  rightW = pose.rightWidth;
+  gap = pose.gap;
+  baseHeight = pose.leftHeight < pose.rightHeight ? pose.leftHeight : pose.rightHeight;
+  verticalOffset = static_cast<int16_t>((pose.leftYOffset + pose.rightYOffset) / 2);
+  cyclops = pose.rightWidth == 0;
+
+  int16_t curiousLeftLift = pose.leftHeight > baseHeight ? pose.leftHeight - baseHeight : 0;
+  int16_t curiousRightLift = pose.rightHeight > baseHeight ? pose.rightHeight - baseHeight : 0;
+  if (activeMode == NewoDisplayMode::THINKING) {
     if (gazeX_ < -7) leftW += 7;
     if (gazeX_ > 7) rightW += 7;
   }
@@ -1111,17 +1112,13 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   }
   if (activeMode == NewoDisplayMode::IDLE && autoFaceEnabled_ &&
       autonomousEpisode_ == AutonomousEpisode::ALERT_CHECK && autonomousEpisodeDirection_ < 0) {
-    // The confused variant stays visibly asymmetric but bounded; unlike the
-    // manual confused face it does not use a ±20 px shake on top of ±20 gaze.
     shake += static_cast<int16_t>(sinf(static_cast<float>(now) * 0.055f) * 6.0f);
   }
-  const uint32_t styleBurstMs = (now - modeStartedMs_) % 2200; // selection-relative 500 ms burst, then calm.
+  const uint32_t styleBurstMs = (now - modeStartedMs_) % 2200;
   if (activeMode == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CONFUSED && styleBurstMs < 500) {
-    // Upstream anim_confused: approximately 20 px horizontal flicker.
     shake += static_cast<int16_t>(sinf(static_cast<float>(styleBurstMs) * 0.075f) * 20.0f);
   }
   if (activeMode == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::LAUGH && styleBurstMs < 500) {
-    // Upstream anim_laugh: approximately 5 px vertical flicker; HAPPY rests between bursts.
     verticalOffset += static_cast<int16_t>(sinf(static_cast<float>(styleBurstMs) * 0.075f) * 5.0f);
   }
 
