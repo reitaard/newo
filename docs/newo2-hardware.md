@@ -12,6 +12,7 @@ This document records physical bring-up results for the second Newo ESP32-S3 boa
 - Camera module physically fitted and now physically validated as **OV3660**.
 - Rear microSD/TF slot present and physically validated.
 - Onboard addressable RGB/WS2812 is GPIO48 and is deliberately kept dark during bring-up.
+- Onboard buttons physically present on this board are RST and BOOT; BOOT is GPIO0.
 
 Upstream board reference: https://github.com/profharris/GOOUUU_ESP32-S3-CAM
 
@@ -35,6 +36,26 @@ The board was tested alone with only its fitted camera module and microSD card p
 - GPIO48 is reserved for the onboard addressable RGB LED.
 - The bring-up sketches issue `rgbLedWrite(48, 0, 0, 0)` at boot and periodically afterwards so the Newo2 hardware test keeps the controllable RGB dark.
 - Do not assign GPIO48 to another Newo2 peripheral.
+
+### Onboard buttons
+
+The physical board has two onboard buttons: **RST** and **BOOT**.
+
+- RST has been repeatedly used successfully during bring-up and resets the board as expected.
+- BOOT is GPIO0 and was tested with `INPUT_PULLUP` after normal boot.
+- Observed sequence:
+
+```text
+[boot] initial=RELEASED
+[boot] PRESSED
+[boot] RELEASED
+```
+
+Result: **PASS**.
+
+GPIO0 is a strapping/boot pin, so Newo2 may use the BOOT button for an intentional user action after startup, but GPIO0 must not be treated as an unrestricted peripheral pin and the button must not be held during reset unless download/boot behavior is intended.
+
+The reference board documentation also labels GPIO3 as `SW` and GPIO46 as `SH`/shutter header functions. Those are not additional physical buttons on the tested V1.5 board, so they are not marked as onboard-button hardware.
 
 ### microSD / SDMMC
 
@@ -146,20 +167,22 @@ The camera pin assignments above are now reserved for Newo2 and must not be reus
 
 ## Combined onboard result
 
-As of 2026-09-02, the following built-in Newo2 hardware is physically proven together:
+As of 2026-09-02, the following built-in Newo2 hardware is physically proven:
 
 ```text
 ESP32-S3            PASS
 16 MB flash         PASS
 8 MB PSRAM          PASS
 GPIO48 RGB off      PASS
+RST button          PASS
+BOOT / GPIO0        PASS
 64 GB microSD       PASS
 OV3660 camera       PASS
 Camera -> SD JPEG   PASS
 Saved JPEG visually PASS
 ```
 
-A small amount of garbled serial text was observed around one reset / sketch transition, but the subsequent boot, SD mount, camera initialization, capture, file write, exact-size verification, heartbeat, and browser image retrieval all completed normally. It is not treated as a hardware failure.
+A small amount of garbled serial text was observed around one reset / sketch transition, but the subsequent boot, SD mount, camera initialization, capture, file write, exact-size verification, heartbeat, browser image retrieval, and button test all completed normally. It is not treated as a hardware failure.
 
 ## Test partition note
 
