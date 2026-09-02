@@ -128,6 +128,20 @@ OV3660 -> ESP32-S3 camera interface -> PSRAM framebuffer -> JPEG -> microSD
 
 After camera initialization, reported free PSRAM was approximately 8,063 KB. The running heartbeat after capture reported approximately 303 KB free heap and 8,063 KB free PSRAM.
 
+### Visual JPEG validation
+
+Because no separate SD-card reader was available, a temporary Newo2 SoftAP/web-server sketch mounted the same microSD card and served `/newo/camera-test.jpg` over local Wi-Fi. The image was successfully opened and visibly rendered in a browser.
+
+This adds a visual validation layer beyond the exact file-size check:
+
+```text
+OV3660 capture -> JPEG -> microSD -> Newo2 HTTP server -> browser image
+```
+
+Result: **PASS**.
+
+The temporary viewer used local AP `NEWO2-CAM`; it is bring-up tooling only and is not part of the production Newo2 network design.
+
 The camera pin assignments above are now reserved for Newo2 and must not be reused for the migrated microphone, display, speaker, or other external peripherals.
 
 ## Combined onboard result
@@ -135,16 +149,17 @@ The camera pin assignments above are now reserved for Newo2 and must not be reus
 As of 2026-09-02, the following built-in Newo2 hardware is physically proven together:
 
 ```text
-ESP32-S3          PASS
-16 MB flash       PASS
-8 MB PSRAM        PASS
-GPIO48 RGB off    PASS
-64 GB microSD     PASS
-OV3660 camera     PASS
-Camera -> SD JPEG PASS
+ESP32-S3            PASS
+16 MB flash         PASS
+8 MB PSRAM          PASS
+GPIO48 RGB off      PASS
+64 GB microSD       PASS
+OV3660 camera       PASS
+Camera -> SD JPEG   PASS
+Saved JPEG visually PASS
 ```
 
-A small amount of garbled serial text was observed around one reset / sketch transition, but the subsequent boot, SD mount, camera initialization, capture, file write, exact-size verification, and heartbeat all completed normally. It is not treated as a hardware failure.
+A small amount of garbled serial text was observed around one reset / sketch transition, but the subsequent boot, SD mount, camera initialization, capture, file write, exact-size verification, heartbeat, and browser image retrieval all completed normally. It is not treated as a hardware failure.
 
 ## Test partition note
 
