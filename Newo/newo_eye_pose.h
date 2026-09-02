@@ -5,6 +5,7 @@
 // Final eye geometry is expressed as a compact pose. Behaviors and expressions
 // choose poses; the renderer consumes only the resolved pose plus gaze/blink.
 enum class NewoEyeEasing : uint8_t { LINEAR, EASE_OUT, EASE_IN_OUT };
+enum class NewoEyeClosureStyle : uint8_t { FILLED, CURVED };
 
 struct NewoEyePose {
   int16_t leftWidth = 60;
@@ -19,6 +20,7 @@ struct NewoEyePose {
   int16_t leftBottomCut = 0;
   int16_t rightBottomCut = 0;
   uint8_t openness = 100;
+  NewoEyeClosureStyle closureStyle = NewoEyeClosureStyle::FILLED;
 };
 
 class NewoEyePoseEngine {
