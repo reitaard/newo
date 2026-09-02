@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - goouuu-vision-bench
+      - goouuu-vision-native-jpeg
     paths:
       - experiments/goouuu-vision-bench/**
       - .github/workflows/goouuu-vision-bench.yml
