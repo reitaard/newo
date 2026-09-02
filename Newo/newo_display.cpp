@@ -15,8 +15,8 @@ constexpr uint16_t kWidth = 240;
 constexpr uint16_t kHeight = 240;
 constexpr uint32_t kTemporaryMs = 7'000;
 constexpr uint32_t kEcoPageMs = 5'000;
-constexpr uint32_t kNormalFaceFrameMs = 50;    // ~20 FPS.
-constexpr uint32_t kSpeakingFaceFrameMs = 120;  // ~8.3 FPS while audio has priority.
+constexpr uint32_t kNormalFaceFrameMs = 50;
+constexpr uint32_t kSpeakingFaceFrameMs = 120;
 constexpr uint32_t kWinkBurstMs = 240;
 constexpr uint32_t kWinkCalmMinMs = 2'000;
 constexpr uint32_t kWinkCalmMaxMs = 4'001;
@@ -52,16 +52,6 @@ void formatUptime(char* out, size_t size, uint32_t ms) {
   const uint32_t seconds = ms / 1000;
   snprintf(out, size, "%luh %02lum", static_cast<unsigned long>(seconds / 3600),
            static_cast<unsigned long>((seconds / 60) % 60));
-}
-
-int16_t easeAutonomousGaze(int16_t current, int16_t target) {
-  const int16_t delta = target - current;
-  const int16_t magnitude = delta < 0 ? -delta : delta;
-  if (magnitude < 2) return target;
-  int16_t step = magnitude / 2;
-  if (step > 8) step = 8;
-  if (step < 1) step = 1;
-  return current + (delta > 0 ? step : -step);
 }
 }  // namespace
 
@@ -135,7 +125,6 @@ void NewoDisplay::noteSystemError() {
 void NewoDisplay::setClockEnabled(bool enabled) {
   if (clockEnabled_ == enabled) return;
   clockEnabled_ = enabled;
-  // updateClock() clears or redraws only its own lower face-view region.
 }
 
 bool NewoDisplay::setFaceStyle(NewoFaceStyle style) {
@@ -264,8 +253,8 @@ void NewoDisplay::maybeLogEyeStats(uint32_t now) {
                 "gaze=%lu meaningful_gaze=%lu blinks=%lu double_blinks=%lu long_blinks=%lu "
                 "episodes=%lu completed=%lu errors=%lu\n",
                 contextName(effectiveMode(now)), static_cast<unsigned long>(eyeContextChanges_),
-                static_cast<unsigned>(energy_),
-                static_cast<unsigned>(curiosity_), static_cast<unsigned>(social_), static_cast<unsigned>(stress_),
+                static_cast<unsigned>(energy_), static_cast<unsigned>(curiosity_),
+                static_cast<unsigned>(social_), static_cast<unsigned>(stress_),
                 static_cast<unsigned long>(eyeGazeEvents_), static_cast<unsigned long>(eyeMeaningfulGazeEvents_),
                 static_cast<unsigned long>(eyeBlinkEvents_), static_cast<unsigned long>(eyeDoubleBlinkEvents_),
                 static_cast<unsigned long>(eyeLongBlinkEvents_), static_cast<unsigned long>(eyeEpisodeStarts_),
@@ -310,6 +299,7 @@ void NewoDisplay::resetFaceMotion(uint32_t now) {
   gazeY_ = 0;
   gazeTargetX_ = 0;
   gazeTargetY_ = 0;
+  gazeMotion_.reset(0, 0);
   nextGazeMs_ = now;
   nextFaceFrameMs_ = 0;
   resetAutonomousEpisode(now);
@@ -448,6 +438,8 @@ void NewoDisplay::beginAutonomousEpisodeGaze(uint32_t now, int16_t targetX, int1
   microCorrectionAtMs_ = 0;
   autonomousEpisodeHoldMs_ = holdMs;
   recordGazeTarget(holdMs);
+  gazeMotion_.start(gazeX_, gazeY_, gazeTargetX_, gazeTargetY_,
+                    kAutonomousGazeHardX, kAutonomousGazeHardY, true);
   autonomousGazePhase_ = AutonomousGazePhase::MOVING;
   nextGazeMs_ = now;
 }
@@ -659,28 +651,26 @@ void NewoDisplay::chooseAutonomousGazeTarget() {
   const int16_t magnitudeX = deltaX < 0 ? -deltaX : deltaX;
   const int16_t magnitudeY = deltaY < 0 ? -deltaY : deltaY;
   autonomousGazeLargeShift_ = magnitudeX >= 12 || magnitudeY >= 7;
+  gazeMotion_.start(gazeX_, gazeY_, gazeTargetX_, gazeTargetY_,
+                    kAutonomousGazeHardX, kAutonomousGazeHardY, true);
   autonomousGazePhase_ = AutonomousGazePhase::MOVING;
 }
 
 void NewoDisplay::updateAutonomousIdleGaze(uint32_t now) {
   if (autonomousEpisode_ != AutonomousEpisode::WAITING) {
     if (autonomousGazePhase_ == AutonomousGazePhase::MOVING) {
-      gazeX_ = easeAutonomousGaze(gazeX_, gazeTargetX_);
-      gazeY_ = easeAutonomousGaze(gazeY_, gazeTargetY_);
-      if (gazeX_ == gazeTargetX_ && gazeY_ == gazeTargetY_) {
-        fixationUntilMs_ = now + autonomousEpisodeHoldMs_;
-        autonomousGazePhase_ = AutonomousGazePhase::FIXATING;
-      }
+      if (!gazeMotion_.update(gazeX_, gazeY_)) return;
+      fixationUntilMs_ = now + autonomousEpisodeHoldMs_;
+      autonomousGazePhase_ = AutonomousGazePhase::FIXATING;
     }
     return;
   }
   switch (autonomousGazePhase_) {
     case AutonomousGazePhase::CHOOSE_TARGET:
-      chooseAutonomousGazeTarget(); return;
+      chooseAutonomousGazeTarget();
+      return;
     case AutonomousGazePhase::MOVING:
-      gazeX_ = easeAutonomousGaze(gazeX_, gazeTargetX_);
-      gazeY_ = easeAutonomousGaze(gazeY_, gazeTargetY_);
-      if (gazeX_ != gazeTargetX_ || gazeY_ != gazeTargetY_) return;
+      if (!gazeMotion_.update(gazeX_, gazeY_)) return;
       queuePostSaccadeBlink(now);
       autonomousGazeLargeShift_ = false;
       {
@@ -721,13 +711,13 @@ void NewoDisplay::updateAutonomousIdleGaze(uint32_t now) {
           gazeTargetY_ = candidate >= -kAutonomousGazeHardY && candidate <= kAutonomousGazeHardY
               ? candidate : gazeTargetY_ - direction * shift;
         }
+        gazeMotion_.start(gazeX_, gazeY_, gazeTargetX_, gazeTargetY_,
+                          kAutonomousGazeHardX, kAutonomousGazeHardY, false);
         autonomousGazePhase_ = AutonomousGazePhase::MICRO_CORRECTION;
       }
       return;
     case AutonomousGazePhase::MICRO_CORRECTION:
-      gazeX_ = easeAutonomousGaze(gazeX_, gazeTargetX_);
-      gazeY_ = easeAutonomousGaze(gazeY_, gazeTargetY_);
-      if (gazeX_ != gazeTargetX_ || gazeY_ != gazeTargetY_) return;
+      if (!gazeMotion_.update(gazeX_, gazeY_)) return;
       autonomousGazePhase_ = static_cast<int32_t>(now - fixationUntilMs_) >= 0
           ? AutonomousGazePhase::CHOOSE_TARGET : AutonomousGazePhase::FIXATING;
       return;
@@ -866,6 +856,11 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   int16_t rightW = pose.rightWidth;
   const int16_t gap = pose.gap;
   const bool cyclops = rightW == 0;
+  const bool expressiveSaccade = activeMode == NewoDisplayMode::IDLE && autoFaceEnabled_ && gazeMotion_.expressive();
+  if (expressiveSaccade && !cyclops) {
+    leftW += 2;
+    rightW += 2;
+  }
   if (activeMode == NewoDisplayMode::THINKING) {
     if (gazeX_ < -7) leftW += 7;
     if (gazeX_ > 7) rightW += 7;
@@ -892,8 +887,12 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   if (blinkPhase_ == BlinkPhase::HALF_CLOSED || blinkPhase_ == BlinkPhase::HALF_OPEN) blinkOpen = 40;
   else if (blinkPhase_ == BlinkPhase::CLOSED) blinkOpen = 7;
   const uint16_t combinedOpen = static_cast<uint16_t>(pose.openness) * blinkOpen / 100U;
-  const int16_t leftBaseHeight = pose.leftHeight;
-  const int16_t rightBaseHeight = pose.rightHeight;
+  int16_t leftBaseHeight = pose.leftHeight;
+  int16_t rightBaseHeight = pose.rightHeight;
+  if (expressiveSaccade && pose.closureStyle == NewoEyeClosureStyle::FILLED) {
+    if (leftBaseHeight > 8) leftBaseHeight -= 2;
+    if (rightBaseHeight > 8) rightBaseHeight -= 2;
+  }
   int16_t leftHeight = static_cast<int16_t>(leftBaseHeight * combinedOpen / 100U);
   int16_t rightHeight = static_cast<int16_t>(rightBaseHeight * combinedOpen / 100U);
   if (pose.closureStyle == NewoEyeClosureStyle::FILLED) {
