@@ -165,6 +165,21 @@ The temporary viewer used local AP `NEWO2-CAM`; it is bring-up tooling only and 
 
 The camera pin assignments above are now reserved for Newo2 and must not be reused for the migrated microphone, display, speaker, or other external peripherals.
 
+## Native USB / OTG — device path partially validated
+
+With the existing TTL USB-C connection left attached for programming/serial, the board's separate USB-C port marked **OTG** was connected to the same Windows PC with a second data cable.
+
+Observed result:
+
+- Windows produced the USB device-connect sound.
+- Arduino IDE showed a new **COM5** entry when the OTG cable was attached.
+- The TTL/programming path remained separately available.
+- No SD-card drive appeared in Windows at this stage, which is expected because the running button-test firmware did not expose a USB Mass Storage Class device.
+
+This confirms that the physical OTG connector and native ESP32-S3 USB data path enumerate successfully as a USB device. Result: **PASS for native USB enumeration**.
+
+USB Mass Storage exposure of the onboard microSD is still pending and is the next bring-up test.
+
 ## Combined onboard result
 
 As of 2026-09-02, the following built-in Newo2 hardware is physically proven:
@@ -180,9 +195,11 @@ BOOT / GPIO0        PASS
 OV3660 camera       PASS
 Camera -> SD JPEG   PASS
 Saved JPEG visually PASS
+Native USB enumerate PASS
+USB SD mass storage PENDING
 ```
 
-A small amount of garbled serial text was observed around one reset / sketch transition, but the subsequent boot, SD mount, camera initialization, capture, file write, exact-size verification, heartbeat, browser image retrieval, and button test all completed normally. It is not treated as a hardware failure.
+A small amount of garbled serial text was observed around one reset / sketch transition, but the subsequent boot, SD mount, camera initialization, capture, file write, exact-size verification, heartbeat, browser image retrieval, button test, and native USB enumeration all completed normally. It is not treated as a hardware failure.
 
 ## Test partition note
 
