@@ -22,6 +22,9 @@ void NewoEyePoseEngine::reset(const NewoEyePose& pose, uint32_t now) {
 void NewoEyePoseEngine::transitionTo(const NewoEyePose& pose, uint32_t now, uint16_t durationMs,
                                     NewoEyeEasing easing) {
   update(now);
+  // The display resolves its target every frame. Do not restart an in-flight
+  // transition just because the same target was requested again at 20 FPS.
+  if (active_ && equal(target_, pose)) return;
   if (equal(current_, pose) || durationMs == 0) {
     reset(pose, now);
     return;
