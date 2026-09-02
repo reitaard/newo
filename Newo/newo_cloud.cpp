@@ -312,6 +312,9 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     else if (strcmp(mode, "sweat") == 0) faceStyle = NewoFaceStyle::SWEAT;
     else if (strcmp(mode, "cyclops") == 0) faceStyle = NewoFaceStyle::CYCLOPS;
     else if (strcmp(mode, "closed") == 0) faceStyle = NewoFaceStyle::CLOSED;
+    else if (strcmp(mode, "detached") == 0) faceStyle = NewoFaceStyle::DETACHED;
+    else if (strcmp(mode, "sleeping") == 0) faceStyle = NewoFaceStyle::SLEEPING;
+    else if (strcmp(mode, "skeptical") == 0) faceStyle = NewoFaceStyle::SKEPTICAL;
     else if (strcmp(mode, "wink_left") == 0) faceStyle = NewoFaceStyle::WINK_LEFT;
     else if (strcmp(mode, "wink_right") == 0) faceStyle = NewoFaceStyle::WINK_RIGHT;
     else if (strcmp(mode, "look_left") == 0) faceStyle = NewoFaceStyle::LOOK_LEFT;
