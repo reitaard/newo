@@ -1,0 +1,36 @@
+name: GOOUUU vision bench
+
+on:
+  push:
+    branches:
+      - goouuu-vision-bench
+    paths:
+      - experiments/goouuu-vision-bench/**
+      - .github/workflows/goouuu-vision-bench.yml
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build ESP-IDF firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.5
+          target: esp32s3
+          path: experiments/goouuu-vision-bench
+          command: idf.py -DSDKCONFIG_DEFAULTS=sdkconfig.defaults build && cd build && esptool.py --chip esp32s3 merge_bin -o goouuu-vision-bench-merged.bin @flash_args
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: goouuu-vision-bench-firmware
+          path: |
+            experiments/goouuu-vision-bench/build/goouuu-vision-bench-merged.bin
+            experiments/goouuu-vision-bench/build/goouuu_vision_bench.bin
+            experiments/goouuu-vision-bench/build/bootloader/bootloader.bin
+            experiments/goouuu-vision-bench/build/partition_table/partition-table.bin
+            experiments/goouuu-vision-bench/build/flash_args
