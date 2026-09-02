@@ -35,10 +35,10 @@ constexpr int MAX_FACES = 8;
 constexpr float DEFAULT_SCORE_THRESHOLD = 0.30f;
 constexpr float MIN_SCORE_THRESHOLD = 0.10f;
 constexpr float MAX_SCORE_THRESHOLD = 0.90f;
-constexpr uint16_t SOURCE_W = 640;
-constexpr uint16_t SOURCE_H = 480;
-constexpr uint16_t FAST_W = 320;
-constexpr uint16_t FAST_H = 240;
+constexpr int SOURCE_W = 640;
+constexpr int SOURCE_H = 480;
+constexpr int FAST_W = 320;
+constexpr int FAST_H = 240;
 constexpr uint8_t CAMERA_JPEG_QUALITY = 12;
 
 // GOOUUU ESP32-S3-CAM v1.5 / ESP32-S3-WROOM-1 N16R8.
