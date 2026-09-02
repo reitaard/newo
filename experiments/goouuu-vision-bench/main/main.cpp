@@ -2,6 +2,7 @@
 #include <array>
 #include <cinttypes>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "dl_image_define.hpp"
@@ -29,10 +30,11 @@ constexpr const char *AP_SSID = "NEWO-CAM-TEST";
 constexpr const char *AP_PASSWORD = "newovision";
 constexpr int HISTORY_LEN = 100;
 constexpr int MAX_FACES = 8;
+constexpr float DEFAULT_SCORE_THRESHOLD = 0.30f;
+constexpr float MIN_SCORE_THRESHOLD = 0.10f;
+constexpr float MAX_SCORE_THRESHOLD = 0.90f;
 
 // GOOUUU ESP32-S3-CAM v1.5 / ESP32-S3-WROOM-1 N16R8.
-// This camera mapping matches the GOOUUU documentation and the esp32-camera
-// BOARD_ESP32S3_GOOUUU example mapping.
 constexpr int CAM_PIN_PWDN = -1;
 constexpr int CAM_PIN_RESET = -1;
 constexpr int CAM_PIN_XCLK = 15;
@@ -84,6 +86,7 @@ struct Metrics {
 };
 
 volatile TestMode g_mode = TestMode::DETECT;
+float g_score_threshold = DEFAULT_SCORE_THRESHOLD;
 Metrics g_metrics;
 portMUX_TYPE g_metrics_mux = portMUX_INITIALIZER_UNLOCKED;
 SemaphoreHandle_t g_detector_mutex = nullptr;
@@ -118,6 +121,19 @@ void reset_history() {
     memset(g_metrics.hist_hit, 0, sizeof(g_metrics.hist_hit));
     memset(g_metrics.boxes, 0, sizeof(g_metrics.boxes));
     taskEXIT_CRITICAL(&g_metrics_mux);
+}
+
+bool set_detector_threshold(float value) {
+    value = std::clamp(value, MIN_SCORE_THRESHOLD, MAX_SCORE_THRESHOLD);
+    if (!g_detector || !g_detector_mutex) return false;
+    if (xSemaphoreTake(g_detector_mutex, portMAX_DELAY) != pdTRUE) return false;
+    g_detector->set_score_thr(value, 0);
+    g_detector->set_score_thr(value, 1);
+    g_score_threshold = value;
+    xSemaphoreGive(g_detector_mutex);
+    reset_history();
+    ESP_LOGI(TAG, "face detector score threshold=%.2f (both MSR and MNP stages)", static_cast<double>(value));
+    return true;
 }
 
 void record_pipeline(uint32_t width,
@@ -187,7 +203,6 @@ bool run_face_detection(camera_fb_t *fb,
     face_count = 0;
     decode_ms = 0;
     detect_ms = 0;
-
     if (xSemaphoreTake(g_detector_mutex, portMAX_DELAY) != pdTRUE) return false;
 
     const size_t required = fb->width * fb->height * 3;
@@ -280,7 +295,6 @@ esp_err_t init_wifi_ap() {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_ap();
-
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&init));
 
@@ -296,7 +310,6 @@ esp_err_t init_wifi_ap() {
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
     ESP_ERROR_CHECK(esp_wifi_start());
-
     ESP_LOGI(TAG, "AP ready: SSID=%s password=%s", AP_SSID, AP_PASSWORD);
     ESP_LOGI(TAG, "Open http://192.168.4.1/ on the phone connected to that AP");
     return ESP_OK;
@@ -319,23 +332,32 @@ esp_err_t index_handler(httpd_req_t *req) {
 esp_err_t mode_handler(httpd_req_t *req) {
     char value[16] = {};
     if (!get_query_value(req, "name", value, sizeof(value))) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing name");
-
     TestMode next;
     if (!strcmp(value, "view")) next = TestMode::VIEW;
     else if (!strcmp(value, "detect")) next = TestMode::DETECT;
     else if (!strcmp(value, "bench")) next = TestMode::BENCH;
     else return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad mode");
-
     g_mode = next;
     reset_history();
     ESP_LOGI(TAG, "mode=%s", mode_name(next));
     return httpd_resp_sendstr(req, "ok");
 }
 
+esp_err_t sensitivity_handler(httpd_req_t *req) {
+    char value[16] = {};
+    if (!get_query_value(req, "value", value, sizeof(value))) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing value");
+    char *end = nullptr;
+    const float threshold = strtof(value, &end);
+    if (end == value || *end != '\0' || threshold < MIN_SCORE_THRESHOLD || threshold > MAX_SCORE_THRESHOLD) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "threshold must be 0.10..0.90");
+    }
+    if (!set_detector_threshold(threshold)) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "detector unavailable");
+    return httpd_resp_sendstr(req, "ok");
+}
+
 esp_err_t resolution_handler(httpd_req_t *req) {
     char value[16] = {};
     if (!get_query_value(req, "name", value, sizeof(value))) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing name");
-
     framesize_t size;
     uint32_t w;
     uint32_t h;
@@ -365,12 +387,10 @@ esp_err_t sensor_handler(httpd_req_t *req) {
     const int value = atoi(val) ? 1 : 0;
     sensor_t *sensor = esp_camera_sensor_get();
     if (!sensor) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "sensor unavailable");
-
     int rc = -1;
     if (!strcmp(var, "hmirror")) rc = sensor->set_hmirror(sensor, value);
     else if (!strcmp(var, "vflip")) rc = sensor->set_vflip(sensor, value);
     else return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "unsupported sensor control");
-
     if (rc != 0) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "sensor control failed");
     return httpd_resp_sendstr(req, "ok");
 }
@@ -401,17 +421,17 @@ esp_err_t metrics_handler(httpd_req_t *req) {
 
     char json[4096];
     int n = snprintf(json, sizeof(json),
-        "{\"mode\":\"%s\",\"width\":%" PRIu32 ",\"height\":%" PRIu32
+        "{\"mode\":\"%s\",\"threshold\":%.2f,\"width\":%" PRIu32 ",\"height\":%" PRIu32
         ",\"sensor_pid\":%" PRIu32 ",\"faces\":%d,\"face_streak\":%" PRIu32
         ",\"largest_face_w\":%" PRIu32 ",\"largest_face_h\":%" PRIu32
         ",\"capture_ms\":%" PRIu32 ",\"decode_ms\":%" PRIu32 ",\"detect_ms\":%" PRIu32
         ",\"pipeline_ms\":%" PRIu32 ",\"detect_avg_ms\":%.2f,\"detect_p95_ms\":%" PRIu32
         ",\"samples\":%u,\"hits\":%" PRIu32 ",\"hit_rate\":%.2f"
         ",\"heap_free\":%u,\"psram_free\":%u,\"boxes\":[",
-        mode_name(g_mode), snapshot.width, snapshot.height, snapshot.sensor_pid, snapshot.face_count,
-        snapshot.face_streak, snapshot.largest_face_w, snapshot.largest_face_h, snapshot.capture_ms,
-        snapshot.decode_ms, snapshot.detect_ms, snapshot.pipeline_ms, avg, p95,
-        static_cast<unsigned>(snapshot.hist_count), hits, hit_rate,
+        mode_name(g_mode), static_cast<double>(g_score_threshold), snapshot.width, snapshot.height,
+        snapshot.sensor_pid, snapshot.face_count, snapshot.face_streak, snapshot.largest_face_w,
+        snapshot.largest_face_h, snapshot.capture_ms, snapshot.decode_ms, snapshot.detect_ms,
+        snapshot.pipeline_ms, avg, p95, static_cast<unsigned>(snapshot.hist_count), hits, hit_rate,
         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_8BIT)),
         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
 
@@ -439,8 +459,8 @@ esp_err_t stream_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-
     ESP_LOGI(TAG, "stream client connected");
+
     while (g_mode != TestMode::BENCH) {
         const int64_t cycle_start = esp_timer_get_time();
         const int64_t capture_start = esp_timer_get_time();
@@ -456,9 +476,7 @@ esp_err_t stream_handler(httpd_req_t *req) {
         uint32_t decode_ms = 0;
         uint32_t detect_ms = 0;
         const bool do_detect = g_mode == TestMode::DETECT;
-        if (do_detect) {
-            run_face_detection(fb, boxes, face_count, decode_ms, detect_ms);
-        }
+        if (do_detect) run_face_detection(fb, boxes, face_count, decode_ms, detect_ms);
 
         const uint32_t pipeline_ms = static_cast<uint32_t>((esp_timer_get_time() - cycle_start + 500) / 1000);
         record_pipeline(fb->width, fb->height, capture_ms, decode_ms, detect_ms, pipeline_ms,
@@ -472,6 +490,7 @@ esp_err_t stream_handler(httpd_req_t *req) {
         esp_camera_fb_return(fb);
         if (result != ESP_OK) break;
     }
+
     ESP_LOGI(TAG, "stream client disconnected");
     return ESP_OK;
 }
@@ -511,16 +530,18 @@ esp_err_t start_web_servers() {
     config.max_uri_handlers = 12;
     config.lru_purge_enable = true;
     config.stack_size = 8192;
-
     ESP_ERROR_CHECK(httpd_start(&g_httpd, &config));
+
     const httpd_uri_t root = {.uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = nullptr};
     const httpd_uri_t mode = {.uri = "/mode", .method = HTTP_GET, .handler = mode_handler, .user_ctx = nullptr};
+    const httpd_uri_t sensitivity = {.uri = "/sensitivity", .method = HTTP_GET, .handler = sensitivity_handler, .user_ctx = nullptr};
     const httpd_uri_t metrics = {.uri = "/metrics", .method = HTTP_GET, .handler = metrics_handler, .user_ctx = nullptr};
     const httpd_uri_t resolution = {.uri = "/resolution", .method = HTTP_GET, .handler = resolution_handler, .user_ctx = nullptr};
     const httpd_uri_t sensor = {.uri = "/sensor", .method = HTTP_GET, .handler = sensor_handler, .user_ctx = nullptr};
     const httpd_uri_t reset = {.uri = "/reset", .method = HTTP_GET, .handler = reset_handler, .user_ctx = nullptr};
     ESP_ERROR_CHECK(httpd_register_uri_handler(g_httpd, &root));
     ESP_ERROR_CHECK(httpd_register_uri_handler(g_httpd, &mode));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(g_httpd, &sensitivity));
     ESP_ERROR_CHECK(httpd_register_uri_handler(g_httpd, &metrics));
     ESP_ERROR_CHECK(httpd_register_uri_handler(g_httpd, &resolution));
     ESP_ERROR_CHECK(httpd_register_uri_handler(g_httpd, &sensor));
@@ -563,6 +584,10 @@ extern "C" void app_main(void) {
     g_detector = new HumanFaceDetect();
     if (!g_detector) {
         ESP_LOGE(TAG, "HumanFaceDetect allocation failed");
+        abort();
+    }
+    if (!set_detector_threshold(DEFAULT_SCORE_THRESHOLD)) {
+        ESP_LOGE(TAG, "Unable to configure detector threshold");
         abort();
     }
 
