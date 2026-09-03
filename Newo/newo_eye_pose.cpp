@@ -4,6 +4,18 @@ namespace {
 uint8_t clampIntensity(uint8_t intensity) {
   return intensity > 100 ? 100 : intensity;
 }
+
+NewoEyeClosureStyle interpolateClosureStyle(NewoEyeClosureStyle from, NewoEyeClosureStyle to,
+                                             uint16_t permille) {
+  if (from == to) return to;
+  // Closing should keep the filled-eye silhouette until it is almost shut;
+  // waking should return to filled geometry early so openness can expand it
+  // smoothly. This avoids a visible mid-transition shape pop.
+  if (to == NewoEyeClosureStyle::CURVED) {
+    return permille < 850 ? from : to;
+  }
+  return permille < 150 ? from : to;
+}
 }  // namespace
 
 NewoEyePoseEngine::NewoEyePoseEngine() {
@@ -60,9 +72,7 @@ const NewoEyePose& NewoEyePoseEngine::update(uint32_t now) {
   current_.leftBottomCut = interpolate(origin_.leftBottomCut, target_.leftBottomCut, t);
   current_.rightBottomCut = interpolate(origin_.rightBottomCut, target_.rightBottomCut, t);
   current_.openness = static_cast<uint8_t>(interpolate(origin_.openness, target_.openness, t));
-  // Shape class is discrete; switch near the middle of the morph rather than
-  // introducing another expression-specific renderer state.
-  current_.closureStyle = t < 500 ? origin_.closureStyle : target_.closureStyle;
+  current_.closureStyle = interpolateClosureStyle(origin_.closureStyle, target_.closureStyle, t);
   return current_;
 }
 
@@ -82,7 +92,7 @@ NewoEyePose NewoEyePoseEngine::blend(const NewoEyePose& neutral, const NewoEyePo
   out.leftBottomCut = interpolate(neutral.leftBottomCut, expression.leftBottomCut, t);
   out.rightBottomCut = interpolate(neutral.rightBottomCut, expression.rightBottomCut, t);
   out.openness = static_cast<uint8_t>(interpolate(neutral.openness, expression.openness, t));
-  out.closureStyle = t < 500 ? neutral.closureStyle : expression.closureStyle;
+  out.closureStyle = interpolateClosureStyle(neutral.closureStyle, expression.closureStyle, t);
   return out;
 }
 
