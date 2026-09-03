@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Arduino.h>
+#include <stdint.h>
 
 // Gaze destination and gaze motion are separate concerns. Behaviors choose a
 // destination; this tiny state machine gives large saccades anticipation and
