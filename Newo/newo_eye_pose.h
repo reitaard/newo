@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Arduino.h>
+#include <stdint.h>
 
 // Final eye geometry is expressed as a compact pose. Behaviors and expressions
 // choose poses; the renderer consumes only the resolved pose plus gaze/blink.
