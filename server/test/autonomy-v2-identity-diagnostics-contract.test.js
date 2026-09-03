@@ -16,6 +16,8 @@ test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, and 
     source("../../Newo/Newo.ino"),
     source("../src/index.js"),
   ]);
+  const renderer = display.match(/void NewoDisplay::drawFaceFrame\(uint32_t now\) \{([\s\S]*?)\n\}\n\nvoid NewoDisplay::blitMonoCanvasFast/);
+  assert.ok(renderer, "drawFaceFrame body should be discoverable for renderer-boundary checks");
 
   assert.match(config, /FIRMWARE_VERSION\[\] = "0\.5\.2-dev"/);
   assert.match(config, /AUTONOMY_REVISION = 2/);
@@ -47,12 +49,28 @@ test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, and 
   assert.doesNotMatch(poseResolver, /switch \(autonomousEpisode_\)/);
   assert.match(poseResolver, /NewoEyePoseEngine::blend\(neutral, target, autonomousExpressionIntensity_\)/);
 
-  // Renderer consumes resolved pose + gaze + blink; expressions are not drawn by episode cases.
+  // Transient shake/bounce/stretch/breathing is resolved as data outside the
+  // renderer. drawFaceFrame consumes the overlay but contains no semantic
+  // expression/episode motion branches and no trigonometric animation logic.
+  assert.match(header, /struct EyeMotionOverlay/);
+  assert.match(header, /EyeMotionOverlay resolveEyeMotionOverlay/);
+  assert.match(poseResolver, /NewoDisplay::EyeMotionOverlay NewoDisplay::resolveEyeMotionOverlay/);
+  assert.match(display, /const EyeMotionOverlay motion = resolveEyeMotionOverlay\(now, activeMode\)/);
+  assert.match(renderer[1], /motion\.xOffset/);
+  assert.match(renderer[1], /motion\.yOffset/);
+  assert.match(renderer[1], /motion\.leftWidthDelta/);
+  assert.match(renderer[1], /motion\.leftHeightDelta/);
+  assert.doesNotMatch(renderer[1], /NewoFaceStyle::CONFUSED|NewoFaceStyle::LAUGH/);
+  assert.doesNotMatch(renderer[1], /AutonomousEpisode::ALERT_CHECK/);
+  assert.doesNotMatch(renderer[1], /NewoDisplayMode::THINKING|NewoDisplayMode::ERROR/);
+  assert.doesNotMatch(renderer[1], /sinf\(/);
+
+  // Renderer consumes resolved pose + gaze + blink + motion + effects.
   assert.match(header, /NewoEyePoseEngine eyePoseEngine_/);
-  assert.match(display, /resolveEyePose\(now, activeMode\)/);
-  assert.match(display, /combinedOpen = static_cast<uint16_t>\(pose\.openness\) \* blinkOpen/);
-  assert.match(display, /applyResolvedPoseCuts/);
-  assert.match(display, /drawSecondaryEffect/);
+  assert.match(renderer[1], /resolveEyePose\(now, activeMode\)/);
+  assert.match(renderer[1], /combinedOpen = static_cast<uint16_t>\(pose\.openness\) \* blinkOpen/);
+  assert.match(renderer[1], /applyResolvedPoseCuts/);
+  assert.match(renderer[1], /drawSecondaryEffect/);
   assert.doesNotMatch(display, /applyEyeExpression\(/);
 
   // Continuous default gaze remains wide but bounded; vertical travel is the requested small increase.
