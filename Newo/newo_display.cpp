@@ -235,6 +235,7 @@ const char* NewoDisplay::episodeName(AutonomousEpisode episode) {
     case AutonomousEpisode::LOW_ENERGY: return "LOW_ENERGY";
     case AutonomousEpisode::SOCIAL_ATTENTION: return "SOCIAL_ATTENTION";
     case AutonomousEpisode::ALERT_CHECK: return "ALERT_CHECK";
+    case AutonomousEpisode::DROWSY_REST: return "DROWSY_REST";
     case AutonomousEpisode::WAITING: return "WAITING";
   }
   return "UNKNOWN";
@@ -493,6 +494,7 @@ void NewoDisplay::chooseAutonomousEpisode(uint32_t now) {
   int socialWeight = 24 + static_cast<int>(social_) / 10;
   int alertWeight = 20 + static_cast<int>(stress_);
   int lowEnergyWeight = 8 + (energy_ < 70 ? static_cast<int>(70 - energy_) : 0);
+  int restWeight = 0;
   if (curiosity_ > 55) curiousWeight += 10;
   if (social_ > 60) socialWeight += 10;
   if (stress_ > 8) alertWeight += 20;
@@ -506,14 +508,16 @@ void NewoDisplay::chooseAutonomousEpisode(uint32_t now) {
     if (socialWeight > 5) socialWeight -= 5;
     if (alertWeight > 5) alertWeight -= 5;
     lowEnergyWeight += 35;
+    restWeight = 10 + (energy_ < 55 ? static_cast<int>(55 - energy_) / 2 : 0);
   }
-  const int totalWeight = curiousWeight + socialWeight + alertWeight + lowEnergyWeight;
+  const int totalWeight = curiousWeight + socialWeight + alertWeight + lowEnergyWeight + restWeight;
   const long choice = random(totalWeight);
   int threshold = curiousWeight;
   if (choice < threshold) autonomousEpisode_ = AutonomousEpisode::CURIOUS_SCAN;
   else if (choice < (threshold += socialWeight)) autonomousEpisode_ = AutonomousEpisode::SOCIAL_ATTENTION;
   else if (choice < (threshold += alertWeight)) autonomousEpisode_ = AutonomousEpisode::ALERT_CHECK;
-  else autonomousEpisode_ = AutonomousEpisode::LOW_ENERGY;
+  else if (choice < (threshold += lowEnergyWeight)) autonomousEpisode_ = AutonomousEpisode::LOW_ENERGY;
+  else autonomousEpisode_ = AutonomousEpisode::DROWSY_REST;
   autonomousEpisodeStep_ = 0;
   autonomousEpisodeDirection_ = random(0, 2) == 0 ? -1 : 1;
   autonomousEpisodeBlinkRequested_ = false;
@@ -551,6 +555,12 @@ void NewoDisplay::chooseAutonomousEpisode(uint32_t now) {
       beginAutonomousEpisodeGaze(now, static_cast<int16_t>(autonomousEpisodeDirection_ * random(16, 21)),
                                  static_cast<int16_t>(random(-5, 4)), static_cast<uint16_t>(random(500, 901)));
       break;
+    case AutonomousEpisode::DROWSY_REST:
+      setAutonomousExpression(AutonomousExpression::SLEEPY, 88);
+      beginAutonomousEpisodeGaze(now, static_cast<int16_t>(random(-3, 4)),
+                                 static_cast<int16_t>(random(6, 10)),
+                                 static_cast<uint16_t>(random(1'200, 1'801)));
+      break;
     case AutonomousEpisode::WAITING: break;
   }
 }
@@ -572,6 +582,20 @@ void NewoDisplay::advanceAutonomousEpisode(uint32_t now) {
         autonomousEpisodeStep_ = 1;
         autonomousEpisodeBlinkRequested_ = true;
       } else if (autonomousEpisodeStep_ == 2) finishAutonomousEpisode(now);
+      return;
+    case AutonomousEpisode::DROWSY_REST:
+      if (autonomousEpisodeStep_ == 0) {
+        autonomousEpisodeStep_ = 1;
+        autonomousEpisodeBlinkRequested_ = true;
+      } else if (autonomousEpisodeStep_ == 2) {
+        autonomousEpisodeStep_ = 3;
+        setAutonomousExpression(AutonomousExpression::SLEEPY, 88);
+        beginAutonomousEpisodeGaze(now, 0, 4, 900);
+      } else if (autonomousEpisodeStep_ == 3) {
+        autonomousEpisodeStep_ = 4;
+        clearAutonomousExpression();
+        beginAutonomousEpisodeGaze(now, 0, 0, 700);
+      } else if (autonomousEpisodeStep_ == 4) finishAutonomousEpisode(now);
       return;
     case AutonomousEpisode::SOCIAL_ATTENTION:
       finishAutonomousEpisode(now);
@@ -605,7 +629,12 @@ void NewoDisplay::updateAutonomousEpisode(uint32_t now) {
       autonomousEpisodeBlinkRequested_ = false;
       autonomousEpisodeBlinkStarted_ = false;
       autonomousEpisodeStep_ = 2;
-      beginAutonomousEpisodeGaze(now, 0, 0, 1'100);
+      if (autonomousEpisode_ == AutonomousEpisode::DROWSY_REST) {
+        setAutonomousExpression(AutonomousExpression::SLEEPING, 100);
+        beginAutonomousEpisodeGaze(now, 0, 4, static_cast<uint16_t>(random(4'200, 6'501)));
+      } else {
+        beginAutonomousEpisodeGaze(now, 0, 0, 1'100);
+      }
     }
     return;
   }
@@ -872,8 +901,9 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
        faceStyle_ == NewoFaceStyle::SLEEPING);
   const bool autonomousEpisodeActive = autonomousEpisode_ != AutonomousEpisode::WAITING;
   if (blinkPhase_ == BlinkPhase::OPEN && !winkActive_) {
-    if (autonomousEpisode_ == AutonomousEpisode::LOW_ENERGY && autonomousEpisodeBlinkRequested_ &&
-        !autonomousEpisodeBlinkStarted_) {
+    if ((autonomousEpisode_ == AutonomousEpisode::LOW_ENERGY ||
+         autonomousEpisode_ == AutonomousEpisode::DROWSY_REST) &&
+        autonomousEpisodeBlinkRequested_ && !autonomousEpisodeBlinkStarted_) {
       startBilateralBlink(false, kForceLongBlink);
       autonomousEpisodeBlinkStarted_ = true;
     } else if (!autonomousEpisodeActive && winkStyle && static_cast<int32_t>(now - nextWinkMs_) >= 0) {
@@ -891,7 +921,9 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   }
   updateGaze(now);
 
-  const bool sleeping = activeMode == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::SLEEPING;
+  const bool sleeping = activeMode == NewoDisplayMode::IDLE &&
+      ((!autoFaceEnabled_ && faceStyle_ == NewoFaceStyle::SLEEPING) ||
+       (autoFaceEnabled_ && autonomousExpression_ == AutonomousExpression::SLEEPING));
   const float phase = static_cast<float>(now % (sleeping ? 6'000 : 3'000)) /
                       static_cast<float>(sleeping ? 6'000 : 3'000) * 6.2831853f;
   const int16_t floatY = static_cast<int16_t>(sinf(phase) * (sleeping ? 1.0f : speakerActive_ ? 2.0f : 1.0f));
