@@ -4,14 +4,15 @@ import { readFile } from "node:fs/promises";
 
 const source = async (path) => readFile(new URL(path, import.meta.url), "utf8");
 
-test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, and effects separated", async () => {
-  const [config, display, header, poseHeader, poseSource, poseResolver, cloud, ino, server] = await Promise.all([
+test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, blink, and effects separated", async () => {
+  const [config, display, header, poseHeader, poseSource, poseResolver, blinkSource, cloud, ino, server] = await Promise.all([
     source("../../Newo/newo_config.h"),
     source("../../Newo/newo_display.cpp"),
     source("../../Newo/newo_display.h"),
     source("../../Newo/newo_eye_pose.h"),
     source("../../Newo/newo_eye_pose.cpp"),
     source("../../Newo/newo_display_pose.cpp"),
+    source("../../Newo/newo_display_blink.cpp"),
     source("../../Newo/newo_cloud.cpp"),
     source("../../Newo/Newo.ino"),
     source("../src/index.js"),
@@ -38,6 +39,13 @@ test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, and 
   assert.match(poseSource, /blend\(const NewoEyePose& neutral/);
   assert.doesNotMatch(poseSource, /malloc|new\s|std::vector|std::map/);
 
+  // Discrete curved/filled shape handoff is direction-aware: closing switches
+  // late and waking switches early, avoiding a visible midpoint shape pop.
+  assert.match(poseSource, /interpolateClosureStyle/);
+  assert.match(poseSource, /to == NewoEyeClosureStyle::CURVED[\s\S]*permille < 850/);
+  assert.match(poseSource, /return permille < 150 \? from : to/);
+  assert.match(poseSource, /current_\.closureStyle = interpolateClosureStyle/);
+
   // Episodes emit semantic expression intent. Only the pose resolver converts
   // that intent to geometry; it must not switch on behavior episodes.
   assert.match(header, /enum class AutonomousExpression[\s\S]*CURIOUS[\s\S]*HAPPY[\s\S]*TIRED[\s\S]*SLEEPY[\s\S]*SURPRISED[\s\S]*CONFUSED[\s\S]*SLEEPING/);
@@ -55,7 +63,6 @@ test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, and 
   assert.match(header, /struct EyeMotionOverlay/);
   assert.match(header, /EyeMotionOverlay resolveEyeMotionOverlay/);
   assert.match(poseResolver, /NewoDisplay::EyeMotionOverlay NewoDisplay::resolveEyeMotionOverlay/);
-  assert.match(display, /const EyeMotionOverlay motion = resolveEyeMotionOverlay\(now, activeMode\)/);
   assert.match(renderer[1], /motion\.xOffset/);
   assert.match(renderer[1], /motion\.yOffset/);
   assert.match(renderer[1], /motion\.leftWidthDelta/);
@@ -65,12 +72,22 @@ test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, and 
   assert.doesNotMatch(renderer[1], /NewoDisplayMode::THINKING|NewoDisplayMode::ERROR/);
   assert.doesNotMatch(renderer[1], /sinf\(/);
 
-  // Renderer consumes resolved pose + gaze + blink + motion + effects.
+  // Renderer consumes resolved pose + gaze + blink + motion + effects. Phase B
+  // scheduling lives in the blink service; the renderer only services and uses
+  // the already-resolved blink state.
   assert.match(header, /NewoEyePoseEngine eyePoseEngine_/);
+  assert.match(renderer[1], /updateBlinkBeforeFrame\(now, activeMode\)/);
+  assert.match(renderer[1], /advanceBlinkAfterFrame\(now\)/);
   assert.match(renderer[1], /resolveEyePose\(now, activeMode\)/);
   assert.match(renderer[1], /combinedOpen = static_cast<uint16_t>\(pose\.openness\) \* blinkOpen/);
   assert.match(renderer[1], /applyResolvedPoseCuts/);
   assert.match(renderer[1], /drawSecondaryEffect/);
+  assert.doesNotMatch(renderer[1], /startBilateralBlink|blinkSchedulerState_|nextBlinkMs_|nextWinkMs_/);
+  assert.match(blinkSource, /void NewoDisplay::updateBlinkBeforeFrame/);
+  assert.match(blinkSource, /void NewoDisplay::advanceBlinkAfterFrame/);
+  assert.match(blinkSource, /AutonomousEpisode::DROWSY_REST/);
+  assert.match(blinkSource, /startBilateralBlink\(false, kForceLongBlink\)/);
+  assert.match(blinkSource, /BlinkSchedulerState::DOUBLE_SECOND/);
   assert.doesNotMatch(display, /applyEyeExpression\(/);
 
   // Continuous default gaze remains wide but bounded; vertical travel is the requested small increase.
