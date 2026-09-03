@@ -56,16 +56,18 @@ test("Autonomy V2 keeps state, behavior, presentation, pose, motion, blink, and 
   // Presentation semantics are portable data and a pure deterministic policy.
   assert.match(header, /#include "newo_presentation\.h"/);
   assert.match(presentationHeader, /enum class NewoSecondaryEffect[\s\S]*NONE[\s\S]*ZZZ[\s\S]*QUESTION[\s\S]*EXCLAMATION[\s\S]*SURPRISE_MARK[\s\S]*ELLIPSIS[\s\S]*SWEAT/);
-  assert.match(presentationHeader, /enum class NewoFaceCaption[\s\S]*NONE[\s\S]*HUH[\s\S]*WOAH[\s\S]*HMM[\s\S]*HEY/);
-  assert.match(presentationHeader, /enum class NewoPresentationCue[\s\S]*CURIOUS[\s\S]*SOCIAL[\s\S]*ALERT_SURPRISE[\s\S]*ALERT_CONFUSED[\s\S]*LOW_ENERGY[\s\S]*SLEEPING/);
+  assert.match(presentationHeader, /enum class NewoFaceCaption[\s\S]*NONE[\s\S]*HUH[\s\S]*WOAH[\s\S]*HMM[\s\S]*HEY[\s\S]*WTF[\s\S]*TSK/);
+  assert.match(presentationHeader, /enum class NewoPresentationCue[\s\S]*CURIOUS[\s\S]*SOCIAL[\s\S]*ALERT_SURPRISE[\s\S]*ALERT_CONFUSED[\s\S]*LOW_ENERGY[\s\S]*SLEEPING[\s\S]*UNIMPRESSED/);
   assert.match(presentationHeader, /struct NewoPresentationIntent[\s\S]*NewoSecondaryEffect effect[\s\S]*NewoFaceCaption caption[\s\S]*effectDurationMs[\s\S]*captionDurationMs/);
   assert.match(presentationSource, /NewoPresentationIntent newoComposePresentation/);
   assert.match(presentationSource, /case NewoPresentationCue::CURIOUS/);
   assert.match(presentationSource, /NewoSecondaryEffect::QUESTION/);
   assert.match(presentationSource, /NewoFaceCaption::HUH/);
   assert.match(presentationSource, /NewoPresentationCue::ALERT_SURPRISE[\s\S]*NewoSecondaryEffect::SURPRISE_MARK/);
+  assert.match(presentationSource, /strength >= 95 && roll < 6[\s\S]*NewoFaceCaption::WTF/);
   assert.match(presentationSource, /NewoPresentationCue::ALERT_CONFUSED[\s\S]*NewoFaceCaption::HMM/);
   assert.match(presentationSource, /NewoPresentationCue::SLEEPING[\s\S]*NewoSecondaryEffect::ZZZ/);
+  assert.match(presentationSource, /NewoPresentationCue::UNIMPRESSED[\s\S]*NewoFaceCaption::TSK/);
   assert.doesNotMatch(presentationSource, /Arduino|millis\(|random\(|Adafruit|draw|GFXcanvas/);
   assert.doesNotMatch(presentationSource, /malloc|new\s|std::vector|std::map/);
 
@@ -139,13 +141,15 @@ test("Autonomy V2 keeps state, behavior, presentation, pose, motion, blink, and 
   assert.match(poseResolver, /pose\.rightWidth = 68/);
   assert.match(poseResolver, /pose\.rightHeight = 50/);
 
-  // CLOSED/DETACHED/SLEEPING semantics remain explicit.
-  assert.match(header, /DETACHED, SLEEPING, SKEPTICAL/);
+  // CLOSED/DETACHED/SLEEPING/UNIMPRESSED semantics remain explicit.
+  assert.match(header, /DETACHED, SLEEPING, UNIMPRESSED, SKEPTICAL/);
   assert.match(header, /DROWSY_REST/);
   assert.match(poseResolver, /case NewoFaceStyle::CLOSED:[\s\S]*NewoEyeClosureStyle::CURVED/);
   assert.match(poseResolver, /case NewoFaceStyle::DETACHED:[\s\S]*leftHeight = pose\.rightHeight = 4/);
   assert.match(poseResolver, /faceStyle_ == NewoFaceStyle::DETACHED[\s\S]*overlay\.xOffset -= gazeX_[\s\S]*overlay\.yOffset -= gazeY_/);
   assert.match(poseResolver, /case NewoFaceStyle::SLEEPING:[\s\S]*NewoEyeClosureStyle::CURVED/);
+  assert.match(poseResolver, /case NewoFaceStyle::UNIMPRESSED:[\s\S]*leftHeight = 25[\s\S]*rightHeight = 22[\s\S]*openness = 86/);
+  assert.match(poseResolver, /faceStyle_ == NewoFaceStyle::UNIMPRESSED[\s\S]*overlay\.xOffset -= gazeX_ \/ 2[\s\S]*overlay\.yOffset -= gazeY_/);
 
   const skeptical = poseResolver.match(/case NewoFaceStyle::SKEPTICAL: \{([\s\S]*?)\n      break;\n    \}/);
   assert.ok(skeptical, "skeptical pose should be a directional pose block");
@@ -201,13 +205,17 @@ test("Autonomy V2 keeps state, behavior, presentation, pose, motion, blink, and 
   assert.doesNotMatch(header, /GFXcanvas1\s+caption/i);
   assert.match(poseResolver, /#include <Fonts\/FreeSans9pt7b\.h>/);
   assert.match(poseResolver, /bool NewoDisplay::setFaceCaption\(NewoFaceCaption caption, uint32_t durationMs\)/);
+  assert.match(poseResolver, /caption > NewoFaceCaption::TSK/);
   assert.match(poseResolver, /durationMs < 500 \|\| durationMs > 8'000/);
   const captionResolver = poseResolver.match(/NewoFaceCaption NewoDisplay::faceCaptionFor\(uint32_t now, NewoDisplayMode mode\) const \{([\s\S]*?)\n\}/);
   assert.ok(captionResolver, "caption resolver should be discoverable");
   assert.match(captionResolver[1], /mode != NewoDisplayMode::IDLE/);
   assert.match(captionResolver[1], /faceCaptionOverride_/);
   assert.doesNotMatch(captionResolver[1], /autonomousExpression_|faceStyle_|autonomousEpisode_/);
-  for (const [caption, text] of [["HUH", "Huh\\?"], ["WOAH", "Woah!"], ["HMM", "Hmm\\.\\.\\."], ["HEY", "Hey!"]]) {
+  for (const [caption, text] of [
+    ["HUH", "Huh\\?"], ["WOAH", "Woah!!"], ["HMM", "Hmm\\.\\.\\."],
+    ["HEY", "Hey!"], ["WTF", "WTF!!"], ["TSK", "Tsk!"],
+  ]) {
     assert.match(poseResolver, new RegExp(`NewoFaceCaption::${caption}.*return "${text}"`));
   }
   assert.match(poseResolver, /kCaptionY = 128/);
@@ -217,12 +225,15 @@ test("Autonomy V2 keeps state, behavior, presentation, pose, motion, blink, and 
 
   // Manual caption transport stays silent and separate.
   assert.match(cloud, /strcmp\(mode, "caption"\) == 0/);
-  for (const [name, caption] of [["huh", "HUH"], ["woah", "WOAH"], ["hmm", "HMM"], ["hey", "HEY"]]) {
+  for (const [name, caption] of [
+    ["huh", "HUH"], ["woah", "WOAH"], ["hmm", "HMM"], ["hey", "HEY"],
+    ["wtf", "WTF"], ["tsk", "TSK"],
+  ]) {
     assert.match(cloud, new RegExp(`strcmp\\(text, "${name}"\\).*NewoFaceCaption::${caption}`));
   }
   assert.match(cloud, /display_\.setFaceCaption\(/);
   assert.match(cloud, /durationMs < 500 \|\| durationMs > 8'000/);
-  assert.match(server, /const FACE_CAPTIONS = \["none", "huh", "woah", "hmm", "hey"\]/);
+  assert.match(server, /const FACE_CAPTIONS = \["none", "huh", "woah", "hmm", "hey", "wtf", "tsk"\]/);
   assert.match(server, /\{ command: "caption", description: "Test a face caption" \}/);
   assert.match(server, /sendDeviceRequest\("display_set", "display_ack", \{ mode: "caption", text: input, duration_ms: durationMs \}/);
   assert.match(server, /bot\.command\(\["caption", "cap"\], handleCaptionCommand\)/);
@@ -234,7 +245,9 @@ test("Autonomy V2 keeps state, behavior, presentation, pose, motion, blink, and 
   assert.match(display, /AutonomousEpisode::DROWSY_REST[\s\S]*AutonomousExpression::SLEEPING, 100/);
   assert.match(cloud, /strcmp\(mode, "detached"\)/);
   assert.match(cloud, /strcmp\(mode, "sleeping"\)/);
+  assert.match(cloud, /strcmp\(mode, "unimpressed"\)/);
   assert.match(cloud, /strcmp\(mode, "skeptical"\)/);
+  assert.match(server, /"face_unimpressed", description: "Unimpressed face"/);
 
   assert.match(display, /scheduleNextBilateralBlink/);
   assert.match(display, /startBilateralBlink/);

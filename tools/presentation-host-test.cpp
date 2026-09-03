@@ -39,6 +39,14 @@ void testAlertComposition() {
   require(intent.effect == NewoSecondaryEffect::SURPRISE_MARK && intent.caption == NewoFaceCaption::WOAH,
           "strong surprise should be able to combine mark + Woah");
 
+  intent = newoComposePresentation(NewoPresentationCue::ALERT_SURPRISE, 98, 2);
+  require(intent.effect == NewoSecondaryEffect::SURPRISE_MARK && intent.caption == NewoFaceCaption::WTF,
+          "extreme surprise should have a rare WTF variation");
+
+  intent = newoComposePresentation(NewoPresentationCue::ALERT_SURPRISE, 90, 2);
+  require(intent.caption == NewoFaceCaption::WOAH,
+          "WTF variation must stay gated behind extreme surprise intensity");
+
   intent = newoComposePresentation(NewoPresentationCue::ALERT_CONFUSED, 80, 12);
   require(intent.effect == NewoSecondaryEffect::QUESTION && intent.caption == NewoFaceCaption::HMM,
           "confusion should be able to combine question + Hmm");
@@ -48,7 +56,7 @@ void testAlertComposition() {
           "confusion should have a quieter ellipsis variation");
 }
 
-void testSocialFatigueAndSleep() {
+void testSocialFatigueSleepAndUnimpressed() {
   auto intent = newoComposePresentation(NewoPresentationCue::SOCIAL, 75, 8);
   require(intent.effect == NewoSecondaryEffect::NONE && intent.caption == NewoFaceCaption::HEY,
           "social attention should occasionally use Hey without a symbol");
@@ -64,6 +72,14 @@ void testSocialFatigueAndSleep() {
   intent = newoComposePresentation(NewoPresentationCue::SLEEPING, 100, 99);
   require(intent.effect == NewoSecondaryEffect::ZZZ && intent.caption == NewoFaceCaption::NONE,
           "sleep presentation should consistently request ZZZ without speech-like text");
+
+  intent = newoComposePresentation(NewoPresentationCue::UNIMPRESSED, 80, 10);
+  require(intent.effect == NewoSecondaryEffect::NONE && intent.caption == NewoFaceCaption::TSK,
+          "unimpressed behavior should be able to request Tsk without forcing another effect");
+
+  intent = newoComposePresentation(NewoPresentationCue::UNIMPRESSED, 80, 70);
+  require(intent.caption == NewoFaceCaption::NONE,
+          "unimpressed presentation should remain optional rather than always saying Tsk");
 }
 
 void testBoundsAndDeterminism() {
@@ -74,7 +90,7 @@ void testBoundsAndDeterminism() {
               first.captionDurationMs == second.captionDurationMs,
           "intensity and variation inputs should normalize deterministically");
 
-  for (uint8_t cue = 0; cue <= static_cast<uint8_t>(NewoPresentationCue::SLEEPING); ++cue) {
+  for (uint8_t cue = 0; cue <= static_cast<uint8_t>(NewoPresentationCue::UNIMPRESSED); ++cue) {
     for (uint16_t variation = 0; variation < 100; ++variation) {
       const auto intent = newoComposePresentation(static_cast<NewoPresentationCue>(cue), 100,
                                                   static_cast<uint8_t>(variation));
@@ -88,7 +104,7 @@ void testBoundsAndDeterminism() {
 int main() {
   testCuriousComposition();
   testAlertComposition();
-  testSocialFatigueAndSleep();
+  testSocialFatigueSleepAndUnimpressed();
   testBoundsAndDeterminism();
   std::cout << "presentation-host-test: PASS\n";
   return 0;

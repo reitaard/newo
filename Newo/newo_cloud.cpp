@@ -333,6 +333,8 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
       else if (strcmp(text, "woah") == 0) caption = NewoFaceCaption::WOAH;
       else if (strcmp(text, "hmm") == 0) caption = NewoFaceCaption::HMM;
       else if (strcmp(text, "hey") == 0) caption = NewoFaceCaption::HEY;
+      else if (strcmp(text, "wtf") == 0) caption = NewoFaceCaption::WTF;
+      else if (strcmp(text, "tsk") == 0) caption = NewoFaceCaption::TSK;
       else captionSelection = false;
 
       const int32_t durationMs = doc["duration_ms"] | 4'000;
@@ -362,6 +364,7 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     else if (strcmp(mode, "closed") == 0) faceStyle = NewoFaceStyle::CLOSED;
     else if (strcmp(mode, "detached") == 0) faceStyle = NewoFaceStyle::DETACHED;
     else if (strcmp(mode, "sleeping") == 0) faceStyle = NewoFaceStyle::SLEEPING;
+    else if (strcmp(mode, "unimpressed") == 0) faceStyle = NewoFaceStyle::UNIMPRESSED;
     else if (strcmp(mode, "skeptical") == 0) faceStyle = NewoFaceStyle::SKEPTICAL;
     else if (strcmp(mode, "wink_left") == 0) faceStyle = NewoFaceStyle::WINK_LEFT;
     else if (strcmp(mode, "wink_right") == 0) faceStyle = NewoFaceStyle::WINK_RIGHT;

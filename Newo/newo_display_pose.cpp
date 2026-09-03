@@ -101,6 +101,20 @@ NewoEyePose NewoDisplay::resolveManualEyePose(NewoFaceStyle style) const {
       pose.openness = 0;
       pose.closureStyle = NewoEyeClosureStyle::CURVED;
       break;
+    case NewoFaceStyle::UNIMPRESSED:
+      // Both eyes stay half-lidded and only mildly asymmetric. The expression
+      // should read as flat/disengaged, not angry and not curiosity-style big/small.
+      pose.leftWidth = 62;
+      pose.rightWidth = 60;
+      pose.leftHeight = 25;
+      pose.rightHeight = 22;
+      pose.gap = 23;
+      pose.leftYOffset = 3;
+      pose.rightYOffset = 4;
+      pose.leftTopCut = 7;
+      pose.rightTopCut = 9;
+      pose.openness = 86;
+      break;
     case NewoFaceStyle::SKEPTICAL: {
       // Skepticism borrows curiosity's directional pose idea: the eye toward
       // attention is large and fully rounded, while the opposite eye is a
@@ -241,6 +255,12 @@ NewoDisplay::EyeMotionOverlay NewoDisplay::resolveEyeMotionOverlay(uint32_t now,
       overlay.xOffset -= gazeX_;
       overlay.yOffset -= gazeY_;
     }
+    if (faceStyle_ == NewoFaceStyle::UNIMPRESSED) {
+      // Keep only half of horizontal wander and suppress vertical wandering so
+      // the expression behaves like a slow side-eye instead of an active scan.
+      overlay.xOffset -= gazeX_ / 2;
+      overlay.yOffset -= gazeY_;
+    }
 
     const uint32_t styleBurstMs = (now - modeStartedMs_) % 2'200;
     if (faceStyle_ == NewoFaceStyle::CONFUSED && styleBurstMs < 500) {
@@ -337,7 +357,7 @@ NewoSecondaryEffect NewoDisplay::secondaryEffectFor(uint32_t now, NewoDisplayMod
 }
 
 bool NewoDisplay::setFaceCaption(NewoFaceCaption caption, uint32_t durationMs) {
-  if (caption > NewoFaceCaption::HEY) return false;
+  if (caption > NewoFaceCaption::TSK) return false;
   if (caption == NewoFaceCaption::NONE) {
     faceCaptionOverride_ = NewoFaceCaption::NONE;
     faceCaptionStartedMs_ = 0;
@@ -377,9 +397,11 @@ NewoFaceCaption NewoDisplay::faceCaptionFor(uint32_t now, NewoDisplayMode mode) 
 const char* NewoDisplay::faceCaptionText(NewoFaceCaption caption) {
   switch (caption) {
     case NewoFaceCaption::HUH: return "Huh?";
-    case NewoFaceCaption::WOAH: return "Woah!";
+    case NewoFaceCaption::WOAH: return "Woah!!";
     case NewoFaceCaption::HMM: return "Hmm...";
     case NewoFaceCaption::HEY: return "Hey!";
+    case NewoFaceCaption::WTF: return "WTF!!";
+    case NewoFaceCaption::TSK: return "Tsk!";
     case NewoFaceCaption::NONE: return "";
   }
   return "";

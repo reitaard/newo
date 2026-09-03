@@ -44,7 +44,10 @@ NewoPresentationIntent newoComposePresentation(NewoPresentationCue cue, uint8_t 
       intent.effect = strength >= 80 ? NewoSecondaryEffect::SURPRISE_MARK
                                      : NewoSecondaryEffect::EXCLAMATION;
       intent.effectDurationMs = 1'900;
-      if (roll < 28) {
+      if (strength >= 95 && roll < 6) {
+        intent.caption = NewoFaceCaption::WTF;
+        intent.captionDurationMs = 1'600;
+      } else if (roll < 28) {
         intent.caption = NewoFaceCaption::WOAH;
         intent.captionDurationMs = 1'700;
       }
@@ -74,6 +77,13 @@ NewoPresentationIntent newoComposePresentation(NewoPresentationCue cue, uint8_t 
     case NewoPresentationCue::SLEEPING:
       intent.effect = NewoSecondaryEffect::ZZZ;
       intent.effectDurationMs = 7'000;
+      return intent;
+
+    case NewoPresentationCue::UNIMPRESSED:
+      if (strength >= 60 && roll < 35) {
+        intent.caption = NewoFaceCaption::TSK;
+        intent.captionDurationMs = 1'500;
+      }
       return intent;
 
     case NewoPresentationCue::NONE:

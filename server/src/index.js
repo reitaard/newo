@@ -111,9 +111,9 @@ const pendingRequests = new Map();
 const DEVICE_REQUEST_TIMEOUT_MS = 5_000;
 const OFFLINE_GRACE_MS = 12_000;
 const REBOOT_RETURN_TIMEOUT_MS = 60_000;
-const FACE_STYLES = ["default", "happy", "angry", "tired", "curious", "confused", "laugh", "sweat", "cyclops", "closed", "detached", "sleeping", "skeptical", "wink_left", "wink_right", "look_left", "look_right", "look_up", "look_down", "look_up_left", "look_up_right", "look_down_left", "look_down_right", "surprised", "sleepy"];
+const FACE_STYLES = ["default", "happy", "angry", "tired", "curious", "confused", "laugh", "sweat", "cyclops", "closed", "detached", "sleeping", "unimpressed", "skeptical", "wink_left", "wink_right", "look_left", "look_right", "look_up", "look_down", "look_up_left", "look_up_right", "look_down_left", "look_down_right", "surprised", "sleepy"];
 const SECONDARY_EFFECTS = ["none", "question", "exclamation", "surprise", "ellipsis", "sweat", "zzz"];
-const FACE_CAPTIONS = ["none", "huh", "woah", "hmm", "hey"];
+const FACE_CAPTIONS = ["none", "huh", "woah", "hmm", "hey", "wtf", "tsk"];
 let bot = null;
 let pendingReboot = null;
 let shuttingDown = false;
@@ -356,6 +356,7 @@ const TELEGRAM_COMMANDS = [
   { command: "face_closed", description: "Closed eyelids" },
   { command: "face_detached", description: "Detached slit eyes" },
   { command: "face_sleeping", description: "Sleeping face with ZZZ" },
+  { command: "face_unimpressed", description: "Unimpressed face" },
   { command: "face_skeptical", description: "Skeptical face" },
   { command: "eco", description: "Toggle eco display" },
   { command: "clock", description: "Toggle clock" },

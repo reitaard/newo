@@ -20,6 +20,8 @@ const char* captionName(NewoFaceCaption caption) {
     case NewoFaceCaption::WOAH: return "WOAH";
     case NewoFaceCaption::HMM: return "HMM";
     case NewoFaceCaption::HEY: return "HEY";
+    case NewoFaceCaption::WTF: return "WTF";
+    case NewoFaceCaption::TSK: return "TSK";
     case NewoFaceCaption::NONE: return "NONE";
   }
   return "UNKNOWN";

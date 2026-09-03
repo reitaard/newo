@@ -18,6 +18,8 @@ enum class NewoFaceCaption : uint8_t {
   WOAH,
   HMM,
   HEY,
+  WTF,
+  TSK,
 };
 
 // Semantic request from behavior to the presentation layer. These cues are not
@@ -30,6 +32,7 @@ enum class NewoPresentationCue : uint8_t {
   ALERT_CONFUSED,
   LOW_ENERGY,
   SLEEPING,
+  UNIMPRESSED,
 };
 
 struct NewoPresentationIntent {
