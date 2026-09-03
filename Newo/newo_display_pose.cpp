@@ -1,13 +1,6 @@
 #include "newo_display.h"
 
 namespace {
-constexpr uint32_t kPoseDrowsyInactivityMs = 300'000;
-
-uint8_t clampPercent(int value) {
-  if (value < 0) return 0;
-  return value > 100 ? 100 : static_cast<uint8_t>(value);
-}
-
 int16_t clampCut(int16_t value, int16_t height) {
   const int16_t magnitude = value < 0 ? -value : value;
   const int16_t maximum = height / 2;
@@ -38,8 +31,8 @@ NewoEyePose NewoDisplay::resolveManualEyePose(NewoFaceStyle style) const {
       pose.leftTopCut = pose.rightTopCut = 8;
       break;
     case NewoFaceStyle::CURIOUS: {
-      // Curiosity is intentionally asymmetric. The eye toward the gaze grows
-      // while the opposite eye contracts, making direction readable at a glance.
+      // Curiosity is directional: the eye toward attention grows while the
+      // opposite eye contracts. Pose and gaze remain separate inputs.
       const int16_t direction = gazeTargetX_ < -7 ? -1 : gazeTargetX_ > 7 ? 1 :
                                 (gazeX_ < 0 ? -1 : 1);
       pose.gap = 20;
@@ -132,36 +125,20 @@ NewoEyePose NewoDisplay::resolveManualEyePose(NewoFaceStyle style) const {
   return pose;
 }
 
-NewoEyePose NewoDisplay::resolveAutonomousEyePose(uint32_t now) const {
+NewoEyePose NewoDisplay::resolveAutonomousEyePose(uint32_t) const {
   const NewoEyePose neutral;
-  switch (autonomousEpisode_) {
-    case AutonomousEpisode::CURIOUS_SCAN: {
-      NewoEyePose target = resolveManualEyePose(NewoFaceStyle::CURIOUS);
-      const int curiosityDelta = curiosity_ > 42 ? static_cast<int>(curiosity_ - 42) : 0;
-      return NewoEyePoseEngine::blend(neutral, target, clampPercent(72 + curiosityDelta * 3));
-    }
-    case AutonomousEpisode::SOCIAL_ATTENTION: {
-      const NewoEyePose target = resolveManualEyePose(NewoFaceStyle::HAPPY);
-      return NewoEyePoseEngine::blend(neutral, target, clampPercent(55 + static_cast<int>(social_) / 2));
-    }
-    case AutonomousEpisode::LOW_ENERGY: {
-      const bool drowsy = now - lastInteractionMs_ >= kPoseDrowsyInactivityMs;
-      const NewoEyePose target = resolveManualEyePose(drowsy ? NewoFaceStyle::SLEEPY : NewoFaceStyle::TIRED);
-      const int lowEnergy = energy_ < 70 ? static_cast<int>(70 - energy_) : 0;
-      const uint8_t intensity = drowsy ? clampPercent(88 + lowEnergy / 2)
-                                       : clampPercent(65 + lowEnergy);
-      return NewoEyePoseEngine::blend(neutral, target, intensity);
-    }
-    case AutonomousEpisode::ALERT_CHECK: {
-      const NewoEyePose target = resolveManualEyePose(autonomousEpisodeDirection_ > 0
-          ? NewoFaceStyle::SURPRISED : NewoFaceStyle::CONFUSED);
-      return NewoEyePoseEngine::blend(neutral, target,
-                                     clampPercent(70 + static_cast<int>(stress_) * 2));
-    }
-    case AutonomousEpisode::WAITING:
-      return neutral;
+  NewoEyePose target;
+  switch (autonomousExpression_) {
+    case AutonomousExpression::CURIOUS: target = resolveManualEyePose(NewoFaceStyle::CURIOUS); break;
+    case AutonomousExpression::HAPPY: target = resolveManualEyePose(NewoFaceStyle::HAPPY); break;
+    case AutonomousExpression::TIRED: target = resolveManualEyePose(NewoFaceStyle::TIRED); break;
+    case AutonomousExpression::SLEEPY: target = resolveManualEyePose(NewoFaceStyle::SLEEPY); break;
+    case AutonomousExpression::SURPRISED: target = resolveManualEyePose(NewoFaceStyle::SURPRISED); break;
+    case AutonomousExpression::CONFUSED: target = resolveManualEyePose(NewoFaceStyle::CONFUSED); break;
+    case AutonomousExpression::SLEEPING: target = resolveManualEyePose(NewoFaceStyle::SLEEPING); break;
+    case AutonomousExpression::NONE: return neutral;
   }
-  return neutral;
+  return NewoEyePoseEngine::blend(neutral, target, autonomousExpressionIntensity_);
 }
 
 NewoEyePose NewoDisplay::resolveEyePose(uint32_t now, NewoDisplayMode mode) const {
@@ -213,12 +190,15 @@ uint16_t NewoDisplay::eyePoseTransitionMs(NewoDisplayMode mode) const {
     return 280;
   }
 
-  switch (autonomousEpisode_) {
-    case AutonomousEpisode::ALERT_CHECK: return 160;
-    case AutonomousEpisode::CURIOUS_SCAN: return 190;
-    case AutonomousEpisode::SOCIAL_ATTENTION: return 260;
-    case AutonomousEpisode::LOW_ENERGY: return 420;
-    case AutonomousEpisode::WAITING: return 280;
+  switch (autonomousExpression_) {
+    case AutonomousExpression::SURPRISED:
+    case AutonomousExpression::CONFUSED: return 160;
+    case AutonomousExpression::CURIOUS: return 190;
+    case AutonomousExpression::HAPPY: return 260;
+    case AutonomousExpression::TIRED:
+    case AutonomousExpression::SLEEPY: return 420;
+    case AutonomousExpression::SLEEPING: return 520;
+    case AutonomousExpression::NONE: return 280;
   }
   return 280;
 }
@@ -228,14 +208,18 @@ NewoEyeEasing NewoDisplay::eyePoseEasing(NewoDisplayMode mode) const {
     return NewoEyeEasing::EASE_OUT;
   }
   if (mode == NewoDisplayMode::IDLE && autoFaceEnabled_ &&
-      autonomousEpisode_ == AutonomousEpisode::ALERT_CHECK) {
+      (autonomousExpression_ == AutonomousExpression::SURPRISED ||
+       autonomousExpression_ == AutonomousExpression::CONFUSED)) {
     return NewoEyeEasing::EASE_OUT;
   }
   return NewoEyeEasing::EASE_IN_OUT;
 }
 
 NewoDisplay::SecondaryEffect NewoDisplay::secondaryEffectFor(uint32_t, NewoDisplayMode mode) const {
-  if (mode != NewoDisplayMode::IDLE || autoFaceEnabled_) return SecondaryEffect::NONE;
+  if (mode != NewoDisplayMode::IDLE) return SecondaryEffect::NONE;
+  if (autoFaceEnabled_) {
+    return autonomousExpression_ == AutonomousExpression::SLEEPING ? SecondaryEffect::ZZZ : SecondaryEffect::NONE;
+  }
   if (faceStyle_ == NewoFaceStyle::SLEEPING) return SecondaryEffect::ZZZ;
   if (faceStyle_ == NewoFaceStyle::SWEAT) return SecondaryEffect::SWEAT;
   return SecondaryEffect::NONE;
