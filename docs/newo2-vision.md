@@ -58,7 +58,9 @@ The firmware boots at threshold `0.30`. The physical session also exercised `0.4
 
 ## Stability result
 
-The clean v6 boot showed:
+The v6 baseline completed a continuous physical soak lasting at least **2,796,132 ms (~46.6 minutes)** without a reboot. During that period the same boot instance moved repeatedly between FAST and ACCURATE and re-established browser/Wi-Fi sessions without restarting.
+
+The clean v6 run showed:
 
 - 16 MB QIO flash detected correctly;
 - 8 MB octal PSRAM detected and memory-tested successfully;
@@ -66,11 +68,12 @@ The clean v6 boot showed:
 - OV3660 initialized correctly;
 - Wi-Fi AP and browser stream started;
 - FAST and ACCURATE both ran;
-- no task-watchdog reset;
+- no task-watchdog event or reset;
 - no `FB-OVF` framebuffer overflow;
-- no panic, reboot loop, or heap-allocation failure in the supplied log.
+- no panic, Guru Meditation, abort, brownout, reboot loop, or heap-allocation failure in the supplied log;
+- no logged `JPEG decode failed` or `camera capture failed` event during the supplied soak.
 
-Three lower-level camera/JPEG framing warnings were observed during the session:
+Three lower-level camera/JPEG framing warnings occurred early in the same boot, shortly after ACCURATE was first entered:
 
 ```text
 cam_hal: NO-EOI - JPEG end marker missing
@@ -78,7 +81,11 @@ cam_hal: NO-SOI - JPEG start marker missing
 cam_hal: NO-SOI - JPEG start marker missing
 ```
 
-v6 validates SOI/EOI before publishing a frame, so malformed frames do not enter the AI/shared-frame path. The camera driver recovered and the system continued operating. These warnings are therefore a **known residual stability item**, not a solved issue. A production soak test must record their rate and verify that they never grow into capture stalls, resets, or repeated decode failures.
+No additional SOI/EOI warning appears later in the supplied log through ~46.6 minutes uptime. v6 validates SOI/EOI before publishing a frame, so malformed frames do not enter the AI/shared-frame path. The camera driver recovered and continued operating. The warning mechanism remains a production-hardening item, but the **v6 acceptance soak is considered PASS** for continuing integration.
+
+HTTP socket error `104` entries coincide with browser MJPEG clients disconnecting/reconnecting and are not treated as camera or inference failures. A pair of Wi-Fi `CCMP replay detected` messages occurred immediately after a station reconnect; the AP remained online and the client resumed normally, so these are recorded as a network observation rather than a vision-pipeline failure.
+
+The earlier measured memory point under ACCURATE was approximately 3.01 MB free PSRAM, 2.81 MB largest PSRAM block, and 65 KB free internal RAM. Long-term production testing should still expose minimum/low-water memory telemetry so leaks can be detected without relying on screenshots.
 
 ## Detector decision
 
@@ -212,7 +219,7 @@ Do not let snapshot/log retention grow without a quota or rotation policy.
 
 The next work should be done in this order:
 
-1. **Detector acceptance test** — 10-15 minute ACCURATE soak with stream open; count SOI/EOI warnings, decode failures, resets, pool drops, and memory floor.
+1. **Detector acceptance soak — PASS** — ~46.6 minutes continuous v6 runtime with no watchdog, `FB-OVF`, panic, reboot, logged decode failure, or camera-capture failure. Three early SOI/EOI warnings recovered and did not recur in the supplied log.
 2. **Precision test** — empty room plus known non-face objects at thresholds 0.30 and 0.40; choose the lowest threshold that does not create recurring false positives.
 3. **Vision Turn v0 transport** — Newo2 Wi-Fi STA + authenticated outbound VPS connection + correlated one-shot JPEG capture/upload.
 4. **Assistant vision proof** — transcript + requested snapshot into a multimodal model, then reuse the existing Newo TTS/speaker path.
@@ -231,6 +238,7 @@ microSD pin map                  LOCKED / physically validated
 RANGE tiled detector             REJECTED
 Native JPEG VGA capture          ACCEPTED baseline
 ACCURATE / ESPDet-224            ACCEPTED primary detector candidate
+v6 detector stability soak       PASS (~46.6 min supplied log)
 Final detector threshold         PENDING precision test
 Vision Turn v0                   NEXT integration milestone
 Face recognition                 NEXT local-AI milestone after vision-turn proof
