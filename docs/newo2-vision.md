@@ -1,20 +1,20 @@
 # Newo2 camera / vision module
 
-This document is the working state for the GOOUUU ESP32-S3-CAM board that will become **Newo2**, the camera/vision sidecar for Newo.
+This document is the working state for the GOOUUU ESP32-S3-CAM board being evaluated as **Newo2**, the camera/vision sidecar for Newo.
 
-## Architecture decision — 2026-09-03
+## Architecture status — 2026-09-03
 
-The hardware role is now **locked**:
+The two-board split remains the intended architecture:
 
-- **Newo** remains the interaction/audio board: microphone, wake/voice lifecycle, display, speaker, user-facing state, and the existing authenticated assistant path.
-- **Newo2** becomes the camera/vision/storage board: OV3660 capture, local face detection, future local face recognition, onboard microSD persistence, snapshots, and vision events.
-- Newo2 is not a replacement for the existing Newo board and raw camera frames must not be relayed through Newo just to reach the VPS.
+- **Newo** owns microphone/voice, display, speaker/TTS, user-facing state, and the existing authenticated assistant path.
+- **Newo2** is the candidate camera/vision/storage board: OV3660 capture, local detection, local identity recognition if the hardware proves capable enough, onboard microSD, snapshots, and vision events.
+- Raw camera frames must not be relayed through the original Newo ESP merely to reach the VPS.
 
-The role is locked, but the production Newo2 firmware is not finished. The current `goouuu-vision-v6-stable` firmware is the validated vision baseline from which production integration will be built.
+The final personalized-Newo2 product role is **not locked yet**. Face recognition at realistic room distance is now the product gate. If Newo2 can reliably distinguish the enrolled user from another person, continue toward a personalized camera assistant. If it cannot, keep the validated camera platform but reconsider the product as a room/door/scene observer where identity is not a hard requirement.
 
-## Physically validated v6 baseline
+## Physically validated v6 camera baseline
 
-Physical test firmware:
+Stable baseline:
 
 ```text
 branch: goouuu-vision-v6-stable
@@ -26,11 +26,11 @@ frame buffers: 2 x 128 KiB in PSRAM
 camera PSRAM DMA: OFF
 ```
 
-The v6 build removed the failed RANGE/tiled mode. It exposes VIEW, FAST, ACCURATE, and BENCH. ACCURATE uses ESPDet-224 on a full VGA decode; FAST uses MSR+MNP on a 320x240 decode.
+v6 removed the failed RANGE/tiled mode. ACCURATE uses ESPDet-PICO-224 on a full VGA decode; FAST uses MSR+MNP on a 320x240 decode.
 
 ### ACCURATE physical result
 
-A real room test with a person at room range produced the following 100-sample window:
+A real room test produced the following 100-sample ACCURATE window:
 
 | Metric | Result |
 | --- | ---: |
@@ -50,30 +50,29 @@ A real room test with a person at room range produced the following 100-sample w
 | Free internal RAM | 65 KB |
 | Sensor PID | 0x3660 |
 
-This is a large recall improvement over the earlier RANGE experiment, which produced only 29.4% hit rate in the comparable room test despite doing four detector passes. RANGE also produced at least one non-face detection in a separate tile and is not part of the production direction.
+The earlier RANGE experiment produced only 29.4% hit rate in its comparable room test, required four detector passes, and also produced a non-face detection in another tile. RANGE is rejected.
 
-The captured ACCURATE screenshot contains two boxes. The screenshot alone is not enough to prove that both are true faces, so the 98% hit rate must be treated as **presence recall**, not multi-face precision. Empty-room and controlled false-positive tests are still required before fixing the final detector threshold.
+### Detector threshold decision
 
-The firmware boots at threshold `0.30`. The physical session also exercised `0.40` and `0.20`. No final production threshold has been selected yet.
+Physical testing compared 0.20, 0.30, and 0.40. The user validated **0.30 as the current detector sweet spot**: it can lose a moving face for a frame but reacquires quickly as the person moves through the room, while the troublesome recurring non-face detections were not observed in the chosen camera position. This is the baseline threshold for the recognition product-gate firmware.
 
-## Stability result
+This does not mean identity recognition is proven. A roughly 40 x 47 px detected face may still contain too little identity information for reliable local recognition. That is the specific question the next firmware tests.
 
-The v6 baseline completed a continuous physical soak lasting at least **2,796,132 ms (~46.6 minutes)** without a reboot. During that period the same boot instance moved repeatedly between FAST and ACCURATE and re-established browser/Wi-Fi sessions without restarting.
+## v6 stability result
 
-The clean v6 run showed:
+The v6 baseline completed a continuous physical soak lasting at least **2,796,132 ms (~46.6 minutes)** without a reboot. During the same boot it repeatedly switched between FAST and ACCURATE and re-established browser/Wi-Fi sessions.
 
-- 16 MB QIO flash detected correctly;
-- 8 MB octal PSRAM detected and memory-tested successfully;
+Observed PASS conditions:
+
+- 16 MB QIO flash and 8 MB octal PSRAM detected correctly;
 - both 128 KiB camera frame buffers allocated in PSRAM;
 - OV3660 initialized correctly;
-- Wi-Fi AP and browser stream started;
-- FAST and ACCURATE both ran;
-- no task-watchdog event or reset;
-- no `FB-OVF` framebuffer overflow;
-- no panic, Guru Meditation, abort, brownout, reboot loop, or heap-allocation failure in the supplied log;
-- no logged `JPEG decode failed` or `camera capture failed` event during the supplied soak.
+- no task-watchdog event/reset;
+- no `FB-OVF`;
+- no panic, Guru Meditation, abort, brownout, reboot loop, or allocation failure;
+- no logged `JPEG decode failed` or `camera capture failed` during the supplied soak.
 
-Three lower-level camera/JPEG framing warnings occurred early in the same boot, shortly after ACCURATE was first entered:
+Three camera framing warnings occurred early in the same boot:
 
 ```text
 cam_hal: NO-EOI - JPEG end marker missing
@@ -81,167 +80,162 @@ cam_hal: NO-SOI - JPEG start marker missing
 cam_hal: NO-SOI - JPEG start marker missing
 ```
 
-No additional SOI/EOI warning appears later in the supplied log through ~46.6 minutes uptime. v6 validates SOI/EOI before publishing a frame, so malformed frames do not enter the AI/shared-frame path. The camera driver recovered and continued operating. The warning mechanism remains a production-hardening item, but the **v6 acceptance soak is considered PASS** for continuing integration.
+No additional SOI/EOI warning appears later through ~46.6 minutes uptime. v6 validates SOI/EOI before publishing a frame and recovered normally. HTTP socket error 104 entries coincided with MJPEG browser disconnect/reconnect. Two Wi-Fi `CCMP replay detected` messages appeared immediately after a station reconnect and did not stop operation.
 
-HTTP socket error `104` entries coincide with browser MJPEG clients disconnecting/reconnecting and are not treated as camera or inference failures. A pair of Wi-Fi `CCMP replay detected` messages occurred immediately after a station reconnect; the AP remained online and the client resumed normally, so these are recorded as a network observation rather than a vision-pipeline failure.
+The v6 camera/detector acceptance soak is therefore **PASS** for proceeding to the recognition product gate.
 
-The earlier measured memory point under ACCURATE was approximately 3.01 MB free PSRAM, 2.81 MB largest PSRAM block, and 65 KB free internal RAM. Long-term production testing should still expose minimum/low-water memory telemetry so leaks can be detected without relying on screenshots.
+## Face-recognition product gate
 
-## Detector decision
-
-**ACCURATE / ESPDet-224 is the primary Newo2 detector candidate.** The measured ~297 ms camera-to-detection AI path is acceptable for presence, identity acquisition, and conversational vision triggers. It is not a 30 FPS tracker and should not be treated as one.
-
-Production should avoid running expensive work simply because a browser is open. The intended behavior is event-driven:
+Test branch:
 
 ```text
-camera capture
-  -> local detector
-  -> face/person event
-  -> recognition only when identity is needed
-  -> cache/track result for a short window
-  -> rerun recognition on new/reappearing/ambiguous face
+branch: goouuu-face-recognition-test
+firmware: recognition-v1
+base camera pipeline: v6 stable
+source: OV3660 VGA native JPEG
+primary detector: ESPDet-PICO-224
+fixed detector threshold: 0.30
+recognizer: MFN_S8_V1
+recognition threshold default: 0.50
+max enrollment samples: 5
+persistence: RAM only for this test
 ```
 
-FAST remains useful as an optional cheaper scout/benchmark path, but the production architecture does not depend on it being the primary detector.
-
-## Newo <-> Newo2 boundary
-
-The two ESPs should exchange **small state/control messages only**. Do not push raw VGA frames, PCM, or model buffers over the inter-board link.
-
-First production transport candidate: local UDP while both devices are on the same 2.4 GHz LAN. Important commands/events should carry a sequence/request ID and use ACK/retry. ESP-NOW remains a later option if a router-independent direct link becomes necessary.
-
-Example local events:
+The firmware keeps the proven v6 camera path intact and adds the smallest useful recognition experiment:
 
 ```text
-vision_online
-vision_offline
-person_present
-person_gone
-face_seen
-identity_known
-identity_unknown
-identity_changed
-camera_busy
-camera_error
-snapshot_ready
+OV3660 native VGA JPEG
+  -> sanitized shared JPEG frame
+  -> RGB565BE VGA decode
+  -> ESPDet-224 @ 0.30
+  -> choose largest detected face
+  -> require 5 facial landmarks / 10 landmark coordinates
+  -> MFN_S8_V1 aligned face feature
+  -> normalized embedding
+  -> dot-product similarity against enrolled samples
+  -> ME / UNKNOWN
 ```
 
-Example commands from Newo:
+This first benchmark deliberately recognizes only the largest face. Multi-person identity tracking is deferred until single-person recognition proves the optics/model are good enough.
+
+### Build result
+
+CI on ESP-IDF 5.5.5 passes with:
 
 ```text
-vision_status
-vision_enable
-vision_disable
-capture_snapshot
-recognize_now
+human_face_detect      0.5.0
+human_face_recognition 0.3.2
+esp-dl                 3.3.11
+esp32-camera           2.1.7
+esp_jpeg               1.3.1
+esp_new_jpeg           1.0.2
 ```
 
-The production protocol must be versioned and bounded. It should carry IDs, confidence, bounding-box metadata, timestamps/age, and status; not images.
+The published `human_face_recognition 0.3.2` registry metadata still declares an older detector range while its current upstream source targets the newer detector family. The test branch uses ESP-IDF Component Manager's explicit dependency override to retain the physically validated `human_face_detect 0.5.0` rather than downgrading ESPDet. This is deliberate and documented in `main/idf_component.yml`.
 
-## Conversational AI path
+CI model packages confirm that only the relevant product-gate models are included:
 
-Newo2 should make camera-based conversation possible without putting continuous cloud vision on the hot path.
+```text
+ESPDet-PICO-224 face detector
+MFN_S8_V1 face feature model
+```
 
-For a voice request such as "Neo, what am I holding?":
+The compiled application is about 4.60 MB and the merged flash image about 4.66 MB, leaving substantial room in the 8 MB application partition. Runtime PSRAM headroom still must be measured physically after MFN loads; compile/flash fit is not proof of runtime memory fitness.
+
+## Recognition benchmark procedure
+
+Enrollment is intentionally volatile for this test. It disappears after reset because SD persistence would add complexity without answering the product question.
+
+1. Put only the intended user in frame. Enroll 3-5 samples: front, slight left, slight right, and modest natural variation. Do not use only an unrealistically close face.
+2. Leave recognition threshold at **0.50** initially.
+3. Select **Test: ME** and measure at approximately 1 m, 2 m, 3 m, and the real room position. Test standing still, walking across the frame, slight head turns, leaving the frame, and returning.
+4. Record face pixel size, similarity max/average, recognition latency, face-frame count, recognition attempts, and correct-classification percentage.
+5. Put a different real person in frame alone, select **Test: OTHER**, and repeat. The critical failure is a false `ME` classification.
+6. Only adjust the recognition threshold after observing the similarity separation between the enrolled user and another person. A stable gap is more important than making one screenshot pass.
+
+The web UI counts detection misses separately through `face_frames` and `recognition_attempts`, while its end-to-end product score uses all test frames. That prevents a weak detector from looking like a strong recognizer simply because difficult frames were skipped.
+
+### Product decision rule
+
+```text
+Reliable ME at useful room distance + rejects OTHER
+  -> personalized Newo2 path survives product gate
+
+Reliable only near the camera
+  -> personalized Newo2 remains possible, but placement is constrained
+
+ESPDet detects room-range faces but MFN is frequently UNKNOWN/unstable
+  -> conversational camera vision remains viable, but room-wide local identity is not trusted
+
+Poor identity separation even at useful distance
+  -> do not build identity-centric production firmware; pivot Newo2 toward room/door/scene observation
+```
+
+## If recognition passes
+
+Do not run MFN on every production frame. The benchmark does this only to gather statistics. Production should become event-driven:
+
+```text
+ESPDet detects/reacquires face
+  -> recognize on acquisition or ambiguity
+  -> cache identity for the active track
+  -> tolerate short detector misses
+  -> rerun recognition after reappearance / identity uncertainty / bounded verification interval
+```
+
+Then add a versioned SD face database with 3-5 varied embeddings per person, load active embeddings into RAM/PSRAM at boot, and keep SD reads out of the recognition hot path.
+
+## Conversational vision if product gate passes
+
+A later Vision Turn should work as:
 
 ```text
 user speech
-  -> Newo microphone
-  -> existing /voice ASR path
-  -> VPS detects that the turn requires vision
-  -> VPS requests one fresh snapshot from Newo2
-  -> Newo2 captures/sends one JPEG directly to the VPS vision endpoint
+  -> Newo microphone / existing ASR path
+  -> VPS decides the turn needs a fresh image
+  -> VPS requests one correlated snapshot from Newo2
+  -> Newo2 sends one native JPEG directly to the VPS
   -> multimodal model receives transcript + image
-  -> text answer
-  -> existing Newo TTS/speaker path
+  -> answer returns through existing Newo TTS/speaker path
 ```
 
-Newo2 should upload the JPEG directly to the VPS rather than relaying image bytes through the original Newo ESP. The original Newo board still owns the spoken conversation and user-facing display state.
+Face identity and generic image understanding are separate capabilities: questions such as "what am I holding?" can use a requested cloud image even if local MFN identity is not available. However, personalized room behavior that depends on knowing **who** is present must not be promised unless this local recognition gate succeeds.
 
-Continuous video upload is explicitly out of scope. Cloud images should be requested only for a user turn, an explicitly enabled automation, or a specific diagnostic/event policy.
+Continuous cloud video remains out of scope.
 
-### Immediate integration slice: Vision Turn v0
+## Newo <-> Newo2 boundary
 
-Before investing in the complete identity database, build one thin end-to-end camera conversation test:
+If the personalized architecture proceeds, the two ESPs should exchange small state/control messages only. Candidate events include `person_present`, `person_gone`, `identity_known`, `identity_unknown`, `identity_changed`, `camera_error`, and `snapshot_ready`. Candidate commands include `vision_status`, `vision_enable`, `vision_disable`, `capture_snapshot`, and `recognize_now`.
 
-1. Newo2 joins normal Wi-Fi as a station while keeping the current camera pipeline intact.
-2. Newo2 opens its own authenticated outbound VPS connection with a distinct device role such as `newo2-vision`.
-3. VPS can send one correlated `vision_capture` request.
-4. Newo2 returns one fresh native JPEG directly to the VPS with request ID, capture age, width/height, and byte length.
-5. The VPS sends transcript + JPEG to a multimodal model.
-6. The answer reuses the already-working Newo speaker/TTS path.
+Local UDP remains the first candidate for low-latency state/events while both devices share Wi-Fi; important commands should carry a sequence/request ID with ACK/retry. ESP-NOW remains a later router-independent option. Raw images should go directly between Newo2 and the VPS when requested, not through the original Newo ESP.
 
-This proves the important product experience — talking to Newo about what the camera sees — without waiting for face recognition. It also proves that image traffic bypasses the original Newo ESP and that the two-board architecture works end to end.
+## Storage role if Newo2 proceeds
 
-The benchmark SoftAP should remain available only as a debug mode. Production/Vision Turn v0 must not depend on the phone being connected to `NEWO-CAM-TEST`.
-
-## Face recognition path
-
-Face recognition remains the next major **local** vision feature after the first end-to-end Vision Turn v0 is proven.
-
-Planned flow:
-
-```text
-ACCURATE detects face
-  -> obtain/verify alignment landmarks
-  -> align face to recognizer input
-  -> MFN_S8_V1 embedding
-  -> compare against active embeddings in RAM/PSRAM
-  -> known / unknown result
-  -> cache identity while the same face remains tracked
-```
-
-Before coding the recognizer, verify the exact alignment/landmark path exposed by the current Espressif face components. Do not assume the ESPDet-224 bounding box by itself is sufficient for MFN alignment.
-
-Enrollment target:
-
-- 3-5 varied samples per person;
-- embeddings persisted on microSD;
-- active database loaded into RAM/PSRAM at boot;
-- no SD read in the per-frame recognition hot path;
-- explicit learn/list/forget/forget-all operations;
-- database format versioned before real identities are stored.
-
-## Storage role
-
-The onboard microSD is already physically validated and remains reserved for Newo2. Intended production contents include:
+The onboard microSD is already physically validated. Intended production contents remain:
 
 ```text
 /newo2/faces/        versioned face database / metadata
-/newo2/snapshots/    optional bounded diagnostic/event snapshots
-/newo2/logs/         optional bounded persistent diagnostics later
+/newo2/snapshots/    bounded diagnostic/event snapshots
+/newo2/logs/         optional bounded persistent diagnostics
 /newo2/config/       future local vision configuration if needed
 ```
 
-Do not let snapshot/log retention grow without a quota or rotation policy.
+Retention must be quota/rotation bounded.
 
-## Remaining gates
-
-The next work should be done in this order:
-
-1. **Detector acceptance soak — PASS** — ~46.6 minutes continuous v6 runtime with no watchdog, `FB-OVF`, panic, reboot, logged decode failure, or camera-capture failure. Three early SOI/EOI warnings recovered and did not recur in the supplied log.
-2. **Precision test** — empty room plus known non-face objects at thresholds 0.30 and 0.40; choose the lowest threshold that does not create recurring false positives.
-3. **Vision Turn v0 transport** — Newo2 Wi-Fi STA + authenticated outbound VPS connection + correlated one-shot JPEG capture/upload.
-4. **Assistant vision proof** — transcript + requested snapshot into a multimodal model, then reuse the existing Newo TTS/speaker path.
-5. **Recognition benchmark** — add MFN only, measure one recognition operation and memory cost.
-6. **Identity cache/tracking** — avoid rerunning MFN every frame.
-7. **SD face database** — enroll/list/forget with versioned persistence and active embeddings in memory.
-8. **Local Newo protocol** — UDP discovery/heartbeat, status/events, sequence IDs, ACK/retry for low-latency local reactions.
-9. **Production hardening** — Newo2 provisioning/recovery, watchdog/soak tests, bounded storage, authentication, OTA/recovery behavior, and removal of benchmark-only UI from the normal hot path.
-
-## Current lock state
+## Current gate state
 
 ```text
-Newo2 board role                 LOCKED: camera/vision/storage module
 OV3660 + camera pin map          LOCKED / physically validated
 microSD pin map                  LOCKED / physically validated
 RANGE tiled detector             REJECTED
 Native JPEG VGA capture          ACCEPTED baseline
-ACCURATE / ESPDet-224            ACCEPTED primary detector candidate
-v6 detector stability soak       PASS (~46.6 min supplied log)
-Final detector threshold         PENDING precision test
-Vision Turn v0                   NEXT integration milestone
-Face recognition                 NEXT local-AI milestone after vision-turn proof
-Local Newo event link            PLANNED
-Production Newo2 firmware        NOT YET LOCKED
+ESPDet-224 detector              ACCEPTED primary detector
+Detector threshold               ACCEPTED baseline: 0.30
+v6 stability soak                PASS (~46.6 min supplied log)
+MFN recognition firmware         BUILT / CI PASS / physical test pending
+Room-range identity separation   PRODUCT GATE — PENDING
+Personalized Newo2 product role  NOT LOCKED until recognition result
+Vision Turn / VPS integration    DEFERRED until product-gate result
+SD face database                 DEFERRED until product-gate result
+Production Newo2 firmware        NOT LOCKED
 ```
