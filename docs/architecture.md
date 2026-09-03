@@ -1,5 +1,35 @@
 # Newo architecture
 
+## Two-board production direction
+
+As of 2026-09-03, Newo is intentionally split across two ESP32-S3 boards.
+
+```text
+Newo (existing ESP32-S3)
+  +-- microphone / I2S input
+  +-- WakeNet / voice lifecycle
+  +-- authenticated cloud voice path
+  +-- speaker / TTS playback
+  +-- ST7789 display + user-facing state
+  +-- status RGB
+
+Newo2 (GOOUUU ESP32-S3-CAM V1.5)
+  +-- OV3660 camera capture
+  +-- local face detection
+  +-- future local face recognition
+  +-- onboard microSD face DB / bounded snapshots
+  +-- local vision events to Newo
+  +-- direct one-shot snapshot path to VPS for multimodal turns
+```
+
+This division is now the project direction. Newo2 is the **camera/vision/storage sidecar**, not a replacement for the original Newo board.
+
+The two boards should exchange only small state/control messages. Raw camera frames, PCM, model buffers, and large files must not be relayed across the inter-board control link. The first production transport candidate is local UDP while both devices are on the same 2.4 GHz LAN, with sequence/request IDs and ACK/retry for important commands. ESP-NOW remains a later router-independent option if needed.
+
+For conversational vision, the existing Newo voice path stays unchanged until the finalized transcript reaches the VPS. If the assistant turn needs visual context, the VPS requests one fresh JPEG directly from Newo2, passes transcript + image to a multimodal model, and sends the answer back through the existing Newo TTS/speaker path. Continuous cloud video is not part of the architecture.
+
+The validated detector baseline is ACCURATE / ESPDet-224 on native-JPEG VGA capture. Physical testing measured about 297 ms total AI latency and 98/100 presence hits in the captured 100-sample window. This is accepted as a strong presence baseline, not proof of zero false positives. The failed four-tile RANGE mode is rejected. Face recognition, detector threshold acceptance, local link, and VPS vision transport remain implementation milestones. See [`newo2-vision.md`](newo2-vision.md) and [`newo2-hardware.md`](newo2-hardware.md).
+
 ## Firmware layers
 
 ```text
@@ -59,11 +89,15 @@ The packaged Arduino ESP_SR wrapper starts the framework's MultiNet support when
 
 The VPS holds Telegram secrets and validates webhook secrets plus user/chat allowlists. Device messages use typed payloads and correlated request IDs. Remote reboot sends `reboot_ack` before the ESP32 schedules restart.
 
+Newo2 will require its own authenticated outbound vision connection before cloud snapshots are enabled. Image bytes should terminate at a dedicated VPS vision handler and must not be tunneled through the existing Newo `/device` control socket. Local presence/identity events can still be mirrored through Newo for UI behavior, but a multimodal request should fetch the JPEG directly from Newo2.
+
 ## Storage and security
 
 Wi-Fi credentials are encoded in a compact JSON list under the `newo-wifi` NVS namespace. They must never be logged or sent through Telegram/cloud telemetry.
 
 Important application events are printed to USB Serial and mirrored into a fixed 64-entry RAM ring buffer. It uses stable level/subsystem/code/detail fields, collapses consecutive identical entries, and is protected for callback/loop access. It is volatile by design: no filesystem or NVS logging, and it disappears after reboot. Health copies only small logger metadata; log export copies at most 40 selected entries into temporary PSRAM, falling back to normal heap and reporting a clean failure if allocation fails. No large ring snapshot is placed on Arduino `loopTask`'s 8 KiB stack. The authenticated WSS channel serves bounded health/log snapshots; the VPS translates codes into readable Telegram text. Public HTTP `/health` remains minimal cloud-service health and never exposes device logs or detailed device telemetry.
+
+Newo2's onboard microSD is reserved for the future face database, bounded snapshots, and optional bounded diagnostics. Active face embeddings should be loaded into RAM/PSRAM so recognition does not read SD on every frame. Snapshot/log retention must use explicit quotas/rotation.
 
 BLE Security 1 encrypts provisioning traffic, but null proof-of-possession permits nearby onboarding attempts and is suitable only for this personal prototype. Production work should add per-device PoP/QR material, physical provisioning/reset gating, authenticated OTA with recovery, and hardware regression tests.
 
