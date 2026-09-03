@@ -124,7 +124,7 @@ class NewoDisplay {
   enum class BlinkPhase : uint8_t { OPEN, HALF_CLOSED, CLOSED, HALF_OPEN };
   enum class BlinkSchedulerState : uint8_t { WAITING, DOUBLE_PAUSE, DOUBLE_SECOND };
   enum class AutonomousGazePhase : uint8_t { CHOOSE_TARGET, MOVING, FIXATING, MICRO_CORRECTION };
-  enum class AutonomousEpisode : uint8_t { WAITING, CURIOUS_SCAN, LOW_ENERGY, SOCIAL_ATTENTION, ALERT_CHECK };
+  enum class AutonomousEpisode : uint8_t { WAITING, CURIOUS_SCAN, LOW_ENERGY, SOCIAL_ATTENTION, ALERT_CHECK, DROWSY_REST };
   enum class InactivityStage : uint8_t { ACTIVE, RELAXED, DROWSY };
   const char* contextName(NewoDisplayMode mode) const;
   static const char* episodeName(AutonomousEpisode episode);
