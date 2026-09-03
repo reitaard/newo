@@ -1,0 +1,65 @@
+name: Display Animation Validation
+
+on:
+  push:
+    paths:
+      - "Newo/newo_display*.cpp"
+      - "Newo/newo_display*.h"
+      - "Newo/newo_eye_pose.*"
+      - "Newo/newo_gaze_motion.*"
+      - "server/src/**"
+      - "server/test/**"
+      - "server/package.json"
+      - "server/package-lock.json"
+      - "tools/display-animation-host-test.cpp"
+      - "tools/run-display-animation-host-test.sh"
+      - ".github/workflows/display-animation-validation.yml"
+  pull_request:
+    paths:
+      - "Newo/newo_display*.cpp"
+      - "Newo/newo_display*.h"
+      - "Newo/newo_eye_pose.*"
+      - "Newo/newo_gaze_motion.*"
+      - "server/src/**"
+      - "server/test/**"
+      - "server/package.json"
+      - "server/package-lock.json"
+      - "tools/display-animation-host-test.cpp"
+      - "tools/run-display-animation-host-test.sh"
+      - ".github/workflows/display-animation-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  eye-engine-host:
+    name: Eye engine host test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Compile and run real C++ eye engines
+        run: bash tools/run-display-animation-host-test.sh
+
+  server-contracts:
+    name: Node contracts
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Install exact dependencies
+        run: npm ci
+      - name: Run tests
+        run: npm test
+      - name: Check JavaScript syntax
+        run: npm run check
