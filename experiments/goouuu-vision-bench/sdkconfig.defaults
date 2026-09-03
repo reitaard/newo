@@ -21,15 +21,18 @@ CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 
 # Recognition enrollment can produce much larger VGA JPEGs at close range than
 # the room-range detector soak. Keep quality 12 for facial detail and give the
-# OV3660 enough headroom instead of trading recognition detail for compression.
+# OV3660 more headroom than the stable detector build.
 CONFIG_CAMERA_PSRAM_DMA=n
 CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE_AUTO=n
 CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE_CUSTOM=y
 CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE=262144
 
-# Product-gate detector: ESPDet-224 only. RANGE and MSR/MNP are not used here.
+# Recognition gate: ESPDet-224 remains the primary detector at the physically
+# validated 0.30 threshold. MNP is bundled only as a landmark refiner because
+# ESPDet returns face boxes but no 5-point landmarks; MFN requires those landmarks.
+# The component packs MSR together with MNP, but this firmware never runs MSR.
 CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA=y
-CONFIG_FLASH_HUMAN_FACE_DETECT_MSRMNP_S8_V1=n
+CONFIG_FLASH_HUMAN_FACE_DETECT_MSRMNP_S8_V1=y
 CONFIG_FLASH_ESPDET_PICO_224_224_FACE=y
 CONFIG_FLASH_ESPDET_PICO_416_416_FACE=n
 CONFIG_ESPDET_PICO_224_224_FACE=y
