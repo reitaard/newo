@@ -47,14 +47,15 @@ test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, blin
   assert.match(poseSource, /current_\.closureStyle = interpolateClosureStyle/);
 
   // Episodes emit semantic expression intent. Only the pose resolver converts
-  // that intent to geometry; it must not switch on behavior episodes.
+  // that intent to geometry or autonomous motion; it must not inspect behavior episodes.
   assert.match(header, /enum class AutonomousExpression[\s\S]*CURIOUS[\s\S]*HAPPY[\s\S]*TIRED[\s\S]*SLEEPY[\s\S]*SURPRISED[\s\S]*CONFUSED[\s\S]*SLEEPING/);
   assert.match(header, /AutonomousExpression autonomousExpression_/);
   assert.match(display, /setAutonomousExpression\(AutonomousExpression::CURIOUS/);
   assert.match(display, /setAutonomousExpression\(AutonomousExpression::HAPPY/);
   assert.match(display, /setAutonomousExpression\(AutonomousExpression::SLEEPING, 100\)/);
   assert.match(poseResolver, /switch \(autonomousExpression_\)/);
-  assert.doesNotMatch(poseResolver, /switch \(autonomousEpisode_\)/);
+  assert.doesNotMatch(poseResolver, /autonomousEpisode_/);
+  assert.match(poseResolver, /autonomousExpression_ == AutonomousExpression::CONFUSED/);
   assert.match(poseResolver, /NewoEyePoseEngine::blend\(neutral, target, autonomousExpressionIntensity_\)/);
 
   // Transient shake/bounce/stretch/breathing is resolved as data outside the
@@ -110,6 +111,7 @@ test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, blin
   assert.match(header, /SecondaryEffect : uint8_t \{ NONE, ZZZ, SWEAT \}/);
   assert.match(poseResolver, /case NewoFaceStyle::CLOSED:[\s\S]*NewoEyeClosureStyle::CURVED/);
   assert.match(poseResolver, /case NewoFaceStyle::DETACHED:[\s\S]*leftHeight = pose\.rightHeight = 4/);
+  assert.match(poseResolver, /faceStyle_ == NewoFaceStyle::DETACHED[\s\S]*overlay\.xOffset -= gazeX_[\s\S]*overlay\.yOffset -= gazeY_/);
   assert.match(poseResolver, /case NewoFaceStyle::SLEEPING:[\s\S]*NewoEyeClosureStyle::CURVED/);
   assert.match(poseResolver, /case NewoFaceStyle::SKEPTICAL:/);
   assert.match(poseResolver, /autonomousExpression_ == AutonomousExpression::SLEEPING \? SecondaryEffect::ZZZ/);
