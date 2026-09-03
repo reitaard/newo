@@ -201,10 +201,54 @@ USB SD mass storage PENDING
 
 A small amount of garbled serial text was observed around one reset / sketch transition, but the subsequent boot, SD mount, camera initialization, capture, file write, exact-size verification, heartbeat, browser image retrieval, button test, and native USB enumeration all completed normally. It is not treated as a hardware failure.
 
+## Vision baseline — 2026-09-03
+
+The clean-flashed ESP-IDF `goouuu-vision-v6-stable` build physically validated Newo2 as a usable local vision board rather than only a camera/storage board.
+
+Validated runtime configuration:
+
+```text
+App version       6f83166
+ESP-IDF           5.5.5
+Camera            OV3660 / PID 0x3660
+Capture           native JPEG VGA 640x480 q=12
+Frame buffers     2 x 128 KiB PSRAM
+PSRAM DMA         OFF
+Primary detector  ESPDet-224 / ACCURATE
+```
+
+Observed ACCURATE 100-sample window:
+
+| Metric | Result |
+| --- | ---: |
+| JPEG decode | 52 ms |
+| Detect now | 245 ms |
+| Detect average | 246.7 ms |
+| Detect p95 | 255 ms |
+| AI total | 297 ms |
+| AI rate | 3.4 fps |
+| Detection hit rate | 98.0% (98/100) |
+| Face streak | 98 |
+| Faces in captured frame | 2 |
+| Largest face | 40 x 47 px |
+| Free PSRAM | 3.01 MB |
+| Largest PSRAM block | 2.81 MB |
+| Free internal RAM | 65 KB |
+
+The earlier four-tile RANGE mode is rejected: its comparable physical test produced only 29.4% hit rate and also produced a non-face detection in a separate tile. RANGE is not part of the Newo2 production plan.
+
+The v6 serial log contained no watchdog reset, framebuffer overflow, panic, reboot loop, or allocation failure. It did contain one `NO-EOI` and two `NO-SOI` camera/JPEG framing warnings; the driver recovered and the firmware continued. Those warnings remain a soak-test item before the production camera service is declared final.
+
+The ACCURATE screenshot reported two boxes, but the screenshot alone cannot prove both boxes are true faces. The 98% value is therefore accepted as strong **presence recall**, not proof of false-positive-free multi-face precision. Threshold and precision still require a controlled empty-room/non-face-object test.
+
+Newo2's role is now locked as the **camera/vision/storage module for Newo**. The production firmware, face recognizer, Newo-to-Newo2 protocol, and VPS multimodal snapshot channel are still pending. See [`newo2-vision.md`](newo2-vision.md) for the current architecture decision and ordered roadmap.
+
 ## Test partition note
 
 The standalone Newo2 hardware tests do not use ESP-SR. A normal 16 MB Arduino partition scheme should therefore be used for these bring-up sketches. The existing Newo `ESP SR 16M` scheme expects `srmodels.bin`; switch back to that scheme only when the real Newo firmware/ESP-SR stack is migrated to Newo2.
 
+The current ESP-IDF vision benchmark instead uses its own 16 MB custom partition table with an 8 MB factory app partition. Newo2 does not need ESP-SR because audio/wake-word responsibilities remain on the original Newo board.
+
 ## Migration rule
 
-Newo2 bring-up stays incremental: validate onboard hardware first, then decide final display, microphone, speaker, USB-host, and other external pin assignments. Existing Newo pin mappings must not be copied blindly onto Newo2 because the validated camera and SD slot already consume GPIOs used by the original device.
+Newo2 bring-up stays incremental. Camera and SD pins are now reserved and must not be reused by migrated peripherals. The current architecture no longer plans to migrate the original microphone/display/speaker stack onto Newo2: Newo2 is the dedicated camera/vision/storage sidecar, while the existing Newo board remains the audio/display/assistant interaction device.
