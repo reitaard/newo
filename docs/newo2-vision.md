@@ -153,9 +153,24 @@ Newo2 should upload the JPEG directly to the VPS rather than relaying image byte
 
 Continuous video upload is explicitly out of scope. Cloud images should be requested only for a user turn, an explicitly enabled automation, or a specific diagnostic/event policy.
 
+### Immediate integration slice: Vision Turn v0
+
+Before investing in the complete identity database, build one thin end-to-end camera conversation test:
+
+1. Newo2 joins normal Wi-Fi as a station while keeping the current camera pipeline intact.
+2. Newo2 opens its own authenticated outbound VPS connection with a distinct device role such as `newo2-vision`.
+3. VPS can send one correlated `vision_capture` request.
+4. Newo2 returns one fresh native JPEG directly to the VPS with request ID, capture age, width/height, and byte length.
+5. The VPS sends transcript + JPEG to a multimodal model.
+6. The answer reuses the already-working Newo speaker/TTS path.
+
+This proves the important product experience — talking to Newo about what the camera sees — without waiting for face recognition. It also proves that image traffic bypasses the original Newo ESP and that the two-board architecture works end to end.
+
+The benchmark SoftAP should remain available only as a debug mode. Production/Vision Turn v0 must not depend on the phone being connected to `NEWO-CAM-TEST`.
+
 ## Face recognition path
 
-The next local-AI milestone is recognition, not another detector rewrite.
+Face recognition remains the next major **local** vision feature after the first end-to-end Vision Turn v0 is proven.
 
 Planned flow:
 
@@ -199,13 +214,13 @@ The next work should be done in this order:
 
 1. **Detector acceptance test** — 10-15 minute ACCURATE soak with stream open; count SOI/EOI warnings, decode failures, resets, pool drops, and memory floor.
 2. **Precision test** — empty room plus known non-face objects at thresholds 0.30 and 0.40; choose the lowest threshold that does not create recurring false positives.
-3. **Recognition benchmark** — add MFN only, measure one recognition operation and memory cost without SD/network integration.
-4. **Identity cache/tracking** — avoid rerunning MFN every frame.
-5. **SD face database** — enroll/list/forget with versioned persistence and active embeddings in memory.
-6. **Local Newo protocol** — UDP discovery/heartbeat, status/events, sequence IDs, ACK/retry for commands.
-7. **VPS vision channel** — authenticated Newo2 connection plus one-shot JPEG request/upload.
-8. **Assistant integration** — transcript + requested snapshot into a multimodal model, then reuse the existing Newo TTS/speaker path.
-9. **Production hardening** — Wi-Fi provisioning/recovery for Newo2, watchdog/soak tests, bounded storage, authentication, and recovery behavior.
+3. **Vision Turn v0 transport** — Newo2 Wi-Fi STA + authenticated outbound VPS connection + correlated one-shot JPEG capture/upload.
+4. **Assistant vision proof** — transcript + requested snapshot into a multimodal model, then reuse the existing Newo TTS/speaker path.
+5. **Recognition benchmark** — add MFN only, measure one recognition operation and memory cost.
+6. **Identity cache/tracking** — avoid rerunning MFN every frame.
+7. **SD face database** — enroll/list/forget with versioned persistence and active embeddings in memory.
+8. **Local Newo protocol** — UDP discovery/heartbeat, status/events, sequence IDs, ACK/retry for low-latency local reactions.
+9. **Production hardening** — Newo2 provisioning/recovery, watchdog/soak tests, bounded storage, authentication, OTA/recovery behavior, and removal of benchmark-only UI from the normal hot path.
 
 ## Current lock state
 
@@ -217,8 +232,8 @@ RANGE tiled detector             REJECTED
 Native JPEG VGA capture          ACCEPTED baseline
 ACCURATE / ESPDet-224            ACCEPTED primary detector candidate
 Final detector threshold         PENDING precision test
-Face recognition                 NEXT
-Local Newo link                  PLANNED
-VPS multimodal snapshot path     PLANNED
+Vision Turn v0                   NEXT integration milestone
+Face recognition                 NEXT local-AI milestone after vision-turn proof
+Local Newo event link            PLANNED
 Production Newo2 firmware        NOT YET LOCKED
 ```
