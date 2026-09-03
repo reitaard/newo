@@ -15,3 +15,10 @@ dependencies:
     version: "1.0.2"
   espressif/led_strip:
     version: "3.0.3"
+
+overrides:
+  - espressif/human_face_detect:
+      with:
+        espressif/human_face_detect:
+          version: "0.5.0"
+      reason: "human_face_recognition 0.3.2 registry metadata still requires ~0.4.1, while its current upstream source targets ~0.5.0; Newo2 physically validated ESPDet-224 from 0.5.0, so keep that detector version for this recognition product gate."
