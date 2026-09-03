@@ -30,7 +30,7 @@ CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA=y
 CONFIG_FLASH_HUMAN_FACE_DETECT_MSRMNP_S8_V1=n
 CONFIG_FLASH_ESPDET_PICO_224_224_FACE=y
 CONFIG_FLASH_ESPDET_PICO_416_416_FACE=n
-CONFIG_HUMAN_FACE_DETECT_ESPDET_PICO_224_224_FACE=y
+CONFIG_ESPDET_PICO_224_224_FACE=y
 
 # Product-gate recognizer: MFN_S8_V1 in flash rodata. The test database itself
 # is intentionally RAM-only so identity quality can be measured before SD persistence.
