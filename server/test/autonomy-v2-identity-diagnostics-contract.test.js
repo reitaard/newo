@@ -108,7 +108,6 @@ test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, blin
   // independent and DROWSY_REST is an orchestrated behavior, not a face renderer.
   assert.match(header, /DETACHED, SLEEPING, SKEPTICAL/);
   assert.match(header, /DROWSY_REST/);
-  assert.match(header, /SecondaryEffect : uint8_t \{ NONE, ZZZ, SWEAT \}/);
   assert.match(poseResolver, /case NewoFaceStyle::CLOSED:[\s\S]*NewoEyeClosureStyle::CURVED/);
   assert.match(poseResolver, /case NewoFaceStyle::DETACHED:[\s\S]*leftHeight = pose\.rightHeight = 4/);
   assert.match(poseResolver, /faceStyle_ == NewoFaceStyle::DETACHED[\s\S]*overlay\.xOffset -= gazeX_[\s\S]*overlay\.yOffset -= gazeY_/);
@@ -125,9 +124,45 @@ test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, blin
   assert.match(skepticalLeft[1], /leftWidth = 62[\s\S]*leftHeight = 38[\s\S]*rightWidth = 50[\s\S]*rightHeight = 24[\s\S]*rightTopCut = -12/);
   assert.doesNotMatch(skepticalLeft[1], /leftTopCut/);
 
-  assert.match(poseResolver, /autonomousExpression_ == AutonomousExpression::SLEEPING \? SecondaryEffect::ZZZ/);
+  // Phase E generalizes the secondary-effect layer without coupling decorative
+  // symbols to face poses. The approved ZZZ geometry stays intact.
+  assert.match(header, /enum class NewoSecondaryEffect[\s\S]*NONE[\s\S]*ZZZ[\s\S]*QUESTION[\s\S]*EXCLAMATION[\s\S]*SURPRISE_MARK[\s\S]*ELLIPSIS[\s\S]*SWEAT/);
+  assert.match(header, /bool setSecondaryEffect\(NewoSecondaryEffect effect, uint32_t durationMs = 6'000\)/);
+  assert.match(header, /secondaryEffectOverride_ = NewoSecondaryEffect::NONE/);
+  assert.match(header, /secondaryEffectStartedMs_/);
+  assert.match(header, /secondaryEffectUntilMs_/);
+  assert.match(poseResolver, /bool NewoDisplay::setSecondaryEffect\(NewoSecondaryEffect effect, uint32_t durationMs\)/);
+  assert.match(poseResolver, /durationMs < 500 \|\| durationMs > 15'000/);
+  assert.match(poseResolver, /if \(mode != NewoDisplayMode::IDLE\) return NewoSecondaryEffect::NONE/);
+  assert.match(poseResolver, /static_cast<int32_t>\(now - secondaryEffectUntilMs_\) < 0/);
+  assert.match(poseResolver, /autonomousExpression_ == AutonomousExpression::SLEEPING \? NewoSecondaryEffect::ZZZ/);
   assert.match(poseResolver, /void NewoDisplay::drawZ[\s\S]*if \(size < 5\) return;[\s\S]*fillRect\(x, y, size \+ 1, 2, 1\)/);
-  assert.match(poseResolver, /effect == SecondaryEffect::ZZZ[\s\S]*index < 2[\s\S]*index == 0 \? 7 : 10/);
+  assert.match(poseResolver, /effect == NewoSecondaryEffect::ZZZ[\s\S]*index < 2[\s\S]*index == 0 \? 7 : 10/);
+  for (const effect of ["QUESTION", "EXCLAMATION", "SURPRISE_MARK", "ELLIPSIS", "SWEAT"]) {
+    assert.match(poseResolver, new RegExp(`effect == NewoSecondaryEffect::${effect}`), `missing procedural effect: ${effect}`);
+  }
+  const effectResolver = poseResolver.match(/NewoSecondaryEffect NewoDisplay::secondaryEffectFor\(uint32_t now, NewoDisplayMode mode\) const \{([\s\S]*?)\n\}/);
+  assert.ok(effectResolver, "secondary effect resolver should be discoverable");
+  assert.doesNotMatch(effectResolver[1], /CURIOUS.*QUESTION|SURPRISED.*EXCLAMATION|CONFUSED.*QUESTION/);
+
+  // Phase E transport exposes a silent manual test path while keeping effects
+  // independent from the face command namespace.
+  assert.match(cloud, /strcmp\(mode, "effect"\) == 0/);
+  for (const [name, effect] of [
+    ["zzz", "ZZZ"], ["question", "QUESTION"], ["exclamation", "EXCLAMATION"],
+    ["surprise", "SURPRISE_MARK"], ["ellipsis", "ELLIPSIS"], ["sweat", "SWEAT"],
+  ]) {
+    assert.match(cloud, new RegExp(`strcmp\\(text, "${name}"\\).*NewoSecondaryEffect::${effect}`));
+  }
+  assert.match(cloud, /display_\.setSecondaryEffect\(/);
+  assert.match(server, /const SECONDARY_EFFECTS = \["none", "question", "exclamation", "surprise", "ellipsis", "sweat", "zzz"\]/);
+  assert.match(server, /\{ command: "effect", description: "Test a secondary effect" \}/);
+  assert.match(server, /sendDeviceRequest\("display_set", "display_ack", \{ mode: "effect", text: input, duration_ms: durationMs \}/);
+  assert.match(server, /bot\.command\(\["effect", "fx"\], handleEffectCommand\)/);
+  const effectHandler = server.match(/async function handleEffectCommand\(ctx\) \{([\s\S]*?)\n\}/);
+  assert.ok(effectHandler, "Telegram effect handler should be discoverable");
+  assert.match(effectHandler[1], /newoSpeak: false/);
+
   assert.match(display, /case AutonomousEpisode::DROWSY_REST:[\s\S]*AutonomousExpression::SLEEPY/);
   assert.match(display, /AutonomousEpisode::DROWSY_REST[\s\S]*AutonomousExpression::SLEEPING, 100/);
   assert.match(cloud, /strcmp\(mode, "detached"\)/);

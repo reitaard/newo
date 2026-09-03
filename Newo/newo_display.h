@@ -9,6 +9,15 @@
 
 enum class NewoDisplayMode : uint8_t { IDLE, LISTENING, THINKING, SPEAKING, ERROR, MESSAGE, ECO };
 enum class NewoFaceStyle : uint8_t { NEUTRAL, HAPPY, ANGRY, TIRED, CURIOUS, CONFUSED, LAUGH, SWEAT, CYCLOPS, CLOSED, WINK_LEFT, WINK_RIGHT, LOOK_LEFT, LOOK_RIGHT, LOOK_UP, LOOK_DOWN, LOOK_UP_LEFT, LOOK_UP_RIGHT, LOOK_DOWN_LEFT, LOOK_DOWN_RIGHT, SURPRISED, SLEEPY, DETACHED, SLEEPING, SKEPTICAL };
+enum class NewoSecondaryEffect : uint8_t {
+  NONE,
+  ZZZ,
+  QUESTION,
+  EXCLAMATION,
+  SURPRISE_MARK,
+  ELLIPSIS,
+  SWEAT,
+};
 
 class NewoDisplay {
  public:
@@ -18,6 +27,7 @@ class NewoDisplay {
   void updateClock();
   bool setMode(NewoDisplayMode mode, const char* text = nullptr, bool temporary = false);
   bool setFaceStyle(NewoFaceStyle style);
+  bool setSecondaryEffect(NewoSecondaryEffect effect, uint32_t durationMs = 6'000);
   // Runtime signals are arbitrated independently of the persistent display mode.
   void setListeningActive(bool active);
   void setAssistantThinking(bool active);
@@ -31,7 +41,6 @@ class NewoDisplay {
                        uint32_t freeHeap, uint32_t freePsram, const NewoLog::Stats& logs);
 
  private:
-  enum class SecondaryEffect : uint8_t { NONE, ZZZ, SWEAT };
   enum class AutonomousExpression : uint8_t {
     NONE,
     CURIOUS,
@@ -88,12 +97,12 @@ class NewoDisplay {
   EyeMotionOverlay resolveEyeMotionOverlay(uint32_t now, NewoDisplayMode mode) const;
   uint16_t eyePoseTransitionMs(NewoDisplayMode mode) const;
   NewoEyeEasing eyePoseEasing(NewoDisplayMode mode) const;
-  SecondaryEffect secondaryEffectFor(uint32_t now, NewoDisplayMode mode) const;
+  NewoSecondaryEffect secondaryEffectFor(uint32_t now, NewoDisplayMode mode) const;
   void applyResolvedPoseCuts(int16_t leftX, int16_t rightX, int16_t leftY, int16_t rightY,
                              int16_t leftW, int16_t rightW, int16_t leftHeight,
                              int16_t rightHeight, const NewoEyePose& pose);
   void drawClosedEyeCurve(int16_t x, int16_t y, int16_t width);
-  void drawSecondaryEffect(uint32_t now, SecondaryEffect effect);
+  void drawSecondaryEffect(uint32_t now, NewoSecondaryEffect effect);
   void drawZ(int16_t x, int16_t y, int16_t size);
   void blitMonoCanvasFast(GFXcanvas1& canvas, int16_t x, int16_t y, int16_t width, int16_t height);
   void recordFaceFrame(uint32_t elapsedUs);
@@ -156,6 +165,9 @@ class NewoDisplay {
   AutonomousEpisode autonomousEpisode_ = AutonomousEpisode::WAITING;
   AutonomousExpression autonomousExpression_ = AutonomousExpression::NONE;
   uint8_t autonomousExpressionIntensity_ = 0;
+  NewoSecondaryEffect secondaryEffectOverride_ = NewoSecondaryEffect::NONE;
+  uint32_t secondaryEffectStartedMs_ = 0;
+  uint32_t secondaryEffectUntilMs_ = 0;
   uint32_t nextAutonomousEpisodeMs_ = 0;
   uint16_t autonomousEpisodeHoldMs_ = 0;
   uint8_t autonomousEpisodeStep_ = 0;

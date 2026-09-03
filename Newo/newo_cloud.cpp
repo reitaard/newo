@@ -300,6 +300,31 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     const char* mode = doc["mode"] | "";
     const char* text = doc["text"] | "";
 
+    if (strcmp(mode, "effect") == 0) {
+      NewoSecondaryEffect effect = NewoSecondaryEffect::NONE;
+      bool effectSelection = true;
+      if (strcmp(text, "none") == 0) effect = NewoSecondaryEffect::NONE;
+      else if (strcmp(text, "zzz") == 0) effect = NewoSecondaryEffect::ZZZ;
+      else if (strcmp(text, "question") == 0) effect = NewoSecondaryEffect::QUESTION;
+      else if (strcmp(text, "exclamation") == 0) effect = NewoSecondaryEffect::EXCLAMATION;
+      else if (strcmp(text, "surprise") == 0) effect = NewoSecondaryEffect::SURPRISE_MARK;
+      else if (strcmp(text, "ellipsis") == 0) effect = NewoSecondaryEffect::ELLIPSIS;
+      else if (strcmp(text, "sweat") == 0) effect = NewoSecondaryEffect::SWEAT;
+      else effectSelection = false;
+
+      const int32_t durationMs = doc["duration_ms"] | 6'000;
+      if (!effectSelection || (effect != NewoSecondaryEffect::NONE &&
+          (durationMs < 500 || durationMs > 15'000)) ||
+          !display_.setSecondaryEffect(effect, effect == NewoSecondaryEffect::NONE
+                                                  ? 0U
+                                                  : static_cast<uint32_t>(durationMs))) {
+        NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "DISPLAY_INVALID_EFFECT");
+        return;
+      }
+      sendDisplayAck(requestId, text);
+      return;
+    }
+
     bool faceSelection = true;
     NewoFaceStyle faceStyle = NewoFaceStyle::NEUTRAL;
     if (strcmp(mode, "default") == 0) faceStyle = NewoFaceStyle::NEUTRAL;

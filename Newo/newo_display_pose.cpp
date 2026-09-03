@@ -288,14 +288,43 @@ NewoEyeEasing NewoDisplay::eyePoseEasing(NewoDisplayMode mode) const {
   return NewoEyeEasing::EASE_IN_OUT;
 }
 
-NewoDisplay::SecondaryEffect NewoDisplay::secondaryEffectFor(uint32_t, NewoDisplayMode mode) const {
-  if (mode != NewoDisplayMode::IDLE) return SecondaryEffect::NONE;
-  if (autoFaceEnabled_) {
-    return autonomousExpression_ == AutonomousExpression::SLEEPING ? SecondaryEffect::ZZZ : SecondaryEffect::NONE;
+bool NewoDisplay::setSecondaryEffect(NewoSecondaryEffect effect, uint32_t durationMs) {
+  if (effect > NewoSecondaryEffect::SWEAT) return false;
+  if (effect == NewoSecondaryEffect::NONE) {
+    secondaryEffectOverride_ = NewoSecondaryEffect::NONE;
+    secondaryEffectStartedMs_ = 0;
+    secondaryEffectUntilMs_ = 0;
+    nextFaceFrameMs_ = 0;
+    dirty_ = true;
+    return true;
   }
-  if (faceStyle_ == NewoFaceStyle::SLEEPING) return SecondaryEffect::ZZZ;
-  if (faceStyle_ == NewoFaceStyle::SWEAT) return SecondaryEffect::SWEAT;
-  return SecondaryEffect::NONE;
+  if (durationMs < 500 || durationMs > 15'000) return false;
+  const uint32_t now = millis();
+  secondaryEffectOverride_ = effect;
+  secondaryEffectStartedMs_ = now;
+  secondaryEffectUntilMs_ = now + durationMs;
+  nextFaceFrameMs_ = 0;
+  dirty_ = true;
+  return true;
+}
+
+NewoSecondaryEffect NewoDisplay::secondaryEffectFor(uint32_t now, NewoDisplayMode mode) const {
+  // Operational states own the face completely; decorative effects never fight
+  // LISTENING / THINKING / SPEAKING / ERROR or the message/eco screens.
+  if (mode != NewoDisplayMode::IDLE) return NewoSecondaryEffect::NONE;
+
+  if (secondaryEffectOverride_ != NewoSecondaryEffect::NONE && secondaryEffectUntilMs_ != 0 &&
+      static_cast<int32_t>(now - secondaryEffectUntilMs_) < 0) {
+    return secondaryEffectOverride_;
+  }
+
+  if (autoFaceEnabled_) {
+    return autonomousExpression_ == AutonomousExpression::SLEEPING ? NewoSecondaryEffect::ZZZ
+                                                                    : NewoSecondaryEffect::NONE;
+  }
+  if (faceStyle_ == NewoFaceStyle::SLEEPING) return NewoSecondaryEffect::ZZZ;
+  if (faceStyle_ == NewoFaceStyle::SWEAT) return NewoSecondaryEffect::SWEAT;
+  return NewoSecondaryEffect::NONE;
 }
 
 void NewoDisplay::applyResolvedPoseCuts(int16_t leftX, int16_t rightX, int16_t leftY, int16_t rightY,
@@ -346,8 +375,8 @@ void NewoDisplay::drawZ(int16_t x, int16_t y, int16_t size) {
   eyeCanvas_.fillRect(x, y + size - 1, size + 1, 2, 1);
 }
 
-void NewoDisplay::drawSecondaryEffect(uint32_t now, SecondaryEffect effect) {
-  if (effect == SecondaryEffect::ZZZ) {
+void NewoDisplay::drawSecondaryEffect(uint32_t now, NewoSecondaryEffect effect) {
+  if (effect == NewoSecondaryEffect::ZZZ) {
     // Two readable glyphs work better than three tiny ones on the 200x82 eye
     // canvas. They are staggered, safely inset, and drift only a few pixels so
     // neither glyph approaches the top/right edge.
@@ -365,9 +394,69 @@ void NewoDisplay::drawSecondaryEffect(uint32_t now, SecondaryEffect effect) {
     return;
   }
 
-  if (effect == SecondaryEffect::SWEAT) {
+  const bool overrideActive = secondaryEffectOverride_ == effect && secondaryEffectUntilMs_ != 0 &&
+      static_cast<int32_t>(now - secondaryEffectUntilMs_) < 0;
+  const uint32_t effectNow = overrideActive ? now - secondaryEffectStartedMs_ : now;
+
+  const auto drawQuestion = [this](int16_t x, int16_t y) {
+    // 2px procedural strokes: compact enough for the top-right margin but
+    // thick enough to survive the 1-bit canvas -> TFT transfer.
+    eyeCanvas_.fillRect(x + 2, y, 6, 2, 1);
+    eyeCanvas_.fillRect(x + 7, y + 2, 2, 4, 1);
+    eyeCanvas_.drawLine(x + 7, y + 5, x + 4, y + 8, 1);
+    eyeCanvas_.drawLine(x + 6, y + 5, x + 3, y + 8, 1);
+    eyeCanvas_.fillRect(x + 3, y + 8, 2, 3, 1);
+    eyeCanvas_.fillRect(x + 3, y + 13, 2, 2, 1);
+  };
+  const auto drawExclamation = [this](int16_t x, int16_t y) {
+    eyeCanvas_.fillRect(x, y, 3, 8, 1);
+    eyeCanvas_.fillRect(x, y + 11, 3, 3, 1);
+  };
+
+  if (effect == NewoSecondaryEffect::QUESTION) {
+    const uint16_t local = static_cast<uint16_t>(effectNow % 1'800);
+    if (local >= 1'450) return;
+    int16_t rise = static_cast<int16_t>(local / 300);
+    if (rise > 4) rise = 4;
+    drawQuestion(177, static_cast<int16_t>(6 - rise));
+    return;
+  }
+
+  if (effect == NewoSecondaryEffect::EXCLAMATION) {
+    const uint16_t local = static_cast<uint16_t>(effectNow % 1'650);
+    if (local >= 1'250) return;
+    int16_t rise = static_cast<int16_t>(local / 60);
+    if (rise > 4) rise = 4;
+    drawExclamation(183, static_cast<int16_t>(7 - rise));
+    return;
+  }
+
+  if (effect == NewoSecondaryEffect::SURPRISE_MARK) {
+    const uint16_t local = static_cast<uint16_t>(effectNow % 1'750);
+    if (local >= 1'300) return;
+    int16_t rise = static_cast<int16_t>(local / 70);
+    if (rise > 4) rise = 4;
+    const int16_t y = static_cast<int16_t>(7 - rise);
+    drawExclamation(166, y);
+    drawQuestion(174, static_cast<int16_t>(y - 1));
+    return;
+  }
+
+  if (effect == NewoSecondaryEffect::ELLIPSIS) {
+    const uint16_t local = static_cast<uint16_t>(effectNow % 1'800);
+    uint8_t count = 0;
+    if (local < 300) count = 1;
+    else if (local < 600) count = 2;
+    else if (local < 1'450) count = 3;
+    for (uint8_t index = 0; index < count; ++index) {
+      eyeCanvas_.fillCircle(static_cast<int16_t>(169 + index * 7), 9, 2, 1);
+    }
+    return;
+  }
+
+  if (effect == NewoSecondaryEffect::SWEAT) {
     for (uint8_t drop = 0; drop < 3; ++drop) {
-      const uint16_t phase = static_cast<uint16_t>((now / 9 + drop * 31) % 100);
+      const uint16_t phase = static_cast<uint16_t>((effectNow / 9 + drop * 31) % 100);
       const int16_t dropX = 42 + drop * 58;
       const int16_t dropY = 3 + phase / 4;
       const int16_t radius = phase < 50 ? 1 + phase / 25 : 1 + (99 - phase) / 25;
