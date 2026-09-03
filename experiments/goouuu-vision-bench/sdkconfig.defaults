@@ -1,4 +1,4 @@
-# GOOUUU ESP32-S3-CAM native-JPEG vision firmware
+# GOOUUU ESP32-S3-CAM recognition product-gate firmware
 # Target: ESP32-S3-WROOM-1 N16R8 (16 MB flash, 8 MB Octal PSRAM)
 
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
@@ -19,21 +19,22 @@ CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 
-# OV3660 + JPEG + PSRAM DMA has a known driver issue in esp32-camera 2.1.7.
-# Keep the native-JPEG capture path on the stable non-PSRAM-DMA mode.
+# Keep the physically stable OV3660 native-JPEG path.
 CONFIG_CAMERA_PSRAM_DMA=n
-
-# esp32-camera's automatic JPEG buffer is width*height/5: only 61,440 bytes
-# at VGA. Real OV3660 quality-12 frames exceeded that in our room and produced
-# cam_hal: FB-OVF. Preserve image quality and give each of the two camera
-# framebuffers 128 KiB instead of increasing JPEG compression.
 CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE_AUTO=n
 CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE_CUSTOM=y
 CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE=131072
 
-# Pack the two detectors used by the stable firmware.
+# Product-gate detector: ESPDet-224 only. RANGE and MSR/MNP are not used here.
 CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA=y
-CONFIG_FLASH_HUMAN_FACE_DETECT_MSRMNP_S8_V1=y
+CONFIG_FLASH_HUMAN_FACE_DETECT_MSRMNP_S8_V1=n
 CONFIG_FLASH_ESPDET_PICO_224_224_FACE=y
 CONFIG_FLASH_ESPDET_PICO_416_416_FACE=n
-CONFIG_HUMAN_FACE_DETECT_MSRMNP_S8_V1=y
+CONFIG_HUMAN_FACE_DETECT_ESPDET_PICO_224_224_FACE=y
+
+# Product-gate recognizer: MFN_S8_V1 in flash rodata. The test database itself
+# is intentionally RAM-only so identity quality can be measured before SD persistence.
+CONFIG_HUMAN_FACE_FEAT_MODEL_IN_FLASH_RODATA=y
+CONFIG_FLASH_HUMAN_FACE_FEAT_MFN_S8_V1=y
+CONFIG_FLASH_HUMAN_FACE_FEAT_MBF_S8_V1=n
+CONFIG_HUMAN_FACE_FEAT_MFN_S8_V1=y
