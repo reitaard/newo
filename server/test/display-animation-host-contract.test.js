@@ -44,7 +44,7 @@ test("pure display engines remain host portable and behavior-tested", async () =
   assert.doesNotMatch(presentationHeader, /malloc|new\s|std::vector|std::map/);
   assert.match(presentationHostTest, /testCuriousComposition/);
   assert.match(presentationHostTest, /testAlertComposition/);
-  assert.match(presentationHostTest, /testSocialFatigueAndSleep/);
+  assert.match(presentationHostTest, /testSocialFatigueSleepAndUnimpressed/);
   assert.match(presentationHostTest, /testBoundsAndDeterminism/);
   assert.match(presentationHostTest, /presentation-host-test: PASS/);
 
