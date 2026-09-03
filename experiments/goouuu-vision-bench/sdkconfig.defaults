@@ -1,4 +1,4 @@
-# GOOUUU ESP32-S3-CAM native-JPEG vision benchmark
+# GOOUUU ESP32-S3-CAM native-JPEG vision firmware
 # Target: ESP32-S3-WROOM-1 N16R8 (16 MB flash, 8 MB Octal PSRAM)
 
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
@@ -23,7 +23,15 @@ CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 # Keep the native-JPEG capture path on the stable non-PSRAM-DMA mode.
 CONFIG_CAMERA_PSRAM_DMA=n
 
-# Pack both detectors so FAST/RANGE can use MSR+MNP and ACCURATE can use ESPDet-224.
+# esp32-camera's automatic JPEG buffer is width*height/5: only 61,440 bytes
+# at VGA. Real OV3660 quality-12 frames exceeded that in our room and produced
+# cam_hal: FB-OVF. Preserve image quality and give each of the two camera
+# framebuffers 128 KiB instead of increasing JPEG compression.
+CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE_AUTO=n
+CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE_CUSTOM=y
+CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE=131072
+
+# Pack the two detectors used by the stable firmware.
 CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA=y
 CONFIG_FLASH_HUMAN_FACE_DETECT_MSRMNP_S8_V1=y
 CONFIG_FLASH_ESPDET_PICO_224_224_FACE=y
