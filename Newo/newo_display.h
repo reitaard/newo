@@ -32,6 +32,16 @@ class NewoDisplay {
 
  private:
   enum class SecondaryEffect : uint8_t { NONE, ZZZ, SWEAT };
+  enum class AutonomousExpression : uint8_t {
+    NONE,
+    CURIOUS,
+    HAPPY,
+    TIRED,
+    SLEEPY,
+    SURPRISED,
+    CONFUSED,
+    SLEEPING,
+  };
 
   void render();
   void drawFace();
@@ -50,6 +60,8 @@ class NewoDisplay {
   void finishAutonomousEpisode(uint32_t now);
   void beginAutonomousEpisodeGaze(uint32_t now, int16_t targetX, int16_t targetY, uint16_t holdMs);
   void advanceAutonomousEpisode(uint32_t now);
+  void setAutonomousExpression(AutonomousExpression expression, uint8_t intensity);
+  void clearAutonomousExpression();
   void noteInteraction(uint32_t now, uint8_t energyGain, uint8_t curiosityGain, uint8_t socialGain);
   void noteError();
   uint32_t adjustAutonomousFixation(uint32_t fixationMs) const;
@@ -116,6 +128,7 @@ class NewoDisplay {
   enum class InactivityStage : uint8_t { ACTIVE, RELAXED, DROWSY };
   const char* contextName(NewoDisplayMode mode) const;
   static const char* episodeName(AutonomousEpisode episode);
+  static const char* expressionName(AutonomousExpression expression);
   void recordGazeTarget(uint16_t holdMs);
   void maybeLogEyeStats(uint32_t now);
   uint32_t nextBlinkMs_ = 0;
@@ -130,6 +143,8 @@ class NewoDisplay {
   bool winkLeft_ = false;
   AutonomousGazePhase autonomousGazePhase_ = AutonomousGazePhase::CHOOSE_TARGET;
   AutonomousEpisode autonomousEpisode_ = AutonomousEpisode::WAITING;
+  AutonomousExpression autonomousExpression_ = AutonomousExpression::NONE;
+  uint8_t autonomousExpressionIntensity_ = 0;
   uint32_t nextAutonomousEpisodeMs_ = 0;
   uint16_t autonomousEpisodeHoldMs_ = 0;
   uint8_t autonomousEpisodeStep_ = 0;
