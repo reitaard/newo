@@ -11,7 +11,9 @@ runtime signals / internal state
         -> AutonomousExpression + intensity
         -> EyePose target
         -> pose transition
-        -> gaze motion + blink openness
+        -> gaze motion
+        -> resolved EyeMotionOverlay
+        -> Phase-B blink state
         -> secondary effect
         -> renderer
 ```
@@ -51,12 +53,12 @@ CONFUSED
 SLEEPING
 ```
 
-`AutonomousExpression` is volatile runtime state and never mutates `faceStyle_`. The pose resolver is the only layer that converts an autonomous expression into an `EyePose`.
+`AutonomousExpression` is volatile runtime state and never mutates `faceStyle_`. The pose/motion resolver is the only layer that converts an autonomous expression into eye geometry or expression-specific secondary motion. It must never inspect `autonomousEpisode_` to decide what an expression looks like.
 
 This separation is a permanent design rule:
 
 ```text
-behavior episode != expression != pose != renderer
+behavior episode != expression != pose != motion != renderer
 ```
 
 Changing what CURIOUS looks like must not require editing `CURIOUS_SCAN`. Changing the timing of `CURIOUS_SCAN` must not require editing the CURIOUS pose.
@@ -82,6 +84,8 @@ Current easing vocabulary is intentionally small:
 - ease-in-out
 
 Add another easing mode only when a visible behavior cannot be expressed cleanly with these.
+
+Closure style is discrete even though eye geometry/openness is continuous. Therefore filled-to-curved transitions use a direction-aware handoff: closing keeps filled geometry until roughly 85% of the morph, while waking returns to filled geometry around 15%. Do not restore a generic midpoint switch; it produces a visible shape pop.
 
 ## Gaze
 
@@ -109,6 +113,24 @@ Small gaze changes and micro-corrections must remain direct and should not be in
 
 The approved hard envelope must be respected during anticipation and overshoot, not only at the final destination.
 
+Manual CLOSED, SLEEPING, and DETACHED do not use ordinary random gaze. DETACHED specifically preserves the former CLOSED semantics: its narrow slit eyes remain effectively stationary even though the generic manual gaze state continues to exist underneath.
+
+## Resolved motion overlay
+
+Transient shake, bounce, breathing, and small squash/stretch belong in `EyeMotionOverlay`, not in `drawFaceFrame()`.
+
+The overlay is compact resolved data:
+
+```text
+x/y offset
+left/right width delta
+left/right height delta
+```
+
+Operational states, manual faces, expression intent, or gaze state may contribute to the overlay before rendering. The renderer consumes the result without knowing why it was requested.
+
+Autonomous overlay logic must follow expression intent rather than behavior episode identity. For example, the autonomous confused shake is attached to `AutonomousExpression::CONFUSED`, not to `ALERT_CHECK`.
+
 ## Blink
 
 The Phase-B bilateral blink scheduler remains the sole owner of normal, double, long, and post-saccade blinks. Winks remain independent one-eye actions.
@@ -122,6 +144,8 @@ final openness = expression openness * blink openness
 A sleepy face must reopen to sleepy, not to fully neutral, after a blink.
 
 Behaviors may request an existing blink type, but they do not implement their own eyelid animation. `LOW_ENERGY` and `DROWSY_REST`, for example, request the existing long-blink path.
+
+`drawFaceFrame()` must not decide when blinks/winks start or advance the Phase-B scheduler directly. It services `updateBlinkBeforeFrame()`, uses the resolved blink state while drawing, then calls `advanceBlinkAfterFrame()`. Scheduling/phase logic belongs outside the renderer.
 
 ## Motion character
 
@@ -169,9 +193,9 @@ Manual `SLEEPING` and autonomous `AutonomousExpression::SLEEPING` both reuse the
 
 ## Renderer rule
 
-The renderer should be deliberately simple. It receives resolved pose, gaze, blink openness, and secondary effect, then draws once into the existing bounded 1-bit canvases.
+The renderer should be deliberately simple. It receives resolved pose, gaze, `EyeMotionOverlay`, blink openness, and secondary effect, then draws once into the existing bounded 1-bit canvases.
 
-The renderer must not know which autonomous episode produced the pose.
+The renderer must not know which autonomous episode or semantic expression produced those resolved values. It must contain no expression-specific shake/bounce/breathing logic and no blink scheduling logic.
 
 Behavior-specific motion may affect gaze scheduling, but new eye geometry must never be added as an `if (episode == ...)` renderer branch.
 
@@ -204,9 +228,10 @@ A new expression should normally require only:
 1. a new semantic face identifier when manual access is desired;
 2. a pose definition in the pose resolver;
 3. optional intensity mapping from internal state;
-4. optional behavior orchestration;
-5. optional secondary effect if the visual is not eye geometry;
-6. contract coverage and physical validation.
+4. optional resolved motion contribution;
+5. optional behavior orchestration;
+6. optional secondary effect if the visual is not eye geometry;
+7. contract coverage and physical validation.
 
 A new autonomous behavior should normally require only:
 
@@ -215,7 +240,7 @@ A new autonomous behavior should normally require only:
 3. gaze/blink/hold orchestration;
 4. no renderer geometry changes.
 
-If adding a face or behavior requires a new renderer branch, first check whether the missing concept belongs in `EyePose`, `NewoGazeMotion`, the blink scheduler, or the secondary-effect layer instead.
+If adding a face or behavior requires a new renderer branch, first check whether the missing concept belongs in `EyePose`, `NewoGazeMotion`, `EyeMotionOverlay`, the blink scheduler, or the secondary-effect layer instead.
 
 ## Physical acceptance
 
@@ -227,6 +252,7 @@ Before promoting a display architecture change to `main`:
 - the manual face resumes after the operational state ends;
 - autonomous expression intent clears on preemption rather than resuming stale;
 - CLOSED, DETACHED, and SLEEPING remain visually distinct;
+- DETACHED remains visually stationary rather than inheriting ordinary manual gaze;
 - `DROWSY_REST` visibly performs sleepy -> sleep -> wake without becoming persistent;
 - sleeping `ZZZ` stays inside the eye canvas and does not disturb clock/activity regions;
 - no display change introduces speaker underruns, voice instability, network stalls, or USB regressions;
