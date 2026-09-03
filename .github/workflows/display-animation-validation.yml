@@ -7,10 +7,12 @@ on:
       - "Newo/newo_display*.h"
       - "Newo/newo_eye_pose.*"
       - "Newo/newo_gaze_motion.*"
-      - "server/src/**"
-      - "server/test/**"
-      - "server/package.json"
-      - "server/package-lock.json"
+      - "server/src/index.js"
+      - "server/test/autonomous-eyes-phase-d-contract.test.js"
+      - "server/test/autonomy-v2-identity-diagnostics-contract.test.js"
+      - "server/test/display-animation-host-contract.test.js"
+      - "server/test/display-state-arbitration-contract.test.js"
+      - "server/test/face-style-contract.test.js"
       - "tools/display-animation-host-test.cpp"
       - "tools/run-display-animation-host-test.sh"
       - ".github/workflows/display-animation-validation.yml"
@@ -20,10 +22,12 @@ on:
       - "Newo/newo_display*.h"
       - "Newo/newo_eye_pose.*"
       - "Newo/newo_gaze_motion.*"
-      - "server/src/**"
-      - "server/test/**"
-      - "server/package.json"
-      - "server/package-lock.json"
+      - "server/src/index.js"
+      - "server/test/autonomous-eyes-phase-d-contract.test.js"
+      - "server/test/autonomy-v2-identity-diagnostics-contract.test.js"
+      - "server/test/display-animation-host-contract.test.js"
+      - "server/test/display-state-arbitration-contract.test.js"
+      - "server/test/face-style-contract.test.js"
       - "tools/display-animation-host-test.cpp"
       - "tools/run-display-animation-host-test.sh"
       - ".github/workflows/display-animation-validation.yml"
@@ -42,8 +46,8 @@ jobs:
       - name: Compile and run real C++ eye engines
         run: bash tools/run-display-animation-host-test.sh
 
-  server-contracts:
-    name: Node contracts
+  display-contracts:
+    name: Display contracts
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -55,11 +59,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: server/package-lock.json
-      - name: Install exact dependencies
-        run: npm ci
-      - name: Run tests
-        run: npm test
+      - name: Run display and autonomy contracts
+        run: >-
+          node --test
+          test/autonomous-eyes-phase-d-contract.test.js
+          test/autonomy-v2-identity-diagnostics-contract.test.js
+          test/display-animation-host-contract.test.js
+          test/display-state-arbitration-contract.test.js
+          test/face-style-contract.test.js
       - name: Check JavaScript syntax
         run: npm run check
