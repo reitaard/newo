@@ -20,6 +20,16 @@ test("Autonomy V2 keeps episode ownership while gaze and blink mechanics stay in
   assert.match(display, /void NewoDisplay::updateAutonomousEpisode\(uint32_t now\)[\s\S]*chooseAutonomousEpisode\(now\)/);
   assert.match(display, /void NewoDisplay::chooseAutonomousGazeTarget\(\)[\s\S]*random\(12, sideRangeX \+ 1\)/);
 
+  // Drowsy rest is a behavior progression: tired settles into sleepy before
+  // requesting the existing long blink. Sleeping/waking remain later steps.
+  const chooseEpisode = display.match(/void NewoDisplay::chooseAutonomousEpisode\(uint32_t now\) \{([\s\S]*?)\n\}\n\nvoid NewoDisplay::advanceAutonomousEpisode/);
+  const advanceEpisode = display.match(/void NewoDisplay::advanceAutonomousEpisode\(uint32_t now\) \{([\s\S]*?)\n\}\n\nvoid NewoDisplay::updateAutonomousEpisode/);
+  assert.ok(chooseEpisode && advanceEpisode, "episode behavior functions should remain discoverable");
+  assert.match(chooseEpisode[1], /case AutonomousEpisode::DROWSY_REST:[\s\S]*AutonomousExpression::TIRED, 82[\s\S]*NewoPresentationCue::LOW_ENERGY, 82/);
+  assert.match(advanceEpisode[1], /case AutonomousEpisode::DROWSY_REST:[\s\S]*autonomousEpisodeStep_ == 0[\s\S]*AutonomousExpression::SLEEPY, 88[\s\S]*autonomousEpisodeStep_ == 1[\s\S]*autonomousEpisodeBlinkRequested_ = true/);
+  assert.match(display, /autonomousEpisodeBlinkStarted_[\s\S]*autonomousEpisodeStep_ = 2[\s\S]*AutonomousEpisode::DROWSY_REST[\s\S]*AutonomousExpression::SLEEPING, 100[\s\S]*NewoPresentationCue::SLEEPING/);
+  assert.match(advanceEpisode[1], /autonomousEpisodeStep_ == 2[\s\S]*clearAutonomousPresentation\(\)[\s\S]*AutonomousExpression::SLEEPY, 88[\s\S]*autonomousEpisodeStep_ == 3[\s\S]*clearAutonomousExpression\(\)/);
+
   // Behaviors request blinks, but Phase B's dedicated service owns when and
   // how the existing blink state machine runs.
   assert.match(header, /void updateBlinkBeforeFrame\(uint32_t now, NewoDisplayMode activeMode\)/);

@@ -547,10 +547,10 @@ void NewoDisplay::chooseAutonomousEpisode(uint32_t now) {
                                  static_cast<int16_t>(random(-5, 4)), static_cast<uint16_t>(random(500, 901)));
       break;
     case AutonomousEpisode::DROWSY_REST:
-      setAutonomousExpression(AutonomousExpression::SLEEPY, 88);
-      requestAutonomousPresentation(NewoPresentationCue::LOW_ENERGY, 88, now);
+      setAutonomousExpression(AutonomousExpression::TIRED, 82);
+      requestAutonomousPresentation(NewoPresentationCue::LOW_ENERGY, 82, now);
       beginAutonomousEpisodeGaze(now, static_cast<int16_t>(random(-3, 4)),
-                                 static_cast<int16_t>(random(6, 10)),
+                                 static_cast<int16_t>(random(4, 9)),
                                  static_cast<uint16_t>(random(1'200, 1'801)));
       break;
     case AutonomousEpisode::WAITING: break;
@@ -578,6 +578,10 @@ void NewoDisplay::advanceAutonomousEpisode(uint32_t now) {
     case AutonomousEpisode::DROWSY_REST:
       if (autonomousEpisodeStep_ == 0) {
         autonomousEpisodeStep_ = 1;
+        setAutonomousExpression(AutonomousExpression::SLEEPY, 88);
+        beginAutonomousEpisodeGaze(now, 0, static_cast<int16_t>(random(6, 10)),
+                                   static_cast<uint16_t>(random(1'200, 1'801)));
+      } else if (autonomousEpisodeStep_ == 1) {
         autonomousEpisodeBlinkRequested_ = true;
       } else if (autonomousEpisodeStep_ == 2) {
         autonomousEpisodeStep_ = 3;
