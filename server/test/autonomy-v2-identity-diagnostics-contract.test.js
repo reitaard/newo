@@ -113,8 +113,18 @@ test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, blin
   assert.match(poseResolver, /case NewoFaceStyle::DETACHED:[\s\S]*leftHeight = pose\.rightHeight = 4/);
   assert.match(poseResolver, /faceStyle_ == NewoFaceStyle::DETACHED[\s\S]*overlay\.xOffset -= gazeX_[\s\S]*overlay\.yOffset -= gazeY_/);
   assert.match(poseResolver, /case NewoFaceStyle::SLEEPING:[\s\S]*NewoEyeClosureStyle::CURVED/);
-  assert.match(poseResolver, /case NewoFaceStyle::SKEPTICAL:[\s\S]*pose\.leftTopCut = 5;[\s\S]*pose\.rightTopCut = -12;/);
-  assert.match(poseResolver, /case NewoFaceStyle::SKEPTICAL:[\s\S]*pose\.leftWidth = 60;[\s\S]*pose\.rightWidth = 54;/);
+
+  const skeptical = poseResolver.match(/case NewoFaceStyle::SKEPTICAL: \{([\s\S]*?)\n      break;\n    \}/);
+  assert.ok(skeptical, "skeptical pose should be a directional pose block");
+  assert.match(skeptical[1], /direction = gazeTargetX_ < -5 \? -1 : gazeTargetX_ > 5 \? 1/);
+  const skepticalRight = skeptical[1].match(/if \(direction > 0\) \{([\s\S]*?)\n      \} else/);
+  const skepticalLeft = skeptical[1].match(/else \{([\s\S]*?)\n      \}/);
+  assert.ok(skepticalRight && skepticalLeft, "skeptical pose should mirror both gaze directions");
+  assert.match(skepticalRight[1], /leftWidth = 50[\s\S]*leftHeight = 24[\s\S]*leftTopCut = -12[\s\S]*rightWidth = 62[\s\S]*rightHeight = 38/);
+  assert.doesNotMatch(skepticalRight[1], /rightTopCut/);
+  assert.match(skepticalLeft[1], /leftWidth = 62[\s\S]*leftHeight = 38[\s\S]*rightWidth = 50[\s\S]*rightHeight = 24[\s\S]*rightTopCut = -12/);
+  assert.doesNotMatch(skepticalLeft[1], /leftTopCut/);
+
   assert.match(poseResolver, /autonomousExpression_ == AutonomousExpression::SLEEPING \? SecondaryEffect::ZZZ/);
   assert.match(poseResolver, /void NewoDisplay::drawZ[\s\S]*if \(size < 5\) return;[\s\S]*fillRect\(x, y, size \+ 1, 2, 1\)/);
   assert.match(poseResolver, /effect == SecondaryEffect::ZZZ[\s\S]*index < 2[\s\S]*index == 0 \? 7 : 10/);
