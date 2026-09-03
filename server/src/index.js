@@ -344,7 +344,28 @@ app.get("/health", async () => {
   return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), device: { connected: device.connected, id: device.id, connected_at: device.connected_at, last_seen: device.last_seen, firmware: device.hello?.firmware ?? null, autonomy_revision: device.hello?.autonomy_revision ?? null, chip: device.hello?.chip ?? null } };
 });
 
-const TELEGRAM_COMMANDS = [];
+const TELEGRAM_COMMANDS = [
+  { command: "status", description: "Device status" },
+  { command: "health", description: "System health" },
+  { command: "face", description: "Choose a display face" },
+  { command: "face_default", description: "Enable autonomous face" },
+  { command: "face_closed", description: "Closed eyelids" },
+  { command: "face_detached", description: "Detached slit eyes" },
+  { command: "face_sleeping", description: "Sleeping face with ZZZ" },
+  { command: "face_skeptical", description: "Skeptical face" },
+  { command: "eco", description: "Toggle eco display" },
+  { command: "clock", description: "Toggle clock" },
+  { command: "voice", description: "Toggle voice" },
+  { command: "vs", description: "Voice status" },
+  { command: "speaker", description: "Toggle speaker" },
+  { command: "volume", description: "Set speaker volume" },
+  { command: "mute", description: "Toggle mute" },
+  { command: "speak", description: "Speak text" },
+  { command: "ping", description: "Measure device latency" },
+  { command: "logs", description: "Recent device logs" },
+  { command: "errors", description: "Warnings and errors" },
+  { command: "reboot", description: "Restart Newo" },
+];
 function commandTrace(ctx) { return ctx.newoTrace ?? null; }
 async function commandReply(ctx, text, category = "reply", requestId = null, options = {}) {
   const trace = commandTrace(ctx);
