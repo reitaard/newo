@@ -19,11 +19,13 @@ CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 
-# Keep the physically stable OV3660 native-JPEG path.
+# Recognition enrollment can produce much larger VGA JPEGs at close range than
+# the room-range detector soak. Keep quality 12 for facial detail and give the
+# OV3660 enough headroom instead of trading recognition detail for compression.
 CONFIG_CAMERA_PSRAM_DMA=n
 CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE_AUTO=n
 CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE_CUSTOM=y
-CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE=131072
+CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE=262144
 
 # Product-gate detector: ESPDet-224 only. RANGE and MSR/MNP are not used here.
 CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA=y
