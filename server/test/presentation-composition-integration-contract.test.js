@@ -20,8 +20,10 @@ test("behavior explicitly composes reusable effects and captions without couplin
   assert.match(header, /autonomousEffectUntilMs_/);
   assert.match(header, /autonomousCaptionUntilMs_/);
 
-  // Entropy belongs to behavior/runtime; the pure policy remains Arduino-free.
-  assert.match(presentationRuntime, /newoComposePresentation\([\s\S]*random\(0, 256\)/);
+  // Entropy belongs to behavior/runtime; use an unbiased 0..99 roll so policy
+  // thresholds correspond directly to their intended percentages.
+  assert.match(presentationRuntime, /newoComposePresentation\([\s\S]*random\(0, 100\)/);
+  assert.doesNotMatch(presentationRuntime, /random\(0, 256\)/);
   assert.match(presentationRuntime, /\[EYES\] presentation effect=%s caption=%s/);
   assert.doesNotMatch(presentationPolicy, /random\(|millis\(|Arduino/);
 

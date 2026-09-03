@@ -38,7 +38,7 @@ void NewoDisplay::clearAutonomousPresentation() {
 void NewoDisplay::requestAutonomousPresentation(NewoPresentationCue cue, uint8_t intensity,
                                                  uint32_t now) {
   autonomousPresentation_ = newoComposePresentation(
-      cue, intensity, static_cast<uint8_t>(random(0, 256)));
+      cue, intensity, static_cast<uint8_t>(random(0, 100)));
   autonomousPresentationStartedMs_ = now;
   autonomousEffectUntilMs_ = autonomousPresentation_.effect != NewoSecondaryEffect::NONE &&
                                      autonomousPresentation_.effectDurationMs != 0
