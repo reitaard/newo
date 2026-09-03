@@ -325,6 +325,29 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
       return;
     }
 
+    if (strcmp(mode, "caption") == 0) {
+      NewoFaceCaption caption = NewoFaceCaption::NONE;
+      bool captionSelection = true;
+      if (strcmp(text, "none") == 0) caption = NewoFaceCaption::NONE;
+      else if (strcmp(text, "huh") == 0) caption = NewoFaceCaption::HUH;
+      else if (strcmp(text, "woah") == 0) caption = NewoFaceCaption::WOAH;
+      else if (strcmp(text, "hmm") == 0) caption = NewoFaceCaption::HMM;
+      else if (strcmp(text, "hey") == 0) caption = NewoFaceCaption::HEY;
+      else captionSelection = false;
+
+      const int32_t durationMs = doc["duration_ms"] | 4'000;
+      if (!captionSelection || (caption != NewoFaceCaption::NONE &&
+          (durationMs < 500 || durationMs > 8'000)) ||
+          !display_.setFaceCaption(caption, caption == NewoFaceCaption::NONE
+                                               ? 0U
+                                               : static_cast<uint32_t>(durationMs))) {
+        NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "DISPLAY_INVALID_CAPTION");
+        return;
+      }
+      sendDisplayAck(requestId, text);
+      return;
+    }
+
     bool faceSelection = true;
     NewoFaceStyle faceStyle = NewoFaceStyle::NEUTRAL;
     if (strcmp(mode, "default") == 0) faceStyle = NewoFaceStyle::NEUTRAL;

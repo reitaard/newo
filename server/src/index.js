@@ -113,6 +113,7 @@ const OFFLINE_GRACE_MS = 12_000;
 const REBOOT_RETURN_TIMEOUT_MS = 60_000;
 const FACE_STYLES = ["default", "happy", "angry", "tired", "curious", "confused", "laugh", "sweat", "cyclops", "closed", "detached", "sleeping", "skeptical", "wink_left", "wink_right", "look_left", "look_right", "look_up", "look_down", "look_up_left", "look_up_right", "look_down_left", "look_down_right", "surprised", "sleepy"];
 const SECONDARY_EFFECTS = ["none", "question", "exclamation", "surprise", "ellipsis", "sweat", "zzz"];
+const FACE_CAPTIONS = ["none", "huh", "woah", "hmm", "hey"];
 let bot = null;
 let pendingReboot = null;
 let shuttingDown = false;
@@ -350,6 +351,7 @@ const TELEGRAM_COMMANDS = [
   { command: "health", description: "System health" },
   { command: "face", description: "Choose a display face" },
   { command: "effect", description: "Test a secondary effect" },
+  { command: "caption", description: "Test a face caption" },
   { command: "face_default", description: "Enable autonomous face" },
   { command: "face_closed", description: "Closed eyelids" },
   { command: "face_detached", description: "Detached slit eyes" },
@@ -426,6 +428,25 @@ async function handleEffectCommand(ctx) {
     return commandReply(ctx, commandMessage("effect", [quote([detail])]), "response", request.requestId, { newoSpeak: false });
   }
   return commandReply(ctx, commandMessage("effect", [quote(["Effect update was not acknowledged."])]), result.kind, request.requestId, { newoSpeak: false });
+}
+
+function faceCaptionCommand(caption) { return `/caption ${caption}`; }
+
+async function handleCaptionCommand(ctx) {
+  const input = String(ctx.match ?? "").trim().toLowerCase();
+  if (!input) return commandReply(ctx, commandMessage("caption", [quote(FACE_CAPTIONS.map(faceCaptionCommand))]), "usage", null, { newoSpeak: false });
+  if (!FACE_CAPTIONS.includes(input)) {
+    return commandReply(ctx, commandMessage("caption", [quote(["Choose one:", ...FACE_CAPTIONS.map(faceCaptionCommand)])]), "usage", null, { newoSpeak: false });
+  }
+  const durationMs = input === "none" ? 0 : 4_000;
+  const request = sendDeviceRequest("display_set", "display_ack", { mode: "caption", text: input, duration_ms: durationMs }, commandTrace(ctx));
+  if (request.kind === "offline") return commandReply(ctx, statusMessage("caption", "offline"), "offline", null, { newoSpeak: false });
+  const result = await request.promise;
+  if (result.kind === "response") {
+    const detail = input === "none" ? `Caption: ${bold("cleared")}` : `Caption: ${bold(input)} · ${bold(4)} ${italic("seconds")}`;
+    return commandReply(ctx, commandMessage("caption", [quote([detail])]), "response", request.requestId, { newoSpeak: false });
+  }
+  return commandReply(ctx, commandMessage("caption", [quote(["Caption update was not acknowledged."])]), result.kind, request.requestId, { newoSpeak: false });
 }
 
 async function handleStatusCommand(ctx) {
@@ -665,6 +686,7 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["face", "f"], handleFaceCommand);
   for (const style of FACE_STYLES) bot.command(`face_${style}`, (ctx) => handleFaceCommand(ctx, style));
   bot.command(["effect", "fx"], handleEffectCommand);
+  bot.command(["caption", "cap"], handleCaptionCommand);
   bot.command("eco", primaryModeHandlers.eco);
   bot.command("clock", primaryModeHandlers.clock);
   bot.command(["voice", "v"], primaryModeHandlers.voice);

@@ -189,6 +189,22 @@ test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, blin
   assert.match(poseResolver, /drawFaceCaption\(now, faceCaptionFor\(now, effectiveMode\(now\)\)\)/);
   assert.doesNotMatch(poseResolver, /CURIOUS.*NewoFaceCaption|SURPRISED.*NewoFaceCaption|CONFUSED.*NewoFaceCaption/);
 
+  // Phase F transport mirrors the effect test path but keeps a distinct
+  // caption namespace and remains silent so SPEAKING cannot cover the test.
+  assert.match(cloud, /strcmp\(mode, "caption"\) == 0/);
+  for (const [name, caption] of [["huh", "HUH"], ["woah", "WOAH"], ["hmm", "HMM"], ["hey", "HEY"]]) {
+    assert.match(cloud, new RegExp(`strcmp\\(text, "${name}"\\).*NewoFaceCaption::${caption}`));
+  }
+  assert.match(cloud, /display_\.setFaceCaption\(/);
+  assert.match(cloud, /durationMs < 500 \|\| durationMs > 8'000/);
+  assert.match(server, /const FACE_CAPTIONS = \["none", "huh", "woah", "hmm", "hey"\]/);
+  assert.match(server, /\{ command: "caption", description: "Test a face caption" \}/);
+  assert.match(server, /sendDeviceRequest\("display_set", "display_ack", \{ mode: "caption", text: input, duration_ms: durationMs \}/);
+  assert.match(server, /bot\.command\(\["caption", "cap"\], handleCaptionCommand\)/);
+  const captionHandler = server.match(/async function handleCaptionCommand\(ctx\) \{([\s\S]*?)\n\}/);
+  assert.ok(captionHandler, "Telegram caption handler should be discoverable");
+  assert.match(captionHandler[1], /newoSpeak: false/);
+
   assert.match(display, /case AutonomousEpisode::DROWSY_REST:[\s\S]*AutonomousExpression::SLEEPY/);
   assert.match(display, /AutonomousEpisode::DROWSY_REST[\s\S]*AutonomousExpression::SLEEPING, 100/);
   assert.match(cloud, /strcmp\(mode, "detached"\)/);
