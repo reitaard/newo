@@ -48,6 +48,11 @@ uint8_t saturatingAdd(uint8_t value, uint8_t amount) {
   return result > 100 ? 100 : static_cast<uint8_t>(result);
 }
 
+uint8_t clampPercent(int value) {
+  if (value < 0) return 0;
+  return value > 100 ? 100 : static_cast<uint8_t>(value);
+}
+
 void formatUptime(char* out, size_t size, uint32_t ms) {
   const uint32_t seconds = ms / 1000;
   snprintf(out, size, "%luh %02lum", static_cast<unsigned long>(seconds / 3600),
@@ -235,6 +240,20 @@ const char* NewoDisplay::episodeName(AutonomousEpisode episode) {
   return "UNKNOWN";
 }
 
+const char* NewoDisplay::expressionName(AutonomousExpression expression) {
+  switch (expression) {
+    case AutonomousExpression::CURIOUS: return "CURIOUS";
+    case AutonomousExpression::HAPPY: return "HAPPY";
+    case AutonomousExpression::TIRED: return "TIRED";
+    case AutonomousExpression::SLEEPY: return "SLEEPY";
+    case AutonomousExpression::SURPRISED: return "SURPRISED";
+    case AutonomousExpression::CONFUSED: return "CONFUSED";
+    case AutonomousExpression::SLEEPING: return "SLEEPING";
+    case AutonomousExpression::NONE: return "NONE";
+  }
+  return "UNKNOWN";
+}
+
 void NewoDisplay::recordGazeTarget(uint16_t holdMs) {
   ++eyeGazeEvents_;
   const int16_t absoluteX = gazeTargetX_ < 0 ? -gazeTargetX_ : gazeTargetX_;
@@ -360,6 +379,19 @@ void NewoDisplay::noteError() {
   stress_ = saturatingAdd(stress_, 12);
 }
 
+void NewoDisplay::setAutonomousExpression(AutonomousExpression expression, uint8_t intensity) {
+  if (intensity > 100) intensity = 100;
+  if (expression == autonomousExpression_ && intensity == autonomousExpressionIntensity_) return;
+  autonomousExpression_ = expression;
+  autonomousExpressionIntensity_ = expression == AutonomousExpression::NONE ? 0 : intensity;
+  Serial.printf("[EYES] expr=%s intensity=%u\n", expressionName(autonomousExpression_),
+                static_cast<unsigned>(autonomousExpressionIntensity_));
+}
+
+void NewoDisplay::clearAutonomousExpression() {
+  setAutonomousExpression(AutonomousExpression::NONE, 0);
+}
+
 void NewoDisplay::updateAutonomousState(uint32_t now) {
   if (static_cast<int32_t>(now - nextAutonomousStateMs_) >= 0) {
     nextAutonomousStateMs_ = now + kAutonomousStateUpdateMs;
@@ -386,6 +418,7 @@ void NewoDisplay::updateAutonomousState(uint32_t now) {
 
 void NewoDisplay::resetAutonomousEpisode(uint32_t now) {
   autonomousEpisode_ = AutonomousEpisode::WAITING;
+  clearAutonomousExpression();
   autonomousEpisodeHoldMs_ = 0;
   autonomousEpisodeStep_ = 0;
   autonomousEpisodeDirection_ = 1;
@@ -420,6 +453,7 @@ void NewoDisplay::finishAutonomousEpisode(uint32_t now) {
     Serial.printf("[EYES] episode=%s done\n", episodeName(completedEpisode));
   }
   autonomousEpisode_ = AutonomousEpisode::WAITING;
+  clearAutonomousExpression();
   autonomousEpisodeHoldMs_ = 0;
   autonomousEpisodeStep_ = 0;
   autonomousEpisodeBlinkRequested_ = false;
@@ -486,20 +520,34 @@ void NewoDisplay::chooseAutonomousEpisode(uint32_t now) {
   autonomousEpisodeBlinkStarted_ = false;
   ++eyeEpisodeStarts_;
   Serial.printf("[EYES] episode=%s start\n", episodeName(autonomousEpisode_));
+
   switch (autonomousEpisode_) {
-    case AutonomousEpisode::CURIOUS_SCAN:
+    case AutonomousEpisode::CURIOUS_SCAN: {
+      const int curiosityDelta = curiosity_ > kCuriosityBaseline ? static_cast<int>(curiosity_ - kCuriosityBaseline) : 0;
+      setAutonomousExpression(AutonomousExpression::CURIOUS, clampPercent(72 + curiosityDelta * 3));
       beginAutonomousEpisodeGaze(now, static_cast<int16_t>(autonomousEpisodeDirection_ * random(16, 21)),
                                  static_cast<int16_t>(random(-4, 5)), static_cast<uint16_t>(random(800, 1'301)));
       break;
-    case AutonomousEpisode::LOW_ENERGY:
+    }
+    case AutonomousEpisode::LOW_ENERGY: {
+      const int lowEnergy = energy_ < 70 ? static_cast<int>(70 - energy_) : 0;
+      const bool drowsy = stage == InactivityStage::DROWSY;
+      setAutonomousExpression(drowsy ? AutonomousExpression::SLEEPY : AutonomousExpression::TIRED,
+                              drowsy ? clampPercent(88 + lowEnergy / 2) : clampPercent(65 + lowEnergy));
       beginAutonomousEpisodeGaze(now, static_cast<int16_t>(random(-4, 5)), static_cast<int16_t>(random(4, 12)),
-                                 static_cast<uint16_t>(stage == InactivityStage::DROWSY ? random(2'200, 3'801) : random(1'600, 2'801)));
+                                 static_cast<uint16_t>(drowsy ? random(2'200, 3'801) : random(1'600, 2'801)));
       break;
+    }
     case AutonomousEpisode::SOCIAL_ATTENTION:
+      setAutonomousExpression(AutonomousExpression::HAPPY,
+                              clampPercent(55 + static_cast<int>(social_) / 2));
       beginAutonomousEpisodeGaze(now, static_cast<int16_t>(random(-3, 4)), static_cast<int16_t>(random(-2, 3)),
                                  static_cast<uint16_t>(random(1'600, 2'801)));
       break;
     case AutonomousEpisode::ALERT_CHECK:
+      setAutonomousExpression(autonomousEpisodeDirection_ > 0 ? AutonomousExpression::SURPRISED
+                                                              : AutonomousExpression::CONFUSED,
+                              clampPercent(70 + static_cast<int>(stress_) * 2));
       beginAutonomousEpisodeGaze(now, static_cast<int16_t>(autonomousEpisodeDirection_ * random(16, 21)),
                                  static_cast<int16_t>(random(-5, 4)), static_cast<uint16_t>(random(500, 901)));
       break;
