@@ -6,6 +6,7 @@ on:
       - goouuu-vision-bench
       - goouuu-vision-native-jpeg
       - goouuu-vision-v6-stable
+      - goouuu-face-recognition-test
     paths:
       - experiments/goouuu-vision-bench/**
       - .github/workflows/goouuu-vision-bench.yml
