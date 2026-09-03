@@ -113,9 +113,11 @@ test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, blin
   assert.match(poseResolver, /case NewoFaceStyle::DETACHED:[\s\S]*leftHeight = pose\.rightHeight = 4/);
   assert.match(poseResolver, /faceStyle_ == NewoFaceStyle::DETACHED[\s\S]*overlay\.xOffset -= gazeX_[\s\S]*overlay\.yOffset -= gazeY_/);
   assert.match(poseResolver, /case NewoFaceStyle::SLEEPING:[\s\S]*NewoEyeClosureStyle::CURVED/);
-  assert.match(poseResolver, /case NewoFaceStyle::SKEPTICAL:/);
+  assert.match(poseResolver, /case NewoFaceStyle::SKEPTICAL:[\s\S]*pose\.leftTopCut = 5;[\s\S]*pose\.rightTopCut = -12;/);
+  assert.match(poseResolver, /case NewoFaceStyle::SKEPTICAL:[\s\S]*pose\.leftWidth = 60;[\s\S]*pose\.rightWidth = 54;/);
   assert.match(poseResolver, /autonomousExpression_ == AutonomousExpression::SLEEPING \? SecondaryEffect::ZZZ/);
-  assert.match(poseResolver, /drawZ\(/);
+  assert.match(poseResolver, /void NewoDisplay::drawZ[\s\S]*if \(size < 5\) return;[\s\S]*fillRect\(x, y, size \+ 1, 2, 1\)/);
+  assert.match(poseResolver, /effect == SecondaryEffect::ZZZ[\s\S]*index < 2[\s\S]*index == 0 \? 7 : 10/);
   assert.match(display, /case AutonomousEpisode::DROWSY_REST:[\s\S]*AutonomousExpression::SLEEPY/);
   assert.match(display, /AutonomousEpisode::DROWSY_REST[\s\S]*AutonomousExpression::SLEEPING, 100/);
   assert.match(cloud, /strcmp\(mode, "detached"\)/);
