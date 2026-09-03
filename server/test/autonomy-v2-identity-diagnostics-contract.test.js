@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 
 const source = async (path) => readFile(new URL(path, import.meta.url), "utf8");
 
-test("Autonomy V2 procedural eye engine keeps ownership, motion, and effects separated", async () => {
+test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, and effects separated", async () => {
   const [config, display, header, poseHeader, poseSource, poseResolver, cloud, ino, server] = await Promise.all([
     source("../../Newo/newo_config.h"),
     source("../../Newo/newo_display.cpp"),
@@ -36,6 +36,17 @@ test("Autonomy V2 procedural eye engine keeps ownership, motion, and effects sep
   assert.match(poseSource, /blend\(const NewoEyePose& neutral/);
   assert.doesNotMatch(poseSource, /malloc|new\s|std::vector|std::map/);
 
+  // Episodes emit semantic expression intent. Only the pose resolver converts
+  // that intent to geometry; it must not switch on behavior episodes.
+  assert.match(header, /enum class AutonomousExpression[\s\S]*CURIOUS[\s\S]*HAPPY[\s\S]*TIRED[\s\S]*SLEEPY[\s\S]*SURPRISED[\s\S]*CONFUSED[\s\S]*SLEEPING/);
+  assert.match(header, /AutonomousExpression autonomousExpression_/);
+  assert.match(display, /setAutonomousExpression\(AutonomousExpression::CURIOUS/);
+  assert.match(display, /setAutonomousExpression\(AutonomousExpression::HAPPY/);
+  assert.match(display, /setAutonomousExpression\(AutonomousExpression::SLEEPING, 100\)/);
+  assert.match(poseResolver, /switch \(autonomousExpression_\)/);
+  assert.doesNotMatch(poseResolver, /switch \(autonomousEpisode_\)/);
+  assert.match(poseResolver, /NewoEyePoseEngine::blend\(neutral, target, autonomousExpressionIntensity_\)/);
+
   // Renderer consumes resolved pose + gaze + blink; expressions are not drawn by episode cases.
   assert.match(header, /NewoEyePoseEngine eyePoseEngine_/);
   assert.match(display, /resolveEyePose\(now, activeMode\)/);
@@ -56,17 +67,20 @@ test("Autonomy V2 procedural eye engine keeps ownership, motion, and effects sep
   assert.match(poseResolver, /pose\.leftHeight = 30/);
   assert.match(poseResolver, /pose\.rightWidth = 68/);
   assert.match(poseResolver, /pose\.rightHeight = 50/);
-  assert.match(poseResolver, /NewoEyePoseEngine::blend\(neutral, target/);
 
-  // Face semantics and secondary effects are explicit and independent.
+  // CLOSED/DETACHED/SLEEPING semantics are explicit; sleep effects remain
+  // independent and DROWSY_REST is an orchestrated behavior, not a face renderer.
   assert.match(header, /DETACHED, SLEEPING, SKEPTICAL/);
+  assert.match(header, /DROWSY_REST/);
   assert.match(header, /SecondaryEffect : uint8_t \{ NONE, ZZZ, SWEAT \}/);
   assert.match(poseResolver, /case NewoFaceStyle::CLOSED:[\s\S]*NewoEyeClosureStyle::CURVED/);
   assert.match(poseResolver, /case NewoFaceStyle::DETACHED:[\s\S]*leftHeight = pose\.rightHeight = 4/);
   assert.match(poseResolver, /case NewoFaceStyle::SLEEPING:[\s\S]*NewoEyeClosureStyle::CURVED/);
   assert.match(poseResolver, /case NewoFaceStyle::SKEPTICAL:/);
-  assert.match(poseResolver, /SecondaryEffect::ZZZ/);
+  assert.match(poseResolver, /autonomousExpression_ == AutonomousExpression::SLEEPING \? SecondaryEffect::ZZZ/);
   assert.match(poseResolver, /drawZ\(/);
+  assert.match(display, /case AutonomousEpisode::DROWSY_REST:[\s\S]*AutonomousExpression::SLEEPY/);
+  assert.match(display, /AutonomousEpisode::DROWSY_REST[\s\S]*AutonomousExpression::SLEEPING, 100/);
   assert.match(cloud, /strcmp\(mode, "detached"\)/);
   assert.match(cloud, /strcmp\(mode, "sleeping"\)/);
   assert.match(cloud, /strcmp\(mode, "skeptical"\)/);
@@ -78,4 +92,5 @@ test("Autonomy V2 procedural eye engine keeps ownership, motion, and effects sep
   assert.match(display, /eyeDoubleBlinkEvents_/);
   assert.match(display, /eyeEpisodeCompletions_/);
   assert.match(display, /\[EYES_STATS\]/);
+  assert.match(display, /\[EYES\] expr=%s intensity=%u/);
 });
