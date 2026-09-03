@@ -209,12 +209,23 @@ NewoDisplay::EyeMotionOverlay NewoDisplay::resolveEyeMotionOverlay(uint32_t now,
     overlay.xOffset += static_cast<int16_t>(sinf(static_cast<float>(now - modeStartedMs_) * 0.075f) * 4.0f);
   }
 
+  // Autonomous motion follows expression intent rather than peeking back into
+  // the behavior episode that produced it. ALERT_CHECK's confused branch is
+  // therefore just a CONFUSED expression with its own secondary shake.
   if (mode == NewoDisplayMode::IDLE && autoFaceEnabled_ &&
-      autonomousEpisode_ == AutonomousEpisode::ALERT_CHECK && autonomousEpisodeDirection_ < 0) {
+      autonomousExpression_ == AutonomousExpression::CONFUSED) {
     overlay.xOffset += static_cast<int16_t>(sinf(static_cast<float>(now) * 0.055f) * 6.0f);
   }
 
   if (mode == NewoDisplayMode::IDLE && !autoFaceEnabled_) {
+    // DETACHED preserves the old CLOSED semantics: its slit eyes do not look
+    // around. Cancel the generic manual-gaze offset while keeping subtle base
+    // breathing motion from the overlay.
+    if (faceStyle_ == NewoFaceStyle::DETACHED) {
+      overlay.xOffset -= gazeX_;
+      overlay.yOffset -= gazeY_;
+    }
+
     const uint32_t styleBurstMs = (now - modeStartedMs_) % 2'200;
     if (faceStyle_ == NewoFaceStyle::CONFUSED && styleBurstMs < 500) {
       overlay.xOffset += static_cast<int16_t>(sinf(static_cast<float>(styleBurstMs) * 0.075f) * 20.0f);
