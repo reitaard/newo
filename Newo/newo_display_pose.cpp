@@ -100,20 +100,30 @@ NewoEyePose NewoDisplay::resolveManualEyePose(NewoFaceStyle style) const {
       pose.openness = 0;
       pose.closureStyle = NewoEyeClosureStyle::CURVED;
       break;
-    case NewoFaceStyle::SKEPTICAL:
-      // Skepticism is primarily eyelid attitude rather than a crude size
-      // mismatch. Both eyes participate: one stays more open with a mild
-      // angled lid while the smaller eye gets a much sharper critical squint.
-      pose.leftWidth = 60;
-      pose.leftHeight = 35;
-      pose.rightWidth = 54;
-      pose.rightHeight = 28;
-      pose.gap = 20;
-      pose.leftYOffset = -2;
-      pose.rightYOffset = 2;
-      pose.leftTopCut = 5;
-      pose.rightTopCut = -12;
+    case NewoFaceStyle::SKEPTICAL: {
+      // Skepticism borrows curiosity's directional pose idea: the eye toward
+      // attention is large and fully rounded, while the opposite eye is a
+      // smaller sharp squint. Crossing gaze direction swaps those roles.
+      const int16_t direction = gazeTargetX_ < -5 ? -1 : gazeTargetX_ > 5 ? 1 :
+                                (gazeX_ < 0 ? -1 : 1);
+      pose.gap = 22;
+      if (direction > 0) {
+        pose.leftWidth = 50;
+        pose.leftHeight = 24;
+        pose.leftYOffset = -4;
+        pose.leftTopCut = -12;
+        pose.rightWidth = 62;
+        pose.rightHeight = 38;
+      } else {
+        pose.leftWidth = 62;
+        pose.leftHeight = 38;
+        pose.rightWidth = 50;
+        pose.rightHeight = 24;
+        pose.rightYOffset = -4;
+        pose.rightTopCut = -12;
+      }
       break;
+    }
     case NewoFaceStyle::SURPRISED:
       pose.leftWidth = pose.rightWidth = 54;
       pose.leftHeight = pose.rightHeight = 54;
