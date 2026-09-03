@@ -921,58 +921,26 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   }
   updateGaze(now);
 
-  const bool sleeping = activeMode == NewoDisplayMode::IDLE &&
-      ((!autoFaceEnabled_ && faceStyle_ == NewoFaceStyle::SLEEPING) ||
-       (autoFaceEnabled_ && autonomousExpression_ == AutonomousExpression::SLEEPING));
-  const float phase = static_cast<float>(now % (sleeping ? 6'000 : 3'000)) /
-                      static_cast<float>(sleeping ? 6'000 : 3'000) * 6.2831853f;
-  const int16_t floatY = static_cast<int16_t>(sinf(phase) * (sleeping ? 1.0f : speakerActive_ ? 2.0f : 1.0f));
-
   const NewoEyePose targetPose = resolveEyePose(now, activeMode);
   eyePoseEngine_.transitionTo(targetPose, now, eyePoseTransitionMs(activeMode), eyePoseEasing(activeMode));
   const NewoEyePose& pose = eyePoseEngine_.update(now);
+  const EyeMotionOverlay motion = resolveEyeMotionOverlay(now, activeMode);
 
-  int16_t leftW = pose.leftWidth;
-  int16_t rightW = pose.rightWidth;
+  const bool cyclops = pose.rightWidth == 0;
+  int16_t leftW = static_cast<int16_t>(pose.leftWidth + motion.leftWidthDelta);
+  int16_t rightW = cyclops ? 0 : static_cast<int16_t>(pose.rightWidth + motion.rightWidthDelta);
+  if (leftW < 2) leftW = 2;
+  if (!cyclops && rightW < 2) rightW = 2;
   const int16_t gap = pose.gap;
-  const bool cyclops = rightW == 0;
-  const bool expressiveSaccade = activeMode == NewoDisplayMode::IDLE && autoFaceEnabled_ && gazeMotion_.expressive();
-  if (expressiveSaccade && !cyclops) {
-    leftW += 2;
-    rightW += 2;
-  }
-  if (activeMode == NewoDisplayMode::THINKING) {
-    if (gazeX_ < -7) leftW += 7;
-    if (gazeX_ > 7) rightW += 7;
-  }
-
-  int16_t shake = 0;
-  if (activeMode == NewoDisplayMode::ERROR && now - modeStartedMs_ < 520) {
-    shake = static_cast<int16_t>(sinf(static_cast<float>(now - modeStartedMs_) * 0.075f) * 4.0f);
-  }
-  if (activeMode == NewoDisplayMode::IDLE && autoFaceEnabled_ &&
-      autonomousEpisode_ == AutonomousEpisode::ALERT_CHECK && autonomousEpisodeDirection_ < 0) {
-    shake += static_cast<int16_t>(sinf(static_cast<float>(now) * 0.055f) * 6.0f);
-  }
-  const uint32_t styleBurstMs = (now - modeStartedMs_) % 2'200;
-  if (activeMode == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CONFUSED && styleBurstMs < 500) {
-    shake += static_cast<int16_t>(sinf(static_cast<float>(styleBurstMs) * 0.075f) * 20.0f);
-  }
-  int16_t extraVertical = 0;
-  if (activeMode == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::LAUGH && styleBurstMs < 500) {
-    extraVertical = static_cast<int16_t>(sinf(static_cast<float>(styleBurstMs) * 0.075f) * 5.0f);
-  }
 
   uint8_t blinkOpen = 100;
   if (blinkPhase_ == BlinkPhase::HALF_CLOSED || blinkPhase_ == BlinkPhase::HALF_OPEN) blinkOpen = 40;
   else if (blinkPhase_ == BlinkPhase::CLOSED) blinkOpen = 7;
   const uint16_t combinedOpen = static_cast<uint16_t>(pose.openness) * blinkOpen / 100U;
-  int16_t leftBaseHeight = pose.leftHeight;
-  int16_t rightBaseHeight = pose.rightHeight;
-  if (expressiveSaccade && pose.closureStyle == NewoEyeClosureStyle::FILLED) {
-    if (leftBaseHeight > 8) leftBaseHeight -= 2;
-    if (rightBaseHeight > 8) rightBaseHeight -= 2;
-  }
+  int16_t leftBaseHeight = static_cast<int16_t>(pose.leftHeight + motion.leftHeightDelta);
+  int16_t rightBaseHeight = static_cast<int16_t>(pose.rightHeight + motion.rightHeightDelta);
+  if (leftBaseHeight < 2) leftBaseHeight = 2;
+  if (rightBaseHeight < 2) rightBaseHeight = 2;
   int16_t leftHeight = static_cast<int16_t>(leftBaseHeight * combinedOpen / 100U);
   int16_t rightHeight = static_cast<int16_t>(rightBaseHeight * combinedOpen / 100U);
   if (pose.closureStyle == NewoEyeClosureStyle::FILLED) {
@@ -981,22 +949,21 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
   }
 
   if (cyclops) {
+    const int16_t x = (kEyeCanvasWidth - leftW) / 2 + gazeX_ + motion.xOffset;
     if (pose.closureStyle == NewoEyeClosureStyle::CURVED) {
-      const int16_t x = (kEyeCanvasWidth - leftW) / 2 + gazeX_ + shake;
-      const int16_t y = kEyeCanvasHeight / 2 + gazeY_ + floatY + pose.leftYOffset + extraVertical;
+      const int16_t y = kEyeCanvasHeight / 2 + gazeY_ + motion.yOffset + pose.leftYOffset;
       drawClosedEyeCurve(x, y, leftW);
     } else {
-      const int16_t x = (kEyeCanvasWidth - leftW) / 2 + gazeX_ + shake;
-      int16_t y = (kEyeCanvasHeight - leftBaseHeight) / 2 + gazeY_ + floatY + pose.leftYOffset + extraVertical;
+      int16_t y = (kEyeCanvasHeight - leftBaseHeight) / 2 + gazeY_ + motion.yOffset + pose.leftYOffset;
       y += (leftBaseHeight - leftHeight) / 2;
       eyeCanvas_.fillRoundRect(x, y, leftW, leftHeight, leftHeight > 3 ? leftHeight / 2 : 1, 1);
     }
   } else {
     const int16_t totalWidth = leftW + gap + rightW;
-    const int16_t leftX = (kEyeCanvasWidth - totalWidth) / 2 + gazeX_ + shake;
+    const int16_t leftX = (kEyeCanvasWidth - totalWidth) / 2 + gazeX_ + motion.xOffset;
     const int16_t rightX = leftX + leftW + gap;
-    int16_t leftY = (kEyeCanvasHeight - leftBaseHeight) / 2 + gazeY_ + floatY + pose.leftYOffset + extraVertical;
-    int16_t rightY = (kEyeCanvasHeight - rightBaseHeight) / 2 + gazeY_ + floatY + pose.rightYOffset + extraVertical;
+    int16_t leftY = (kEyeCanvasHeight - leftBaseHeight) / 2 + gazeY_ + motion.yOffset + pose.leftYOffset;
+    int16_t rightY = (kEyeCanvasHeight - rightBaseHeight) / 2 + gazeY_ + motion.yOffset + pose.rightYOffset;
     leftY += (leftBaseHeight - leftHeight) / 2;
     rightY += (rightBaseHeight - rightHeight) / 2;
 
@@ -1006,19 +973,19 @@ void NewoDisplay::drawFaceFrame(uint32_t now) {
       if (winkLeft_) {
         leftHeight = static_cast<int16_t>(leftBaseHeight * pose.openness * winkOpen / 10'000U);
         if (leftHeight < 2) leftHeight = 2;
-        leftY = (kEyeCanvasHeight - leftBaseHeight) / 2 + gazeY_ + floatY + pose.leftYOffset + extraVertical +
+        leftY = (kEyeCanvasHeight - leftBaseHeight) / 2 + gazeY_ + motion.yOffset + pose.leftYOffset +
                 (leftBaseHeight - leftHeight) / 2;
       } else {
         rightHeight = static_cast<int16_t>(rightBaseHeight * pose.openness * winkOpen / 10'000U);
         if (rightHeight < 2) rightHeight = 2;
-        rightY = (kEyeCanvasHeight - rightBaseHeight) / 2 + gazeY_ + floatY + pose.rightYOffset + extraVertical +
+        rightY = (kEyeCanvasHeight - rightBaseHeight) / 2 + gazeY_ + motion.yOffset + pose.rightYOffset +
                  (rightBaseHeight - rightHeight) / 2;
       }
     }
 
     if (pose.closureStyle == NewoEyeClosureStyle::CURVED) {
-      drawClosedEyeCurve(leftX, static_cast<int16_t>(kEyeCanvasHeight / 2 + gazeY_ + floatY + pose.leftYOffset + extraVertical), leftW);
-      drawClosedEyeCurve(rightX, static_cast<int16_t>(kEyeCanvasHeight / 2 + gazeY_ + floatY + pose.rightYOffset + extraVertical), rightW);
+      drawClosedEyeCurve(leftX, static_cast<int16_t>(kEyeCanvasHeight / 2 + gazeY_ + motion.yOffset + pose.leftYOffset), leftW);
+      drawClosedEyeCurve(rightX, static_cast<int16_t>(kEyeCanvasHeight / 2 + gazeY_ + motion.yOffset + pose.rightYOffset), rightW);
     } else {
       eyeCanvas_.fillRoundRect(leftX, leftY, leftW, leftHeight, leftHeight > 3 ? leftHeight / 2 : 1, 1);
       eyeCanvas_.fillRoundRect(rightX, rightY, rightW, rightHeight, rightHeight > 3 ? rightHeight / 2 : 1, 1);
