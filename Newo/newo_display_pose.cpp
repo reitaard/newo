@@ -1,5 +1,6 @@
 #include "newo_display.h"
 
+#include <Fonts/FreeSans9pt7b.h>
 #include <cmath>
 
 namespace {
@@ -327,6 +328,85 @@ NewoSecondaryEffect NewoDisplay::secondaryEffectFor(uint32_t now, NewoDisplayMod
   return NewoSecondaryEffect::NONE;
 }
 
+bool NewoDisplay::setFaceCaption(NewoFaceCaption caption, uint32_t durationMs) {
+  if (caption > NewoFaceCaption::HEY) return false;
+  if (caption == NewoFaceCaption::NONE) {
+    faceCaptionOverride_ = NewoFaceCaption::NONE;
+    faceCaptionStartedMs_ = 0;
+    faceCaptionUntilMs_ = 0;
+    nextFaceFrameMs_ = 0;
+    dirty_ = true;
+    return true;
+  }
+  if (durationMs < 500 || durationMs > 8'000) return false;
+  const uint32_t now = millis();
+  faceCaptionOverride_ = caption;
+  faceCaptionStartedMs_ = now;
+  faceCaptionUntilMs_ = now + durationMs;
+  nextFaceFrameMs_ = 0;
+  dirty_ = true;
+  return true;
+}
+
+NewoFaceCaption NewoDisplay::faceCaptionFor(uint32_t now, NewoDisplayMode mode) const {
+  // Captions are decorative reactions. Operational contexts own the lower face
+  // area completely and suppress them without mutating the caption request.
+  if (mode != NewoDisplayMode::IDLE) return NewoFaceCaption::NONE;
+  if (faceCaptionOverride_ != NewoFaceCaption::NONE && faceCaptionUntilMs_ != 0 &&
+      static_cast<int32_t>(now - faceCaptionUntilMs_) < 0) {
+    return faceCaptionOverride_;
+  }
+  return NewoFaceCaption::NONE;
+}
+
+const char* NewoDisplay::faceCaptionText(NewoFaceCaption caption) {
+  switch (caption) {
+    case NewoFaceCaption::HUH: return "Huh?";
+    case NewoFaceCaption::WOAH: return "Woah!";
+    case NewoFaceCaption::HMM: return "Hmm...";
+    case NewoFaceCaption::HEY: return "Hey!";
+    case NewoFaceCaption::NONE: return "";
+  }
+  return "";
+}
+
+void NewoDisplay::drawFaceCaption(uint32_t now, NewoFaceCaption caption) {
+  constexpr int16_t kCaptionX = 58;
+  constexpr int16_t kCaptionY = 128;
+  constexpr int16_t kCaptionW = 124;
+  constexpr int16_t kCaptionH = 28;
+  constexpr int16_t kCaptionBaseline = 150;
+
+  // This band sits below the 200x82 eye canvas (ending at screen Y=122) and
+  // above the existing activity strip (screen Y=160..182). It is untouched
+  // during ordinary idle frames, so captions add no steady-state SPI traffic.
+  if (caption == NewoFaceCaption::NONE) {
+    if (!faceCaptionRegionVisible_) return;
+    display_.fillRect(kCaptionX, kCaptionY, kCaptionW, kCaptionH, ST77XX_BLACK);
+    faceCaptionRegionVisible_ = false;
+    return;
+  }
+
+  faceCaptionRegionVisible_ = true;
+  display_.fillRect(kCaptionX, kCaptionY, kCaptionW, kCaptionH, ST77XX_BLACK);
+  const char* text = faceCaptionText(caption);
+  int16_t baseline = kCaptionBaseline;
+  if (faceCaptionStartedMs_ != 0) {
+    const uint32_t elapsed = now - faceCaptionStartedMs_;
+    if (elapsed < 160) baseline = static_cast<int16_t>(baseline + 3 - (elapsed * 3 / 160));
+  }
+
+  display_.setFont(&FreeSans9pt7b);
+  display_.setTextColor(ST77XX_WHITE);
+  int16_t x1, y1;
+  uint16_t width, height;
+  display_.getTextBounds(text, 0, baseline, &x1, &y1, &width, &height);
+  const int16_t cursorX = static_cast<int16_t>(kCaptionX + (kCaptionW - static_cast<int16_t>(width)) / 2);
+  display_.setCursor(cursorX, baseline);
+  display_.print(text);
+  display_.setFont(nullptr);
+}
+
 void NewoDisplay::applyResolvedPoseCuts(int16_t leftX, int16_t rightX, int16_t leftY, int16_t rightY,
                                         int16_t leftW, int16_t rightW, int16_t leftHeight,
                                         int16_t rightHeight, const NewoEyePose& pose) {
@@ -376,6 +456,10 @@ void NewoDisplay::drawZ(int16_t x, int16_t y, int16_t size) {
 }
 
 void NewoDisplay::drawSecondaryEffect(uint32_t now, NewoSecondaryEffect effect) {
+  // Caption state is independent from secondary-effect state. This renderer
+  // hook services both bounded decorative layers before the eye canvas blit.
+  drawFaceCaption(now, faceCaptionFor(now, effectiveMode(now)));
+
   if (effect == NewoSecondaryEffect::ZZZ) {
     // Two readable glyphs work better than three tiny ones on the 200x82 eye
     // canvas. They are staggered, safely inset, and drift only a few pixels so

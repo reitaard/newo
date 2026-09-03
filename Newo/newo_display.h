@@ -18,6 +18,13 @@ enum class NewoSecondaryEffect : uint8_t {
   ELLIPSIS,
   SWEAT,
 };
+enum class NewoFaceCaption : uint8_t {
+  NONE,
+  HUH,
+  WOAH,
+  HMM,
+  HEY,
+};
 
 class NewoDisplay {
  public:
@@ -28,6 +35,7 @@ class NewoDisplay {
   bool setMode(NewoDisplayMode mode, const char* text = nullptr, bool temporary = false);
   bool setFaceStyle(NewoFaceStyle style);
   bool setSecondaryEffect(NewoSecondaryEffect effect, uint32_t durationMs = 6'000);
+  bool setFaceCaption(NewoFaceCaption caption, uint32_t durationMs = 4'000);
   // Runtime signals are arbitrated independently of the persistent display mode.
   void setListeningActive(bool active);
   void setAssistantThinking(bool active);
@@ -98,6 +106,9 @@ class NewoDisplay {
   uint16_t eyePoseTransitionMs(NewoDisplayMode mode) const;
   NewoEyeEasing eyePoseEasing(NewoDisplayMode mode) const;
   NewoSecondaryEffect secondaryEffectFor(uint32_t now, NewoDisplayMode mode) const;
+  NewoFaceCaption faceCaptionFor(uint32_t now, NewoDisplayMode mode) const;
+  static const char* faceCaptionText(NewoFaceCaption caption);
+  void drawFaceCaption(uint32_t now, NewoFaceCaption caption);
   void applyResolvedPoseCuts(int16_t leftX, int16_t rightX, int16_t leftY, int16_t rightY,
                              int16_t leftW, int16_t rightW, int16_t leftHeight,
                              int16_t rightHeight, const NewoEyePose& pose);
@@ -168,6 +179,10 @@ class NewoDisplay {
   NewoSecondaryEffect secondaryEffectOverride_ = NewoSecondaryEffect::NONE;
   uint32_t secondaryEffectStartedMs_ = 0;
   uint32_t secondaryEffectUntilMs_ = 0;
+  NewoFaceCaption faceCaptionOverride_ = NewoFaceCaption::NONE;
+  uint32_t faceCaptionStartedMs_ = 0;
+  uint32_t faceCaptionUntilMs_ = 0;
+  bool faceCaptionRegionVisible_ = false;
   uint32_t nextAutonomousEpisodeMs_ = 0;
   uint16_t autonomousEpisodeHoldMs_ = 0;
   uint8_t autonomousEpisodeStep_ = 0;

@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 
 const source = async (path) => readFile(new URL(path, import.meta.url), "utf8");
 
-test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, blink, and effects separated", async () => {
+test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, blink, effects, and captions separated", async () => {
   const [config, display, header, poseHeader, poseSource, poseResolver, blinkSource, cloud, ino, server] = await Promise.all([
     source("../../Newo/newo_config.h"),
     source("../../Newo/newo_display.cpp"),
@@ -162,6 +162,32 @@ test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, blin
   const effectHandler = server.match(/async function handleEffectCommand\(ctx\) \{([\s\S]*?)\n\}/);
   assert.ok(effectHandler, "Telegram effect handler should be discoverable");
   assert.match(effectHandler[1], /newoSpeak: false/);
+
+  // Phase F captions are their own timed semantic layer. They reuse the linked
+  // FreeSans font and a small screen band; no new GFX canvas/framebuffer exists.
+  assert.match(header, /enum class NewoFaceCaption[\s\S]*NONE[\s\S]*HUH[\s\S]*WOAH[\s\S]*HMM[\s\S]*HEY/);
+  assert.match(header, /bool setFaceCaption\(NewoFaceCaption caption, uint32_t durationMs = 4'000\)/);
+  assert.match(header, /faceCaptionOverride_ = NewoFaceCaption::NONE/);
+  assert.match(header, /faceCaptionStartedMs_/);
+  assert.match(header, /faceCaptionUntilMs_/);
+  assert.match(header, /faceCaptionRegionVisible_ = false/);
+  assert.doesNotMatch(header, /GFXcanvas1\s+caption/i);
+  assert.match(poseResolver, /#include <Fonts\/FreeSans9pt7b\.h>/);
+  assert.match(poseResolver, /bool NewoDisplay::setFaceCaption\(NewoFaceCaption caption, uint32_t durationMs\)/);
+  assert.match(poseResolver, /durationMs < 500 \|\| durationMs > 8'000/);
+  const captionResolver = poseResolver.match(/NewoFaceCaption NewoDisplay::faceCaptionFor\(uint32_t now, NewoDisplayMode mode\) const \{([\s\S]*?)\n\}/);
+  assert.ok(captionResolver, "caption resolver should be discoverable");
+  assert.match(captionResolver[1], /mode != NewoDisplayMode::IDLE/);
+  assert.match(captionResolver[1], /faceCaptionOverride_/);
+  assert.doesNotMatch(captionResolver[1], /autonomousExpression_|faceStyle_|autonomousEpisode_/);
+  for (const [caption, text] of [["HUH", "Huh\\?"], ["WOAH", "Woah!"], ["HMM", "Hmm\\.\\.\\."], ["HEY", "Hey!"]]) {
+    assert.match(poseResolver, new RegExp(`NewoFaceCaption::${caption}.*return "${text}"`));
+  }
+  assert.match(poseResolver, /kCaptionY = 128/);
+  assert.match(poseResolver, /kCaptionH = 28/);
+  assert.match(poseResolver, /if \(!faceCaptionRegionVisible_\) return/);
+  assert.match(poseResolver, /drawFaceCaption\(now, faceCaptionFor\(now, effectiveMode\(now\)\)\)/);
+  assert.doesNotMatch(poseResolver, /CURIOUS.*NewoFaceCaption|SURPRISED.*NewoFaceCaption|CONFUSED.*NewoFaceCaption/);
 
   assert.match(display, /case AutonomousEpisode::DROWSY_REST:[\s\S]*AutonomousExpression::SLEEPY/);
   assert.match(display, /AutonomousEpisode::DROWSY_REST[\s\S]*AutonomousExpression::SLEEPING, 100/);
