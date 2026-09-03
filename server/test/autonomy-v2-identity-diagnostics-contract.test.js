@@ -4,11 +4,13 @@ import { readFile } from "node:fs/promises";
 
 const source = async (path) => readFile(new URL(path, import.meta.url), "utf8");
 
-test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, blink, effects, and captions separated", async () => {
-  const [config, display, header, poseHeader, poseSource, poseResolver, blinkSource, cloud, ino, server] = await Promise.all([
+test("Autonomy V2 procedural eye engine keeps state, behavior, expression, motion, blink, effects, and captions separated", async () => {
+  const [config, display, header, stateHeader, stateSource, poseHeader, poseSource, poseResolver, blinkSource, cloud, ino, server] = await Promise.all([
     source("../../Newo/newo_config.h"),
     source("../../Newo/newo_display.cpp"),
     source("../../Newo/newo_display.h"),
+    source("../../Newo/newo_autonomy_state.h"),
+    source("../../Newo/newo_autonomy_state.cpp"),
     source("../../Newo/newo_eye_pose.h"),
     source("../../Newo/newo_eye_pose.cpp"),
     source("../../Newo/newo_display_pose.cpp"),
@@ -26,6 +28,28 @@ test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, blin
   assert.match(ino, /Autonomy: V%u/);
   assert.match(cloud, /doc\["autonomy_revision"\] = NewoConfig::AUTONOMY_REVISION/);
   assert.match(server, /autonomy_revision: z\.number\(\)\.int\(\)\.nonnegative\(\)\.optional\(\)/);
+
+  // Slow character state has one owner. Display behavior reads semantic state,
+  // but the state engine never selects expressions, effects, captions, or geometry.
+  assert.match(header, /#include "newo_autonomy_state\.h"/);
+  assert.match(header, /NewoAutonomyState autonomyState_/);
+  assert.doesNotMatch(header, /uint8_t energy_|uint8_t curiosity_|uint8_t social_|uint8_t stress_|lastInteractionMs_|idleDriftTicks_/);
+  assert.match(stateHeader, /class NewoAutonomyState/);
+  assert.match(stateHeader, /enum class NewoInactivityStage[\s\S]*ACTIVE[\s\S]*RELAXED[\s\S]*DROWSY/);
+  assert.match(stateHeader, /uint8_t fatigue\(\) const \{ return static_cast<uint8_t>\(100 - energy_\); \}/);
+  assert.match(stateHeader, /kRelaxedInactivityMs = 120'000/);
+  assert.match(stateHeader, /kDrowsyInactivityMs = 300'000/);
+  assert.match(stateSource, /kEngagementEnergyRecoveryMs = 18'000/);
+  assert.match(stateSource, /case NewoInactivityStage::DROWSY: return 35/);
+  assert.doesNotMatch(stateSource, /AutonomousExpression|NewoSecondaryEffect|NewoFaceCaption|NewoEyePose|draw/);
+  assert.doesNotMatch(stateSource, /malloc|new\s|std::vector|std::map/);
+  assert.match(display, /autonomyState_\.reset\(now\)/);
+  assert.match(display, /autonomyState_\.noteInteraction\(now, energyGain, curiosityGain, socialGain\)/);
+  assert.match(display, /autonomyState_\.noteError\(\)/);
+  assert.match(display, /autonomyState_\.update\(now, autonomyEngagementFor\(effectiveMode\(now\)\)\)/);
+  assert.match(display, /const NewoInactivityStage stage = autonomyState_\.stage\(now\)/);
+  assert.match(display, /fatigue=%u[\s\S]*stage=%s/);
+  assert.doesNotMatch(renderer[1], /autonomyState_|NewoInactivityStage|energy|curiosity|social|stress/);
 
   // Pose is data; transition mechanics live outside the display behavior scheduler.
   assert.match(poseHeader, /struct NewoEyePose/);
@@ -94,7 +118,7 @@ test("Autonomy V2 procedural eye engine keeps behavior, expression, motion, blin
   // Continuous default gaze remains wide but bounded; vertical travel is the requested small increase.
   assert.match(display, /kAutonomousGazeHardX = 20/);
   assert.match(display, /kAutonomousGazeHardY = 12/);
-  assert.match(display, /sideRangeX = energy_ < 55 \? 16 : energy_ > 80 \? 20 : 18/);
+  assert.match(display, /const uint8_t energy = autonomyState_\.energy\(\)[\s\S]*sideRangeX = energy < 55 \? 16 : energy > 80 \? 20 : 18/);
   assert.match(display, /random\(-12, -3\)/);
   assert.match(display, /candidate >= -kAutonomousGazeHardY && candidate <= kAutonomousGazeHardY/);
 

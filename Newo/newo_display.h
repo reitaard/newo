@@ -3,6 +3,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 
+#include "newo_autonomy_state.h"
 #include "newo_eye_pose.h"
 #include "newo_gaze_motion.h"
 #include "newo_log.h"
@@ -133,6 +134,7 @@ class NewoDisplay {
   NewoFaceStyle faceStyle_ = NewoFaceStyle::NEUTRAL;
   NewoEyePoseEngine eyePoseEngine_;
   NewoGazeMotion gazeMotion_;
+  NewoAutonomyState autonomyState_;
   bool autoFaceEnabled_ = true;
   NewoDisplayMode lastEffectiveMode_ = NewoDisplayMode::IDLE;
   bool lastEffectiveAutoFace_ = false;
@@ -156,7 +158,6 @@ class NewoDisplay {
   enum class BlinkSchedulerState : uint8_t { WAITING, DOUBLE_PAUSE, DOUBLE_SECOND };
   enum class AutonomousGazePhase : uint8_t { CHOOSE_TARGET, MOVING, FIXATING, MICRO_CORRECTION };
   enum class AutonomousEpisode : uint8_t { WAITING, CURIOUS_SCAN, LOW_ENERGY, SOCIAL_ATTENTION, ALERT_CHECK, DROWSY_REST };
-  enum class InactivityStage : uint8_t { ACTIVE, RELAXED, DROWSY };
   const char* contextName(NewoDisplayMode mode) const;
   static const char* episodeName(AutonomousEpisode episode);
   static const char* expressionName(AutonomousExpression expression);
@@ -193,13 +194,7 @@ class NewoDisplay {
   uint32_t microCorrectionAtMs_ = 0;
   bool microCorrectionPending_ = false;
   bool autonomousGazeLargeShift_ = false;
-  uint8_t energy_ = 70;
-  uint8_t curiosity_ = 42;
-  uint8_t social_ = 38;
-  uint8_t stress_ = 5;
-  uint8_t idleDriftTicks_ = 0;
   uint32_t nextAutonomousStateMs_ = 0;
-  uint32_t lastInteractionMs_ = 0;
   uint32_t nextAutonomousStateLogMs_ = 0;
   uint32_t eyeContextChanges_ = 0;
   uint32_t eyeGazeEvents_ = 0;
