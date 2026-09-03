@@ -15,6 +15,7 @@ on:
       - "server/test/display-animation-host-contract.test.js"
       - "server/test/display-state-arbitration-contract.test.js"
       - "server/test/face-style-contract.test.js"
+      - "server/test/presentation-composition-integration-contract.test.js"
       - "server/test/telegram-command-menu-contract.test.js"
       - "tools/display-animation-host-test.cpp"
       - "tools/autonomy-state-host-test.cpp"
@@ -35,6 +36,7 @@ on:
       - "server/test/display-animation-host-contract.test.js"
       - "server/test/display-state-arbitration-contract.test.js"
       - "server/test/face-style-contract.test.js"
+      - "server/test/presentation-composition-integration-contract.test.js"
       - "server/test/telegram-command-menu-contract.test.js"
       - "tools/display-animation-host-test.cpp"
       - "tools/autonomy-state-host-test.cpp"
@@ -77,6 +79,7 @@ jobs:
           test/display-animation-host-contract.test.js
           test/display-state-arbitration-contract.test.js
           test/face-style-contract.test.js
+          test/presentation-composition-integration-contract.test.js
           test/telegram-command-menu-contract.test.js
       - name: Check JavaScript syntax
         run: npm run check

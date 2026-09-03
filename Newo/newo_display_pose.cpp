@@ -314,11 +314,19 @@ NewoSecondaryEffect NewoDisplay::secondaryEffectFor(uint32_t now, NewoDisplayMod
   // LISTENING / THINKING / SPEAKING / ERROR or the message/eco screens.
   if (mode != NewoDisplayMode::IDLE) return NewoSecondaryEffect::NONE;
 
+  // Explicit Telegram/manual requests always outrank autonomous composition.
   if (secondaryEffectOverride_ != NewoSecondaryEffect::NONE && secondaryEffectUntilMs_ != 0 &&
       static_cast<int32_t>(now - secondaryEffectUntilMs_) < 0) {
     return secondaryEffectOverride_;
   }
 
+  if (autoFaceEnabled_ && autonomousPresentation_.effect != NewoSecondaryEffect::NONE &&
+      autonomousEffectUntilMs_ != 0 && static_cast<int32_t>(now - autonomousEffectUntilMs_) < 0) {
+    return autonomousPresentation_.effect;
+  }
+
+  // Safety fallback preserves the already-approved sleeping behavior even if a
+  // future behavior path forgets to request the presentation cue explicitly.
   if (autoFaceEnabled_) {
     return autonomousExpression_ == AutonomousExpression::SLEEPING ? NewoSecondaryEffect::ZZZ
                                                                     : NewoSecondaryEffect::NONE;
@@ -350,11 +358,18 @@ bool NewoDisplay::setFaceCaption(NewoFaceCaption caption, uint32_t durationMs) {
 
 NewoFaceCaption NewoDisplay::faceCaptionFor(uint32_t now, NewoDisplayMode mode) const {
   // Captions are decorative reactions. Operational contexts own the lower face
-  // area completely and suppress them without mutating the caption request.
+  // area completely and suppress them without mutating either request source.
   if (mode != NewoDisplayMode::IDLE) return NewoFaceCaption::NONE;
+
+  // Explicit Telegram/manual requests always outrank autonomous composition.
   if (faceCaptionOverride_ != NewoFaceCaption::NONE && faceCaptionUntilMs_ != 0 &&
       static_cast<int32_t>(now - faceCaptionUntilMs_) < 0) {
     return faceCaptionOverride_;
+  }
+
+  if (autoFaceEnabled_ && autonomousPresentation_.caption != NewoFaceCaption::NONE &&
+      autonomousCaptionUntilMs_ != 0 && static_cast<int32_t>(now - autonomousCaptionUntilMs_) < 0) {
+    return autonomousPresentation_.caption;
   }
   return NewoFaceCaption::NONE;
 }
@@ -391,8 +406,14 @@ void NewoDisplay::drawFaceCaption(uint32_t now, NewoFaceCaption caption) {
   display_.fillRect(kCaptionX, kCaptionY, kCaptionW, kCaptionH, ST77XX_BLACK);
   const char* text = faceCaptionText(caption);
   int16_t baseline = kCaptionBaseline;
-  if (faceCaptionStartedMs_ != 0) {
-    const uint32_t elapsed = now - faceCaptionStartedMs_;
+  const bool manualCaptionActive = faceCaptionOverride_ == caption && faceCaptionUntilMs_ != 0 &&
+      static_cast<int32_t>(now - faceCaptionUntilMs_) < 0;
+  const bool autonomousCaptionActive = autoFaceEnabled_ && autonomousPresentation_.caption == caption &&
+      autonomousCaptionUntilMs_ != 0 && static_cast<int32_t>(now - autonomousCaptionUntilMs_) < 0;
+  const uint32_t captionStartedMs = manualCaptionActive ? faceCaptionStartedMs_
+      : autonomousCaptionActive ? autonomousPresentationStartedMs_ : 0;
+  if (captionStartedMs != 0) {
+    const uint32_t elapsed = now - captionStartedMs;
     if (elapsed < 160) baseline = static_cast<int16_t>(baseline + 3 - (elapsed * 3 / 160));
   }
 
@@ -460,11 +481,19 @@ void NewoDisplay::drawSecondaryEffect(uint32_t now, NewoSecondaryEffect effect) 
   // hook services both bounded decorative layers before the eye canvas blit.
   drawFaceCaption(now, faceCaptionFor(now, effectiveMode(now)));
 
+  const bool manualEffectActive = secondaryEffectOverride_ == effect && secondaryEffectUntilMs_ != 0 &&
+      static_cast<int32_t>(now - secondaryEffectUntilMs_) < 0;
+  const bool autonomousEffectActive = autoFaceEnabled_ && autonomousPresentation_.effect == effect &&
+      autonomousEffectUntilMs_ != 0 && static_cast<int32_t>(now - autonomousEffectUntilMs_) < 0;
+  const uint32_t effectStartedMs = manualEffectActive ? secondaryEffectStartedMs_
+      : autonomousEffectActive ? autonomousPresentationStartedMs_ : 0;
+  const uint32_t effectNow = effectStartedMs != 0 ? now - effectStartedMs : now;
+
   if (effect == NewoSecondaryEffect::ZZZ) {
     // Two readable glyphs work better than three tiny ones on the 200x82 eye
     // canvas. They are staggered, safely inset, and drift only a few pixels so
     // neither glyph approaches the top/right edge.
-    const uint16_t cycle = static_cast<uint16_t>(now % 2'400);
+    const uint16_t cycle = static_cast<uint16_t>(effectNow % 2'400);
     for (uint8_t index = 0; index < 2; ++index) {
       const uint16_t local = static_cast<uint16_t>((cycle + index * 1'200) % 2'400);
       if (local >= 1'700) continue;
@@ -477,10 +506,6 @@ void NewoDisplay::drawSecondaryEffect(uint32_t now, NewoSecondaryEffect effect) 
     }
     return;
   }
-
-  const bool overrideActive = secondaryEffectOverride_ == effect && secondaryEffectUntilMs_ != 0 &&
-      static_cast<int32_t>(now - secondaryEffectUntilMs_) < 0;
-  const uint32_t effectNow = overrideActive ? now - secondaryEffectStartedMs_ : now;
 
   const auto drawQuestion = [this](int16_t x, int16_t y) {
     // 2px procedural strokes: compact enough for the top-right margin but

@@ -73,6 +73,8 @@ class NewoDisplay {
   void advanceAutonomousEpisode(uint32_t now);
   void setAutonomousExpression(AutonomousExpression expression, uint8_t intensity);
   void clearAutonomousExpression();
+  void requestAutonomousPresentation(NewoPresentationCue cue, uint8_t intensity, uint32_t now);
+  void clearAutonomousPresentation();
   void noteInteraction(uint32_t now, uint8_t energyGain, uint8_t curiosityGain, uint8_t socialGain);
   void noteError();
   uint32_t adjustAutonomousFixation(uint32_t fixationMs) const;
@@ -162,6 +164,10 @@ class NewoDisplay {
   AutonomousEpisode autonomousEpisode_ = AutonomousEpisode::WAITING;
   AutonomousExpression autonomousExpression_ = AutonomousExpression::NONE;
   uint8_t autonomousExpressionIntensity_ = 0;
+  NewoPresentationIntent autonomousPresentation_ = {};
+  uint32_t autonomousPresentationStartedMs_ = 0;
+  uint32_t autonomousEffectUntilMs_ = 0;
+  uint32_t autonomousCaptionUntilMs_ = 0;
   NewoSecondaryEffect secondaryEffectOverride_ = NewoSecondaryEffect::NONE;
   uint32_t secondaryEffectStartedMs_ = 0;
   uint32_t secondaryEffectUntilMs_ = 0;
