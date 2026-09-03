@@ -77,6 +77,8 @@ class NewoDisplay {
   void scheduleNextBilateralBlink(uint32_t now);
   void startBilateralBlink(bool allowAutonomousVariation, uint8_t forcedBlink = 0);
   void queuePostSaccadeBlink(uint32_t now);
+  void updateBlinkBeforeFrame(uint32_t now, NewoDisplayMode activeMode);
+  void advanceBlinkAfterFrame(uint32_t now);
   void resetFaceMotion(uint32_t now);
   void syncEffectiveMode(uint32_t now);
   NewoDisplayMode effectiveMode(uint32_t now) const;
