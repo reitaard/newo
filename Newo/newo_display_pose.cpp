@@ -1,5 +1,7 @@
 #include "newo_display.h"
 
+#include <cmath>
+
 namespace {
 int16_t clampCut(int16_t value, int16_t height) {
   const int16_t magnitude = value < 0 ? -value : value;
@@ -178,6 +180,51 @@ NewoEyePose NewoDisplay::resolveEyePose(uint32_t now, NewoDisplayMode mode) cons
       break;
   }
   return pose;
+}
+
+NewoDisplay::EyeMotionOverlay NewoDisplay::resolveEyeMotionOverlay(uint32_t now, NewoDisplayMode mode) const {
+  EyeMotionOverlay overlay;
+
+  const bool sleeping = mode == NewoDisplayMode::IDLE &&
+      ((!autoFaceEnabled_ && faceStyle_ == NewoFaceStyle::SLEEPING) ||
+       (autoFaceEnabled_ && autonomousExpression_ == AutonomousExpression::SLEEPING));
+  const uint32_t periodMs = sleeping ? 6'000 : 3'000;
+  const float phase = static_cast<float>(now % periodMs) / static_cast<float>(periodMs) * 6.2831853f;
+  const float amplitude = sleeping ? 1.0f : speakerActive_ ? 2.0f : 1.0f;
+  overlay.yOffset = static_cast<int16_t>(sinf(phase) * amplitude);
+
+  if (mode == NewoDisplayMode::IDLE && autoFaceEnabled_ && gazeMotion_.expressive()) {
+    overlay.leftWidthDelta += 2;
+    overlay.rightWidthDelta += 2;
+    overlay.leftHeightDelta -= 2;
+    overlay.rightHeightDelta -= 2;
+  }
+
+  if (mode == NewoDisplayMode::THINKING) {
+    if (gazeX_ < -7) overlay.leftWidthDelta += 7;
+    if (gazeX_ > 7) overlay.rightWidthDelta += 7;
+  }
+
+  if (mode == NewoDisplayMode::ERROR && now - modeStartedMs_ < 520) {
+    overlay.xOffset += static_cast<int16_t>(sinf(static_cast<float>(now - modeStartedMs_) * 0.075f) * 4.0f);
+  }
+
+  if (mode == NewoDisplayMode::IDLE && autoFaceEnabled_ &&
+      autonomousEpisode_ == AutonomousEpisode::ALERT_CHECK && autonomousEpisodeDirection_ < 0) {
+    overlay.xOffset += static_cast<int16_t>(sinf(static_cast<float>(now) * 0.055f) * 6.0f);
+  }
+
+  if (mode == NewoDisplayMode::IDLE && !autoFaceEnabled_) {
+    const uint32_t styleBurstMs = (now - modeStartedMs_) % 2'200;
+    if (faceStyle_ == NewoFaceStyle::CONFUSED && styleBurstMs < 500) {
+      overlay.xOffset += static_cast<int16_t>(sinf(static_cast<float>(styleBurstMs) * 0.075f) * 20.0f);
+    }
+    if (faceStyle_ == NewoFaceStyle::LAUGH && styleBurstMs < 500) {
+      overlay.yOffset += static_cast<int16_t>(sinf(static_cast<float>(styleBurstMs) * 0.075f) * 5.0f);
+    }
+  }
+
+  return overlay;
 }
 
 uint16_t NewoDisplay::eyePoseTransitionMs(NewoDisplayMode mode) const {
