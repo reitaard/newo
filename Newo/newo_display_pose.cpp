@@ -101,13 +101,18 @@ NewoEyePose NewoDisplay::resolveManualEyePose(NewoFaceStyle style) const {
       pose.closureStyle = NewoEyeClosureStyle::CURVED;
       break;
     case NewoFaceStyle::SKEPTICAL:
-      pose.leftWidth = 62;
-      pose.leftHeight = 38;
-      pose.rightWidth = 50;
-      pose.rightHeight = 24;
-      pose.gap = 22;
-      pose.rightYOffset = -5;
-      pose.rightTopCut = -4;
+      // Skepticism is primarily eyelid attitude rather than a crude size
+      // mismatch. Both eyes participate: one stays more open with a mild
+      // angled lid while the smaller eye gets a much sharper critical squint.
+      pose.leftWidth = 60;
+      pose.leftHeight = 35;
+      pose.rightWidth = 54;
+      pose.rightHeight = 28;
+      pose.gap = 20;
+      pose.leftYOffset = -2;
+      pose.rightYOffset = 2;
+      pose.leftTopCut = 5;
+      pose.rightTopCut = -12;
       break;
     case NewoFaceStyle::SURPRISED:
       pose.leftWidth = pose.rightWidth = 54;
@@ -322,22 +327,30 @@ void NewoDisplay::drawClosedEyeCurve(int16_t x, int16_t y, int16_t width) {
 }
 
 void NewoDisplay::drawZ(int16_t x, int16_t y, int16_t size) {
-  if (size < 3) return;
-  eyeCanvas_.drawLine(x, y, x + size, y, 1);
-  eyeCanvas_.drawLine(x + size, y, x, y + size, 1);
-  eyeCanvas_.drawLine(x, y + size, x + size, y + size, 1);
+  if (size < 5) return;
+  // Two-pixel strokes remain legible after the 1-bit canvas is transferred to
+  // the physical TFT; the former 1px 5/7/9px glyphs looked fragmented.
+  eyeCanvas_.fillRect(x, y, size + 1, 2, 1);
+  eyeCanvas_.drawLine(x + size, y + 1, x, y + size, 1);
+  eyeCanvas_.drawLine(x + size - 1, y + 1, x, y + size - 1, 1);
+  eyeCanvas_.fillRect(x, y + size - 1, size + 1, 2, 1);
 }
 
 void NewoDisplay::drawSecondaryEffect(uint32_t now, SecondaryEffect effect) {
   if (effect == SecondaryEffect::ZZZ) {
-    const uint16_t cycle = static_cast<uint16_t>(now % 3'000);
-    for (uint8_t index = 0; index < 3; ++index) {
-      const uint16_t local = static_cast<uint16_t>((cycle + index * 1'000) % 3'000);
-      if (local >= 1'850) continue;
-      const int16_t rise = static_cast<int16_t>(local / 140);
-      const int16_t size = static_cast<int16_t>(5 + index * 2);
-      drawZ(static_cast<int16_t>(146 + index * 15),
-            static_cast<int16_t>(22 + index * 3 - rise), size);
+    // Two readable glyphs work better than three tiny ones on the 200x82 eye
+    // canvas. They are staggered, safely inset, and drift only a few pixels so
+    // neither glyph approaches the top/right edge.
+    const uint16_t cycle = static_cast<uint16_t>(now % 2'400);
+    for (uint8_t index = 0; index < 2; ++index) {
+      const uint16_t local = static_cast<uint16_t>((cycle + index * 1'200) % 2'400);
+      if (local >= 1'700) continue;
+      const int16_t rise = static_cast<int16_t>(local / 210);
+      const int16_t drift = static_cast<int16_t>(local / 550);
+      const int16_t size = index == 0 ? 7 : 10;
+      const int16_t baseX = index == 0 ? 145 : 165;
+      const int16_t baseY = index == 0 ? 30 : 22;
+      drawZ(static_cast<int16_t>(baseX + drift), static_cast<int16_t>(baseY - rise), size);
     }
     return;
   }
