@@ -8,6 +8,7 @@ on:
       - "Newo/newo_eye_pose.*"
       - "Newo/newo_gaze_motion.*"
       - "Newo/newo_autonomy_state.*"
+      - "Newo/newo_presentation.*"
       - "server/src/index.js"
       - "server/test/autonomous-eyes-phase-d-contract.test.js"
       - "server/test/autonomy-v2-identity-diagnostics-contract.test.js"
@@ -17,6 +18,7 @@ on:
       - "server/test/telegram-command-menu-contract.test.js"
       - "tools/display-animation-host-test.cpp"
       - "tools/autonomy-state-host-test.cpp"
+      - "tools/presentation-host-test.cpp"
       - "tools/run-display-animation-host-test.sh"
       - ".github/workflows/display-animation-validation.yml"
   pull_request:
@@ -26,6 +28,7 @@ on:
       - "Newo/newo_eye_pose.*"
       - "Newo/newo_gaze_motion.*"
       - "Newo/newo_autonomy_state.*"
+      - "Newo/newo_presentation.*"
       - "server/src/index.js"
       - "server/test/autonomous-eyes-phase-d-contract.test.js"
       - "server/test/autonomy-v2-identity-diagnostics-contract.test.js"
@@ -35,6 +38,7 @@ on:
       - "server/test/telegram-command-menu-contract.test.js"
       - "tools/display-animation-host-test.cpp"
       - "tools/autonomy-state-host-test.cpp"
+      - "tools/presentation-host-test.cpp"
       - "tools/run-display-animation-host-test.sh"
       - ".github/workflows/display-animation-validation.yml"
   workflow_dispatch:

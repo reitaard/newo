@@ -4,13 +4,16 @@ import { readFile } from "node:fs/promises";
 
 const source = async (path) => readFile(new URL(path, import.meta.url), "utf8");
 
-test("Autonomy V2 procedural eye engine keeps state, behavior, expression, motion, blink, effects, and captions separated", async () => {
-  const [config, display, header, stateHeader, stateSource, poseHeader, poseSource, poseResolver, blinkSource, cloud, ino, server] = await Promise.all([
+test("Autonomy V2 keeps state, behavior, presentation, pose, motion, blink, and rendering separated", async () => {
+  const [config, display, header, stateHeader, stateSource, presentationHeader, presentationSource,
+    poseHeader, poseSource, poseResolver, blinkSource, cloud, ino, server] = await Promise.all([
     source("../../Newo/newo_config.h"),
     source("../../Newo/newo_display.cpp"),
     source("../../Newo/newo_display.h"),
     source("../../Newo/newo_autonomy_state.h"),
     source("../../Newo/newo_autonomy_state.cpp"),
+    source("../../Newo/newo_presentation.h"),
+    source("../../Newo/newo_presentation.cpp"),
     source("../../Newo/newo_eye_pose.h"),
     source("../../Newo/newo_eye_pose.cpp"),
     source("../../Newo/newo_display_pose.cpp"),
@@ -29,8 +32,7 @@ test("Autonomy V2 procedural eye engine keeps state, behavior, expression, motio
   assert.match(cloud, /doc\["autonomy_revision"\] = NewoConfig::AUTONOMY_REVISION/);
   assert.match(server, /autonomy_revision: z\.number\(\)\.int\(\)\.nonnegative\(\)\.optional\(\)/);
 
-  // Slow character state has one owner. Display behavior reads semantic state,
-  // but the state engine never selects expressions, effects, captions, or geometry.
+  // Slow character state has one owner and never selects presentation or geometry.
   assert.match(header, /#include "newo_autonomy_state\.h"/);
   assert.match(header, /NewoAutonomyState autonomyState_/);
   assert.doesNotMatch(header, /uint8_t energy_|uint8_t curiosity_|uint8_t social_|uint8_t stress_|lastInteractionMs_|idleDriftTicks_/);
@@ -51,6 +53,22 @@ test("Autonomy V2 procedural eye engine keeps state, behavior, expression, motio
   assert.match(display, /fatigue=%u[\s\S]*stage=%s/);
   assert.doesNotMatch(renderer[1], /autonomyState_|NewoInactivityStage|energy|curiosity|social|stress/);
 
+  // Presentation semantics are portable data and a pure deterministic policy.
+  assert.match(header, /#include "newo_presentation\.h"/);
+  assert.match(presentationHeader, /enum class NewoSecondaryEffect[\s\S]*NONE[\s\S]*ZZZ[\s\S]*QUESTION[\s\S]*EXCLAMATION[\s\S]*SURPRISE_MARK[\s\S]*ELLIPSIS[\s\S]*SWEAT/);
+  assert.match(presentationHeader, /enum class NewoFaceCaption[\s\S]*NONE[\s\S]*HUH[\s\S]*WOAH[\s\S]*HMM[\s\S]*HEY/);
+  assert.match(presentationHeader, /enum class NewoPresentationCue[\s\S]*CURIOUS[\s\S]*SOCIAL[\s\S]*ALERT_SURPRISE[\s\S]*ALERT_CONFUSED[\s\S]*LOW_ENERGY[\s\S]*SLEEPING/);
+  assert.match(presentationHeader, /struct NewoPresentationIntent[\s\S]*NewoSecondaryEffect effect[\s\S]*NewoFaceCaption caption[\s\S]*effectDurationMs[\s\S]*captionDurationMs/);
+  assert.match(presentationSource, /NewoPresentationIntent newoComposePresentation/);
+  assert.match(presentationSource, /case NewoPresentationCue::CURIOUS/);
+  assert.match(presentationSource, /NewoSecondaryEffect::QUESTION/);
+  assert.match(presentationSource, /NewoFaceCaption::HUH/);
+  assert.match(presentationSource, /NewoPresentationCue::ALERT_SURPRISE[\s\S]*NewoSecondaryEffect::SURPRISE_MARK/);
+  assert.match(presentationSource, /NewoPresentationCue::ALERT_CONFUSED[\s\S]*NewoFaceCaption::HMM/);
+  assert.match(presentationSource, /NewoPresentationCue::SLEEPING[\s\S]*NewoSecondaryEffect::ZZZ/);
+  assert.doesNotMatch(presentationSource, /Arduino|millis\(|random\(|Adafruit|draw|GFXcanvas/);
+  assert.doesNotMatch(presentationSource, /malloc|new\s|std::vector|std::map/);
+
   // Pose is data; transition mechanics live outside the display behavior scheduler.
   assert.match(poseHeader, /struct NewoEyePose/);
   assert.match(poseHeader, /leftWidth/);
@@ -63,15 +81,12 @@ test("Autonomy V2 procedural eye engine keeps state, behavior, expression, motio
   assert.match(poseSource, /blend\(const NewoEyePose& neutral/);
   assert.doesNotMatch(poseSource, /malloc|new\s|std::vector|std::map/);
 
-  // Discrete curved/filled shape handoff is direction-aware: closing switches
-  // late and waking switches early, avoiding a visible midpoint shape pop.
   assert.match(poseSource, /interpolateClosureStyle/);
   assert.match(poseSource, /to == NewoEyeClosureStyle::CURVED[\s\S]*permille < 850/);
   assert.match(poseSource, /return permille < 150 \? from : to/);
   assert.match(poseSource, /current_\.closureStyle = interpolateClosureStyle/);
 
-  // Episodes emit semantic expression intent. Only the pose resolver converts
-  // that intent to geometry or autonomous motion; it must not inspect behavior episodes.
+  // Episodes emit semantic expression intent; pose/motion resolver never inspects episode identity.
   assert.match(header, /enum class AutonomousExpression[\s\S]*CURIOUS[\s\S]*HAPPY[\s\S]*TIRED[\s\S]*SLEEPY[\s\S]*SURPRISED[\s\S]*CONFUSED[\s\S]*SLEEPING/);
   assert.match(header, /AutonomousExpression autonomousExpression_/);
   assert.match(display, /setAutonomousExpression\(AutonomousExpression::CURIOUS/);
@@ -82,9 +97,7 @@ test("Autonomy V2 procedural eye engine keeps state, behavior, expression, motio
   assert.match(poseResolver, /autonomousExpression_ == AutonomousExpression::CONFUSED/);
   assert.match(poseResolver, /NewoEyePoseEngine::blend\(neutral, target, autonomousExpressionIntensity_\)/);
 
-  // Transient shake/bounce/stretch/breathing is resolved as data outside the
-  // renderer. drawFaceFrame consumes the overlay but contains no semantic
-  // expression/episode motion branches and no trigonometric animation logic.
+  // Transient motion is resolved outside the renderer.
   assert.match(header, /struct EyeMotionOverlay/);
   assert.match(header, /EyeMotionOverlay resolveEyeMotionOverlay/);
   assert.match(poseResolver, /NewoDisplay::EyeMotionOverlay NewoDisplay::resolveEyeMotionOverlay/);
@@ -97,9 +110,7 @@ test("Autonomy V2 procedural eye engine keeps state, behavior, expression, motio
   assert.doesNotMatch(renderer[1], /NewoDisplayMode::THINKING|NewoDisplayMode::ERROR/);
   assert.doesNotMatch(renderer[1], /sinf\(/);
 
-  // Renderer consumes resolved pose + gaze + blink + motion + effects. Phase B
-  // scheduling lives in the blink service; the renderer only services and uses
-  // the already-resolved blink state.
+  // Renderer consumes resolved layers and does not schedule blinks.
   assert.match(header, /NewoEyePoseEngine eyePoseEngine_/);
   assert.match(renderer[1], /updateBlinkBeforeFrame\(now, activeMode\)/);
   assert.match(renderer[1], /advanceBlinkAfterFrame\(now\)/);
@@ -115,21 +126,20 @@ test("Autonomy V2 procedural eye engine keeps state, behavior, expression, motio
   assert.match(blinkSource, /BlinkSchedulerState::DOUBLE_SECOND/);
   assert.doesNotMatch(display, /applyEyeExpression\(/);
 
-  // Continuous default gaze remains wide but bounded; vertical travel is the requested small increase.
+  // Continuous default gaze remains wide but bounded.
   assert.match(display, /kAutonomousGazeHardX = 20/);
   assert.match(display, /kAutonomousGazeHardY = 12/);
   assert.match(display, /const uint8_t energy = autonomyState_\.energy\(\)[\s\S]*sideRangeX = energy < 55 \? 16 : energy > 80 \? 20 : 18/);
   assert.match(display, /random\(-12, -3\)/);
   assert.match(display, /candidate >= -kAutonomousGazeHardY && candidate <= kAutonomousGazeHardY/);
 
-  // Directional curiosity makes one eye substantially larger and the other smaller.
+  // Directional curiosity remains strongly asymmetric.
   assert.match(poseResolver, /pose\.leftWidth = 50/);
   assert.match(poseResolver, /pose\.leftHeight = 30/);
   assert.match(poseResolver, /pose\.rightWidth = 68/);
   assert.match(poseResolver, /pose\.rightHeight = 50/);
 
-  // CLOSED/DETACHED/SLEEPING semantics are explicit; sleep effects remain
-  // independent and DROWSY_REST is an orchestrated behavior, not a face renderer.
+  // CLOSED/DETACHED/SLEEPING semantics remain explicit.
   assert.match(header, /DETACHED, SLEEPING, SKEPTICAL/);
   assert.match(header, /DROWSY_REST/);
   assert.match(poseResolver, /case NewoFaceStyle::CLOSED:[\s\S]*NewoEyeClosureStyle::CURVED/);
@@ -148,9 +158,7 @@ test("Autonomy V2 procedural eye engine keeps state, behavior, expression, motio
   assert.match(skepticalLeft[1], /leftWidth = 62[\s\S]*leftHeight = 38[\s\S]*rightWidth = 50[\s\S]*rightHeight = 24[\s\S]*rightTopCut = -12/);
   assert.doesNotMatch(skepticalLeft[1], /leftTopCut/);
 
-  // Phase E generalizes the secondary-effect layer without coupling decorative
-  // symbols to face poses. The approved ZZZ geometry stays intact.
-  assert.match(header, /enum class NewoSecondaryEffect[\s\S]*NONE[\s\S]*ZZZ[\s\S]*QUESTION[\s\S]*EXCLAMATION[\s\S]*SURPRISE_MARK[\s\S]*ELLIPSIS[\s\S]*SWEAT/);
+  // Phase E effect runtime remains independent from pose and behavior composition.
   assert.match(header, /bool setSecondaryEffect\(NewoSecondaryEffect effect, uint32_t durationMs = 6'000\)/);
   assert.match(header, /secondaryEffectOverride_ = NewoSecondaryEffect::NONE/);
   assert.match(header, /secondaryEffectStartedMs_/);
@@ -169,15 +177,12 @@ test("Autonomy V2 procedural eye engine keeps state, behavior, expression, motio
   assert.ok(effectResolver, "secondary effect resolver should be discoverable");
   assert.doesNotMatch(effectResolver[1], /CURIOUS.*QUESTION|SURPRISED.*EXCLAMATION|CONFUSED.*QUESTION/);
 
-  // Phase E transport exposes a silent manual test path while keeping effects
-  // independent from the face command namespace.
+  // Manual effect transport stays silent and separate.
   assert.match(cloud, /strcmp\(mode, "effect"\) == 0/);
   for (const [name, effect] of [
     ["zzz", "ZZZ"], ["question", "QUESTION"], ["exclamation", "EXCLAMATION"],
     ["surprise", "SURPRISE_MARK"], ["ellipsis", "ELLIPSIS"], ["sweat", "SWEAT"],
-  ]) {
-    assert.match(cloud, new RegExp(`strcmp\\(text, "${name}"\\).*NewoSecondaryEffect::${effect}`));
-  }
+  ]) assert.match(cloud, new RegExp(`strcmp\\(text, "${name}"\\).*NewoSecondaryEffect::${effect}`));
   assert.match(cloud, /display_\.setSecondaryEffect\(/);
   assert.match(server, /const SECONDARY_EFFECTS = \["none", "question", "exclamation", "surprise", "ellipsis", "sweat", "zzz"\]/);
   assert.match(server, /\{ command: "effect", description: "Test a secondary effect" \}/);
@@ -187,9 +192,7 @@ test("Autonomy V2 procedural eye engine keeps state, behavior, expression, motio
   assert.ok(effectHandler, "Telegram effect handler should be discoverable");
   assert.match(effectHandler[1], /newoSpeak: false/);
 
-  // Phase F captions are their own timed semantic layer. They reuse the linked
-  // FreeSans font and a small screen band; no new GFX canvas/framebuffer exists.
-  assert.match(header, /enum class NewoFaceCaption[\s\S]*NONE[\s\S]*HUH[\s\S]*WOAH[\s\S]*HMM[\s\S]*HEY/);
+  // Phase F caption runtime remains independent and allocation-free in the display loop.
   assert.match(header, /bool setFaceCaption\(NewoFaceCaption caption, uint32_t durationMs = 4'000\)/);
   assert.match(header, /faceCaptionOverride_ = NewoFaceCaption::NONE/);
   assert.match(header, /faceCaptionStartedMs_/);
@@ -211,10 +214,8 @@ test("Autonomy V2 procedural eye engine keeps state, behavior, expression, motio
   assert.match(poseResolver, /kCaptionH = 28/);
   assert.match(poseResolver, /if \(!faceCaptionRegionVisible_\) return/);
   assert.match(poseResolver, /drawFaceCaption\(now, faceCaptionFor\(now, effectiveMode\(now\)\)\)/);
-  assert.doesNotMatch(poseResolver, /CURIOUS.*NewoFaceCaption|SURPRISED.*NewoFaceCaption|CONFUSED.*NewoFaceCaption/);
 
-  // Phase F transport mirrors the effect test path but keeps a distinct
-  // caption namespace and remains silent so SPEAKING cannot cover the test.
+  // Manual caption transport stays silent and separate.
   assert.match(cloud, /strcmp\(mode, "caption"\) == 0/);
   for (const [name, caption] of [["huh", "HUH"], ["woah", "WOAH"], ["hmm", "HMM"], ["hey", "HEY"]]) {
     assert.match(cloud, new RegExp(`strcmp\\(text, "${name}"\\).*NewoFaceCaption::${caption}`));
@@ -235,7 +236,6 @@ test("Autonomy V2 procedural eye engine keeps state, behavior, expression, motio
   assert.match(cloud, /strcmp\(mode, "sleeping"\)/);
   assert.match(cloud, /strcmp\(mode, "skeptical"\)/);
 
-  // Phase B still owns bilateral blink sequencing and bounded diagnostics remain.
   assert.match(display, /scheduleNextBilateralBlink/);
   assert.match(display, /startBilateralBlink/);
   assert.match(display, /eyeMeaningfulGazeEvents_/);

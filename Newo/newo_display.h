@@ -7,25 +7,10 @@
 #include "newo_eye_pose.h"
 #include "newo_gaze_motion.h"
 #include "newo_log.h"
+#include "newo_presentation.h"
 
 enum class NewoDisplayMode : uint8_t { IDLE, LISTENING, THINKING, SPEAKING, ERROR, MESSAGE, ECO };
 enum class NewoFaceStyle : uint8_t { NEUTRAL, HAPPY, ANGRY, TIRED, CURIOUS, CONFUSED, LAUGH, SWEAT, CYCLOPS, CLOSED, WINK_LEFT, WINK_RIGHT, LOOK_LEFT, LOOK_RIGHT, LOOK_UP, LOOK_DOWN, LOOK_UP_LEFT, LOOK_UP_RIGHT, LOOK_DOWN_LEFT, LOOK_DOWN_RIGHT, SURPRISED, SLEEPY, DETACHED, SLEEPING, SKEPTICAL };
-enum class NewoSecondaryEffect : uint8_t {
-  NONE,
-  ZZZ,
-  QUESTION,
-  EXCLAMATION,
-  SURPRISE_MARK,
-  ELLIPSIS,
-  SWEAT,
-};
-enum class NewoFaceCaption : uint8_t {
-  NONE,
-  HUH,
-  WOAH,
-  HMM,
-  HEY,
-};
 
 class NewoDisplay {
  public:

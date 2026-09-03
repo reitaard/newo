@@ -5,16 +5,18 @@ import { readFile } from "node:fs/promises";
 const source = async (path) => readFile(new URL(path, import.meta.url), "utf8");
 
 test("pure display engines remain host portable and behavior-tested", async () => {
-  const [poseHeader, gazeHeader, stateHeader, hostTest, stateHostTest, runner] = await Promise.all([
+  const [poseHeader, gazeHeader, stateHeader, presentationHeader, hostTest, stateHostTest, presentationHostTest, runner] = await Promise.all([
     source("../../Newo/newo_eye_pose.h"),
     source("../../Newo/newo_gaze_motion.h"),
     source("../../Newo/newo_autonomy_state.h"),
+    source("../../Newo/newo_presentation.h"),
     source("../../tools/display-animation-host-test.cpp"),
     source("../../tools/autonomy-state-host-test.cpp"),
+    source("../../tools/presentation-host-test.cpp"),
     source("../../tools/run-display-animation-host-test.sh"),
   ]);
 
-  for (const header of [poseHeader, gazeHeader, stateHeader]) {
+  for (const header of [poseHeader, gazeHeader, stateHeader, presentationHeader]) {
     assert.match(header, /#include <stdint\.h>/);
     assert.doesNotMatch(header, /Arduino\.h/);
   }
@@ -36,10 +38,22 @@ test("pure display engines remain host portable and behavior-tested", async () =
   assert.match(stateHostTest, /testStressAndCuriosityDecay/);
   assert.match(stateHostTest, /autonomy-state-host-test: PASS/);
 
+  assert.match(presentationHeader, /struct NewoPresentationIntent/);
+  assert.match(presentationHeader, /enum class NewoPresentationCue/);
+  assert.match(presentationHeader, /newoComposePresentation/);
+  assert.doesNotMatch(presentationHeader, /malloc|new\s|std::vector|std::map/);
+  assert.match(presentationHostTest, /testCuriousComposition/);
+  assert.match(presentationHostTest, /testAlertComposition/);
+  assert.match(presentationHostTest, /testSocialFatigueAndSleep/);
+  assert.match(presentationHostTest, /testBoundsAndDeterminism/);
+  assert.match(presentationHostTest, /presentation-host-test: PASS/);
+
   assert.match(runner, /-std=c\+\+17/);
   assert.match(runner, /-Wall -Wextra -Werror/);
   assert.match(runner, /newo_eye_pose\.cpp/);
   assert.match(runner, /newo_gaze_motion\.cpp/);
   assert.match(runner, /newo_autonomy_state\.cpp/);
+  assert.match(runner, /newo_presentation\.cpp/);
   assert.match(runner, /autonomy-state-host-test\.cpp/);
+  assert.match(runner, /presentation-host-test\.cpp/);
 });
