@@ -42,6 +42,14 @@ class NewoDisplay {
     CONFUSED,
     SLEEPING,
   };
+  struct EyeMotionOverlay {
+    int16_t xOffset = 0;
+    int16_t yOffset = 0;
+    int16_t leftWidthDelta = 0;
+    int16_t rightWidthDelta = 0;
+    int16_t leftHeightDelta = 0;
+    int16_t rightHeightDelta = 0;
+  };
 
   void render();
   void drawFace();
@@ -75,6 +83,7 @@ class NewoDisplay {
   NewoEyePose resolveEyePose(uint32_t now, NewoDisplayMode mode) const;
   NewoEyePose resolveManualEyePose(NewoFaceStyle style) const;
   NewoEyePose resolveAutonomousEyePose(uint32_t now) const;
+  EyeMotionOverlay resolveEyeMotionOverlay(uint32_t now, NewoDisplayMode mode) const;
   uint16_t eyePoseTransitionMs(NewoDisplayMode mode) const;
   NewoEyeEasing eyePoseEasing(NewoDisplayMode mode) const;
   SecondaryEffect secondaryEffectFor(uint32_t now, NewoDisplayMode mode) const;
