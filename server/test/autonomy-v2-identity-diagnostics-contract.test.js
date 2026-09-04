@@ -25,7 +25,7 @@ test("Autonomy V2 keeps state, behavior, presentation, pose, motion, blink, and 
   const renderer = display.match(/void NewoDisplay::drawFaceFrame\(uint32_t now\) \{([\s\S]*?)\n\}\n\nvoid NewoDisplay::blitMonoCanvasFast/);
   assert.ok(renderer, "drawFaceFrame body should be discoverable for renderer-boundary checks");
 
-  assert.match(config, /FIRMWARE_VERSION\[\] = "0\.5\.2-dev"/);
+  assert.match(config, /FIRMWARE_VERSION\[\] = "0\.5\.3-dev"/);
   assert.match(config, /AUTONOMY_REVISION = 2/);
   assert.match(ino, /Firmware: %s/);
   assert.match(ino, /Autonomy: V%u/);
@@ -189,10 +189,11 @@ test("Autonomy V2 keeps state, behavior, presentation, pose, motion, blink, and 
   ]) assert.match(cloud, new RegExp(`strcmp\\(text, "${name}"\\).*NewoSecondaryEffect::${effect}`));
   assert.match(cloud, /display_\.setSecondaryEffect\(/);
   assert.match(server, /const SECONDARY_EFFECTS = \["none", "question", "exclamation", "surprise", "ellipsis", "sweat", "zzz"\]/);
-  assert.match(server, /\{ command: "effect", description: "Test a secondary effect" \}/);
+  assert.match(server, /function secondaryEffectCommand\(effect\) \{ return `\/effect_\$\{effect\}`; \}/);
   assert.match(server, /sendDeviceRequest\("display_set", "display_ack", \{ mode: "effect", text: input, duration_ms: durationMs \}/);
   assert.match(server, /bot\.command\(\["effect", "fx"\], handleEffectCommand\)/);
-  const effectHandler = server.match(/async function handleEffectCommand\(ctx\) \{([\s\S]*?)\n\}/);
+  assert.match(server, /for \(const effect of SECONDARY_EFFECTS\) bot\.command\(`effect_\$\{effect\}`/);
+  const effectHandler = server.match(/async function handleEffectCommand\(ctx, selectedInput = null\) \{([\s\S]*?)\n\}/);
   assert.ok(effectHandler, "Telegram effect handler should be discoverable");
   assert.match(effectHandler[1], /newoSpeak: false/);
 
@@ -218,8 +219,10 @@ test("Autonomy V2 keeps state, behavior, presentation, pose, motion, blink, and 
   ]) {
     assert.match(poseResolver, new RegExp(`NewoFaceCaption::${caption}.*return "${text}"`));
   }
-  assert.match(poseResolver, /kCaptionY = 128/);
-  assert.match(poseResolver, /kCaptionH = 28/);
+  assert.match(poseResolver, /kCaptionY = 124/);
+  assert.match(poseResolver, /kCaptionH = 36/);
+  assert.match(poseResolver, /kCaptionBaseline = 155/);
+  assert.match(poseResolver, /display_\.setTextSize\(2\)/);
   assert.match(poseResolver, /if \(!faceCaptionRegionVisible_\) return/);
   assert.match(poseResolver, /drawFaceCaption\(now, faceCaptionFor\(now, effectiveMode\(now\)\)\)/);
 
@@ -234,12 +237,22 @@ test("Autonomy V2 keeps state, behavior, presentation, pose, motion, blink, and 
   assert.match(cloud, /display_\.setFaceCaption\(/);
   assert.match(cloud, /durationMs < 500 \|\| durationMs > 8'000/);
   assert.match(server, /const FACE_CAPTIONS = \["none", "huh", "woah", "hmm", "hey", "wtf", "tsk"\]/);
-  assert.match(server, /\{ command: "caption", description: "Test a face caption" \}/);
+  assert.match(server, /function faceCaptionCommand\(caption\) \{ return `\/caption_\$\{caption\}`; \}/);
   assert.match(server, /sendDeviceRequest\("display_set", "display_ack", \{ mode: "caption", text: input, duration_ms: durationMs \}/);
   assert.match(server, /bot\.command\(\["caption", "cap"\], handleCaptionCommand\)/);
-  const captionHandler = server.match(/async function handleCaptionCommand\(ctx\) \{([\s\S]*?)\n\}/);
+  assert.match(server, /for \(const caption of FACE_CAPTIONS\) bot\.command\(`caption_\$\{caption\}`/);
+  const captionHandler = server.match(/async function handleCaptionCommand\(ctx, selectedInput = null\) \{([\s\S]*?)\n\}/);
   assert.ok(captionHandler, "Telegram caption handler should be discoverable");
   assert.match(captionHandler[1], /newoSpeak: false/);
+
+  // Composed reaction commands bundle a face, effect, and caption without weakening the independent controls.
+  assert.match(server, /const REACTION_PRESETS = Object\.freeze/);
+  assert.match(server, /huh: \{ face: "curious", effect: "question", caption: "huh" \}/);
+  assert.match(server, /woah: \{ face: "surprised", effect: "surprise", caption: "woah" \}/);
+  assert.match(server, /tsk: \{ face: "unimpressed", effect: "ellipsis", caption: "tsk" \}/);
+  assert.match(server, /const steps = \[[\s\S]*mode: preset\.face[\s\S]*mode: "effect"[\s\S]*mode: "caption"/);
+  assert.match(server, /bot\.command\(\["reaction", "rx"\], handleReactionCommand\)/);
+  assert.match(server, /for \(const reaction of REACTION_NAMES\) bot\.command\(`reaction_\$\{reaction\}`/);
 
   assert.match(display, /case AutonomousEpisode::DROWSY_REST:[\s\S]*AutonomousExpression::SLEEPY/);
   assert.match(display, /AutonomousEpisode::DROWSY_REST[\s\S]*AutonomousExpression::SLEEPING, 100/);
