@@ -1,7 +1,6 @@
 #include "newo_display.h"
 
-namespace {
-const char* effectName(NewoSecondaryEffect effect) {
+const char* NewoDisplay::secondaryEffectName(NewoSecondaryEffect effect) {
   switch (effect) {
     case NewoSecondaryEffect::ZZZ: return "ZZZ";
     case NewoSecondaryEffect::QUESTION: return "QUESTION";
@@ -14,7 +13,7 @@ const char* effectName(NewoSecondaryEffect effect) {
   return "UNKNOWN";
 }
 
-const char* captionName(NewoFaceCaption caption) {
+const char* NewoDisplay::faceCaptionName(NewoFaceCaption caption) {
   switch (caption) {
     case NewoFaceCaption::HUH: return "HUH";
     case NewoFaceCaption::WOAH: return "WOAH";
@@ -26,7 +25,6 @@ const char* captionName(NewoFaceCaption caption) {
   }
   return "UNKNOWN";
 }
-}  // namespace
 
 void NewoDisplay::clearAutonomousPresentation() {
   autonomousPresentation_ = {};
@@ -49,11 +47,4 @@ void NewoDisplay::requestAutonomousPresentation(NewoPresentationCue cue, uint8_t
                                   ? now + autonomousPresentation_.captionDurationMs
                                   : 0;
   nextFaceFrameMs_ = 0;
-
-  if (autonomousPresentation_.effect != NewoSecondaryEffect::NONE ||
-      autonomousPresentation_.caption != NewoFaceCaption::NONE) {
-    Serial.printf("[EYES] presentation effect=%s caption=%s\n",
-                  effectName(autonomousPresentation_.effect),
-                  captionName(autonomousPresentation_.caption));
-  }
 }

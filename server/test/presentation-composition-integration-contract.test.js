@@ -24,7 +24,7 @@ test("behavior explicitly composes reusable effects and captions without couplin
   // thresholds correspond directly to their intended percentages.
   assert.match(presentationRuntime, /newoComposePresentation\([\s\S]*random\(0, 100\)/);
   assert.doesNotMatch(presentationRuntime, /random\(0, 256\)/);
-  assert.match(presentationRuntime, /\[EYES\] presentation effect=%s caption=%s/);
+  assert.doesNotMatch(presentationRuntime, /Serial\.printf|\[EYES\] presentation/);
   assert.doesNotMatch(presentationPolicy, /random\(|millis\(|Arduino/);
 
   // Behavior episodes explicitly request composition. Expression itself never

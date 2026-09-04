@@ -148,6 +148,8 @@ class NewoDisplay {
   const char* contextName(NewoDisplayMode mode) const;
   static const char* episodeName(AutonomousEpisode episode);
   static const char* expressionName(AutonomousExpression expression);
+  static const char* secondaryEffectName(NewoSecondaryEffect effect);
+  static const char* faceCaptionName(NewoFaceCaption caption);
   void recordGazeTarget(uint16_t holdMs);
   void maybeLogEyeStats(uint32_t now);
   uint32_t nextBlinkMs_ = 0;
@@ -196,6 +198,8 @@ class NewoDisplay {
   uint32_t eyeEpisodeStarts_ = 0;
   uint32_t eyeEpisodeCompletions_ = 0;
   uint32_t eyeErrorEvents_ = 0;
+  uint32_t eyeSummaryBlinkBase_ = 0;
+  uint32_t eyeSummaryGazeBase_ = 0;
   int16_t gazeX_ = 0;
   int16_t gazeY_ = 0;
   int16_t gazeTargetX_ = 0;

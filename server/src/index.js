@@ -43,6 +43,7 @@ const EnvSchema = z.object({
   VOICE_MAX_STREAM_BYTES: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(19_200_000)),
   VOICE_MAX_CHUNK_BYTES: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().max(256 * 1024).default(64 * 1024)),
   VOICE_FIRST_AUDIO_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(500).max(10_000).default(2_500)),
+  VOICE_ASR_BATCH_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(80).max(120).default(100)),
   VOICE_SAVE_WAV: z.preprocess(stringToBoolean, z.boolean().default(false)),
   VOICE_CAPTURE_DIRECTORY: z.preprocess(emptyToUndefined, z.string().default("/tmp/newo-voice")),
   VOICE_ASR_BACKEND: z.preprocess(emptyToUndefined, z.enum(["null", "sherpa"]).default("sherpa")),
@@ -187,7 +188,7 @@ const voiceRuntime = createVoiceRuntime({
     captureDirectory: env.VOICE_CAPTURE_DIRECTORY,
     liveTestMode: env.VOICE_LIVE_TEST_MODE,
     firstAudioTimeoutMs: env.VOICE_FIRST_AUDIO_TIMEOUT_MS,
-    maxPendingChunks: 2,
+    batchDurationMs: env.VOICE_ASR_BATCH_MS,
     onFinalTranscript: (turn) => assistantTurnRuntime.handleFinalTranscript(turn),
   },
 });

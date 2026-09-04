@@ -258,16 +258,11 @@ const char* NewoDisplay::expressionName(AutonomousExpression expression) {
   return "UNKNOWN";
 }
 
-void NewoDisplay::recordGazeTarget(uint16_t holdMs) {
+void NewoDisplay::recordGazeTarget(uint16_t) {
   ++eyeGazeEvents_;
   const int16_t absoluteX = gazeTargetX_ < 0 ? -gazeTargetX_ : gazeTargetX_;
   const int16_t absoluteY = gazeTargetY_ < 0 ? -gazeTargetY_ : gazeTargetY_;
   if (absoluteX >= 8 || absoluteY >= 3) ++eyeMeaningfulGazeEvents_;
-  const char* direction = absoluteX >= 8 ? (gazeTargetX_ < 0 ? "LEFT" : "RIGHT")
-      : absoluteY >= 3 ? (gazeTargetY_ < 0 ? "UP" : "DOWN") : "CENTER";
-  Serial.printf("[EYES] gaze=%s x=%d y=%d hold_ms=%u\n", direction,
-                static_cast<int>(gazeTargetX_), static_cast<int>(gazeTargetY_),
-                static_cast<unsigned>(holdMs));
 }
 
 void NewoDisplay::maybeLogEyeStats(uint32_t now) {
@@ -380,8 +375,6 @@ void NewoDisplay::setAutonomousExpression(AutonomousExpression expression, uint8
   if (expression == autonomousExpression_ && intensity == autonomousExpressionIntensity_) return;
   autonomousExpression_ = expression;
   autonomousExpressionIntensity_ = expression == AutonomousExpression::NONE ? 0 : intensity;
-  Serial.printf("[EYES] expr=%s intensity=%u\n", expressionName(autonomousExpression_),
-                static_cast<unsigned>(autonomousExpressionIntensity_));
 }
 
 void NewoDisplay::clearAutonomousExpression() {
@@ -692,7 +685,6 @@ void NewoDisplay::startBilateralBlink(bool allowAutonomousVariation, uint8_t for
   ++eyeBlinkEvents_;
   if (doubleBlink) ++eyeDoubleBlinkEvents_;
   if (longBlink_) ++eyeLongBlinkEvents_;
-  Serial.printf("[EYES] blink=%s\n", longBlink_ ? "LONG" : doubleBlink ? "DOUBLE" : "NORMAL");
 }
 
 void NewoDisplay::queuePostSaccadeBlink(uint32_t now) {
@@ -999,9 +991,23 @@ void NewoDisplay::recordFaceFrame(uint32_t elapsedUs) {
   ++frameMetricsCount_;
   const uint32_t now = millis();
   if (now - frameMetricsStartedMs_ < 5'000) return;
-  Serial.printf("DISPLAY_FRAME avg_us=%lu worst_us=%lu frames=%u\n",
+  const int16_t absoluteX = gazeTargetX_ < 0 ? -gazeTargetX_ : gazeTargetX_;
+  const int16_t absoluteY = gazeTargetY_ < 0 ? -gazeTargetY_ : gazeTargetY_;
+  const char* direction = absoluteX >= 8 ? (gazeTargetX_ < 0 ? "LEFT" : "RIGHT")
+      : absoluteY >= 3 ? (gazeTargetY_ < 0 ? "UP" : "DOWN") : "CENTER";
+  Serial.printf("[EYES] ctx=%s expr=%s(%u) gaze=%s(%d,%d) blinks=%lu gazes=%lu episode=%s "
+                "effect=%s caption=%s frame_avg_us=%lu frame_worst_us=%lu\n",
+                contextName(effectiveMode(now)), expressionName(autonomousExpression_),
+                static_cast<unsigned>(autonomousExpressionIntensity_), direction,
+                static_cast<int>(gazeTargetX_), static_cast<int>(gazeTargetY_),
+                static_cast<unsigned long>(eyeBlinkEvents_ - eyeSummaryBlinkBase_),
+                static_cast<unsigned long>(eyeGazeEvents_ - eyeSummaryGazeBase_),
+                episodeName(autonomousEpisode_), secondaryEffectName(autonomousPresentation_.effect),
+                faceCaptionName(autonomousPresentation_.caption),
                 static_cast<unsigned long>(frameMetricsTotalUs_ / frameMetricsCount_),
-                static_cast<unsigned long>(frameMetricsWorstUs_), static_cast<unsigned>(frameMetricsCount_));
+                static_cast<unsigned long>(frameMetricsWorstUs_));
+  eyeSummaryBlinkBase_ = eyeBlinkEvents_;
+  eyeSummaryGazeBase_ = eyeGazeEvents_;
   frameMetricsStartedMs_ = now;
   frameMetricsTotalUs_ = 0;
   frameMetricsWorstUs_ = 0;

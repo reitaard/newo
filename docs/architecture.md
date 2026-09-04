@@ -66,7 +66,7 @@ Manual `CLOSED`, `DETACHED`, `SLEEPING`, and `UNIMPRESSED` are distinct: CLOSED 
 
 Presentation vocabulary currently includes procedural `ZZZ`, question/exclamation/surprise marks, ellipsis, sweat, and captions `Huh?`, `Woah!!`, `Hmm...`, `Hey!`, `WTF!!`, and `Tsk!`. Automatic composition is intentionally sparse. `WTF!!` is limited to an extremely strong rare surprise. `UNIMPRESSED`/`Tsk!` are reusable primitives but autonomy currently has no generic disdain trigger, so ordinary idle behavior must not invent annoyance.
 
-USB Serial reports context, expression/intensity, gaze, episode, blink, and non-empty autonomous presentation events, with cumulative `EYES_STATS` rate-limited to once per minute. The detailed display-animation contract is documented in [`display-animation.md`](display-animation.md).
+USB Serial reports context and episode boundaries immediately. Routine expression/intensity, gaze, blink, presentation, and frame timing are bundled into one compact `[EYES]` summary about every five seconds, with cumulative `EYES_STATS` rate-limited to once per minute. The detailed display-animation contract is documented in [`display-animation.md`](display-animation.md).
 
 ## Cloud boundary
 

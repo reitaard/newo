@@ -137,19 +137,131 @@ test("first PCM logs arrival and cancels the no-audio timeout", async () => {
   socket.close();
 });
 
-test("voice runtime fails rather than accumulating worker-bound PCM", async () => {
-  let release;
-  const gate = new Promise((resolve) => { release = resolve; });
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function sendRealtimeFrames(socket, count) {
+  for (let index = 0; index < count && socket.readyState === 1; ++index) {
+    socket.emit("message", Buffer.alloc(640, index & 0xff), true);
+    await sleep(20);
+  }
+}
+
+async function waitFor(predicate, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("timed out waiting for voice test condition");
+    await sleep(5);
+  }
+}
+
+function cadenceRuntime({ latencyForBatch, onAccept, onStop } = {}) {
+  const logs = [];
+  let batchIndex = 0;
   const runtime = createVoiceRuntime({
-    logger: { info() {}, warn() {} },
-    asr: { async createStream() { return { async acceptAudio() { await gate; }, async stop() {} }; } },
-    config: { sampleRate: 16000, channels: 1, bitsPerSample: 16, maxStreamBytes: 64000, maxPendingChunks: 2, saveWav: false, liveTestMode: false },
+    logger: {
+      info: (fields, message) => logs.push({ level: "info", fields, message }),
+      warn: (fields, message) => logs.push({ level: "warn", fields, message }),
+    },
+    asr: {
+      async createStream() {
+        return {
+          async acceptAudio(chunk) {
+            onAccept?.(chunk);
+            const latency = latencyForBatch?.(batchIndex++) ?? 0;
+            if (latency) await sleep(latency);
+          },
+          async stop() { onStop?.(); },
+        };
+      },
+    },
+    config: { sampleRate: 16000, channels: 1, bitsPerSample: 16, maxStreamBytes: 640_000,
+      batchDurationMs: 100, firstAudioTimeoutMs: 500, saveWav: false, liveTestMode: false },
   });
+  return { runtime, logs };
+}
+
+test("a synchronous frame burst reserves one active batch before bounding the pending batch", async () => {
+  const batches = [];
+  const { runtime, logs } = cadenceRuntime({ latencyForBatch: () => 40, onAccept: (chunk) => batches.push(chunk.length) });
   const socket = new FakeSocket();
   await runtime.handleConnection(socket, "test-device");
-  socket.emit("message", Buffer.alloc(640), true);
-  socket.emit("message", Buffer.alloc(640), true);
-  socket.emit("message", Buffer.alloc(640), true);
+  for (let index = 0; index < 10; ++index) socket.emit("message", Buffer.alloc(640), true);
+  assert.equal(socket.closeCode, undefined);
+  socket.close();
+  await waitFor(() => logs.some(({ message }) => message === "VOICE_ASR_BATCH"));
+  assert.deepEqual(batches, [3200, 3200]);
+  const summaries = logs.filter(({ message }) => message === "VOICE_ASR_BATCH");
+  assert.equal(summaries.length, 1);
+  assert.equal(summaries[0].fields.max_pending_audio_ms, 200);
+});
+
+test("realtime 20 ms PCM remains open when 100 ms ASR batches finish within realtime", async () => {
+  const batches = [];
+  const { runtime, logs } = cadenceRuntime({ latencyForBatch: () => 35, onAccept: (chunk) => batches.push(chunk.length) });
+  const socket = new FakeSocket();
+  await runtime.handleConnection(socket, "test-device");
+  await sendRealtimeFrames(socket, 100); // Two seconds at the physical ESP cadence.
+  assert.equal(socket.closeCode, undefined);
+  socket.close();
+  await waitFor(() => logs.some(({ message }) => message === "VOICE_ASR_BATCH"));
+  assert.deepEqual(new Set(batches), new Set([3200]));
+  assert.equal(batches.length, 20);
+  const summaries = logs.filter(({ message }) => message === "VOICE_ASR_BATCH");
+  assert.equal(summaries.length, 1);
+  const summary = summaries[0].fields;
+  assert.equal(summary.raw_frames_received, 100);
+  assert.equal(summary.asr_batches_sent, 20);
+  assert.ok(summary.max_pending_audio_ms <= 200);
+  assert.equal(summary.worker_backpressure_events, 0);
+});
+
+test("one slightly slow worker batch is absorbed by the bounded pending bundle", async () => {
+  const { runtime, logs } = cadenceRuntime({ latencyForBatch: (index) => index === 2 ? 105 : 30 });
+  const socket = new FakeSocket();
+  await runtime.handleConnection(socket, "test-device");
+  await sendRealtimeFrames(socket, 60);
+  assert.equal(socket.closeCode, undefined);
+  socket.close();
+  await waitFor(() => logs.some(({ message }) => message === "VOICE_ASR_BATCH"));
+  const summaries = logs.filter(({ message }) => message === "VOICE_ASR_BATCH");
+  assert.equal(summaries.length, 1);
+  const summary = summaries[0].fields;
+  assert.equal(summary.asr_batches_sent, 12);
+  assert.ok(summary.max_pending_audio_ms <= 200);
+  assert.equal(summary.worker_backpressure_events, 0);
+});
+
+test("sustained slower-than-realtime ASR closes once with a bounded backlog", async () => {
+  const { runtime, logs } = cadenceRuntime({ latencyForBatch: () => 180 });
+  const socket = new FakeSocket();
+  await runtime.handleConnection(socket, "test-device");
+  await sendRealtimeFrames(socket, 60);
+  await waitFor(() => logs.some(({ message }) => message === "VOICE_ASR_BATCH"));
   assert.equal(socket.closeCode, 1013);
-  release();
+  assert.equal(logs.filter(({ message }) => message === "Voice worker backpressure limit reached").length, 1);
+  const summaries = logs.filter(({ message }) => message === "VOICE_ASR_BATCH");
+  assert.equal(summaries.length, 1);
+  const summary = summaries[0].fields;
+  assert.ok(summary.max_pending_audio_ms <= 200);
+  assert.equal(summary.worker_backpressure_events, 1);
+  assert.ok(summary.raw_frames_received < 60);
+});
+
+test("cleanup waits for active decode and flushes one final partial ASR bundle in chronological order", async () => {
+  const batches = [];
+  const { runtime, logs } = cadenceRuntime({ latencyForBatch: () => 30, onAccept: (chunk) => batches.push(Buffer.from(chunk)) });
+  const socket = new FakeSocket();
+  await runtime.handleConnection(socket, "test-device");
+  for (let index = 0; index < 5; ++index) socket.emit("message", Buffer.alloc(640, 0x11), true);
+  socket.emit("message", Buffer.alloc(640, 0x22), true);
+  socket.emit("message", Buffer.alloc(640, 0x33), true);
+  socket.close();
+  await waitFor(() => logs.some(({ message }) => message === "VOICE_ASR_BATCH"));
+  assert.equal(batches.length, 2);
+  assert.equal(batches[0].length, 3200);
+  assert.ok(batches[0].every((value) => value === 0x11));
+  assert.equal(batches[1].length, 1280);
+  assert.ok(batches[1].subarray(0, 640).every((value) => value === 0x22));
+  assert.ok(batches[1].subarray(640).every((value) => value === 0x33));
+  assert.equal(logs.filter(({ message }) => message === "VOICE_ASR_BATCH").length, 1);
 });

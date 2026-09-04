@@ -268,5 +268,6 @@ test("Autonomy V2 keeps state, behavior, presentation, pose, motion, blink, and 
   assert.match(display, /eyeDoubleBlinkEvents_/);
   assert.match(display, /eyeEpisodeCompletions_/);
   assert.match(display, /\[EYES_STATS\]/);
-  assert.match(display, /\[EYES\] expr=%s intensity=%u/);
+  assert.match(display, /\[EYES\] ctx=%s expr=%s\(%u\) gaze=%s/);
+  assert.doesNotMatch(display, /\[EYES\] blink=%s|\[EYES\] gaze=%s x=|\[EYES\] expr=%s intensity=/);
 });

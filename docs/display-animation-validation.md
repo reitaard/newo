@@ -110,13 +110,11 @@ Acceptance:
 
 ## 6. Autonomous expression and presentation episodes
 
-USB Serial should make random behavior observable without guessing what happened visually:
+USB Serial should make random behavior observable without hiding voice diagnostics. Episode boundaries remain immediate; routine details appear in the five-second summary:
 
 ```text
 [EYES] episode=CURIOUS_SCAN start
-[EYES] expr=CURIOUS intensity=...
-[EYES] presentation effect=QUESTION caption=HUH
-...
+[EYES] ctx=IDLE_AUTO expr=CURIOUS(72) gaze=LEFT(-16,-2) blinks=2 gazes=3 episode=CURIOUS_SCAN effect=QUESTION caption=HUH frame_avg_us=... frame_worst_us=...
 [EYES] episode=CURIOUS_SCAN done
 ```
 
@@ -168,7 +166,7 @@ A manual face must similarly disable autonomous episodes until `/face_default` i
 
 During the physical run watch existing diagnostics, not only the face:
 
-- `DISPLAY_FRAME` average/worst time;
+- `[EYES]` summary `frame_avg_us` / `frame_worst_us`;
 - free heap and PSRAM;
 - speaker underruns/overflows when speaker is exercised;
 - voice stability when LISTENING is exercised;

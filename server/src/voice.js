@@ -308,8 +308,11 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
   async function handleConnection(ws, deviceId) {
     const streamId = randomUUID();
     const connectedAt = Date.now();
+    const batchDurationMs = config.batchDurationMs ?? 100;
+    const batchBytes = Math.round(bytesPerSecond * batchDurationMs / 1_000);
     let startedAt = null;
     let bytesReceived = 0;
+    let rawFramesReceived = 0;
     let capture = null;
     let asrStream = null;
     let nextProgressBytes = bytesPerSecond * 5;
@@ -317,8 +320,18 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
     let finalMs = null;
     let finalTranscript = null;
     let assistantFinalDelivered = false;
-    let processing = Promise.resolve();
-    let queuedChunks = 0;
+    let pendingParts = [];
+    let pendingBytes = 0;
+    let activeBatchBytes = 0;
+    let maxOutstandingBytes = 0;
+    let asrBatchesSent = 0;
+    let workerBatchTotalMs = 0;
+    let worstWorkerBatchMs = 0;
+    let workerBackpressureEvents = 0;
+    let initializationPromise = null;
+    let pumpPromise = null;
+    let processingFailed = false;
+    let stopping = false;
     let closed = false;
     let closeRequested = false;
     let cleanupPromise = null;
@@ -329,12 +342,119 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
       closeRequested = true;
       if (ws.readyState === 1) ws.close(code, reason);
     };
+    const takePending = (byteCount) => {
+      const output = Buffer.allocUnsafe(byteCount);
+      let written = 0;
+      while (written < byteCount) {
+        const part = pendingParts[0];
+        const remaining = byteCount - written;
+        if (part.length <= remaining) {
+          part.copy(output, written);
+          written += part.length;
+          pendingParts.shift();
+        } else {
+          part.copy(output, written, 0, remaining);
+          pendingParts[0] = part.subarray(remaining);
+          written += remaining;
+        }
+      }
+      pendingBytes -= byteCount;
+      return output;
+    };
+    const acceptBatch = async (batch) => {
+      activeBatchBytes = batch.length;
+      maxOutstandingBytes = Math.max(maxOutstandingBytes, activeBatchBytes + pendingBytes);
+      await capture?.write(batch);
+      const workerStartedAt = performance.now();
+      ++asrBatchesSent;
+      try { await asrStream.acceptAudio(batch); }
+      finally {
+        const workerBatchMs = Math.max(0, performance.now() - workerStartedAt);
+        workerBatchTotalMs += workerBatchMs;
+        worstWorkerBatchMs = Math.max(worstWorkerBatchMs, workerBatchMs);
+        activeBatchBytes = 0;
+      }
+    };
+    const failProcessing = (error) => {
+      if (processingFailed) return;
+      processingFailed = true;
+      logger.warn({ device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Voice stream processing failed");
+      requestClose(1011, "voice stream processing failed");
+    };
+    const initializeStream = async () => {
+      asrStream = await asr.createStream({
+        deviceId,
+        streamId,
+        format,
+        onEvent(event) {
+          const elapsedMs = Math.max(0, Date.now() - startedAt);
+          const audioDurationMs = Math.round((bytesReceived / bytesPerSecond) * 1_000);
+          if (event.type === "partial" && firstPartialMs === null) {
+            firstPartialMs = elapsedMs;
+            logger.info({ event: "VOICE_FIRST_PARTIAL", device_id: deviceId, stream_id: streamId, elapsed_ms: elapsedMs }, "VOICE_FIRST_PARTIAL");
+          }
+          if (event.type === "final" && finalMs === null) {
+            finalMs = elapsedMs;
+            finalTranscript = event.text;
+            logger.info({ event: "VOICE_FINAL", device_id: deviceId, stream_id: streamId, elapsed_ms: elapsedMs }, "VOICE_FINAL");
+          }
+          logTranscript(deviceId, streamId, event, {
+            elapsed_ms: elapsedMs,
+            audio_duration_ms: audioDurationMs,
+            first_partial_ms: firstPartialMs,
+            final_ms: finalMs,
+          });
+          if (ws.readyState === 1) ws.send(JSON.stringify(event));
+          if (event.type === "final" && !assistantFinalDelivered && typeof config.onFinalTranscript === "function") {
+            assistantFinalDelivered = true;
+            void Promise.resolve()
+              .then(() => config.onFinalTranscript({ deviceId, streamId, text: event.text, asrFinalMs: finalMs }))
+              .catch((error) => logger.warn({ device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Voice final callback failed"));
+          }
+        },
+      });
+      if (config.saveWav) {
+        const file = path.join(config.captureDirectory, `${new Date().toISOString().replaceAll(/[:.]/g, "-")}-${streamId}.wav`);
+        capture = new WavCapture(file, format);
+        await capture.start();
+        logger.info({ device_id: deviceId, stream_id: streamId, capture_file: file }, "Voice WAV capture started");
+      }
+      logger.info({ event: "VOICE_ASR_STREAM_CREATED", new_stream_id: streamId, device_id: deviceId, format, connection_to_stream_ms: Math.max(0, Date.now() - connectedAt) }, "VOICE_ASR_STREAM_CREATED");
+      logger.info({ device_id: deviceId, stream_id: streamId, format }, "Voice stream started");
+    };
+    const startPump = () => {
+      if (pumpPromise || processingFailed || !initializationPromise || pendingBytes < batchBytes) return;
+      // Reserve the full bundle synchronously. A following WebSocket frame can
+      // then occupy the one pending bundle even while stream setup/decoding awaits.
+      let batch = takePending(batchBytes);
+      activeBatchBytes = batch.length;
+      pumpPromise = (async () => {
+        await initializationPromise;
+        while (batch && !processingFailed) {
+          await acceptBatch(batch);
+          if (pendingBytes >= batchBytes) {
+            batch = takePending(batchBytes);
+            activeBatchBytes = batch.length;
+          } else {
+            batch = null;
+          }
+        }
+      })().catch(failProcessing).finally(() => {
+        pumpPromise = null;
+        if (!stopping && pendingBytes >= batchBytes && !processingFailed) startPump();
+      });
+    };
     const stop = (outcome) => {
       if (cleanupPromise) return cleanupPromise;
+      stopping = true;
       cleanupPromise = (async () => {
         if (noAudioTimer) { clearTimeout(noAudioTimer); noAudioTimer = null; }
-        // Do not race recognizer teardown with an in-flight acceptAudio().
-        await processing.catch(() => {});
+        await initializationPromise?.catch(() => {});
+        await pumpPromise?.catch(() => {});
+        if (!processingFailed && asrStream && pendingBytes > 0) {
+          try { await acceptBatch(takePending(pendingBytes)); }
+          catch (error) { failProcessing(error); }
+        }
         if (closed) return;
         closed = true;
         const durationMs = Math.round((bytesReceived / bytesPerSecond) * 1_000);
@@ -351,6 +471,19 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
         }
         if (asrStream) logger.info({ old_stream_id: streamId, device_id: deviceId, outcome }, "VOICE_ASR_STREAM_CLOSED");
         asrStream = null;
+        logger.info({
+          event: "VOICE_ASR_BATCH",
+          device_id: deviceId,
+          stream_id: streamId,
+          batch_ms: batchDurationMs,
+          batch_bytes: batchBytes,
+          raw_frames_received: rawFramesReceived,
+          asr_batches_sent: asrBatchesSent,
+          max_pending_audio_ms: Math.round(maxOutstandingBytes / bytesPerSecond * 1_000),
+          worker_backpressure_events: workerBackpressureEvents,
+          average_worker_batch_ms: asrBatchesSent ? Math.round(workerBatchTotalMs / asrBatchesSent) : 0,
+          worst_worker_batch_ms: Math.round(worstWorkerBatchMs),
+        }, "VOICE_ASR_BATCH");
         const fields = { device_id: deviceId, stream_id: streamId, bytes_received: bytesReceived, audio_duration_ms: durationMs, outcome };
         if (config.liveTestMode) Object.assign(fields, { first_partial_ms: firstPartialMs, final_ms: finalMs, final_transcript: finalTranscript });
         logger.info(fields, "Voice stream stopped");
@@ -361,99 +494,55 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
     logger.info({ event: "VOICE_CONNECTED", device_id: deviceId, stream_id: streamId, format }, "Voice device connected");
 
     ws.on("message", (raw, isBinary) => {
-      // Do not allow WebSocket arrivals to form an unbounded Promise/PCM queue
-      // while the worker is decoding. Realtime audio is failed, not buffered.
-      if (isBinary && !closed && ++queuedChunks > (config.maxPendingChunks ?? 2)) {
-        queuedChunks -= 1;
-        logger.warn({ device_id: deviceId, stream_id: streamId }, "Voice worker backpressure limit reached");
+      if (closed || stopping || closeRequested) return;
+      if (!isBinary) {
+        logger.warn({ device_id: deviceId, stream_id: streamId }, "Ignoring non-binary voice message");
+        return;
+      }
+      const chunk = Buffer.from(raw);
+      if (chunk.length === 0) return;
+      if (bytesReceived + chunk.length > config.maxStreamBytes) {
+        logger.warn({ device_id: deviceId, stream_id: streamId, bytes_received: bytesReceived }, "Voice stream exceeded configured size limit");
+        requestClose(1009, "voice stream too large");
+        return;
+      }
+      if (activeBatchBytes + pendingBytes + chunk.length > batchBytes * 2) {
+        ++workerBackpressureEvents;
+        logger.warn({
+          event: "VOICE_WORKER_BACKPRESSURE",
+          device_id: deviceId,
+          stream_id: streamId,
+          pending_audio_ms: Math.round((activeBatchBytes + pendingBytes) / bytesPerSecond * 1_000),
+        }, "Voice worker backpressure limit reached");
         requestClose(1013, "voice worker busy");
         return;
       }
-      processing = processing.then(async () => {
-      if (!isBinary || closed) {
-        if (!isBinary) logger.warn({ device_id: deviceId, stream_id: streamId }, "Ignoring non-binary voice message");
-        return;
+
+      if (!startedAt) {
+        startedAt = Date.now();
+        if (noAudioTimer) { clearTimeout(noAudioTimer); noAudioTimer = null; }
+        logger.info({
+          event: "VOICE_FIRST_AUDIO",
+          device_id: deviceId,
+          stream_id: streamId,
+          chunk_bytes: chunk.length,
+          connection_to_first_audio_ms: Math.max(0, startedAt - connectedAt),
+        }, "VOICE_FIRST_AUDIO");
+        initializationPromise = initializeStream();
+        void initializationPromise.catch(failProcessing);
       }
 
-      try {
-        const chunk = Buffer.from(raw);
-        if (chunk.length === 0) return;
-        if (bytesReceived + chunk.length > config.maxStreamBytes) {
-          logger.warn({ device_id: deviceId, stream_id: streamId, bytes_received: bytesReceived }, "Voice stream exceeded configured size limit");
-          requestClose(1009, "voice stream too large");
-          return;
-        }
-
-        if (!startedAt) {
-          startedAt = Date.now();
-          if (noAudioTimer) { clearTimeout(noAudioTimer); noAudioTimer = null; }
-          logger.info({
-            event: "VOICE_FIRST_AUDIO",
-            device_id: deviceId,
-            stream_id: streamId,
-            chunk_bytes: chunk.length,
-            connection_to_first_audio_ms: Math.max(0, startedAt - connectedAt),
-          }, "VOICE_FIRST_AUDIO");
-          asrStream = await asr.createStream({
-            deviceId,
-            streamId,
-            format,
-            onEvent(event) {
-              const elapsedMs = Math.max(0, Date.now() - startedAt);
-              const audioDurationMs = Math.round((bytesReceived / bytesPerSecond) * 1_000);
-              if (event.type === "partial" && firstPartialMs === null) {
-                firstPartialMs = elapsedMs;
-                logger.info({ event: "VOICE_FIRST_PARTIAL", device_id: deviceId, stream_id: streamId, elapsed_ms: elapsedMs }, "VOICE_FIRST_PARTIAL");
-              }
-              if (event.type === "final" && finalMs === null) {
-                finalMs = elapsedMs;
-                finalTranscript = event.text;
-                logger.info({ event: "VOICE_FINAL", device_id: deviceId, stream_id: streamId, elapsed_ms: elapsedMs }, "VOICE_FINAL");
-              }
-              logTranscript(deviceId, streamId, event, {
-                elapsed_ms: elapsedMs,
-                audio_duration_ms: audioDurationMs,
-                first_partial_ms: firstPartialMs,
-                final_ms: finalMs,
-              });
-              // `type` remains partial/final for deployed ESP clients. `stage`
-              // allows a later rescorer to emit rescored_final without a wire break.
-              if (ws.readyState === 1) ws.send(JSON.stringify(event));
-              // Cleanup can generate another final event. Exactly one finalized
-              // utterance may leave this stream for the assistant.
-              if (event.type === "final" && !assistantFinalDelivered && typeof config.onFinalTranscript === "function") {
-                assistantFinalDelivered = true;
-                void Promise.resolve()
-                  .then(() => config.onFinalTranscript({ deviceId, streamId, text: event.text, asrFinalMs: finalMs }))
-                  .catch((error) => logger.warn({ device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Voice final callback failed"));
-              }
-            },
-          });
-          if (config.saveWav) {
-            const file = path.join(config.captureDirectory, `${new Date().toISOString().replaceAll(/[:.]/g, "-")}-${streamId}.wav`);
-            capture = new WavCapture(file, format);
-            await capture.start();
-            logger.info({ device_id: deviceId, stream_id: streamId, capture_file: file }, "Voice WAV capture started");
-          }
-          logger.info({ event: "VOICE_ASR_STREAM_CREATED", new_stream_id: streamId, device_id: deviceId, format, connection_to_stream_ms: Math.max(0, Date.now() - connectedAt) }, "VOICE_ASR_STREAM_CREATED");
-          logger.info({ device_id: deviceId, stream_id: streamId, format }, "Voice stream started");
-        }
-
-        bytesReceived += chunk.length;
-        await capture?.write(chunk);
-        await asrStream.acceptAudio(chunk);
-        if (bytesReceived >= nextProgressBytes) {
-          const audioDurationMs = Math.round((bytesReceived / bytesPerSecond) * 1_000);
-          logger.info({ device_id: deviceId, stream_id: streamId, bytes_received: bytesReceived, audio_duration_ms: audioDurationMs }, "Voice audio received");
-          nextProgressBytes = bytesReceived + (bytesPerSecond * 5);
-        }
-      } catch (error) {
-        logger.warn({ device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Voice stream processing failed");
-        requestClose(1011, "voice stream processing failed");
-      } finally {
-        if (isBinary) queuedChunks = Math.max(0, queuedChunks - 1);
+      ++rawFramesReceived;
+      bytesReceived += chunk.length;
+      pendingParts.push(chunk);
+      pendingBytes += chunk.length;
+      maxOutstandingBytes = Math.max(maxOutstandingBytes, activeBatchBytes + pendingBytes);
+      if (pendingBytes >= batchBytes) startPump();
+      if (bytesReceived >= nextProgressBytes) {
+        const audioDurationMs = Math.round((bytesReceived / bytesPerSecond) * 1_000);
+        logger.info({ device_id: deviceId, stream_id: streamId, bytes_received: bytesReceived, audio_duration_ms: audioDurationMs }, "Voice audio received");
+        nextProgressBytes = bytesReceived + (bytesPerSecond * 5);
       }
-      });
     });
 
     ws.on("close", (code) => { void stop(`disconnect:${code}`); });
