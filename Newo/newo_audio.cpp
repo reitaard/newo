@@ -1,5 +1,6 @@
 #include "newo_audio.h"
 
+#include <cmath>
 #include <cstring>
 
 #include "newo_log.h"
@@ -196,6 +197,14 @@ void NewoAudio::streamTask() {
                                  NewoConfig::VOICE_PATH, NewoSecrets::CLOUD_CA_CERT, "");
   int16_t stereo[NewoConfig::AUDIO_SAMPLES_PER_FRAME * 2];
   int16_t mono[NewoConfig::AUDIO_SAMPLES_PER_FRAME];
+  constexpr uint32_t kHealthFrames = 25;  // First 0.5 s at 20 ms/frame.
+  uint32_t healthFrames = 0;
+  uint32_t healthSamples = 0;
+  uint32_t healthNonzero = 0;
+  uint32_t healthPeak = 0;
+  uint64_t healthSquareSum = 0;
+  int16_t healthMin = 32767;
+  int16_t healthMax = -32768;
   while (!stopStreaming_) {
     voiceWebSocket_.loop();
     if (voiceConnected_) {
@@ -205,6 +214,31 @@ void NewoAudio::streamTask() {
       }
       for (size_t i = 0; i < NewoConfig::AUDIO_SAMPLES_PER_FRAME; ++i) {
         mono[i] = stereo[i * 2 + (NewoConfig::AUDIO_I2S_MIC_IS_LEFT ? 0 : 1)];
+      }
+      if (healthFrames < kHealthFrames) {
+        for (size_t i = 0; i < NewoConfig::AUDIO_SAMPLES_PER_FRAME; ++i) {
+          const int32_t sample = mono[i];
+          const uint32_t absolute = sample < 0 ? static_cast<uint32_t>(-sample) : static_cast<uint32_t>(sample);
+          if (sample != 0) ++healthNonzero;
+          if (absolute > healthPeak) healthPeak = absolute;
+          if (sample < healthMin) healthMin = static_cast<int16_t>(sample);
+          if (sample > healthMax) healthMax = static_cast<int16_t>(sample);
+          healthSquareSum += static_cast<uint64_t>(sample * sample);
+        }
+        ++healthFrames;
+        healthSamples += NewoConfig::AUDIO_SAMPLES_PER_FRAME;
+        if (healthFrames == kHealthFrames) {
+          const uint32_t rms = static_cast<uint32_t>(sqrt(
+              static_cast<double>(healthSquareSum) / static_cast<double>(healthSamples)));
+          char detail[160];
+          snprintf(detail, sizeof(detail),
+                   "frames=%lu samples=%lu peak=%lu rms=%lu nonzero=%lu min=%d max=%d channel=%s",
+                   static_cast<unsigned long>(healthFrames), static_cast<unsigned long>(healthSamples),
+                   static_cast<unsigned long>(healthPeak), static_cast<unsigned long>(rms),
+                   static_cast<unsigned long>(healthNonzero), static_cast<int>(healthMin),
+                   static_cast<int>(healthMax), NewoConfig::AUDIO_I2S_MIC_IS_LEFT ? "left" : "right");
+          NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_PCM_HEALTH", detail);
+        }
       }
       // One 20 ms PCM16 frame is sent directly: no queue and no stale backlog.
       if (!voiceWebSocket_.sendBIN(reinterpret_cast<uint8_t*>(mono), sizeof(mono))) {

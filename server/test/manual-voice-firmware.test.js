@@ -18,6 +18,14 @@ test("manual voice control has one direct OFF-to-STREAMING path without a wake c
   assert.match(audio, /state_ == NewoVoiceState::STREAMING \|\| streamTask_ \|\| playbackSuppressed_/);
 });
 
+test("manual microphone emits one bounded PCM health summary per full diagnostic window", async () => {
+  const audio = await firmware("newo_audio.cpp");
+  assert.match(audio, /constexpr uint32_t kHealthFrames = 25/);
+  assert.match(audio, /VOICE_PCM_HEALTH/);
+  assert.match(audio, /frames=%lu samples=%lu peak=%lu rms=%lu nonzero=%lu min=%d max=%d channel=%s/);
+  assert.match(audio, /AUDIO_I2S_MIC_IS_LEFT \? "left" : "right"/);
+});
+
 test("manual sessions settle OFF while the future WakeNet path remains re-armable", async () => {
   const audio = await firmware("newo_audio.cpp");
   assert.match(audio, /if \(rearmAfterStream_ && enabled_ && startWakeNet\(\)\) return;/);

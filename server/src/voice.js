@@ -29,9 +29,11 @@ function wavHeader({ dataBytes, sampleRate, channels, bitsPerSample }) {
 
 /** A safe no-transcription fallback for transport and capture debugging. */
 export class NullAsrBackend {
+  async prewarm() {}
   async createStream() {
     return { async acceptAudio() {}, async stop() {} };
   }
+  async close() {}
 }
 
 function pcm16leToFloat32(chunk) {
@@ -133,35 +135,100 @@ export class SherpaAsrBackend {
 // The native recognizer must never be constructed in the Fastify event-loop
 // process. This proxy gives each real /voice connection a worker-owned stream.
 export class WorkerAsrBackend {
-  constructor(options) {
+  constructor(options, { logger, workerFactory } = {}) {
     this.options = options;
+    this.logger = logger;
+    this.workerFactory = workerFactory ?? (() => new Worker(new URL("./sherpa-worker.js", import.meta.url), { workerData: this.options }));
     this.worker = null;
+    this.startPromise = null;
+    this.resolveStart = null;
+    this.rejectStart = null;
+    this.startingAt = null;
+    this.unavailableError = null;
+    this.closing = false;
     this.requests = new Map();
     this.streams = new Map();
     this.nextId = 1;
   }
-  ensureWorker() {
-    if (this.worker) return;
-    const worker = this.worker = new Worker(new URL("./sherpa-worker.js", import.meta.url), { workerData: this.options });
-    worker.on("message", (message) => {
-      if (message.type === "event") { this.streams.get(message.sessionId)?.onEvent(message.event); return; }
-      const pending = this.requests.get(message.requestId);
-      if (!pending) return;
-      this.requests.delete(message.requestId);
-      message.error ? pending.reject(new Error(message.error)) : pending.resolve(message);
+
+  async prewarm() {
+    if (this.worker && !this.startPromise && !this.unavailableError) return;
+    if (this.unavailableError) throw this.unavailableError;
+    if (this.startPromise) return this.startPromise;
+
+    this.startingAt = Date.now();
+    this.logger?.info({ event: "SHERPA_WORKER_STARTING" }, "SHERPA_WORKER_STARTING");
+    let worker;
+    try { worker = this.worker = this.workerFactory(); }
+    catch (error) {
+      this.worker = null;
+      this.unavailableError = error;
+      this.logger?.error?.({ event: "SHERPA_START_FAILED", error_message: error.message }, "SHERPA_START_FAILED");
+      throw error;
+    }
+    this.startPromise = new Promise((resolve, reject) => {
+      this.resolveStart = resolve;
+      this.rejectStart = reject;
     });
-    worker.on("error", (error) => this.failAll(error));
-    worker.on("exit", (code) => { if (this.worker === worker) this.worker = null; if (code !== 0) this.failAll(new Error(`ASR worker exited (${code})`)); });
+    worker.on("message", (message) => this.handleWorkerMessage(worker, message));
+    worker.on("error", (error) => this.failWorker(worker, error));
+    worker.on("exit", (code) => {
+      if (this.worker !== worker) return;
+      if (!this.closing && !this.unavailableError) this.failWorker(worker, new Error(`ASR worker exited (${code})`));
+      this.worker = null;
+    });
+    return this.startPromise;
   }
-  failAll(error) { for (const pending of this.requests.values()) pending.reject(error); this.requests.clear(); }
-  request(type, payload = {}, transfer = []) {
-    this.ensureWorker();
+
+  handleWorkerMessage(worker, message) {
+    if (this.worker !== worker) return;
+    if (message.type === "ready") {
+      const startupMs = Math.max(0, Date.now() - this.startingAt);
+      this.startPromise = null;
+      this.resolveStart?.();
+      this.resolveStart = null;
+      this.rejectStart = null;
+      this.logger?.info({ event: "SHERPA_READY", startup_ms: startupMs }, "SHERPA_READY");
+      return;
+    }
+    if (message.type === "fatal") {
+      this.failWorker(worker, new Error(message.error || "ASR worker fatal error"));
+      return;
+    }
+    if (message.type === "event") { this.streams.get(message.sessionId)?.onEvent(message.event); return; }
+    const pending = this.requests.get(message.requestId);
+    if (!pending) return;
+    this.requests.delete(message.requestId);
+    message.error ? pending.reject(new Error(message.error)) : pending.resolve(message);
+  }
+
+  failWorker(worker, error) {
+    if (this.worker !== worker || this.closing) return;
+    this.unavailableError = error;
+    this.rejectStart?.(error);
+    this.startPromise = null;
+    this.resolveStart = null;
+    this.rejectStart = null;
+    this.failAll(error);
+    this.logger?.error?.({ event: "SHERPA_START_FAILED", error_message: error.message }, "SHERPA_START_FAILED");
+  }
+
+  failAll(error) {
+    for (const pending of this.requests.values()) pending.reject(error);
+    this.requests.clear();
+  }
+
+  async request(type, payload = {}, transfer = []) {
+    await this.prewarm();
+    if (!this.worker || this.unavailableError) throw this.unavailableError ?? new Error("ASR worker unavailable");
     const requestId = this.nextId++;
     return new Promise((resolve, reject) => {
       this.requests.set(requestId, { resolve, reject });
-      this.worker.postMessage({ type, requestId, ...payload }, transfer);
+      try { this.worker.postMessage({ type, requestId, ...payload }, transfer); }
+      catch (error) { this.requests.delete(requestId); reject(error); }
     });
   }
+
   async createStream({ format, onEvent }) {
     const response = await this.request("create", { format });
     const sessionId = response.sessionId;
@@ -174,18 +241,22 @@ export class WorkerAsrBackend {
       },
       stop: async () => {
         try { await this.request("stop", { sessionId }); }
-        finally {
-          this.streams.delete(sessionId);
-          // Keeping no native recognizer resident between voice sessions saves
-          // VPS memory and makes ARMED device state independent of ASR state.
-          if (this.streams.size === 0 && this.requests.size === 0 && this.worker) {
-            const worker = this.worker; this.worker = null; await worker.terminate();
-          }
-        }
+        finally { this.streams.delete(sessionId); }
       },
     };
   }
-  async close() { if (this.worker) { const worker = this.worker; this.worker = null; await worker.terminate(); } }
+
+  async close() {
+    this.closing = true;
+    const error = new Error("ASR worker shutting down");
+    this.rejectStart?.(error);
+    this.failAll(error);
+    this.streams.clear();
+    const worker = this.worker;
+    this.worker = null;
+    this.startPromise = null;
+    if (worker) await worker.terminate();
+  }
 }
 
 class WavCapture {
@@ -236,6 +307,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
 
   async function handleConnection(ws, deviceId) {
     const streamId = randomUUID();
+    const connectedAt = Date.now();
     let startedAt = null;
     let bytesReceived = 0;
     let capture = null;
@@ -250,6 +322,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
     let closed = false;
     let closeRequested = false;
     let cleanupPromise = null;
+    let noAudioTimer = null;
 
     const requestClose = (code, reason) => {
       if (closeRequested) return;
@@ -259,6 +332,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
     const stop = (outcome) => {
       if (cleanupPromise) return cleanupPromise;
       cleanupPromise = (async () => {
+        if (noAudioTimer) { clearTimeout(noAudioTimer); noAudioTimer = null; }
         // Do not race recognizer teardown with an in-flight acceptAudio().
         await processing.catch(() => {});
         if (closed) return;
@@ -284,7 +358,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
       return cleanupPromise;
     };
 
-    logger.info({ device_id: deviceId, stream_id: streamId, format }, "Voice device connected");
+    logger.info({ event: "VOICE_CONNECTED", device_id: deviceId, stream_id: streamId, format }, "Voice device connected");
 
     ws.on("message", (raw, isBinary) => {
       // Do not allow WebSocket arrivals to form an unbounded Promise/PCM queue
@@ -312,6 +386,14 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
 
         if (!startedAt) {
           startedAt = Date.now();
+          if (noAudioTimer) { clearTimeout(noAudioTimer); noAudioTimer = null; }
+          logger.info({
+            event: "VOICE_FIRST_AUDIO",
+            device_id: deviceId,
+            stream_id: streamId,
+            chunk_bytes: chunk.length,
+            connection_to_first_audio_ms: Math.max(0, startedAt - connectedAt),
+          }, "VOICE_FIRST_AUDIO");
           asrStream = await asr.createStream({
             deviceId,
             streamId,
@@ -319,10 +401,14 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
             onEvent(event) {
               const elapsedMs = Math.max(0, Date.now() - startedAt);
               const audioDurationMs = Math.round((bytesReceived / bytesPerSecond) * 1_000);
-              if (event.type === "partial" && firstPartialMs === null) firstPartialMs = elapsedMs;
-              if (event.type === "final") {
+              if (event.type === "partial" && firstPartialMs === null) {
+                firstPartialMs = elapsedMs;
+                logger.info({ event: "VOICE_FIRST_PARTIAL", device_id: deviceId, stream_id: streamId, elapsed_ms: elapsedMs }, "VOICE_FIRST_PARTIAL");
+              }
+              if (event.type === "final" && finalMs === null) {
                 finalMs = elapsedMs;
                 finalTranscript = event.text;
+                logger.info({ event: "VOICE_FINAL", device_id: deviceId, stream_id: streamId, elapsed_ms: elapsedMs }, "VOICE_FINAL");
               }
               logTranscript(deviceId, streamId, event, {
                 elapsed_ms: elapsedMs,
@@ -349,7 +435,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
             await capture.start();
             logger.info({ device_id: deviceId, stream_id: streamId, capture_file: file }, "Voice WAV capture started");
           }
-          logger.info({ new_stream_id: streamId, device_id: deviceId, format }, "VOICE_ASR_STREAM_CREATED");
+          logger.info({ event: "VOICE_ASR_STREAM_CREATED", new_stream_id: streamId, device_id: deviceId, format, connection_to_stream_ms: Math.max(0, Date.now() - connectedAt) }, "VOICE_ASR_STREAM_CREATED");
           logger.info({ device_id: deviceId, stream_id: streamId, format }, "Voice stream started");
         }
 
@@ -376,6 +462,14 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
       requestClose(1011, "voice websocket error");
       void stop("error");
     });
+
+    noAudioTimer = setTimeout(() => {
+      noAudioTimer = null;
+      if (startedAt || closed) return;
+      logger.warn({ event: "VOICE_NO_AUDIO_TIMEOUT", device_id: deviceId, stream_id: streamId, timeout_ms: config.firstAudioTimeoutMs ?? 2_500 }, "voice_no_audio_timeout");
+      requestClose(1008, "voice no audio");
+    }, config.firstAudioTimeoutMs ?? 2_500);
+    noAudioTimer.unref?.();
   }
 
   return { handleConnection };

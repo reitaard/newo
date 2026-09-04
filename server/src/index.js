@@ -42,6 +42,7 @@ const EnvSchema = z.object({
   VOICE_BITS_PER_SAMPLE: z.preprocess(emptyToUndefined, z.coerce.number().int().refine((value) => [8, 16, 24, 32].includes(value)).default(16)),
   VOICE_MAX_STREAM_BYTES: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(19_200_000)),
   VOICE_MAX_CHUNK_BYTES: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().max(256 * 1024).default(64 * 1024)),
+  VOICE_FIRST_AUDIO_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(500).max(10_000).default(2_500)),
   VOICE_SAVE_WAV: z.preprocess(stringToBoolean, z.boolean().default(false)),
   VOICE_CAPTURE_DIRECTORY: z.preprocess(emptyToUndefined, z.string().default("/tmp/newo-voice")),
   VOICE_ASR_BACKEND: z.preprocess(emptyToUndefined, z.enum(["null", "sherpa"]).default("sherpa")),
@@ -105,7 +106,7 @@ const voiceAsr = env.VOICE_ASR_BACKEND === "sherpa"
     numThreads: env.VOICE_ASR_THREADS,
     hotwordsFile: env.VOICE_SHERPA_MODEL === "libri-giga" && env.VOICE_ASR_HOTWORDS_ENABLED ? env.VOICE_ASR_HOTWORDS_FILE : undefined,
     hotwordsScore: env.VOICE_ASR_HOTWORDS_SCORE,
-  })
+  }, { logger: app.log })
   : new NullAsrBackend();
 const devices = new Map();
 const pendingRequests = new Map();
@@ -174,6 +175,7 @@ const voiceRuntime = createVoiceRuntime({
     saveWav: env.VOICE_SAVE_WAV,
     captureDirectory: env.VOICE_CAPTURE_DIRECTORY,
     liveTestMode: env.VOICE_LIVE_TEST_MODE,
+    firstAudioTimeoutMs: env.VOICE_FIRST_AUDIO_TIMEOUT_MS,
     maxPendingChunks: 2,
     onFinalTranscript: (turn) => assistantTurnRuntime.handleFinalTranscript(turn),
   },
@@ -752,6 +754,11 @@ function handleShutdownSignal(signal) { void shutdown(signal).catch(() => { proc
 process.once("SIGINT", () => handleShutdownSignal("SIGINT"));
 process.once("SIGTERM", () => handleShutdownSignal("SIGTERM"));
 
+// Construct the native Sherpa recognizer in its worker before accepting a
+// physical /voice connection. A failed preload is logged and leaves /health
+// available, while voice requests fail cleanly instead of cold-loading PCM.
+try { await voiceAsr.prewarm?.(); }
+catch { /* WorkerAsrBackend emitted SHERPA_START_FAILED with the exact error. */ }
 await app.listen({ host: env.HOST, port: env.PORT });
 // Probe the local model once without generating text. /vs only reads this
 // bounded snapshot and never waits on Qwen itself.
