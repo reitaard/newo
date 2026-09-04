@@ -9,16 +9,17 @@ runtime signals / internal state
         -> display ownership
         -> behavior episode
         -> AutonomousExpression + intensity
+        -> presentation cue + pure composition policy
         -> EyePose target
         -> pose transition
         -> gaze motion
         -> resolved EyeMotionOverlay
         -> Phase-B blink state
-        -> secondary effect
+        -> resolved secondary effect + caption
         -> renderer
 ```
 
-Each layer has one responsibility. A behavior may request an expression, gaze, blink, hold, or secondary effect, but it must not draw eye geometry directly.
+Each layer has one responsibility. A behavior may request an expression, gaze, blink, hold, or semantic presentation cue, but it must not draw eye geometry directly. The presentation composer converts reusable semantic cues into optional effect/caption intent; it does not select eye geometry or own timing/rendering.
 
 ## Ownership
 
@@ -36,7 +37,7 @@ neutral autonomous face
 
 Operational contexts temporarily supersede a manual face but must not erase it. `/face_default` enables autonomous face behavior; other `/face_*` commands are persistent manual overrides until replaced.
 
-An operational context also immediately cancels any active autonomous episode and expression intent. When the device returns to IDLE_AUTO, autonomy starts again from a neutral, freshly scheduled state instead of resuming half-way through an old animation.
+An operational context also immediately cancels any active autonomous episode and expression/presentation intent. When the device returns to IDLE_AUTO, autonomy starts again from a neutral, freshly scheduled state instead of resuming half-way through an old animation.
 
 ## Autonomous expression intent
 
@@ -64,6 +65,29 @@ behavior episode != expression != pose != motion != renderer
 Changing what CURIOUS looks like must not require editing `CURIOUS_SCAN`. Changing the timing of `CURIOUS_SCAN` must not require editing the CURIOUS pose.
 
 Expression strength should normally be represented by a bounded `0..100` intensity blended from neutral toward the target pose. Do not create separate `slightly_*`, `very_*`, or threshold-only face variants when intensity can express the same idea.
+
+## Presentation composition
+
+Effects and captions are reusable presentation primitives, not properties hard-wired into an eye pose. Behavior requests a semantic `NewoPresentationCue`; the pure host-portable `newoComposePresentation()` policy returns an optional `NewoSecondaryEffect`, optional `NewoFaceCaption`, and bounded durations.
+
+Current cues are:
+
+```text
+NONE
+CURIOUS
+SOCIAL
+ALERT_SURPRISE
+ALERT_CONFUSED
+LOW_ENERGY
+SLEEPING
+UNIMPRESSED
+```
+
+The policy is deterministic for a supplied intensity and variation roll. Runtime owns entropy and supplies an unbiased `0..99` roll, so thresholds in the policy correspond directly to their intended percentages. The policy itself must remain free of Arduino timing, random calls, drawing, heap allocation, and display state.
+
+Manual `/effect` and `/caption` requests are separate override sources and outrank autonomous composition. Operational display contexts suppress decoration without mutating either request source. A behavior episode must clear its autonomous presentation state when it finishes or is preempted.
+
+`UNIMPRESSED` exists as a reusable manual pose/presentation cue, but autonomy must not invent an annoyed/disdainful state without a real semantic trigger. Likewise, rare strong captions such as `WTF!!` belong only to appropriately strong surprise composition rather than generic idle randomness.
 
 ## EyePose
 
@@ -113,7 +137,7 @@ Small gaze changes and micro-corrections must remain direct and should not be in
 
 The approved hard envelope must be respected during anticipation and overshoot, not only at the final destination.
 
-Manual CLOSED, SLEEPING, and DETACHED do not use ordinary random gaze. DETACHED specifically preserves the former CLOSED semantics: its narrow slit eyes remain effectively stationary even though the generic manual gaze state continues to exist underneath.
+Manual CLOSED, SLEEPING, and DETACHED do not use ordinary random gaze. DETACHED specifically preserves the former CLOSED semantics: its narrow slit eyes remain effectively stationary even though the generic manual gaze state continues to exist underneath. UNIMPRESSED deliberately damps ordinary gaze to a restrained horizontal side-eye and suppresses vertical wander rather than adding a separate animation routine.
 
 ## Resolved motion overlay
 
@@ -166,7 +190,8 @@ Strong directional curiosity intentionally enlarges the eye toward the gaze whil
 The sequence is:
 
 ```text
-SLEEPY + slight downward gaze
+TIRED + mild downward gaze
+        -> SLEEPY + deeper downward settle
         -> existing LONG blink
         -> SLEEPING + procedural ZZZ + slow breathing
         -> SLEEPY wake
@@ -178,9 +203,9 @@ The sleeping hold is bounded to a few seconds. It is not a persistent power/slee
 
 Any higher-priority display context cancels the episode immediately. LISTENING, THINKING, SPEAKING, ERROR, MESSAGE, ECO, or a manual face command must never wait for the rest animation to finish.
 
-## Secondary effects
+## Secondary effects and captions
 
-Effects such as `ZZZ` and sweat are not eye geometry. They are separate procedural overlays selected after the eye state is resolved.
+Effects such as `ZZZ`, question/exclamation marks, ellipsis, and sweat are not eye geometry. Captions such as `Huh?`, `Woah!!`, `Hmm...`, `Hey!`, `WTF!!`, and `Tsk!` are a separate text presentation layer. Both are selected after behavior semantics are known and resolved independently from eye geometry.
 
 Manual `SLEEPING` and autonomous `AutonomousExpression::SLEEPING` both reuse the same procedural sleep presentation:
 
@@ -193,9 +218,9 @@ Manual `SLEEPING` and autonomous `AutonomousExpression::SLEEPING` both reuse the
 
 ## Renderer rule
 
-The renderer should be deliberately simple. It receives resolved pose, gaze, `EyeMotionOverlay`, blink openness, and secondary effect, then draws once into the existing bounded 1-bit canvases.
+The renderer should be deliberately simple. It receives resolved pose, gaze, `EyeMotionOverlay`, blink openness, secondary effect, and caption state, then draws using the existing bounded regions.
 
-The renderer must not know which autonomous episode or semantic expression produced those resolved values. It must contain no expression-specific shake/bounce/breathing logic and no blink scheduling logic.
+The renderer must not know which autonomous episode produced those resolved values. It must contain no expression-specific shake/bounce/breathing logic and no blink scheduling logic.
 
 Behavior-specific motion may affect gaze scheduling, but new eye geometry must never be added as an `if (episode == ...)` renderer branch.
 
@@ -230,17 +255,17 @@ A new expression should normally require only:
 3. optional intensity mapping from internal state;
 4. optional resolved motion contribution;
 5. optional behavior orchestration;
-6. optional secondary effect if the visual is not eye geometry;
+6. optional semantic presentation cue/effect/caption if the reaction needs decoration;
 7. contract coverage and physical validation.
 
 A new autonomous behavior should normally require only:
 
 1. an episode/state-machine entry;
-2. expression-intent requests;
+2. expression-intent and optional presentation-cue requests;
 3. gaze/blink/hold orchestration;
 4. no renderer geometry changes.
 
-If adding a face or behavior requires a new renderer branch, first check whether the missing concept belongs in `EyePose`, `NewoGazeMotion`, `EyeMotionOverlay`, the blink scheduler, or the secondary-effect layer instead.
+If adding a face or behavior requires a new renderer branch, first check whether the missing concept belongs in `EyePose`, `NewoGazeMotion`, `EyeMotionOverlay`, the blink scheduler, or the presentation/effect layer instead.
 
 ## Physical acceptance
 
@@ -250,10 +275,13 @@ Before promoting a display architecture change to `main`:
 - horizontal motion remains inside +/-20 px and vertical motion inside +/-12 px;
 - operational states preempt autonomy and manual faces correctly;
 - the manual face resumes after the operational state ends;
-- autonomous expression intent clears on preemption rather than resuming stale;
-- CLOSED, DETACHED, and SLEEPING remain visually distinct;
+- autonomous expression/presentation intent clears on preemption rather than resuming stale;
+- CLOSED, DETACHED, SLEEPING, and UNIMPRESSED remain visually distinct;
 - DETACHED remains visually stationary rather than inheriting ordinary manual gaze;
-- `DROWSY_REST` visibly performs sleepy -> sleep -> wake without becoming persistent;
+- UNIMPRESSED reads as restrained/half-lidded rather than TIRED or SKEPTICAL;
+- manual `/effect` and `/caption` overrides remain usable and outrank autonomous presentation;
+- autonomous reactions remain sparse and semantically appropriate rather than decorating every episode;
+- `DROWSY_REST` visibly performs tired -> sleepy -> long blink -> sleep -> wake without becoming persistent;
 - sleeping `ZZZ` stays inside the eye canvas and does not disturb clock/activity regions;
 - no display change introduces speaker underruns, voice instability, network stalls, or USB regressions;
 - program/DRAM usage is recorded from the final combined compile;

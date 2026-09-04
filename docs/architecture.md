@@ -45,25 +45,28 @@ The display is a procedural character system rather than a set of stored animati
 energy / curiosity / social / stress + inactivity
         -> behavior episode
         -> autonomous expression intent + 0..100 intensity
-        -> EyePose target
+        -> semantic presentation cue + pure composition policy
+        -> EyePose target + optional effect/caption intent
         -> pose interpolation
         -> gaze motion + resolved motion overlay
         -> Phase-B blink state
-        -> secondary effect
+        -> resolved secondary effect + caption
         -> renderer
 ```
 
-The renderer does not know which behavior episode selected the expression. `NewoEyePose` owns compact eye geometry, `NewoEyePoseEngine` owns pose interpolation, `NewoGazeMotion` owns bounded anticipation/travel/settle for meaningful saccades, and `EyeMotionOverlay` resolves transient shake, bounce, stretch, and breathing outside the renderer. The blink service owns bilateral blink/wink scheduling and phase advancement. Secondary effects such as `ZZZ` remain separate from eye geometry. No animation layer allocates per-frame heap memory or adds a task, full RGB framebuffer, bitmap/GIF animation set, or animation library.
+The renderer does not know which behavior episode selected the expression. `NewoEyePose` owns compact eye geometry, `NewoEyePoseEngine` owns pose interpolation, `NewoGazeMotion` owns bounded anticipation/travel/settle for meaningful saccades, and `EyeMotionOverlay` resolves transient shake, bounce, stretch, and breathing outside the renderer. The blink service owns bilateral blink/wink scheduling and phase advancement. `newoComposePresentation()` is a pure host-portable policy that converts reusable semantic presentation cues into optional effect/caption intent; runtime supplies the unbiased 0..99 variation roll and owns the timers. Manual `/effect` and `/caption` requests remain separate higher-priority override sources. No animation layer allocates per-frame heap memory or adds a task, full RGB framebuffer, bitmap/GIF animation set, or animation library.
 
 Default autonomous gaze is continuous even when no episode is active. Its current hard envelope is +/-20 px horizontally and +/-12 px vertically; large shifts may use a tiny bounded counter-motion, up to a small bounded overshoot, then settle to the requested destination. Phase B remains the sole owner of normal, double, long, and post-saccade bilateral blinks. Expression openness multiplies blink openness so sleepy eyes reopen as sleepy rather than neutral.
 
-Four volatile `uint8_t` signals—energy, curiosity, social, and stress—update every three seconds. ACTIVE, RELAXED, and DROWSY stages begin at normal idle, two minutes, and five minutes of inactivity. Five coherent episodes are currently available: `CURIOUS_SCAN`, `LOW_ENERGY`, `SOCIAL_ATTENTION`, `ALERT_CHECK`, and `DROWSY_REST`. Base episode spacing is about 8–18 seconds, lengthened in RELAXED and DROWSY states. Episodes emit semantic expression intents such as CURIOUS, HAPPY, TIRED, SLEEPY, SURPRISED, CONFUSED, and SLEEPING; only the pose resolver converts those intents into geometry.
+Four volatile `uint8_t` signals—energy, curiosity, social, and stress—update every three seconds. ACTIVE, RELAXED, and DROWSY stages begin at normal idle, two minutes, and five minutes of inactivity. Five coherent episodes are currently available: `CURIOUS_SCAN`, `LOW_ENERGY`, `SOCIAL_ATTENTION`, `ALERT_CHECK`, and `DROWSY_REST`. Base episode spacing is about 8–18 seconds, lengthened in RELAXED and DROWSY states. Episodes emit semantic expression intents such as CURIOUS, HAPPY, TIRED, SLEEPY, SURPRISED, CONFUSED, and SLEEPING; only the pose resolver converts those intents into geometry. Episodes may independently request presentation cues such as CURIOUS, SOCIAL, ALERT_SURPRISE, ALERT_CONFUSED, LOW_ENERGY, and SLEEPING; only the presentation policy converts them into reusable effects/captions.
 
-`DROWSY_REST` is eligible only in the DROWSY stage. It performs a bounded sleepy gaze, requests the existing long-blink scheduler, rests with proper curved closed lids plus procedural `ZZZ` for a few seconds, wakes through SLEEPY, recenters, and returns to neutral autonomy. Any higher-priority operational context or manual face change resets the episode immediately instead of waiting for it to finish.
+`DROWSY_REST` is eligible only in the DROWSY stage. It begins TIRED with a mild downward gaze, settles further into SLEEPY, requests the existing long-blink scheduler, rests with proper curved closed lids plus procedural `ZZZ` for a few seconds, wakes through SLEEPY, recenters, and returns to neutral autonomy. Any higher-priority operational context or manual face change resets the episode immediately instead of waiting for it to finish.
 
-Manual `CLOSED`, `DETACHED`, and `SLEEPING` are distinct: CLOSED uses proper curved eyelids, DETACHED preserves the old narrow-slit visual, and SLEEPING composes closed eyelids with slow breathing and procedural `ZZZ`. Curved-vs-filled pose transitions use a direction-aware handoff so closing changes to curved geometry late while waking returns to filled geometry early, avoiding a midpoint shape pop.
+Manual `CLOSED`, `DETACHED`, `SLEEPING`, and `UNIMPRESSED` are distinct: CLOSED uses proper curved eyelids, DETACHED preserves the old narrow-slit visual, SLEEPING composes closed eyelids with slow breathing and procedural `ZZZ`, and UNIMPRESSED uses a restrained half-lidded asymmetry with damped horizontal side-eye and no vertical wander. Curved-vs-filled pose transitions use a direction-aware handoff so closing changes to curved geometry late while waking returns to filled geometry early, avoiding a midpoint shape pop.
 
-USB Serial reports context, expression/intensity, gaze, episode, and blink events, with cumulative `EYES_STATS` rate-limited to once per minute. The detailed display-animation contract is documented in [`display-animation.md`](display-animation.md).
+Presentation vocabulary currently includes procedural `ZZZ`, question/exclamation/surprise marks, ellipsis, sweat, and captions `Huh?`, `Woah!!`, `Hmm...`, `Hey!`, `WTF!!`, and `Tsk!`. Automatic composition is intentionally sparse. `WTF!!` is limited to an extremely strong rare surprise. `UNIMPRESSED`/`Tsk!` are reusable primitives but autonomy currently has no generic disdain trigger, so ordinary idle behavior must not invent annoyance.
+
+USB Serial reports context, expression/intensity, gaze, episode, blink, and non-empty autonomous presentation events, with cumulative `EYES_STATS` rate-limited to once per minute. The detailed display-animation contract is documented in [`display-animation.md`](display-animation.md).
 
 ## Cloud boundary
 
