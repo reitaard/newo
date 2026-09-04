@@ -34,8 +34,6 @@ NewoEyePose NewoDisplay::resolveManualEyePose(NewoFaceStyle style) const {
       pose.leftTopCut = pose.rightTopCut = 8;
       break;
     case NewoFaceStyle::CURIOUS: {
-      // Curiosity is directional: the eye toward attention grows while the
-      // opposite eye contracts. Pose and gaze remain separate inputs.
       const int16_t direction = gazeTargetX_ < -7 ? -1 : gazeTargetX_ > 7 ? 1 :
                                 (gazeX_ < 0 ? -1 : 1);
       pose.gap = 20;
@@ -90,7 +88,6 @@ NewoEyePose NewoDisplay::resolveManualEyePose(NewoFaceStyle style) const {
       pose.closureStyle = NewoEyeClosureStyle::CURVED;
       break;
     case NewoFaceStyle::DETACHED:
-      // The old CLOSED face is intentionally preserved as its own visual.
       pose.leftHeight = pose.rightHeight = 4;
       break;
     case NewoFaceStyle::SLEEPING:
@@ -102,8 +99,6 @@ NewoEyePose NewoDisplay::resolveManualEyePose(NewoFaceStyle style) const {
       pose.closureStyle = NewoEyeClosureStyle::CURVED;
       break;
     case NewoFaceStyle::UNIMPRESSED:
-      // Both eyes stay half-lidded and only mildly asymmetric. The expression
-      // should read as flat/disengaged, not angry and not curiosity-style big/small.
       pose.leftWidth = 62;
       pose.rightWidth = 60;
       pose.leftHeight = 25;
@@ -116,9 +111,6 @@ NewoEyePose NewoDisplay::resolveManualEyePose(NewoFaceStyle style) const {
       pose.openness = 86;
       break;
     case NewoFaceStyle::SKEPTICAL: {
-      // Skepticism borrows curiosity's directional pose idea: the eye toward
-      // attention is large and fully rounded, while the opposite eye is a
-      // smaller sharp squint. Crossing gaze direction swaps those roles.
       const int16_t direction = gazeTargetX_ < -5 ? -1 : gazeTargetX_ > 5 ? 1 :
                                 (gazeX_ < 0 ? -1 : 1);
       pose.gap = 22;
@@ -239,25 +231,17 @@ NewoDisplay::EyeMotionOverlay NewoDisplay::resolveEyeMotionOverlay(uint32_t now,
     overlay.xOffset += static_cast<int16_t>(sinf(static_cast<float>(now - modeStartedMs_) * 0.075f) * 4.0f);
   }
 
-  // Autonomous motion follows expression intent rather than peeking back into
-  // the behavior episode that produced it. ALERT_CHECK's confused branch is
-  // therefore just a CONFUSED expression with its own secondary shake.
   if (mode == NewoDisplayMode::IDLE && autoFaceEnabled_ &&
       autonomousExpression_ == AutonomousExpression::CONFUSED) {
     overlay.xOffset += static_cast<int16_t>(sinf(static_cast<float>(now) * 0.055f) * 6.0f);
   }
 
   if (mode == NewoDisplayMode::IDLE && !autoFaceEnabled_) {
-    // DETACHED preserves the old CLOSED semantics: its slit eyes do not look
-    // around. Cancel the generic manual-gaze offset while keeping subtle base
-    // breathing motion from the overlay.
     if (faceStyle_ == NewoFaceStyle::DETACHED) {
       overlay.xOffset -= gazeX_;
       overlay.yOffset -= gazeY_;
     }
     if (faceStyle_ == NewoFaceStyle::UNIMPRESSED) {
-      // Keep only half of horizontal wander and suppress vertical wandering so
-      // the expression behaves like a slow side-eye instead of an active scan.
       overlay.xOffset -= gazeX_ / 2;
       overlay.yOffset -= gazeY_;
     }
@@ -330,11 +314,8 @@ bool NewoDisplay::setSecondaryEffect(NewoSecondaryEffect effect, uint32_t durati
 }
 
 NewoSecondaryEffect NewoDisplay::secondaryEffectFor(uint32_t now, NewoDisplayMode mode) const {
-  // Operational states own the face completely; decorative effects never fight
-  // LISTENING / THINKING / SPEAKING / ERROR or the message/eco screens.
   if (mode != NewoDisplayMode::IDLE) return NewoSecondaryEffect::NONE;
 
-  // Explicit Telegram/manual requests always outrank autonomous composition.
   if (secondaryEffectOverride_ != NewoSecondaryEffect::NONE && secondaryEffectUntilMs_ != 0 &&
       static_cast<int32_t>(now - secondaryEffectUntilMs_) < 0) {
     return secondaryEffectOverride_;
@@ -345,8 +326,6 @@ NewoSecondaryEffect NewoDisplay::secondaryEffectFor(uint32_t now, NewoDisplayMod
     return autonomousPresentation_.effect;
   }
 
-  // Safety fallback preserves the already-approved sleeping behavior even if a
-  // future behavior path forgets to request the presentation cue explicitly.
   if (autoFaceEnabled_) {
     return autonomousExpression_ == AutonomousExpression::SLEEPING ? NewoSecondaryEffect::ZZZ
                                                                     : NewoSecondaryEffect::NONE;
@@ -377,11 +356,8 @@ bool NewoDisplay::setFaceCaption(NewoFaceCaption caption, uint32_t durationMs) {
 }
 
 NewoFaceCaption NewoDisplay::faceCaptionFor(uint32_t now, NewoDisplayMode mode) const {
-  // Captions are decorative reactions. Operational contexts own the lower face
-  // area completely and suppress them without mutating either request source.
   if (mode != NewoDisplayMode::IDLE) return NewoFaceCaption::NONE;
 
-  // Explicit Telegram/manual requests always outrank autonomous composition.
   if (faceCaptionOverride_ != NewoFaceCaption::NONE && faceCaptionUntilMs_ != 0 &&
       static_cast<int32_t>(now - faceCaptionUntilMs_) < 0) {
     return faceCaptionOverride_;
@@ -408,15 +384,12 @@ const char* NewoDisplay::faceCaptionText(NewoFaceCaption caption) {
 }
 
 void NewoDisplay::drawFaceCaption(uint32_t now, NewoFaceCaption caption) {
-  constexpr int16_t kCaptionX = 58;
-  constexpr int16_t kCaptionY = 128;
-  constexpr int16_t kCaptionW = 124;
-  constexpr int16_t kCaptionH = 28;
-  constexpr int16_t kCaptionBaseline = 150;
+  constexpr int16_t kCaptionX = 30;
+  constexpr int16_t kCaptionY = 124;
+  constexpr int16_t kCaptionW = 180;
+  constexpr int16_t kCaptionH = 36;
+  constexpr int16_t kCaptionBaseline = 153;
 
-  // This band sits below the 200x82 eye canvas (ending at screen Y=122) and
-  // above the existing activity strip (screen Y=160..182). It is untouched
-  // during ordinary idle frames, so captions add no steady-state SPI traffic.
   if (caption == NewoFaceCaption::NONE) {
     if (!faceCaptionRegionVisible_) return;
     display_.fillRect(kCaptionX, kCaptionY, kCaptionW, kCaptionH, ST77XX_BLACK);
@@ -440,6 +413,7 @@ void NewoDisplay::drawFaceCaption(uint32_t now, NewoFaceCaption caption) {
   }
 
   display_.setFont(&FreeSans9pt7b);
+  display_.setTextSize(2);
   display_.setTextColor(ST77XX_WHITE);
   int16_t x1, y1;
   uint16_t width, height;
@@ -447,6 +421,7 @@ void NewoDisplay::drawFaceCaption(uint32_t now, NewoFaceCaption caption) {
   const int16_t cursorX = static_cast<int16_t>(kCaptionX + (kCaptionW - static_cast<int16_t>(width)) / 2);
   display_.setCursor(cursorX, baseline);
   display_.print(text);
+  display_.setTextSize(1);
   display_.setFont(nullptr);
 }
 
@@ -490,8 +465,6 @@ void NewoDisplay::drawClosedEyeCurve(int16_t x, int16_t y, int16_t width) {
 
 void NewoDisplay::drawZ(int16_t x, int16_t y, int16_t size) {
   if (size < 5) return;
-  // Two-pixel strokes remain legible after the 1-bit canvas is transferred to
-  // the physical TFT; the former 1px 5/7/9px glyphs looked fragmented.
   eyeCanvas_.fillRect(x, y, size + 1, 2, 1);
   eyeCanvas_.drawLine(x + size, y + 1, x, y + size, 1);
   eyeCanvas_.drawLine(x + size - 1, y + 1, x, y + size - 1, 1);
@@ -499,8 +472,6 @@ void NewoDisplay::drawZ(int16_t x, int16_t y, int16_t size) {
 }
 
 void NewoDisplay::drawSecondaryEffect(uint32_t now, NewoSecondaryEffect effect) {
-  // Caption state is independent from secondary-effect state. This renderer
-  // hook services both bounded decorative layers before the eye canvas blit.
   drawFaceCaption(now, faceCaptionFor(now, effectiveMode(now)));
 
   const bool manualEffectActive = secondaryEffectOverride_ == effect && secondaryEffectUntilMs_ != 0 &&
@@ -512,9 +483,6 @@ void NewoDisplay::drawSecondaryEffect(uint32_t now, NewoSecondaryEffect effect) 
   const uint32_t effectNow = effectStartedMs != 0 ? now - effectStartedMs : now;
 
   if (effect == NewoSecondaryEffect::ZZZ) {
-    // Two readable glyphs work better than three tiny ones on the 200x82 eye
-    // canvas. They are staggered, safely inset, and drift only a few pixels so
-    // neither glyph approaches the top/right edge.
     const uint16_t cycle = static_cast<uint16_t>(effectNow % 2'400);
     for (uint8_t index = 0; index < 2; ++index) {
       const uint16_t local = static_cast<uint16_t>((cycle + index * 1'200) % 2'400);
@@ -530,8 +498,6 @@ void NewoDisplay::drawSecondaryEffect(uint32_t now, NewoSecondaryEffect effect) 
   }
 
   const auto drawQuestion = [this](int16_t x, int16_t y) {
-    // 2px procedural strokes: compact enough for the top-right margin but
-    // thick enough to survive the 1-bit canvas -> TFT transfer.
     eyeCanvas_.fillRect(x + 2, y, 6, 2, 1);
     eyeCanvas_.fillRect(x + 7, y + 2, 2, 4, 1);
     eyeCanvas_.drawLine(x + 7, y + 5, x + 4, y + 8, 1);
