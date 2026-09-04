@@ -343,7 +343,7 @@ function scheduleOfflineNotification(deviceId, state, ws) {
 app.get("/", async () => ({ service: "newo-cloud", status: "ok" }));
 app.get("/health", async () => {
   const device = getDeviceSnapshot();
-  return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), device: { connected: device.connected, id: device.id, connected_at: device.connected_at, last_seen: device.lastSeen, firmware: device.hello?.firmware ?? null, autonomy_revision: device.hello?.autonomy_revision ?? null, chip: device.hello?.chip ?? null } };
+  return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), device: { connected: device.connected, id: device.id, connected_at: device.connected_at, last_seen: device.last_seen, firmware: device.hello?.firmware ?? null, autonomy_revision: device.hello?.autonomy_revision ?? null, chip: device.hello?.chip ?? null } };
 });
 
 const TELEGRAM_COMMANDS = [
@@ -677,7 +677,7 @@ if (env.TELEGRAM_BOT_TOKEN) {
     const userId = ctx.from?.id?.toString();
     const chatId = ctx.chat?.id?.toString();
     const allowed = (userId && allowedUserIds.has(userId)) || (chatId && allowedChatIds.has(chatId));
-    if (!allowed) { app.log.warn({ user_id: userId ?? null, chat_id: chatId ?? null }, "Rejected Telegram update outside allowlist"); return; }
+    if (!allowed) { app.log.warn({ user_id: userId ?? null, chat_id: chatId }, "Rejected Telegram update outside allowlist"); return; }
     await next();
   });
   bot.catch((error) => {
