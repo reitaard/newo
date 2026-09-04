@@ -412,7 +412,7 @@ void NewoDisplay::drawFaceCaption(uint32_t now, NewoFaceCaption caption) {
   constexpr int16_t kCaptionY = 124;
   constexpr int16_t kCaptionW = 180;
   constexpr int16_t kCaptionH = 36;
-  constexpr int16_t kCaptionBaseline = 153;
+  constexpr int16_t kCaptionBaseline = 155;
 
   // This band sits below the 200x82 eye canvas (ending at screen Y=122) and
   // above the existing activity strip (screen Y=160..182). It is untouched
