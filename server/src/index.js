@@ -343,21 +343,33 @@ function scheduleOfflineNotification(deviceId, state, ws) {
 app.get("/", async () => ({ service: "newo-cloud", status: "ok" }));
 app.get("/health", async () => {
   const device = getDeviceSnapshot();
-  return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), device: { connected: device.connected, id: device.id, connected_at: device.connected_at, last_seen: device.last_seen, firmware: device.hello?.firmware ?? null, autonomy_revision: device.hello?.autonomy_revision ?? null, chip: device.hello?.chip ?? null } };
+  return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), device: { connected: device.connected, id: device.id, connected_at: device.connected_at, last_seen: device.lastSeen, firmware: device.hello?.firmware ?? null, autonomy_revision: device.hello?.autonomy_revision ?? null, chip: device.hello?.chip ?? null } };
 });
 
 const TELEGRAM_COMMANDS = [
   { command: "status", description: "Device status" },
   { command: "health", description: "System health" },
   { command: "face", description: "Choose a display face" },
-  { command: "effect", description: "Test a secondary effect" },
-  { command: "caption", description: "Test a face caption" },
   { command: "face_default", description: "Enable autonomous face" },
   { command: "face_closed", description: "Closed eyelids" },
   { command: "face_detached", description: "Detached slit eyes" },
   { command: "face_sleeping", description: "Sleeping face with ZZZ" },
   { command: "face_unimpressed", description: "Unimpressed face" },
   { command: "face_skeptical", description: "Skeptical face" },
+  { command: "effect_none", description: "Clear secondary effect" },
+  { command: "effect_question", description: "Question effect" },
+  { command: "effect_exclamation", description: "Exclamation effect" },
+  { command: "effect_surprise", description: "Surprise punctuation" },
+  { command: "effect_ellipsis", description: "Ellipsis effect" },
+  { command: "effect_sweat", description: "Sweat effect" },
+  { command: "effect_zzz", description: "ZZZ effect" },
+  { command: "caption_none", description: "Clear face caption" },
+  { command: "caption_huh", description: "Show Huh? caption" },
+  { command: "caption_woah", description: "Show Woah!! caption" },
+  { command: "caption_hmm", description: "Show Hmm... caption" },
+  { command: "caption_hey", description: "Show Hey! caption" },
+  { command: "caption_wtf", description: "Show WTF!! caption" },
+  { command: "caption_tsk", description: "Show Tsk! caption" },
   { command: "eco", description: "Toggle eco display" },
   { command: "clock", description: "Toggle clock" },
   { command: "voice", description: "Toggle voice" },
@@ -412,10 +424,10 @@ async function handleFaceCommand(ctx, selectedInput = null) {
   return commandReply(ctx, commandMessage("face", [quote(["Face update was not acknowledged."])]), result.kind, request.requestId);
 }
 
-function secondaryEffectCommand(effect) { return `/effect ${effect}`; }
+function secondaryEffectCommand(effect) { return `/effect_${effect}`; }
 
-async function handleEffectCommand(ctx) {
-  const input = String(ctx.match ?? "").trim().toLowerCase();
+async function handleEffectCommand(ctx, selectedInput = null) {
+  const input = selectedInput ?? String(ctx.match ?? "").trim().toLowerCase();
   if (!input) return commandReply(ctx, commandMessage("effect", [quote(SECONDARY_EFFECTS.map(secondaryEffectCommand))]), "usage", null, { newoSpeak: false });
   if (!SECONDARY_EFFECTS.includes(input)) {
     return commandReply(ctx, commandMessage("effect", [quote(["Choose one:", ...SECONDARY_EFFECTS.map(secondaryEffectCommand)])]), "usage", null, { newoSpeak: false });
@@ -431,10 +443,10 @@ async function handleEffectCommand(ctx) {
   return commandReply(ctx, commandMessage("effect", [quote(["Effect update was not acknowledged."])]), result.kind, request.requestId, { newoSpeak: false });
 }
 
-function faceCaptionCommand(caption) { return `/caption ${caption}`; }
+function faceCaptionCommand(caption) { return `/caption_${caption}`; }
 
-async function handleCaptionCommand(ctx) {
-  const input = String(ctx.match ?? "").trim().toLowerCase();
+async function handleCaptionCommand(ctx, selectedInput = null) {
+  const input = selectedInput ?? String(ctx.match ?? "").trim().toLowerCase();
   if (!input) return commandReply(ctx, commandMessage("caption", [quote(FACE_CAPTIONS.map(faceCaptionCommand))]), "usage", null, { newoSpeak: false });
   if (!FACE_CAPTIONS.includes(input)) {
     return commandReply(ctx, commandMessage("caption", [quote(["Choose one:", ...FACE_CAPTIONS.map(faceCaptionCommand)])]), "usage", null, { newoSpeak: false });
@@ -687,7 +699,9 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["face", "f"], handleFaceCommand);
   for (const style of FACE_STYLES) bot.command(`face_${style}`, (ctx) => handleFaceCommand(ctx, style));
   bot.command(["effect", "fx"], handleEffectCommand);
+  for (const effect of SECONDARY_EFFECTS) bot.command(`effect_${effect}`, (ctx) => handleEffectCommand(ctx, effect));
   bot.command(["caption", "cap"], handleCaptionCommand);
+  for (const caption of FACE_CAPTIONS) bot.command(`caption_${caption}`, (ctx) => handleCaptionCommand(ctx, caption));
   bot.command("eco", primaryModeHandlers.eco);
   bot.command("clock", primaryModeHandlers.clock);
   bot.command(["voice", "v"], primaryModeHandlers.voice);
