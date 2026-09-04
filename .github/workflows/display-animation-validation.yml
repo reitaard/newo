@@ -1,0 +1,85 @@
+name: Display Animation Validation
+
+on:
+  push:
+    paths:
+      - "Newo/newo_display*.cpp"
+      - "Newo/newo_display*.h"
+      - "Newo/newo_eye_pose.*"
+      - "Newo/newo_gaze_motion.*"
+      - "Newo/newo_autonomy_state.*"
+      - "Newo/newo_presentation.*"
+      - "server/src/index.js"
+      - "server/test/autonomous-eyes-phase-d-contract.test.js"
+      - "server/test/autonomy-v2-identity-diagnostics-contract.test.js"
+      - "server/test/display-animation-host-contract.test.js"
+      - "server/test/display-state-arbitration-contract.test.js"
+      - "server/test/face-style-contract.test.js"
+      - "server/test/presentation-composition-integration-contract.test.js"
+      - "server/test/telegram-command-menu-contract.test.js"
+      - "tools/display-animation-host-test.cpp"
+      - "tools/autonomy-state-host-test.cpp"
+      - "tools/presentation-host-test.cpp"
+      - "tools/run-display-animation-host-test.sh"
+      - ".github/workflows/display-animation-validation.yml"
+  pull_request:
+    paths:
+      - "Newo/newo_display*.cpp"
+      - "Newo/newo_display*.h"
+      - "Newo/newo_eye_pose.*"
+      - "Newo/newo_gaze_motion.*"
+      - "Newo/newo_autonomy_state.*"
+      - "Newo/newo_presentation.*"
+      - "server/src/index.js"
+      - "server/test/autonomous-eyes-phase-d-contract.test.js"
+      - "server/test/autonomy-v2-identity-diagnostics-contract.test.js"
+      - "server/test/display-animation-host-contract.test.js"
+      - "server/test/display-state-arbitration-contract.test.js"
+      - "server/test/face-style-contract.test.js"
+      - "server/test/presentation-composition-integration-contract.test.js"
+      - "server/test/telegram-command-menu-contract.test.js"
+      - "tools/display-animation-host-test.cpp"
+      - "tools/autonomy-state-host-test.cpp"
+      - "tools/presentation-host-test.cpp"
+      - "tools/run-display-animation-host-test.sh"
+      - ".github/workflows/display-animation-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  eye-engine-host:
+    name: Display engines host test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Compile and run real C++ display engines
+        run: bash tools/run-display-animation-host-test.sh
+
+  display-contracts:
+    name: Display contracts
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run display and autonomy contracts
+        run: >-
+          node --test
+          test/autonomous-eyes-phase-d-contract.test.js
+          test/autonomy-v2-identity-diagnostics-contract.test.js
+          test/display-animation-host-contract.test.js
+          test/display-state-arbitration-contract.test.js
+          test/face-style-contract.test.js
+          test/presentation-composition-integration-contract.test.js
+          test/telegram-command-menu-contract.test.js
+      - name: Check JavaScript syntax
+        run: npm run check

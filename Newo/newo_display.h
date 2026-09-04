@@ -3,10 +3,14 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 
+#include "newo_autonomy_state.h"
+#include "newo_eye_pose.h"
+#include "newo_gaze_motion.h"
 #include "newo_log.h"
+#include "newo_presentation.h"
 
 enum class NewoDisplayMode : uint8_t { IDLE, LISTENING, THINKING, SPEAKING, ERROR, MESSAGE, ECO };
-enum class NewoFaceStyle : uint8_t { NEUTRAL, HAPPY, ANGRY, TIRED, CURIOUS, CONFUSED, LAUGH, SWEAT, CYCLOPS, CLOSED, WINK_LEFT, WINK_RIGHT, LOOK_LEFT, LOOK_RIGHT, LOOK_UP, LOOK_DOWN, LOOK_UP_LEFT, LOOK_UP_RIGHT, LOOK_DOWN_LEFT, LOOK_DOWN_RIGHT, SURPRISED, SLEEPY };
+enum class NewoFaceStyle : uint8_t { NEUTRAL, HAPPY, ANGRY, TIRED, CURIOUS, CONFUSED, LAUGH, SWEAT, CYCLOPS, CLOSED, WINK_LEFT, WINK_RIGHT, LOOK_LEFT, LOOK_RIGHT, LOOK_UP, LOOK_DOWN, LOOK_UP_LEFT, LOOK_UP_RIGHT, LOOK_DOWN_LEFT, LOOK_DOWN_RIGHT, SURPRISED, SLEEPY, DETACHED, SLEEPING, UNIMPRESSED, SKEPTICAL };
 
 class NewoDisplay {
  public:
@@ -16,6 +20,8 @@ class NewoDisplay {
   void updateClock();
   bool setMode(NewoDisplayMode mode, const char* text = nullptr, bool temporary = false);
   bool setFaceStyle(NewoFaceStyle style);
+  bool setSecondaryEffect(NewoSecondaryEffect effect, uint32_t durationMs = 6'000);
+  bool setFaceCaption(NewoFaceCaption caption, uint32_t durationMs = 4'000);
   // Runtime signals are arbitrated independently of the persistent display mode.
   void setListeningActive(bool active);
   void setAssistantThinking(bool active);
@@ -29,6 +35,25 @@ class NewoDisplay {
                        uint32_t freeHeap, uint32_t freePsram, const NewoLog::Stats& logs);
 
  private:
+  enum class AutonomousExpression : uint8_t {
+    NONE,
+    CURIOUS,
+    HAPPY,
+    TIRED,
+    SLEEPY,
+    SURPRISED,
+    CONFUSED,
+    SLEEPING,
+  };
+  struct EyeMotionOverlay {
+    int16_t xOffset = 0;
+    int16_t yOffset = 0;
+    int16_t leftWidthDelta = 0;
+    int16_t rightWidthDelta = 0;
+    int16_t leftHeightDelta = 0;
+    int16_t rightHeightDelta = 0;
+  };
+
   void render();
   void drawFace();
   void drawFaceFrame(uint32_t now);
@@ -46,6 +71,10 @@ class NewoDisplay {
   void finishAutonomousEpisode(uint32_t now);
   void beginAutonomousEpisodeGaze(uint32_t now, int16_t targetX, int16_t targetY, uint16_t holdMs);
   void advanceAutonomousEpisode(uint32_t now);
+  void setAutonomousExpression(AutonomousExpression expression, uint8_t intensity);
+  void clearAutonomousExpression();
+  void requestAutonomousPresentation(NewoPresentationCue cue, uint8_t intensity, uint32_t now);
+  void clearAutonomousPresentation();
   void noteInteraction(uint32_t now, uint8_t energyGain, uint8_t curiosityGain, uint8_t socialGain);
   void noteError();
   uint32_t adjustAutonomousFixation(uint32_t fixationMs) const;
@@ -53,11 +82,27 @@ class NewoDisplay {
   void scheduleNextBilateralBlink(uint32_t now);
   void startBilateralBlink(bool allowAutonomousVariation, uint8_t forcedBlink = 0);
   void queuePostSaccadeBlink(uint32_t now);
+  void updateBlinkBeforeFrame(uint32_t now, NewoDisplayMode activeMode);
+  void advanceBlinkAfterFrame(uint32_t now);
   void resetFaceMotion(uint32_t now);
   void syncEffectiveMode(uint32_t now);
   NewoDisplayMode effectiveMode(uint32_t now) const;
-  void applyEyeExpression(int16_t leftX, int16_t rightX, int16_t y, int16_t leftW, int16_t rightW,
-                          int16_t height, NewoDisplayMode mode);
+  NewoEyePose resolveEyePose(uint32_t now, NewoDisplayMode mode) const;
+  NewoEyePose resolveManualEyePose(NewoFaceStyle style) const;
+  NewoEyePose resolveAutonomousEyePose(uint32_t now) const;
+  EyeMotionOverlay resolveEyeMotionOverlay(uint32_t now, NewoDisplayMode mode) const;
+  uint16_t eyePoseTransitionMs(NewoDisplayMode mode) const;
+  NewoEyeEasing eyePoseEasing(NewoDisplayMode mode) const;
+  NewoSecondaryEffect secondaryEffectFor(uint32_t now, NewoDisplayMode mode) const;
+  NewoFaceCaption faceCaptionFor(uint32_t now, NewoDisplayMode mode) const;
+  static const char* faceCaptionText(NewoFaceCaption caption);
+  void drawFaceCaption(uint32_t now, NewoFaceCaption caption);
+  void applyResolvedPoseCuts(int16_t leftX, int16_t rightX, int16_t leftY, int16_t rightY,
+                             int16_t leftW, int16_t rightW, int16_t leftHeight,
+                             int16_t rightHeight, const NewoEyePose& pose);
+  void drawClosedEyeCurve(int16_t x, int16_t y, int16_t width);
+  void drawSecondaryEffect(uint32_t now, NewoSecondaryEffect effect);
+  void drawZ(int16_t x, int16_t y, int16_t size);
   void blitMonoCanvasFast(GFXcanvas1& canvas, int16_t x, int16_t y, int16_t width, int16_t height);
   void recordFaceFrame(uint32_t elapsedUs);
   void drawTextPage(const char* heading, const char* body, bool info = false);
@@ -74,6 +119,9 @@ class NewoDisplay {
   NewoDisplayMode mode_ = NewoDisplayMode::IDLE;
   NewoDisplayMode persistentMode_ = NewoDisplayMode::IDLE;
   NewoFaceStyle faceStyle_ = NewoFaceStyle::NEUTRAL;
+  NewoEyePoseEngine eyePoseEngine_;
+  NewoGazeMotion gazeMotion_;
+  NewoAutonomyState autonomyState_;
   bool autoFaceEnabled_ = true;
   NewoDisplayMode lastEffectiveMode_ = NewoDisplayMode::IDLE;
   bool lastEffectiveAutoFace_ = false;
@@ -96,10 +144,10 @@ class NewoDisplay {
   enum class BlinkPhase : uint8_t { OPEN, HALF_CLOSED, CLOSED, HALF_OPEN };
   enum class BlinkSchedulerState : uint8_t { WAITING, DOUBLE_PAUSE, DOUBLE_SECOND };
   enum class AutonomousGazePhase : uint8_t { CHOOSE_TARGET, MOVING, FIXATING, MICRO_CORRECTION };
-  enum class AutonomousEpisode : uint8_t { WAITING, CURIOUS_SCAN, LOW_ENERGY, SOCIAL_ATTENTION, ALERT_CHECK };
-  enum class InactivityStage : uint8_t { ACTIVE, RELAXED, DROWSY };
+  enum class AutonomousEpisode : uint8_t { WAITING, CURIOUS_SCAN, LOW_ENERGY, SOCIAL_ATTENTION, ALERT_CHECK, DROWSY_REST };
   const char* contextName(NewoDisplayMode mode) const;
   static const char* episodeName(AutonomousEpisode episode);
+  static const char* expressionName(AutonomousExpression expression);
   void recordGazeTarget(uint16_t holdMs);
   void maybeLogEyeStats(uint32_t now);
   uint32_t nextBlinkMs_ = 0;
@@ -114,6 +162,19 @@ class NewoDisplay {
   bool winkLeft_ = false;
   AutonomousGazePhase autonomousGazePhase_ = AutonomousGazePhase::CHOOSE_TARGET;
   AutonomousEpisode autonomousEpisode_ = AutonomousEpisode::WAITING;
+  AutonomousExpression autonomousExpression_ = AutonomousExpression::NONE;
+  uint8_t autonomousExpressionIntensity_ = 0;
+  NewoPresentationIntent autonomousPresentation_ = {};
+  uint32_t autonomousPresentationStartedMs_ = 0;
+  uint32_t autonomousEffectUntilMs_ = 0;
+  uint32_t autonomousCaptionUntilMs_ = 0;
+  NewoSecondaryEffect secondaryEffectOverride_ = NewoSecondaryEffect::NONE;
+  uint32_t secondaryEffectStartedMs_ = 0;
+  uint32_t secondaryEffectUntilMs_ = 0;
+  NewoFaceCaption faceCaptionOverride_ = NewoFaceCaption::NONE;
+  uint32_t faceCaptionStartedMs_ = 0;
+  uint32_t faceCaptionUntilMs_ = 0;
+  bool faceCaptionRegionVisible_ = false;
   uint32_t nextAutonomousEpisodeMs_ = 0;
   uint16_t autonomousEpisodeHoldMs_ = 0;
   uint8_t autonomousEpisodeStep_ = 0;
@@ -124,13 +185,7 @@ class NewoDisplay {
   uint32_t microCorrectionAtMs_ = 0;
   bool microCorrectionPending_ = false;
   bool autonomousGazeLargeShift_ = false;
-  uint8_t energy_ = 70;
-  uint8_t curiosity_ = 42;
-  uint8_t social_ = 38;
-  uint8_t stress_ = 5;
-  uint8_t idleDriftTicks_ = 0;
   uint32_t nextAutonomousStateMs_ = 0;
-  uint32_t lastInteractionMs_ = 0;
   uint32_t nextAutonomousStateLogMs_ = 0;
   uint32_t eyeContextChanges_ = 0;
   uint32_t eyeGazeEvents_ = 0;

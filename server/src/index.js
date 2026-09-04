@@ -82,7 +82,6 @@ const EnvSchema = z.object({
 });
 
 const env = EnvSchema.parse(process.env);
-// OpusPlaybackTransport reads this existing process setting directly.
 process.env.SPEAKER_CODEC = env.SPEAKER_CODEC;
 if (env.TELEGRAM_BOT_TOKEN && !env.TELEGRAM_WEBHOOK_SECRET) throw new Error("TELEGRAM_WEBHOOK_SECRET is required when TELEGRAM_BOT_TOKEN is set");
 
@@ -113,7 +112,19 @@ const pendingRequests = new Map();
 const DEVICE_REQUEST_TIMEOUT_MS = 5_000;
 const OFFLINE_GRACE_MS = 12_000;
 const REBOOT_RETURN_TIMEOUT_MS = 60_000;
-const FACE_STYLES = ["default", "happy", "angry", "tired", "curious", "confused", "laugh", "sweat", "cyclops", "closed", "wink_left", "wink_right", "look_left", "look_right", "look_up", "look_down", "look_up_left", "look_up_right", "look_down_left", "look_down_right", "surprised", "sleepy"];
+const FACE_STYLES = ["default", "happy", "angry", "tired", "curious", "confused", "laugh", "sweat", "cyclops", "closed", "detached", "sleeping", "unimpressed", "skeptical", "wink_left", "wink_right", "look_left", "look_right", "look_up", "look_down", "look_up_left", "look_up_right", "look_down_left", "look_down_right", "surprised", "sleepy"];
+const SECONDARY_EFFECTS = ["none", "question", "exclamation", "surprise", "ellipsis", "sweat", "zzz"];
+const FACE_CAPTIONS = ["none", "huh", "woah", "hmm", "hey", "wtf", "tsk"];
+const REACTION_PRESETS = Object.freeze({
+  none: { face: "default", effect: "none", caption: "none" },
+  huh: { face: "curious", effect: "question", caption: "huh" },
+  woah: { face: "surprised", effect: "surprise", caption: "woah" },
+  hmm: { face: "confused", effect: "question", caption: "hmm" },
+  hey: { face: "happy", effect: "exclamation", caption: "hey" },
+  wtf: { face: "surprised", effect: "surprise", caption: "wtf" },
+  tsk: { face: "unimpressed", effect: "ellipsis", caption: "tsk" },
+});
+const REACTION_NAMES = Object.keys(REACTION_PRESETS);
 let bot = null;
 let pendingReboot = null;
 let shuttingDown = false;
@@ -347,15 +358,57 @@ app.get("/health", async () => {
   return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), device: { connected: device.connected, id: device.id, connected_at: device.connected_at, last_seen: device.last_seen, firmware: device.hello?.firmware ?? null, autonomy_revision: device.hello?.autonomy_revision ?? null, chip: device.hello?.chip ?? null } };
 });
 
-const TELEGRAM_COMMANDS = [];
+const TELEGRAM_COMMANDS = [
+  { command: "status", description: "Device status" },
+  { command: "health", description: "System health" },
+  { command: "face", description: "Choose a display face" },
+  { command: "face_default", description: "Enable autonomous face" },
+  { command: "face_closed", description: "Closed eyelids" },
+  { command: "face_detached", description: "Detached slit eyes" },
+  { command: "face_sleeping", description: "Sleeping face with ZZZ" },
+  { command: "face_unimpressed", description: "Unimpressed face" },
+  { command: "face_skeptical", description: "Skeptical face" },
+  { command: "effect_none", description: "Clear secondary effect" },
+  { command: "effect_question", description: "Question effect" },
+  { command: "effect_exclamation", description: "Exclamation effect" },
+  { command: "effect_surprise", description: "Surprise punctuation" },
+  { command: "effect_ellipsis", description: "Ellipsis effect" },
+  { command: "effect_sweat", description: "Sweat effect" },
+  { command: "effect_zzz", description: "ZZZ effect" },
+  { command: "caption_none", description: "Clear face caption" },
+  { command: "caption_huh", description: "Show Huh? caption" },
+  { command: "caption_woah", description: "Show Woah!! caption" },
+  { command: "caption_hmm", description: "Show Hmm... caption" },
+  { command: "caption_hey", description: "Show Hey! caption" },
+  { command: "caption_wtf", description: "Show WTF!! caption" },
+  { command: "caption_tsk", description: "Show Tsk! caption" },
+  { command: "reaction", description: "Choose a composed reaction" },
+  { command: "reaction_none", description: "Return to autonomous face" },
+  { command: "reaction_huh", description: "Curious Huh? reaction" },
+  { command: "reaction_woah", description: "Surprised Woah!! reaction" },
+  { command: "reaction_hmm", description: "Confused Hmm... reaction" },
+  { command: "reaction_hey", description: "Happy Hey! reaction" },
+  { command: "reaction_wtf", description: "Strong surprise reaction" },
+  { command: "reaction_tsk", description: "Unimpressed Tsk! reaction" },
+  { command: "eco", description: "Toggle eco display" },
+  { command: "clock", description: "Toggle clock" },
+  { command: "voice", description: "Toggle voice" },
+  { command: "vs", description: "Voice status" },
+  { command: "speaker", description: "Toggle speaker" },
+  { command: "volume", description: "Set speaker volume" },
+  { command: "mute", description: "Toggle mute" },
+  { command: "speak", description: "Speak text" },
+  { command: "ping", description: "Measure device latency" },
+  { command: "logs", description: "Recent device logs" },
+  { command: "errors", description: "Warnings and errors" },
+  { command: "reboot", description: "Restart Newo" },
+];
 function commandTrace(ctx) { return ctx.newoTrace ?? null; }
 async function commandReply(ctx, text, category = "reply", requestId = null, options = {}) {
   const trace = commandTrace(ctx);
   if (trace) { trace.replyCategory = category; trace.requestId = requestId; }
   const { newoSpeak = true, newoSpeakMaxChars, ...telegramOptions } = options;
   const replyReadyAt = performance.now();
-  // Start Telegram first, then immediately start independent TTS without waiting
-  // for Telegram's network request. Neither failure path is allowed to poison the other.
   return startTelegramAndSpeech(
     () => ctx.reply(text, { parse_mode: "HTML", ...telegramOptions }),
     () => {
@@ -382,17 +435,89 @@ function faceStyleCommand(style) { return `/face_${style}`; }
 
 async function handleFaceCommand(ctx, selectedInput = null) {
   const input = selectedInput ?? String(ctx.match ?? "").trim().toLowerCase();
-  if (!input) {
-    return commandReply(ctx, commandMessage("face", [quote(FACE_STYLES.map(faceStyleCommand))]), "usage");
-  }
-  if (!FACE_STYLES.includes(input)) {
-    return commandReply(ctx, commandMessage("face", [quote(["Choose one:", ...FACE_STYLES.map(faceStyleCommand)])]), "usage");
-  }
+  if (!input) return commandReply(ctx, commandMessage("face", [quote(FACE_STYLES.map(faceStyleCommand))]), "usage");
+  if (!FACE_STYLES.includes(input)) return commandReply(ctx, commandMessage("face", [quote(["Choose one:", ...FACE_STYLES.map(faceStyleCommand)])]), "usage");
   const request = sendDeviceRequest("display_set", "display_ack", { mode: input, text: "" }, commandTrace(ctx));
   if (request.kind === "offline") return commandReply(ctx, statusMessage("face", "offline"), "offline");
   const result = await request.promise;
   if (result.kind === "response") return commandReply(ctx, commandMessage("face", [quote([`Face: ${bold(input)}`])]), "response", request.requestId);
   return commandReply(ctx, commandMessage("face", [quote(["Face update was not acknowledged."])]), result.kind, request.requestId);
+}
+
+function secondaryEffectCommand(effect) { return `/effect_${effect}`; }
+
+async function handleEffectCommand(ctx, selectedInput = null) {
+  const input = selectedInput ?? String(ctx.match ?? "").trim().toLowerCase();
+  if (!input) return commandReply(ctx, commandMessage("effect", [quote(SECONDARY_EFFECTS.map(secondaryEffectCommand))]), "usage", null, { newoSpeak: false });
+  if (!SECONDARY_EFFECTS.includes(input)) {
+    return commandReply(ctx, commandMessage("effect", [quote(["Choose one:", ...SECONDARY_EFFECTS.map(secondaryEffectCommand)])]), "usage", null, { newoSpeak: false });
+  }
+  const durationMs = input === "none" ? 0 : 6_000;
+  const request = sendDeviceRequest("display_set", "display_ack", { mode: "effect", text: input, duration_ms: durationMs }, commandTrace(ctx));
+  if (request.kind === "offline") return commandReply(ctx, statusMessage("effect", "offline"), "offline", null, { newoSpeak: false });
+  const result = await request.promise;
+  if (result.kind === "response") {
+    const detail = input === "none" ? `Effect: ${bold("cleared")}` : `Effect: ${bold(input)} · ${bold(6)} ${italic("seconds")}`;
+    return commandReply(ctx, commandMessage("effect", [quote([detail])]), "response", request.requestId, { newoSpeak: false });
+  }
+  return commandReply(ctx, commandMessage("effect", [quote(["Effect update was not acknowledged."])]), result.kind, request.requestId, { newoSpeak: false });
+}
+
+function faceCaptionCommand(caption) { return `/caption_${caption}`; }
+
+async function handleCaptionCommand(ctx, selectedInput = null) {
+  const input = selectedInput ?? String(ctx.match ?? "").trim().toLowerCase();
+  if (!input) return commandReply(ctx, commandMessage("caption", [quote(FACE_CAPTIONS.map(faceCaptionCommand))]), "usage", null, { newoSpeak: false });
+  if (!FACE_CAPTIONS.includes(input)) {
+    return commandReply(ctx, commandMessage("caption", [quote(["Choose one:", ...FACE_CAPTIONS.map(faceCaptionCommand)])]), "usage", null, { newoSpeak: false });
+  }
+  const durationMs = input === "none" ? 0 : 4_000;
+  const request = sendDeviceRequest("display_set", "display_ack", { mode: "caption", text: input, duration_ms: durationMs }, commandTrace(ctx));
+  if (request.kind === "offline") return commandReply(ctx, statusMessage("caption", "offline"), "offline", null, { newoSpeak: false });
+  const result = await request.promise;
+  if (result.kind === "response") {
+    const detail = input === "none" ? `Caption: ${bold("cleared")}` : `Caption: ${bold(input)} · ${bold(4)} ${italic("seconds")}`;
+    return commandReply(ctx, commandMessage("caption", [quote([detail])]), "response", request.requestId, { newoSpeak: false });
+  }
+  return commandReply(ctx, commandMessage("caption", [quote(["Caption update was not acknowledged."])]), result.kind, request.requestId, { newoSpeak: false });
+}
+
+function reactionCommand(reaction) { return `/reaction_${reaction}`; }
+
+async function handleReactionCommand(ctx, selectedInput = null) {
+  const input = selectedInput ?? String(ctx.match ?? "").trim().toLowerCase();
+  if (!input) return commandReply(ctx, commandMessage("reaction", [quote(REACTION_NAMES.map(reactionCommand))]), "usage", null, { newoSpeak: false });
+  const preset = REACTION_PRESETS[input];
+  if (!preset) return commandReply(ctx, commandMessage("reaction", [quote(["Choose one:", ...REACTION_NAMES.map(reactionCommand)])]), "usage", null, { newoSpeak: false });
+
+  const durationMs = input === "none" ? 0 : 4_000;
+  const steps = [
+    { mode: preset.face, text: "" },
+    { mode: "effect", text: preset.effect, duration_ms: durationMs },
+    { mode: "caption", text: preset.caption, duration_ms: durationMs },
+  ];
+  const requests = [];
+  for (const fields of steps) {
+    const request = sendDeviceRequest("display_set", "display_ack", fields, commandTrace(ctx));
+    if (request.kind === "offline") return commandReply(ctx, statusMessage("reaction", "offline"), "offline", null, { newoSpeak: false });
+    requests.push(request);
+  }
+
+  const results = await Promise.all(requests.map((request) => request.promise));
+  const failedIndex = results.findIndex((result) => result.kind !== "response");
+  if (failedIndex !== -1) {
+    const failed = results[failedIndex];
+    return commandReply(ctx, commandMessage("reaction", [quote(["Reaction update was not acknowledged."])]), failed.kind, requests[failedIndex].requestId, { newoSpeak: false });
+  }
+
+  const lastRequestId = requests.at(-1)?.requestId ?? null;
+  if (input === "none") return commandReply(ctx, commandMessage("reaction", [quote(["Reaction: cleared", "Autonomy: enabled"])]), "response", lastRequestId, { newoSpeak: false });
+  return commandReply(ctx, commandMessage("reaction", [quote([
+    `Reaction: ${bold(input)}`,
+    `Face: ${bold(preset.face)}`,
+    `Effect: ${bold(preset.effect)}`,
+    `Caption: ${bold(preset.caption)}`,
+  ])]), "response", lastRequestId, { newoSpeak: false });
 }
 
 async function handleStatusCommand(ctx) {
@@ -524,8 +649,7 @@ async function handlePingCommand(ctx) {
   const result = await request.promise;
   if (result.kind === "response") {
     showDisplay(`PING\n${result.elapsedMs} ms`);
-    return commandReply(ctx, commandMessage("ping", [quote([`Latency: ${bold(result.elapsedMs)} ${italic("ms")}`])]),
-      "response", request.requestId, { newoSpeak: false });
+    return commandReply(ctx, commandMessage("ping", [quote([`Latency: ${bold(result.elapsedMs)} ${italic("ms")}`])]), "response", request.requestId, { newoSpeak: false });
   }
   if (result.kind === "timeout") return commandReply(ctx, timeoutMessage("ping"), "timeout", request.requestId, { newoSpeak: false });
   return commandReply(ctx, getConnectedDeviceState() ? timeoutMessage("ping") : statusMessage("ping", "offline"), "unavailable", request.requestId, { newoSpeak: false });
@@ -611,7 +735,7 @@ if (env.TELEGRAM_BOT_TOKEN) {
     const userId = ctx.from?.id?.toString();
     const chatId = ctx.chat?.id?.toString();
     const allowed = (userId && allowedUserIds.has(userId)) || (chatId && allowedChatIds.has(chatId));
-    if (!allowed) { app.log.warn({ user_id: userId ?? null, chat_id: chatId ?? null }, "Rejected Telegram update outside allowlist"); return; }
+    if (!allowed) { app.log.warn({ user_id: userId ?? null, chat_id: chatId }, "Rejected Telegram update outside allowlist"); return; }
     await next();
   });
   bot.catch((error) => {
@@ -632,6 +756,12 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["newo", "n"], handleNewoCommand);
   bot.command(["face", "f"], handleFaceCommand);
   for (const style of FACE_STYLES) bot.command(`face_${style}`, (ctx) => handleFaceCommand(ctx, style));
+  bot.command(["effect", "fx"], handleEffectCommand);
+  for (const effect of SECONDARY_EFFECTS) bot.command(`effect_${effect}`, (ctx) => handleEffectCommand(ctx, effect));
+  bot.command(["caption", "cap"], handleCaptionCommand);
+  for (const caption of FACE_CAPTIONS) bot.command(`caption_${caption}`, (ctx) => handleCaptionCommand(ctx, caption));
+  bot.command(["reaction", "rx"], handleReactionCommand);
+  for (const reaction of REACTION_NAMES) bot.command(`reaction_${reaction}`, (ctx) => handleReactionCommand(ctx, reaction));
   bot.command("eco", primaryModeHandlers.eco);
   bot.command("clock", primaryModeHandlers.clock);
   bot.command(["voice", "v"], primaryModeHandlers.voice);
@@ -639,7 +769,6 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command("speaker", primaryModeHandlers.speaker);
   bot.command("volume", primaryModeHandlers.volume);
   bot.command("mute", primaryModeHandlers.mute);
-  // Hidden physical bring-up command; deliberately omitted from setMyCommands.
   bot.command(["speak", "sp"], handleSpeakCommand);
   void bot.api.setMyCommands(TELEGRAM_COMMANDS).catch(() => app.log.warn("Failed to register the Telegram command menu"));
   app.post("/telegram/webhook", webhookCallback(bot, "fastify", { secretToken: env.TELEGRAM_WEBHOOK_SECRET, onTimeout: "return", timeoutMilliseconds: 9_000 }));
@@ -706,7 +835,6 @@ wss.on("connection", (ws, request, deviceId) => {
   });
   ws.on("error", () => app.log.warn({ device_id: deviceId }, "Newo WebSocket error"));
   ws.send(JSON.stringify({ type: "hello_ack", device: deviceId, server_time: new Date().toISOString() }));
-  // A fresh device session must never inherit a stale thinking indicator.
   ws.send(JSON.stringify({ type: "assistant_state", state: "idle" }));
   void speakerRuntime.handleDeviceConnected(deviceId, state);
   const speakerSync = sendDeviceRequest("speaker_control", "speaker_ack", { action: "set_enabled", enabled: automaticSpeakerEnabled, led_feedback: false });
@@ -760,8 +888,6 @@ process.once("SIGTERM", () => handleShutdownSignal("SIGTERM"));
 try { await voiceAsr.prewarm?.(); }
 catch { /* WorkerAsrBackend emitted SHERPA_START_FAILED with the exact error. */ }
 await app.listen({ host: env.HOST, port: env.PORT });
-// Probe the local model once without generating text. /vs only reads this
-// bounded snapshot and never waits on Qwen itself.
 void assistantRuntime.refreshHealth();
 app.log.info({
   bind: `${env.HOST}:${env.PORT}`,

@@ -4,17 +4,46 @@ import { readFile } from "node:fs/promises";
 
 const source = async (path) => readFile(new URL(path, import.meta.url), "utf8");
 
-test("Autonomy V2 is neutral-IDLE owned and episode driven", async () => {
-  const [header, display] = await Promise.all([
+test("Autonomy V2 keeps episode ownership while gaze and blink mechanics stay independent", async () => {
+  const [header, display, blinkSource, gazeHeader, gazeSource] = await Promise.all([
     source("../../Newo/newo_display.h"),
     source("../../Newo/newo_display.cpp"),
+    source("../../Newo/newo_display_blink.cpp"),
+    source("../../Newo/newo_gaze_motion.h"),
+    source("../../Newo/newo_gaze_motion.cpp"),
   ]);
-  assert.match(header, /enum class AutonomousEpisode[\s\S]*WAITING[\s\S]*CURIOUS_SCAN[\s\S]*LOW_ENERGY[\s\S]*SOCIAL_ATTENTION[\s\S]*ALERT_CHECK/);
+
+  assert.match(header, /enum class AutonomousEpisode[\s\S]*WAITING[\s\S]*CURIOUS_SCAN[\s\S]*LOW_ENERGY[\s\S]*SOCIAL_ATTENTION[\s\S]*ALERT_CHECK[\s\S]*DROWSY_REST/);
   assert.match(display, /bool NewoDisplay::autonomousIdle\(\) const \{\s*return effectiveMode\(millis\(\)\) == NewoDisplayMode::IDLE && autoFaceEnabled_;/);
   assert.match(display, /void NewoDisplay::resetFaceMotion\(uint32_t now\)[\s\S]*resetAutonomousEpisode\(now\);/);
-  assert.match(display, /constexpr uint32_t kAutonomousEpisodeMinMs = 10'000;[\s\S]*constexpr uint32_t kAutonomousEpisodeMaxMs = 20'000;/);
+  assert.match(display, /constexpr uint32_t kAutonomousEpisodeMinMs = 8'000;[\s\S]*constexpr uint32_t kAutonomousEpisodeMaxMs = 18'000;/);
   assert.match(display, /void NewoDisplay::updateAutonomousEpisode\(uint32_t now\)[\s\S]*chooseAutonomousEpisode\(now\)/);
-  assert.match(display, /void NewoDisplay::chooseAutonomousGazeTarget\(\)[\s\S]*random\(10, sideRangeX \+ 1\)/);
-  assert.match(display, /startBilateralBlink\(false, kForceLongBlink\)/);
-  assert.match(display, /int16_t easeAutonomousGaze\(int16_t current, int16_t target\)/);
+  assert.match(display, /void NewoDisplay::chooseAutonomousGazeTarget\(\)[\s\S]*random\(12, sideRangeX \+ 1\)/);
+
+  // Drowsy rest is a behavior progression: tired settles into sleepy before
+  // requesting the existing long blink. Sleeping/waking remain later steps.
+  const chooseEpisode = display.match(/void NewoDisplay::chooseAutonomousEpisode\(uint32_t now\) \{([\s\S]*?)\n\}\n\nvoid NewoDisplay::advanceAutonomousEpisode/);
+  const advanceEpisode = display.match(/void NewoDisplay::advanceAutonomousEpisode\(uint32_t now\) \{([\s\S]*?)\n\}\n\nvoid NewoDisplay::updateAutonomousEpisode/);
+  assert.ok(chooseEpisode && advanceEpisode, "episode behavior functions should remain discoverable");
+  assert.match(chooseEpisode[1], /case AutonomousEpisode::DROWSY_REST:[\s\S]*AutonomousExpression::TIRED, 82[\s\S]*NewoPresentationCue::LOW_ENERGY, 82/);
+  assert.match(advanceEpisode[1], /case AutonomousEpisode::DROWSY_REST:[\s\S]*autonomousEpisodeStep_ == 0[\s\S]*AutonomousExpression::SLEEPY, 88[\s\S]*autonomousEpisodeStep_ == 1[\s\S]*autonomousEpisodeBlinkRequested_ = true/);
+  assert.match(display, /autonomousEpisodeBlinkStarted_[\s\S]*autonomousEpisodeStep_ = 2[\s\S]*AutonomousEpisode::DROWSY_REST[\s\S]*AutonomousExpression::SLEEPING, 100[\s\S]*NewoPresentationCue::SLEEPING/);
+  assert.match(advanceEpisode[1], /autonomousEpisodeStep_ == 2[\s\S]*clearAutonomousPresentation\(\)[\s\S]*AutonomousExpression::SLEEPY, 88[\s\S]*autonomousEpisodeStep_ == 3[\s\S]*clearAutonomousExpression\(\)/);
+
+  // Behaviors request blinks, but Phase B's dedicated service owns when and
+  // how the existing blink state machine runs.
+  assert.match(header, /void updateBlinkBeforeFrame\(uint32_t now, NewoDisplayMode activeMode\)/);
+  assert.match(blinkSource, /AutonomousEpisode::LOW_ENERGY/);
+  assert.match(blinkSource, /AutonomousEpisode::DROWSY_REST/);
+  assert.match(blinkSource, /startBilateralBlink\(false, kForceLongBlink\)/);
+  assert.doesNotMatch(display.match(/void NewoDisplay::drawFaceFrame\(uint32_t now\) \{([\s\S]*?)\n\}/)?.[1] ?? "",
+                      /startBilateralBlink|blinkSchedulerState_|nextBlinkMs_/);
+
+  assert.match(header, /NewoGazeMotion gazeMotion_/);
+  assert.match(gazeHeader, /class NewoGazeMotion/);
+  assert.match(gazeHeader, /ANTICIPATE, TRAVEL, SETTLE/);
+  assert.match(gazeSource, /currentX - directionX_ \* 2/);
+  assert.match(gazeSource, /destinationX_ \+ directionX_ \* 2/);
+  assert.match(gazeSource, /clamp\(static_cast<int16_t>/);
+  assert.doesNotMatch(gazeSource, /malloc|new\s|std::vector|std::map/);
 });

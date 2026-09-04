@@ -15,9 +15,8 @@ constexpr uint16_t kWidth = 240;
 constexpr uint16_t kHeight = 240;
 constexpr uint32_t kTemporaryMs = 7'000;
 constexpr uint32_t kEcoPageMs = 5'000;
-constexpr uint32_t kNormalFaceFrameMs = 50;    // ~20 FPS.
-constexpr uint32_t kSpeakingFaceFrameMs = 120;  // ~8.3 FPS while audio has priority.
-constexpr uint32_t kWinkBurstMs = 240;
+constexpr uint32_t kNormalFaceFrameMs = 50;
+constexpr uint32_t kSpeakingFaceFrameMs = 120;
 constexpr uint32_t kWinkCalmMinMs = 2'000;
 constexpr uint32_t kWinkCalmMaxMs = 4'001;
 constexpr uint16_t kWhite = ST77XX_WHITE;
@@ -27,39 +26,40 @@ constexpr int16_t kEyeCanvasX = 20;
 constexpr int16_t kEyeCanvasY = 40;
 constexpr uint32_t kAutonomousStateUpdateMs = 3'000;
 constexpr uint32_t kAutonomousStateLogMs = 60'000;
-constexpr uint32_t kInactivityBeforeDriftMs = 30'000;
-constexpr uint32_t kRelaxedInactivityMs = 120'000;
-constexpr uint32_t kDrowsyInactivityMs = 300'000;
-constexpr uint32_t kAutonomousEpisodeMinMs = 10'000;
-constexpr uint32_t kAutonomousEpisodeMaxMs = 20'000;
+constexpr uint32_t kAutonomousEpisodeMinMs = 8'000;
+constexpr uint32_t kAutonomousEpisodeMaxMs = 18'000;
+constexpr int16_t kAutonomousGazeHardX = 20;
+constexpr int16_t kAutonomousGazeHardY = 12;
 constexpr uint8_t kForceDoubleBlink = 1;
 constexpr uint8_t kForceLongBlink = 2;
-constexpr uint8_t kCuriosityBaseline = 42;
 
-bool isOngoingEngagement(NewoDisplayMode mode) {
-  return mode == NewoDisplayMode::LISTENING || mode == NewoDisplayMode::THINKING ||
-         mode == NewoDisplayMode::SPEAKING;
+NewoAutonomyEngagement autonomyEngagementFor(NewoDisplayMode mode) {
+  switch (mode) {
+    case NewoDisplayMode::LISTENING: return NewoAutonomyEngagement::LISTENING;
+    case NewoDisplayMode::THINKING: return NewoAutonomyEngagement::THINKING;
+    case NewoDisplayMode::SPEAKING: return NewoAutonomyEngagement::SPEAKING;
+    default: return NewoAutonomyEngagement::IDLE;
+  }
 }
 
-uint8_t saturatingAdd(uint8_t value, uint8_t amount) {
-  const uint16_t result = static_cast<uint16_t>(value) + amount;
-  return result > 100 ? 100 : static_cast<uint8_t>(result);
+const char* inactivityStageName(NewoInactivityStage stage) {
+  switch (stage) {
+    case NewoInactivityStage::ACTIVE: return "ACTIVE";
+    case NewoInactivityStage::RELAXED: return "RELAXED";
+    case NewoInactivityStage::DROWSY: return "DROWSY";
+  }
+  return "UNKNOWN";
+}
+
+uint8_t clampPercent(int value) {
+  if (value < 0) return 0;
+  return value > 100 ? 100 : static_cast<uint8_t>(value);
 }
 
 void formatUptime(char* out, size_t size, uint32_t ms) {
   const uint32_t seconds = ms / 1000;
   snprintf(out, size, "%luh %02lum", static_cast<unsigned long>(seconds / 3600),
            static_cast<unsigned long>((seconds / 60) % 60));
-}
-
-int16_t easeAutonomousGaze(int16_t current, int16_t target) {
-  const int16_t delta = target - current;
-  const int16_t magnitude = delta < 0 ? -delta : delta;
-  if (magnitude < 2) return target;
-  int16_t step = magnitude / 2;
-  if (step > 8) step = 8;
-  if (step < 1) step = 1;
-  return current + (delta > 0 ? step : -step);
 }
 }  // namespace
 
@@ -133,11 +133,10 @@ void NewoDisplay::noteSystemError() {
 void NewoDisplay::setClockEnabled(bool enabled) {
   if (clockEnabled_ == enabled) return;
   clockEnabled_ = enabled;
-  // updateClock() clears or redraws only its own lower face-view region.
 }
 
 bool NewoDisplay::setFaceStyle(NewoFaceStyle style) {
-  if (style > NewoFaceStyle::SLEEPY) return false;
+  if (style > NewoFaceStyle::SKEPTICAL) return false;
   const bool styleChanged = style != faceStyle_;
   faceStyle_ = style;
   autoFaceEnabled_ = style == NewoFaceStyle::NEUTRAL;
@@ -174,7 +173,7 @@ void NewoDisplay::toggleEco() {
     mode_ = persistentMode_;
     resetFaceMotion(now);
     strncpy(text_, persistentText_, sizeof(text_) - 1);
-      text_[sizeof(text_) - 1] = '\0';
+    text_[sizeof(text_) - 1] = '\0';
   }
   syncEffectiveMode(now);
   dirty_ = true;
@@ -211,8 +210,6 @@ void NewoDisplay::loop() {
   if (dirty_) render();
   if (!temporary_ && mode_ != NewoDisplayMode::ECO && mode_ != NewoDisplayMode::MESSAGE &&
       static_cast<int32_t>(now - nextFaceFrameMs_) >= 0) {
-    // Speaker playback owns the SPEAKING context and uses a slower bounded
-    // face-frame cadence while audio is active.
     nextFaceFrameMs_ = now + (speakerActive_ ? kSpeakingFaceFrameMs : kNormalFaceFrameMs);
     drawFaceFrame(now);
   }
@@ -241,7 +238,22 @@ const char* NewoDisplay::episodeName(AutonomousEpisode episode) {
     case AutonomousEpisode::LOW_ENERGY: return "LOW_ENERGY";
     case AutonomousEpisode::SOCIAL_ATTENTION: return "SOCIAL_ATTENTION";
     case AutonomousEpisode::ALERT_CHECK: return "ALERT_CHECK";
+    case AutonomousEpisode::DROWSY_REST: return "DROWSY_REST";
     case AutonomousEpisode::WAITING: return "WAITING";
+  }
+  return "UNKNOWN";
+}
+
+const char* NewoDisplay::expressionName(AutonomousExpression expression) {
+  switch (expression) {
+    case AutonomousExpression::CURIOUS: return "CURIOUS";
+    case AutonomousExpression::HAPPY: return "HAPPY";
+    case AutonomousExpression::TIRED: return "TIRED";
+    case AutonomousExpression::SLEEPY: return "SLEEPY";
+    case AutonomousExpression::SURPRISED: return "SURPRISED";
+    case AutonomousExpression::CONFUSED: return "CONFUSED";
+    case AutonomousExpression::SLEEPING: return "SLEEPING";
+    case AutonomousExpression::NONE: return "NONE";
   }
   return "UNKNOWN";
 }
@@ -260,12 +272,14 @@ void NewoDisplay::recordGazeTarget(uint16_t holdMs) {
 
 void NewoDisplay::maybeLogEyeStats(uint32_t now) {
   if (static_cast<int32_t>(now - nextAutonomousStateLogMs_) < 0) return;
-  Serial.printf("[EYES_STATS] context=%s context_changes=%lu energy=%u curiosity=%u social=%u stress=%u "
+  const NewoInactivityStage stage = autonomyState_.stage(now);
+  Serial.printf("[EYES_STATS] context=%s context_changes=%lu energy=%u fatigue=%u curiosity=%u social=%u stress=%u stage=%s "
                 "gaze=%lu meaningful_gaze=%lu blinks=%lu double_blinks=%lu long_blinks=%lu "
                 "episodes=%lu completed=%lu errors=%lu\n",
                 contextName(effectiveMode(now)), static_cast<unsigned long>(eyeContextChanges_),
-                static_cast<unsigned>(energy_),
-                static_cast<unsigned>(curiosity_), static_cast<unsigned>(social_), static_cast<unsigned>(stress_),
+                static_cast<unsigned>(autonomyState_.energy()), static_cast<unsigned>(autonomyState_.fatigue()),
+                static_cast<unsigned>(autonomyState_.curiosity()), static_cast<unsigned>(autonomyState_.social()),
+                static_cast<unsigned>(autonomyState_.stress()), inactivityStageName(stage),
                 static_cast<unsigned long>(eyeGazeEvents_), static_cast<unsigned long>(eyeMeaningfulGazeEvents_),
                 static_cast<unsigned long>(eyeBlinkEvents_), static_cast<unsigned long>(eyeDoubleBlinkEvents_),
                 static_cast<unsigned long>(eyeLongBlinkEvents_), static_cast<unsigned long>(eyeEpisodeStarts_),
@@ -284,7 +298,6 @@ void NewoDisplay::render() {
 }
 
 void NewoDisplay::drawFace() {
-  // Face states are visual-only: RoboEyes plus the compact activity animation below them.
   if (nextBlinkMs_ == 0) resetFaceMotion(millis());
   nextFaceFrameMs_ = 0;
   drawFaceFrame(millis());
@@ -296,12 +309,8 @@ void NewoDisplay::resetFaceMotion(uint32_t now) {
   blinkFramesRemaining_ = 0;
   longBlink_ = false;
   postSaccadeBlinkPending_ = false;
-  if (autonomousIdle()) {
-    scheduleNextBilateralBlink(now);
-  } else {
-    // Keep non-autonomous mode/style entry timing unchanged.
-    nextBlinkMs_ = now + 1'000;
-  }
+  if (autonomousIdle()) scheduleNextBilateralBlink(now);
+  else nextBlinkMs_ = now + 1'000;
   nextWinkMs_ = now + static_cast<uint32_t>(random(kWinkCalmMinMs, kWinkCalmMaxMs));
   winkStartedMs_ = 0;
   winkActive_ = false;
@@ -315,6 +324,7 @@ void NewoDisplay::resetFaceMotion(uint32_t now) {
   gazeY_ = 0;
   gazeTargetX_ = 0;
   gazeTargetY_ = 0;
+  gazeMotion_.reset(0, 0);
   nextGazeMs_ = now;
   nextFaceFrameMs_ = 0;
   resetAutonomousEpisode(now);
@@ -324,9 +334,7 @@ NewoDisplayMode NewoDisplay::effectiveMode(uint32_t now) const {
   if (ecoEnabled_ || mode_ == NewoDisplayMode::ECO) return NewoDisplayMode::ECO;
   if (temporary_ || mode_ == NewoDisplayMode::MESSAGE) return NewoDisplayMode::MESSAGE;
   if (mode_ == NewoDisplayMode::ERROR ||
-      (errorActive_ && static_cast<int32_t>(now - errorUntilMs_) < 0)) {
-    return NewoDisplayMode::ERROR;
-  }
+      (errorActive_ && static_cast<int32_t>(now - errorUntilMs_) < 0)) return NewoDisplayMode::ERROR;
   if (listeningActive_ || mode_ == NewoDisplayMode::LISTENING) return NewoDisplayMode::LISTENING;
   if (speakerActive_ || mode_ == NewoDisplayMode::SPEAKING) return NewoDisplayMode::SPEAKING;
   if (assistantThinking_ || mode_ == NewoDisplayMode::THINKING) return NewoDisplayMode::THINKING;
@@ -337,87 +345,61 @@ void NewoDisplay::syncEffectiveMode(uint32_t now) {
   const NewoDisplayMode next = effectiveMode(now);
   const bool nextAutoFace = next == NewoDisplayMode::IDLE && autoFaceEnabled_;
   if (next == lastEffectiveMode_ && nextAutoFace == lastEffectiveAutoFace_) return;
-
   lastEffectiveMode_ = next;
   lastEffectiveAutoFace_ = nextAutoFace;
   ++eyeContextChanges_;
   Serial.printf("[EYES] context=%s\n", contextName(next));
   modeStartedMs_ = now;
   switch (next) {
-    case NewoDisplayMode::LISTENING:
-      noteInteraction(now, 5, 10, 12);
-      break;
-    case NewoDisplayMode::THINKING:
-      noteInteraction(now, 2, 4, 5);
-      break;
-    case NewoDisplayMode::SPEAKING:
-      noteInteraction(now, 4, 5, 10);
-      break;
-    default:
-      break;
+    case NewoDisplayMode::LISTENING: noteInteraction(now, 5, 10, 12); break;
+    case NewoDisplayMode::THINKING: noteInteraction(now, 2, 4, 5); break;
+    case NewoDisplayMode::SPEAKING: noteInteraction(now, 4, 5, 10); break;
+    default: break;
   }
   resetFaceMotion(now);
   dirty_ = true;
 }
 
 void NewoDisplay::initializeAutonomousState(uint32_t now) {
-  energy_ = 70;
-  curiosity_ = kCuriosityBaseline;
-  social_ = 38;
-  stress_ = 5;
-  idleDriftTicks_ = 0;
-  lastInteractionMs_ = now;
+  autonomyState_.reset(now);
   nextAutonomousStateMs_ = now + kAutonomousStateUpdateMs;
   nextAutonomousStateLogMs_ = now + kAutonomousStateLogMs;
 }
 
 void NewoDisplay::noteInteraction(uint32_t now, uint8_t energyGain, uint8_t curiosityGain, uint8_t socialGain) {
-  lastInteractionMs_ = now;
-  idleDriftTicks_ = 0;
-  energy_ = saturatingAdd(energy_, energyGain);
-  curiosity_ = saturatingAdd(curiosity_, curiosityGain);
-  social_ = saturatingAdd(social_, socialGain);
-  if (stress_ > 0) --stress_;
+  autonomyState_.noteInteraction(now, energyGain, curiosityGain, socialGain);
 }
 
 void NewoDisplay::noteError() {
-  // A single completed ERROR remains just above the subtle neutral-IDLE threshold briefly.
   ++eyeErrorEvents_;
-  stress_ = saturatingAdd(stress_, 12);
+  autonomyState_.noteError();
+}
+
+void NewoDisplay::setAutonomousExpression(AutonomousExpression expression, uint8_t intensity) {
+  if (intensity > 100) intensity = 100;
+  if (expression == autonomousExpression_ && intensity == autonomousExpressionIntensity_) return;
+  autonomousExpression_ = expression;
+  autonomousExpressionIntensity_ = expression == AutonomousExpression::NONE ? 0 : intensity;
+  Serial.printf("[EYES] expr=%s intensity=%u\n", expressionName(autonomousExpression_),
+                static_cast<unsigned>(autonomousExpressionIntensity_));
+}
+
+void NewoDisplay::clearAutonomousExpression() {
+  setAutonomousExpression(AutonomousExpression::NONE, 0);
 }
 
 void NewoDisplay::updateAutonomousState(uint32_t now) {
   if (static_cast<int32_t>(now - nextAutonomousStateMs_) >= 0) {
     nextAutonomousStateMs_ = now + kAutonomousStateUpdateMs;
-    if (curiosity_ > kCuriosityBaseline) --curiosity_;
-    if (curiosity_ < kCuriosityBaseline) ++curiosity_;
-    if (stress_ > 0) --stress_;
-
-    const NewoDisplayMode activeMode = effectiveMode(now);
-    if (isOngoingEngagement(activeMode)) {
-      // Engagement is current rather than an accumulating score. Entry events add
-      // a small spark; this keeps the live social signal high only while active.
-      lastInteractionMs_ = now;
-      idleDriftTicks_ = 0;
-      const uint8_t socialTarget = activeMode == NewoDisplayMode::SPEAKING ? 82
-          : activeMode == NewoDisplayMode::LISTENING ? 78 : 68;
-      if (social_ < socialTarget) social_ = static_cast<uint8_t>(social_ + (socialTarget - social_ > 1 ? 2 : 1));
-    } else {
-      if (social_ > 30) --social_;
-      if (now - lastInteractionMs_ >= kInactivityBeforeDriftMs && ++idleDriftTicks_ >= 10) {
-        idleDriftTicks_ = 0;
-        if (energy_ > 35) --energy_;
-      } else if (now - lastInteractionMs_ < kInactivityBeforeDriftMs) {
-        idleDriftTicks_ = 0;
-      }
-    }
+    autonomyState_.update(now, autonomyEngagementFor(effectiveMode(now)));
   }
-
   maybeLogEyeStats(now);
 }
 
 void NewoDisplay::resetAutonomousEpisode(uint32_t now) {
   autonomousEpisode_ = AutonomousEpisode::WAITING;
+  clearAutonomousExpression();
+  clearAutonomousPresentation();
   autonomousEpisodeHoldMs_ = 0;
   autonomousEpisodeStep_ = 0;
   autonomousEpisodeDirection_ = 1;
@@ -432,16 +414,15 @@ void NewoDisplay::scheduleNextAutonomousEpisode(uint32_t now) {
     nextAutonomousEpisodeMs_ = 0;
     return;
   }
-
   int32_t minimumMs = kAutonomousEpisodeMinMs;
   int32_t maximumMs = kAutonomousEpisodeMaxMs;
-  const uint32_t inactiveMs = now - lastInteractionMs_;
-  if (inactiveMs >= kDrowsyInactivityMs) {
-    minimumMs += 1'000;
-    maximumMs += 2'000;
-  } else if (inactiveMs >= kRelaxedInactivityMs) {
-    minimumMs += 500;
-    maximumMs += 1'000;
+  const uint32_t inactiveMs = autonomyState_.inactiveMs(now);
+  if (inactiveMs >= NewoAutonomyState::kDrowsyInactivityMs) {
+    minimumMs += 10'000;
+    maximumMs += 14'000;
+  } else if (inactiveMs >= NewoAutonomyState::kRelaxedInactivityMs) {
+    minimumMs += 4'000;
+    maximumMs += 6'000;
   }
   nextAutonomousEpisodeMs_ = now + static_cast<uint32_t>(random(minimumMs, maximumMs + 1));
 }
@@ -453,14 +434,14 @@ void NewoDisplay::finishAutonomousEpisode(uint32_t now) {
     Serial.printf("[EYES] episode=%s done\n", episodeName(completedEpisode));
   }
   autonomousEpisode_ = AutonomousEpisode::WAITING;
+  clearAutonomousExpression();
+  clearAutonomousPresentation();
   autonomousEpisodeHoldMs_ = 0;
   autonomousEpisodeStep_ = 0;
   autonomousEpisodeBlinkRequested_ = false;
   autonomousEpisodeBlinkStarted_ = false;
   if (blinkPhase_ == BlinkPhase::OPEN && blinkSchedulerState_ == BlinkSchedulerState::WAITING &&
-      static_cast<int32_t>(now - nextBlinkMs_) >= 0) {
-    scheduleNextBilateralBlink(now);
-  }
+      static_cast<int32_t>(now - nextBlinkMs_) >= 0) scheduleNextBilateralBlink(now);
   scheduleNextAutonomousEpisode(now);
 }
 
@@ -473,6 +454,8 @@ void NewoDisplay::beginAutonomousEpisodeGaze(uint32_t now, int16_t targetX, int1
   microCorrectionAtMs_ = 0;
   autonomousEpisodeHoldMs_ = holdMs;
   recordGazeTarget(holdMs);
+  gazeMotion_.start(gazeX_, gazeY_, gazeTargetX_, gazeTargetY_,
+                    kAutonomousGazeHardX, kAutonomousGazeHardY, true);
   autonomousGazePhase_ = AutonomousGazePhase::MOVING;
   nextGazeMs_ = now;
 }
@@ -484,53 +467,93 @@ void NewoDisplay::chooseAutonomousEpisode(uint32_t now) {
     scheduleNextAutonomousEpisode(now);
     return;
   }
-
-  const uint32_t inactiveMs = now - lastInteractionMs_;
-  const InactivityStage stage = inactiveMs >= kDrowsyInactivityMs ? InactivityStage::DROWSY
-                              : inactiveMs >= kRelaxedInactivityMs ? InactivityStage::RELAXED
-                                                                    : InactivityStage::ACTIVE;
-  if (stage == InactivityStage::DROWSY && (energy_ < 65 || random(100) < 70)) {
-    autonomousEpisode_ = AutonomousEpisode::LOW_ENERGY;
-  } else if (stress_ > 8) {
-    autonomousEpisode_ = AutonomousEpisode::ALERT_CHECK;
-  } else if (curiosity_ > kCuriosityBaseline + 5 && random(100) < 70) {
-    autonomousEpisode_ = AutonomousEpisode::CURIOUS_SCAN;
-  } else if (social_ > 50 && random(100) < 65) {
-    autonomousEpisode_ = AutonomousEpisode::SOCIAL_ATTENTION;
-  } else if (energy_ < 60) {
-    autonomousEpisode_ = AutonomousEpisode::LOW_ENERGY;
-  } else if (random(100) < 55) {
-    autonomousEpisode_ = AutonomousEpisode::ALERT_CHECK;
-  } else {
-    autonomousEpisode_ = AutonomousEpisode::SOCIAL_ATTENTION;
+  const NewoInactivityStage stage = autonomyState_.stage(now);
+  const uint8_t energy = autonomyState_.energy();
+  const uint8_t curiosity = autonomyState_.curiosity();
+  const uint8_t social = autonomyState_.social();
+  const uint8_t stress = autonomyState_.stress();
+  int curiousWeight = 30 + (curiosity > NewoAutonomyState::kCuriosityBaseline
+      ? static_cast<int>(curiosity - NewoAutonomyState::kCuriosityBaseline) / 2 : 0);
+  int socialWeight = 24 + static_cast<int>(social) / 10;
+  int alertWeight = 20 + static_cast<int>(stress);
+  int lowEnergyWeight = 8 + (energy < 70 ? static_cast<int>(70 - energy) : 0);
+  int restWeight = 0;
+  if (curiosity > 55) curiousWeight += 10;
+  if (social > 60) socialWeight += 10;
+  if (stress > 8) alertWeight += 20;
+  if (energy < 55) lowEnergyWeight += 15;
+  if (stage == NewoInactivityStage::RELAXED) {
+    if (curiousWeight > 5) curiousWeight -= 5;
+    socialWeight += 3;
+    lowEnergyWeight += 15;
+  } else if (stage == NewoInactivityStage::DROWSY) {
+    if (curiousWeight > 10) curiousWeight -= 10;
+    if (socialWeight > 5) socialWeight -= 5;
+    if (alertWeight > 5) alertWeight -= 5;
+    lowEnergyWeight += 35;
+    restWeight = 10 + (energy < 55 ? static_cast<int>(55 - energy) / 2 : 0);
   }
+  const int totalWeight = curiousWeight + socialWeight + alertWeight + lowEnergyWeight + restWeight;
+  const long choice = random(totalWeight);
+  int threshold = curiousWeight;
+  if (choice < threshold) autonomousEpisode_ = AutonomousEpisode::CURIOUS_SCAN;
+  else if (choice < (threshold += socialWeight)) autonomousEpisode_ = AutonomousEpisode::SOCIAL_ATTENTION;
+  else if (choice < (threshold += alertWeight)) autonomousEpisode_ = AutonomousEpisode::ALERT_CHECK;
+  else if (choice < (threshold += lowEnergyWeight)) autonomousEpisode_ = AutonomousEpisode::LOW_ENERGY;
+  else autonomousEpisode_ = AutonomousEpisode::DROWSY_REST;
   autonomousEpisodeStep_ = 0;
   autonomousEpisodeDirection_ = random(0, 2) == 0 ? -1 : 1;
   autonomousEpisodeBlinkRequested_ = false;
   autonomousEpisodeBlinkStarted_ = false;
   ++eyeEpisodeStarts_;
   Serial.printf("[EYES] episode=%s start\n", episodeName(autonomousEpisode_));
+  clearAutonomousPresentation();
 
   switch (autonomousEpisode_) {
-    case AutonomousEpisode::CURIOUS_SCAN:
-      beginAutonomousEpisodeGaze(now, static_cast<int16_t>(autonomousEpisodeDirection_ * random(12, 17)),
-                                 static_cast<int16_t>(random(-2, 3)), static_cast<uint16_t>(random(700, 1'101)));
+    case AutonomousEpisode::CURIOUS_SCAN: {
+      const int curiosityDelta = curiosity > NewoAutonomyState::kCuriosityBaseline
+          ? static_cast<int>(curiosity - NewoAutonomyState::kCuriosityBaseline) : 0;
+      setAutonomousExpression(AutonomousExpression::CURIOUS, clampPercent(72 + curiosityDelta * 3));
+      requestAutonomousPresentation(NewoPresentationCue::CURIOUS, autonomousExpressionIntensity_, now);
+      beginAutonomousEpisodeGaze(now, static_cast<int16_t>(autonomousEpisodeDirection_ * random(16, 21)),
+                                 static_cast<int16_t>(random(-4, 5)), static_cast<uint16_t>(random(800, 1'301)));
       break;
-    case AutonomousEpisode::LOW_ENERGY:
-      beginAutonomousEpisodeGaze(now, static_cast<int16_t>(random(-2, 3)),
-                                 static_cast<int16_t>(random(3, 7)),
-                                 static_cast<uint16_t>(stage == InactivityStage::DROWSY
-                                     ? random(2'000, 3'201) : random(1'400, 2'401)));
+    }
+    case AutonomousEpisode::LOW_ENERGY: {
+      const int lowEnergy = energy < 70 ? static_cast<int>(70 - energy) : 0;
+      const bool drowsy = stage == NewoInactivityStage::DROWSY;
+      setAutonomousExpression(drowsy ? AutonomousExpression::SLEEPY : AutonomousExpression::TIRED,
+                              drowsy ? clampPercent(88 + lowEnergy / 2) : clampPercent(65 + lowEnergy));
+      requestAutonomousPresentation(NewoPresentationCue::LOW_ENERGY, autonomousExpressionIntensity_, now);
+      beginAutonomousEpisodeGaze(now, static_cast<int16_t>(random(-4, 5)), static_cast<int16_t>(random(4, 12)),
+                                 static_cast<uint16_t>(drowsy ? random(2'200, 3'801) : random(1'600, 2'801)));
       break;
+    }
     case AutonomousEpisode::SOCIAL_ATTENTION:
-      beginAutonomousEpisodeGaze(now, 0, 0, static_cast<uint16_t>(random(2'200, 3'801)));
+      setAutonomousExpression(AutonomousExpression::HAPPY,
+                              clampPercent(55 + static_cast<int>(social) / 2));
+      requestAutonomousPresentation(NewoPresentationCue::SOCIAL, autonomousExpressionIntensity_, now);
+      beginAutonomousEpisodeGaze(now, static_cast<int16_t>(random(-3, 4)), static_cast<int16_t>(random(-2, 3)),
+                                 static_cast<uint16_t>(random(1'600, 2'801)));
       break;
     case AutonomousEpisode::ALERT_CHECK:
-      beginAutonomousEpisodeGaze(now, static_cast<int16_t>(autonomousEpisodeDirection_ * random(12, 17)),
-                                 static_cast<int16_t>(random(-3, 2)), static_cast<uint16_t>(random(400, 801)));
+      setAutonomousExpression(autonomousEpisodeDirection_ > 0 ? AutonomousExpression::SURPRISED
+                                                              : AutonomousExpression::CONFUSED,
+                              clampPercent(70 + static_cast<int>(stress) * 2));
+      requestAutonomousPresentation(autonomousEpisodeDirection_ > 0 ? NewoPresentationCue::ALERT_SURPRISE
+                                                                    : NewoPresentationCue::ALERT_CONFUSED,
+                                    autonomousExpressionIntensity_, now);
+      beginAutonomousEpisodeGaze(now, static_cast<int16_t>(autonomousEpisodeDirection_ * random(16, 21)),
+                                 static_cast<int16_t>(random(-5, 4)), static_cast<uint16_t>(random(500, 901)));
       break;
-    case AutonomousEpisode::WAITING:
+    case AutonomousEpisode::DROWSY_REST:
+      setAutonomousExpression(AutonomousExpression::TIRED, 82);
+      requestAutonomousPresentation(NewoPresentationCue::LOW_ENERGY, 82, now);
+      beginAutonomousEpisodeGaze(now, static_cast<int16_t>(random(-3, 4)),
+                                 static_cast<int16_t>(random(4, 9)),
+                                 static_cast<uint16_t>(random(1'200, 1'801)));
       break;
+    case AutonomousEpisode::WAITING: break;
   }
 }
 
@@ -539,22 +562,37 @@ void NewoDisplay::advanceAutonomousEpisode(uint32_t now) {
     case AutonomousEpisode::CURIOUS_SCAN:
       if (autonomousEpisodeStep_ == 0) {
         autonomousEpisodeStep_ = 1;
-        beginAutonomousEpisodeGaze(now, static_cast<int16_t>(autonomousEpisodeDirection_ * 16),
-                                   static_cast<int16_t>(random(-3, 2)), 450);
+        beginAutonomousEpisodeGaze(now, static_cast<int16_t>(autonomousEpisodeDirection_ * kAutonomousGazeHardX),
+                                   static_cast<int16_t>(random(-5, 4)), 550);
       } else if (autonomousEpisodeStep_ == 1) {
         autonomousEpisodeStep_ = 2;
         beginAutonomousEpisodeGaze(now, 0, 0, 850);
-      } else {
-        finishAutonomousEpisode(now);
-      }
+      } else finishAutonomousEpisode(now);
       return;
     case AutonomousEpisode::LOW_ENERGY:
       if (autonomousEpisodeStep_ == 0) {
         autonomousEpisodeStep_ = 1;
         autonomousEpisodeBlinkRequested_ = true;
+      } else if (autonomousEpisodeStep_ == 2) finishAutonomousEpisode(now);
+      return;
+    case AutonomousEpisode::DROWSY_REST:
+      if (autonomousEpisodeStep_ == 0) {
+        autonomousEpisodeStep_ = 1;
+        setAutonomousExpression(AutonomousExpression::SLEEPY, 88);
+        beginAutonomousEpisodeGaze(now, 0, static_cast<int16_t>(random(6, 10)),
+                                   static_cast<uint16_t>(random(1'200, 1'801)));
+      } else if (autonomousEpisodeStep_ == 1) {
+        autonomousEpisodeBlinkRequested_ = true;
       } else if (autonomousEpisodeStep_ == 2) {
-        finishAutonomousEpisode(now);
-      }
+        autonomousEpisodeStep_ = 3;
+        clearAutonomousPresentation();
+        setAutonomousExpression(AutonomousExpression::SLEEPY, 88);
+        beginAutonomousEpisodeGaze(now, 0, 4, 900);
+      } else if (autonomousEpisodeStep_ == 3) {
+        autonomousEpisodeStep_ = 4;
+        clearAutonomousExpression();
+        beginAutonomousEpisodeGaze(now, 0, 0, 700);
+      } else if (autonomousEpisodeStep_ == 4) finishAutonomousEpisode(now);
       return;
     case AutonomousEpisode::SOCIAL_ATTENTION:
       finishAutonomousEpisode(now);
@@ -562,16 +600,14 @@ void NewoDisplay::advanceAutonomousEpisode(uint32_t now) {
     case AutonomousEpisode::ALERT_CHECK:
       if (autonomousEpisodeStep_ == 0) {
         autonomousEpisodeStep_ = 1;
-        beginAutonomousEpisodeGaze(now, static_cast<int16_t>(-autonomousEpisodeDirection_ * 9), 0, 350);
+        beginAutonomousEpisodeGaze(now, static_cast<int16_t>(-autonomousEpisodeDirection_ * 12),
+                                   static_cast<int16_t>(random(-3, 4)), 420);
       } else if (autonomousEpisodeStep_ == 1) {
         autonomousEpisodeStep_ = 2;
-        beginAutonomousEpisodeGaze(now, 0, 0, 600);
-      } else {
-        finishAutonomousEpisode(now);
-      }
+        beginAutonomousEpisodeGaze(now, 0, 0, 650);
+      } else finishAutonomousEpisode(now);
       return;
-    case AutonomousEpisode::WAITING:
-      return;
+    case AutonomousEpisode::WAITING: return;
   }
 }
 
@@ -590,23 +626,33 @@ void NewoDisplay::updateAutonomousEpisode(uint32_t now) {
       autonomousEpisodeBlinkRequested_ = false;
       autonomousEpisodeBlinkStarted_ = false;
       autonomousEpisodeStep_ = 2;
-      beginAutonomousEpisodeGaze(now, 0, 0, 1'100);
+      if (autonomousEpisode_ == AutonomousEpisode::DROWSY_REST) {
+        setAutonomousExpression(AutonomousExpression::SLEEPING, 100);
+        requestAutonomousPresentation(NewoPresentationCue::SLEEPING, 100, now);
+        beginAutonomousEpisodeGaze(now, 0, 4, static_cast<uint16_t>(random(4'200, 6'501)));
+      } else {
+        beginAutonomousEpisodeGaze(now, 0, 0, 1'100);
+      }
     }
     return;
   }
   if (autonomousGazePhase_ == AutonomousGazePhase::FIXATING &&
-      static_cast<int32_t>(now - fixationUntilMs_) >= 0) {
-    advanceAutonomousEpisode(now);
-  }
+      static_cast<int32_t>(now - fixationUntilMs_) >= 0) advanceAutonomousEpisode(now);
 }
 
 uint32_t NewoDisplay::adjustAutonomousFixation(uint32_t fixationMs) const {
   int32_t adjusted = static_cast<int32_t>(fixationMs);
-  if (energy_ < 70) adjusted += static_cast<int32_t>(70 - energy_) * 10;
-  if (energy_ > 75) adjusted -= static_cast<int32_t>(energy_ - 75) * 7;
-  if (curiosity_ > kCuriosityBaseline) adjusted -= static_cast<int32_t>(curiosity_ - kCuriosityBaseline) * 2;
-  if (social_ > 60) adjusted += static_cast<int32_t>(social_ - 60) * 3;
-  if (stress_ > 0) adjusted -= static_cast<int32_t>(stress_) * 3;
+  const uint8_t energy = autonomyState_.energy();
+  const uint8_t curiosity = autonomyState_.curiosity();
+  const uint8_t social = autonomyState_.social();
+  const uint8_t stress = autonomyState_.stress();
+  if (energy < 70) adjusted += static_cast<int32_t>(70 - energy) * 10;
+  if (energy > 75) adjusted -= static_cast<int32_t>(energy - 75) * 7;
+  if (curiosity > NewoAutonomyState::kCuriosityBaseline) {
+    adjusted -= static_cast<int32_t>(curiosity - NewoAutonomyState::kCuriosityBaseline) * 2;
+  }
+  if (social > 60) adjusted += static_cast<int32_t>(social - 60) * 3;
+  if (stress > 0) adjusted -= static_cast<int32_t>(stress) * 3;
   if (adjusted < 600) return 600;
   if (adjusted > 5'000) return 5'000;
   return static_cast<uint32_t>(adjusted);
@@ -621,10 +667,12 @@ void NewoDisplay::scheduleNextBilateralBlink(uint32_t now) {
     nextBlinkMs_ = now + static_cast<uint32_t>(random(2'500, 5'501));
     return;
   }
+  const uint8_t energy = autonomyState_.energy();
+  const uint8_t stress = autonomyState_.stress();
   int32_t intervalMs = random(2'500, 6'001);
-  if (energy_ < 55) intervalMs += static_cast<int32_t>(55 - energy_) * 12;
-  if (energy_ > 80) intervalMs -= static_cast<int32_t>(energy_ - 80) * 8;
-  if (stress_ > 8) intervalMs -= static_cast<int32_t>(stress_ - 8) * 10;
+  if (energy < 55) intervalMs += static_cast<int32_t>(55 - energy) * 12;
+  if (energy > 80) intervalMs -= static_cast<int32_t>(energy - 80) * 8;
+  if (stress > 8) intervalMs -= static_cast<int32_t>(stress - 8) * 10;
   if (intervalMs < 2'200) intervalMs = 2'200;
   if (intervalMs > 6'200) intervalMs = 6'200;
   nextBlinkMs_ = now + static_cast<uint32_t>(intervalMs);
@@ -632,7 +680,7 @@ void NewoDisplay::scheduleNextBilateralBlink(uint32_t now) {
 
 void NewoDisplay::startBilateralBlink(bool allowAutonomousVariation, uint8_t forcedBlink) {
   uint8_t longBlinkChance = 2;
-  if (energy_ < 55) ++longBlinkChance;
+  if (autonomyState_.energy() < 55) ++longBlinkChance;
   longBlink_ = forcedBlink == kForceLongBlink ||
                (forcedBlink == 0 && allowAutonomousVariation && random(100) < longBlinkChance);
   const bool doubleBlink = forcedBlink == kForceDoubleBlink ||
@@ -648,9 +696,8 @@ void NewoDisplay::startBilateralBlink(bool allowAutonomousVariation, uint8_t for
 }
 
 void NewoDisplay::queuePostSaccadeBlink(uint32_t now) {
-  if (!autonomousGazeLargeShift_ ||
-      blinkPhase_ != BlinkPhase::OPEN || winkActive_ || blinkSchedulerState_ != BlinkSchedulerState::WAITING ||
-      random(100) >= 25) return;
+  if (!autonomousGazeLargeShift_ || blinkPhase_ != BlinkPhase::OPEN || winkActive_ ||
+      blinkSchedulerState_ != BlinkSchedulerState::WAITING || random(100) >= 25) return;
   postSaccadeBlinkPending_ = true;
   nextBlinkMs_ = now + static_cast<uint32_t>(random(150, 351));
 }
@@ -660,77 +707,69 @@ void NewoDisplay::chooseAutonomousGazeTarget() {
     if (value < minimum) return minimum;
     return value > maximum ? maximum : value;
   };
-  const int16_t curiosityOffset = static_cast<int16_t>(curiosity_) - kCuriosityBaseline;
-  const int16_t socialOffset = static_cast<int16_t>(social_) - 38;
-  const int16_t centerWeight = clampWeight(40 + socialOffset / 3 - curiosityOffset / 5, 34, 46);
-  const int16_t sideWeight = clampWeight(37 + curiosityOffset / 3 - socialOffset / 6, 32, 44);
-  const int16_t upperWeight = clampWeight(16 + curiosityOffset / 5, 12, 21);
-  const int16_t sideRangeX = energy_ < 55 ? 12 : energy_ > 80 ? 16 : 14;
-  const int16_t upperRangeX = energy_ < 55 ? 8 : energy_ > 80 ? 12 : 10;
-
+  const int16_t curiosityOffset = static_cast<int16_t>(autonomyState_.curiosity()) -
+      NewoAutonomyState::kCuriosityBaseline;
+  const int16_t socialOffset = static_cast<int16_t>(autonomyState_.social()) -
+      NewoAutonomyState::kSocialBaseline;
+  const int16_t centerWeight = clampWeight(34 + socialOffset / 4 - curiosityOffset / 6, 28, 38);
+  const int16_t sideWeight = clampWeight(42 + curiosityOffset / 4 - socialOffset / 8, 38, 48);
+  const int16_t upperWeight = clampWeight(18 + curiosityOffset / 6, 15, 22);
+  const uint8_t energy = autonomyState_.energy();
+  const int16_t sideRangeX = energy < 55 ? 16 : energy > 80 ? 20 : 18;
+  const int16_t upperRangeX = energy < 55 ? 12 : energy > 80 ? 16 : 14;
   const long choice = random(100);
   if (choice < centerWeight) {
-    gazeTargetX_ = static_cast<int16_t>(random(-3, 4));
-    gazeTargetY_ = static_cast<int16_t>(random(-2, 3));
+    gazeTargetX_ = static_cast<int16_t>(random(-6, 7));
+    gazeTargetY_ = static_cast<int16_t>(random(-4, 5));
   } else if (choice < centerWeight + sideWeight) {
     const int16_t side = random(0, 2) ? 1 : -1;
-    gazeTargetX_ = static_cast<int16_t>(side * random(10, sideRangeX + 1));
-    gazeTargetY_ = static_cast<int16_t>(random(-2, 3));
+    gazeTargetX_ = static_cast<int16_t>(side * random(12, sideRangeX + 1));
+    gazeTargetY_ = static_cast<int16_t>(random(-4, 5));
   } else if (choice < centerWeight + sideWeight + upperWeight) {
     gazeTargetX_ = static_cast<int16_t>(random(-upperRangeX, upperRangeX + 1));
-    gazeTargetY_ = static_cast<int16_t>(random(-8, -3));
+    gazeTargetY_ = static_cast<int16_t>(random(-12, -3));
   } else {
-    gazeTargetX_ = static_cast<int16_t>(random(-5, 6));
-    gazeTargetY_ = static_cast<int16_t>(random(4, 8));
+    gazeTargetX_ = static_cast<int16_t>(random(-8, 9));
+    gazeTargetY_ = static_cast<int16_t>(random(5, 12));
   }
   const int16_t deltaX = gazeTargetX_ - gazeX_;
   const int16_t deltaY = gazeTargetY_ - gazeY_;
   const int16_t magnitudeX = deltaX < 0 ? -deltaX : deltaX;
   const int16_t magnitudeY = deltaY < 0 ? -deltaY : deltaY;
-  autonomousGazeLargeShift_ = magnitudeX >= 11 || magnitudeY >= 6;
+  autonomousGazeLargeShift_ = magnitudeX >= 12 || magnitudeY >= 7;
+  gazeMotion_.start(gazeX_, gazeY_, gazeTargetX_, gazeTargetY_,
+                    kAutonomousGazeHardX, kAutonomousGazeHardY, true);
   autonomousGazePhase_ = AutonomousGazePhase::MOVING;
 }
 
 void NewoDisplay::updateAutonomousIdleGaze(uint32_t now) {
   if (autonomousEpisode_ != AutonomousEpisode::WAITING) {
     if (autonomousGazePhase_ == AutonomousGazePhase::MOVING) {
-      gazeX_ = easeAutonomousGaze(gazeX_, gazeTargetX_);
-      gazeY_ = easeAutonomousGaze(gazeY_, gazeTargetY_);
-      if (gazeX_ == gazeTargetX_ && gazeY_ == gazeTargetY_) {
-        fixationUntilMs_ = now + autonomousEpisodeHoldMs_;
-        autonomousGazePhase_ = AutonomousGazePhase::FIXATING;
-      }
+      if (!gazeMotion_.update(gazeX_, gazeY_)) return;
+      fixationUntilMs_ = now + autonomousEpisodeHoldMs_;
+      autonomousGazePhase_ = AutonomousGazePhase::FIXATING;
     }
     return;
   }
-
   switch (autonomousGazePhase_) {
     case AutonomousGazePhase::CHOOSE_TARGET:
       chooseAutonomousGazeTarget();
       return;
     case AutonomousGazePhase::MOVING:
-      gazeX_ = easeAutonomousGaze(gazeX_, gazeTargetX_);
-      gazeY_ = easeAutonomousGaze(gazeY_, gazeTargetY_);
-      if (gazeX_ != gazeTargetX_ || gazeY_ != gazeTargetY_) return;
+      if (!gazeMotion_.update(gazeX_, gazeY_)) return;
       queuePostSaccadeBlink(now);
       autonomousGazeLargeShift_ = false;
       {
-        const uint32_t inactiveMs = now - lastInteractionMs_;
-        const InactivityStage stage = inactiveMs >= kDrowsyInactivityMs ? InactivityStage::DROWSY
-                                    : inactiveMs >= kRelaxedInactivityMs ? InactivityStage::RELAXED
-                                                                          : InactivityStage::ACTIVE;
-        const uint32_t baseFixationMs = stage == InactivityStage::DROWSY
-            ? static_cast<uint32_t>(random(2'200, 4'201))
-            : stage == InactivityStage::RELAXED
-                ? static_cast<uint32_t>(random(1'500, 3'101))
-                : static_cast<uint32_t>(random(1'000, 2'401));
+        const NewoInactivityStage stage = autonomyState_.stage(now);
+        const uint32_t baseFixationMs = stage == NewoInactivityStage::DROWSY ? static_cast<uint32_t>(random(2'200, 4'201))
+            : stage == NewoInactivityStage::RELAXED ? static_cast<uint32_t>(random(1'500, 3'101))
+                                                    : static_cast<uint32_t>(random(1'000, 2'401));
         const uint32_t fixationMs = adjustAutonomousFixation(baseFixationMs);
         fixationUntilMs_ = now + fixationMs;
-        microCorrectionPending_ = random(100) < (stage == InactivityStage::ACTIVE ? 28 : 18);
+        microCorrectionPending_ = random(100) < (stage == NewoInactivityStage::ACTIVE ? 28 : 18);
         const long microCorrectionEnd = static_cast<long>(fixationMs * 2 / 3);
         microCorrectionAtMs_ = microCorrectionPending_ && microCorrectionEnd > 300
-            ? now + static_cast<uint32_t>(random(300, microCorrectionEnd))
-            : 0;
+            ? now + static_cast<uint32_t>(random(300, microCorrectionEnd)) : 0;
         microCorrectionPending_ = microCorrectionAtMs_ != 0;
         recordGazeTarget(static_cast<uint16_t>(fixationMs));
         autonomousGazePhase_ = AutonomousGazePhase::FIXATING;
@@ -748,21 +787,22 @@ void NewoDisplay::updateAutonomousIdleGaze(uint32_t now) {
         const int16_t direction = random(0, 2) ? 1 : -1;
         if (random(100) < 70) {
           const int16_t candidate = gazeTargetX_ + direction * shift;
-          gazeTargetX_ = candidate >= -14 && candidate <= 14 ? candidate : gazeTargetX_ - direction * shift;
+          gazeTargetX_ = candidate >= -kAutonomousGazeHardX && candidate <= kAutonomousGazeHardX
+              ? candidate : gazeTargetX_ - direction * shift;
         } else {
           const int16_t candidate = gazeTargetY_ + direction * shift;
-          gazeTargetY_ = candidate >= -8 && candidate <= 8 ? candidate : gazeTargetY_ - direction * shift;
+          gazeTargetY_ = candidate >= -kAutonomousGazeHardY && candidate <= kAutonomousGazeHardY
+              ? candidate : gazeTargetY_ - direction * shift;
         }
+        gazeMotion_.start(gazeX_, gazeY_, gazeTargetX_, gazeTargetY_,
+                          kAutonomousGazeHardX, kAutonomousGazeHardY, false);
         autonomousGazePhase_ = AutonomousGazePhase::MICRO_CORRECTION;
       }
       return;
     case AutonomousGazePhase::MICRO_CORRECTION:
-      gazeX_ = easeAutonomousGaze(gazeX_, gazeTargetX_);
-      gazeY_ = easeAutonomousGaze(gazeY_, gazeTargetY_);
-      if (gazeX_ != gazeTargetX_ || gazeY_ != gazeTargetY_) return;
+      if (!gazeMotion_.update(gazeX_, gazeY_)) return;
       autonomousGazePhase_ = static_cast<int32_t>(now - fixationUntilMs_) >= 0
-          ? AutonomousGazePhase::CHOOSE_TARGET
-          : AutonomousGazePhase::FIXATING;
+          ? AutonomousGazePhase::CHOOSE_TARGET : AutonomousGazePhase::FIXATING;
       return;
   }
 }
@@ -776,7 +816,12 @@ void NewoDisplay::updateGaze(uint32_t now) {
   if (static_cast<int32_t>(now - nextGazeMs_) >= 0) {
     switch (activeMode) {
       case NewoDisplayMode::IDLE: {
-        // Fixed RoboEyes positions reuse the normal gaze state; no idle randomness.
+        if (faceStyle_ == NewoFaceStyle::CLOSED || faceStyle_ == NewoFaceStyle::SLEEPING) {
+          gazeTargetX_ = 0;
+          gazeTargetY_ = 0;
+          nextGazeMs_ = now + 1'000;
+          break;
+        }
         if (faceStyle_ >= NewoFaceStyle::LOOK_LEFT && faceStyle_ <= NewoFaceStyle::LOOK_DOWN_RIGHT) {
           gazeTargetX_ = (faceStyle_ == NewoFaceStyle::LOOK_LEFT || faceStyle_ == NewoFaceStyle::LOOK_UP_LEFT ||
                           faceStyle_ == NewoFaceStyle::LOOK_DOWN_LEFT) ? -14 :
@@ -786,7 +831,7 @@ void NewoDisplay::updateGaze(uint32_t now) {
                           faceStyle_ == NewoFaceStyle::LOOK_UP_RIGHT) ? -8 :
                          (faceStyle_ == NewoFaceStyle::LOOK_DOWN || faceStyle_ == NewoFaceStyle::LOOK_DOWN_LEFT ||
                           faceStyle_ == NewoFaceStyle::LOOK_DOWN_RIGHT) ? 8 : 0;
-          nextGazeMs_ = now + 1000;
+          nextGazeMs_ = now + 1'000;
           break;
         }
         int16_t rangeX = 14;
@@ -799,22 +844,13 @@ void NewoDisplay::updateGaze(uint32_t now) {
           minDelay = faceStyle_ == NewoFaceStyle::SLEEPY ? 3'500 : 2'000;
           maxDelay = faceStyle_ == NewoFaceStyle::SLEEPY ? 6'001 : 4'201;
         } else if (faceStyle_ == NewoFaceStyle::CURIOUS) {
-          rangeX = 17;
-          rangeY = 7;
-          minDelay = 900;
-          maxDelay = 2'201;
+          rangeX = 17; rangeY = 8; minDelay = 900; maxDelay = 2'201;
         } else if (faceStyle_ == NewoFaceStyle::CONFUSED) {
-          // Neutral eyes leave 29 px per side. Keep horizontal gaze centered so
-          // the upstream ±20 px flicker remains wholly inside the 200 px canvas.
-          rangeX = 0;
-          rangeY = 3;
-          minDelay = 1'400;
-          maxDelay = 2'801;
+          rangeX = 0; rangeY = 3; minDelay = 1'400; maxDelay = 2'801;
         } else if (faceStyle_ == NewoFaceStyle::HAPPY || faceStyle_ == NewoFaceStyle::LAUGH) {
-          rangeX = 10;
-          rangeY = 4;
-          minDelay = 1'000;
-          maxDelay = 2'601;
+          rangeX = 10; rangeY = 4; minDelay = 1'000; maxDelay = 2'601;
+        } else if (faceStyle_ == NewoFaceStyle::SKEPTICAL) {
+          rangeX = 8; rangeY = 4; minDelay = 1'600; maxDelay = 3'201;
         }
         gazeTargetX_ = static_cast<int16_t>(random(-rangeX, rangeX + 1));
         gazeTargetY_ = static_cast<int16_t>(random(-rangeY, rangeY + 1));
@@ -827,8 +863,7 @@ void NewoDisplay::updateGaze(uint32_t now) {
         nextGazeMs_ = now + static_cast<uint32_t>(random(900, 1'601));
         break;
       case NewoDisplayMode::THINKING:
-        gazeTargetX_ = random(0, 2) ? static_cast<int16_t>(random(8, 17))
-                                    : static_cast<int16_t>(random(-16, -7));
+        gazeTargetX_ = random(0, 2) ? static_cast<int16_t>(random(8, 17)) : static_cast<int16_t>(random(-16, -7));
         gazeTargetY_ = static_cast<int16_t>(random(-9, -3));
         nextGazeMs_ = now + static_cast<uint32_t>(random(1'100, 2'401));
         break;
@@ -844,7 +879,6 @@ void NewoDisplay::updateGaze(uint32_t now) {
         break;
     }
   }
-
   auto easeToward = [](int16_t current, int16_t target) -> int16_t {
     const int16_t delta = target - current;
     if (delta > -2 && delta < 2) return target;
@@ -856,296 +890,89 @@ void NewoDisplay::updateGaze(uint32_t now) {
   gazeY_ = easeToward(gazeY_, gazeTargetY_);
 }
 
-void NewoDisplay::applyEyeExpression(int16_t leftX, int16_t rightX, int16_t y, int16_t leftW, int16_t rightW,
-                                      int16_t height, NewoDisplayMode mode) {
-  if (height < 8) return;
-
-  bool tired = mode == NewoDisplayMode::THINKING;
-  bool happy = mode == NewoDisplayMode::SPEAKING;
-  bool angry = mode == NewoDisplayMode::ERROR;
-  if (mode == NewoDisplayMode::IDLE) {
-    tired = faceStyle_ == NewoFaceStyle::TIRED || faceStyle_ == NewoFaceStyle::SLEEPY;
-    happy = faceStyle_ == NewoFaceStyle::HAPPY || faceStyle_ == NewoFaceStyle::LAUGH;
-    angry = faceStyle_ == NewoFaceStyle::ANGRY;
-  }
-
-  if (tired) {
-    const int16_t cover = height / 4;
-    eyeCanvas_.fillTriangle(leftX, y, leftX + leftW, y, leftX, y + cover, 0);
-    eyeCanvas_.fillTriangle(rightX, y, rightX + rightW, y, rightX + rightW, y + cover, 0);
-  } else if (happy) {
-    const int16_t leftCenter = leftX + leftW / 2;
-    const int16_t rightCenter = rightX + rightW / 2;
-    const int16_t radius = height / 2 + 5;
-    const int16_t centerY = y + height + 4;
-    eyeCanvas_.fillCircle(leftCenter, centerY, radius, 0);
-    eyeCanvas_.fillCircle(rightCenter, centerY, radius, 0);
-  } else if (angry) {
-    const int16_t cover = height / 2;
-    eyeCanvas_.fillTriangle(leftX, y, leftX + leftW, y, leftX + leftW, y + cover, 0);
-    eyeCanvas_.fillTriangle(rightX, y, rightX + rightW, y, rightX, y + cover, 0);
-  }
-}
-
 void NewoDisplay::drawFaceFrame(uint32_t now) {
   const uint32_t frameStartedUs = micros();
   eyeCanvas_.fillScreen(0);
   const NewoDisplayMode activeMode = effectiveMode(now);
-
-  const bool winkStyle = activeMode == NewoDisplayMode::IDLE &&
-                         (faceStyle_ == NewoFaceStyle::WINK_LEFT || faceStyle_ == NewoFaceStyle::WINK_RIGHT);
-  if (winkActive_ && now - winkStartedMs_ >= kWinkBurstMs) {
-    winkActive_ = false;
-    nextWinkMs_ = now + static_cast<uint32_t>(random(kWinkCalmMinMs, kWinkCalmMaxMs));
-    // Do not start a delayed autoblink immediately after a wink burst.
-    nextBlinkMs_ = now + static_cast<uint32_t>(random(2'500, 5'501));
-  }
   updateAutonomousEpisode(now);
-  const bool deliberatelyClosed = activeMode == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CLOSED;
-  const bool autonomousEpisodeActive = autonomousEpisode_ != AutonomousEpisode::WAITING;
-  if (blinkPhase_ == BlinkPhase::OPEN && !winkActive_) {
-    if (autonomousEpisode_ == AutonomousEpisode::LOW_ENERGY && autonomousEpisodeBlinkRequested_ &&
-        !autonomousEpisodeBlinkStarted_) {
-      startBilateralBlink(false, kForceLongBlink);
-      autonomousEpisodeBlinkStarted_ = true;
-    } else if (!autonomousEpisodeActive && winkStyle && static_cast<int32_t>(now - nextWinkMs_) >= 0) {
-      // A wink wins over and cancels any pending bilateral sequence.
-      blinkSchedulerState_ = BlinkSchedulerState::WAITING;
-      longBlink_ = false;
-      postSaccadeBlinkPending_ = false;
-      winkActive_ = true;
-      winkLeft_ = faceStyle_ == NewoFaceStyle::WINK_LEFT;
-      winkStartedMs_ = now;
-    } else if (!autonomousEpisodeActive && !deliberatelyClosed && static_cast<int32_t>(now - nextBlinkMs_) >= 0) {
-      // One scheduler owns bilateral events; episodes only request this existing scheduler.
-      const bool doubleSecond = blinkSchedulerState_ == BlinkSchedulerState::DOUBLE_SECOND;
-      startBilateralBlink(activeMode == NewoDisplayMode::IDLE && autoFaceEnabled_ &&
-                              !postSaccadeBlinkPending_ && !doubleSecond);
-    }
-  }
+  updateBlinkBeforeFrame(now, activeMode);
   updateGaze(now);
 
-  const float phase = static_cast<float>(now % 3000) / 3000.0f * 6.2831853f;
-  const int16_t floatY = static_cast<int16_t>(sinf(phase) * (speakerActive_ ? 2.0f : 1.0f));
+  const NewoEyePose targetPose = resolveEyePose(now, activeMode);
+  eyePoseEngine_.transitionTo(targetPose, now, eyePoseTransitionMs(activeMode), eyePoseEasing(activeMode));
+  const NewoEyePose& pose = eyePoseEngine_.update(now);
+  const EyeMotionOverlay motion = resolveEyeMotionOverlay(now, activeMode);
 
-  int16_t leftW = 60;
-  int16_t rightW = 60;
-  int16_t baseHeight = 36;
-  int16_t gap = 22;
-  int16_t verticalOffset = 0;
-  bool cyclops = false;
+  const bool cyclops = pose.rightWidth == 0;
+  int16_t leftW = static_cast<int16_t>(pose.leftWidth + motion.leftWidthDelta);
+  int16_t rightW = cyclops ? 0 : static_cast<int16_t>(pose.rightWidth + motion.rightWidthDelta);
+  if (leftW < 2) leftW = 2;
+  if (!cyclops && rightW < 2) rightW = 2;
+  const int16_t gap = pose.gap;
 
-  if (activeMode == NewoDisplayMode::IDLE && autoFaceEnabled_ &&
-      autonomousEpisode_ == AutonomousEpisode::SOCIAL_ATTENTION) {
-    baseHeight = 39;
-  }
-
-  if (activeMode == NewoDisplayMode::IDLE) {
-    switch (faceStyle_) {
-      case NewoFaceStyle::HAPPY:
-        leftW = rightW = 64;
-        baseHeight = 39;
-        gap = 20;
-        break;
-      case NewoFaceStyle::ANGRY:
-        leftW = rightW = 62;
-        baseHeight = 35;
-        gap = 20;
-        verticalOffset = 3;
-        break;
-      case NewoFaceStyle::TIRED:
-        leftW = rightW = 62;
-        baseHeight = 32;
-        gap = 22;
-        verticalOffset = 3;
-        break;
-      case NewoFaceStyle::CURIOUS:
-        leftW = rightW = 59;
-        baseHeight = 38;
-        gap = 22;
-        break;
-      case NewoFaceStyle::CONFUSED:
-        // Keep neutral geometry: the upstream horizontal flicker is the expression.
-        break;
-      case NewoFaceStyle::LAUGH:
-        leftW = rightW = 67;
-        baseHeight = 33;
-        gap = 18;
-        verticalOffset = 2;
-        break;
-      case NewoFaceStyle::SWEAT:
-        leftW = 61;
-        rightW = 55;
-        baseHeight = 36;
-        gap = 23;
-        break;
-      case NewoFaceStyle::CLOSED:
-        baseHeight = 4;
-        break;
-      case NewoFaceStyle::SURPRISED:
-        leftW = rightW = 54; baseHeight = 54; gap = 28;
-        break;
-      case NewoFaceStyle::SLEEPY:
-        leftW = rightW = 62; baseHeight = 20; verticalOffset = 5;
-        break;
-      case NewoFaceStyle::CYCLOPS:
-        leftW = 78;
-        rightW = 0;
-        baseHeight = 43;
-        gap = 0;
-        cyclops = true;
-        break;
-      default:
-        break;
-    }
-  } else {
-    switch (activeMode) {
-      case NewoDisplayMode::LISTENING:
-        leftW = rightW = 69;
-        baseHeight = 42;
-        gap = 17;
-        break;
-      case NewoDisplayMode::THINKING:
-        leftW = 56;
-        rightW = 62;
-        baseHeight = 35;
-        gap = 22;
-        verticalOffset = -2;
-        break;
-      case NewoDisplayMode::SPEAKING:
-        leftW = rightW = 62;
-        baseHeight = 38;
-        gap = 20;
-        break;
-      case NewoDisplayMode::ERROR:
-        leftW = rightW = 62;
-        baseHeight = 34;
-        gap = 20;
-        verticalOffset = 5;
-        break;
-      default:
-        break;
-    }
+  uint8_t blinkOpen = 100;
+  if (blinkPhase_ == BlinkPhase::HALF_CLOSED || blinkPhase_ == BlinkPhase::HALF_OPEN) blinkOpen = 40;
+  else if (blinkPhase_ == BlinkPhase::CLOSED) blinkOpen = 7;
+  const uint16_t combinedOpen = static_cast<uint16_t>(pose.openness) * blinkOpen / 100U;
+  int16_t leftBaseHeight = static_cast<int16_t>(pose.leftHeight + motion.leftHeightDelta);
+  int16_t rightBaseHeight = static_cast<int16_t>(pose.rightHeight + motion.rightHeightDelta);
+  if (leftBaseHeight < 2) leftBaseHeight = 2;
+  if (rightBaseHeight < 2) rightBaseHeight = 2;
+  int16_t leftHeight = static_cast<int16_t>(leftBaseHeight * combinedOpen / 100U);
+  int16_t rightHeight = static_cast<int16_t>(rightBaseHeight * combinedOpen / 100U);
+  if (pose.closureStyle == NewoEyeClosureStyle::FILLED) {
+    if (leftHeight < 2) leftHeight = 2;
+    if (rightHeight < 2) rightHeight = 2;
   }
 
-  int16_t curiousLeftLift = 0;
-  int16_t curiousRightLift = 0;
-  const bool microCuriosityLift = activeMode == NewoDisplayMode::IDLE && autoFaceEnabled_ &&
-                                  autonomousEpisode_ == AutonomousEpisode::CURIOUS_SCAN;
-  if (activeMode == NewoDisplayMode::IDLE && (faceStyle_ == NewoFaceStyle::CURIOUS || microCuriosityLift)) {
-    // RoboEyes curiosity is directional: the outer eye grows vertically when
-    // the gaze reaches an edge rather than merely widening both eyes.
-    const int16_t lift = microCuriosityLift ? 4 : 8;
-    if (gazeX_ < -7 || (microCuriosityLift && gazeTargetX_ < 0)) curiousLeftLift = lift;
-    if (gazeX_ > 7 || (microCuriosityLift && gazeTargetX_ > 0)) curiousRightLift = lift;
-  } else if (activeMode == NewoDisplayMode::THINKING) {
-    if (gazeX_ < -7) leftW += 7;
-    if (gazeX_ > 7) rightW += 7;
-  }
-
-  int16_t shake = 0;
-  if (activeMode == NewoDisplayMode::ERROR && now - modeStartedMs_ < 520) {
-    shake = static_cast<int16_t>(sinf(static_cast<float>(now - modeStartedMs_) * 0.075f) * 4.0f);
-  }
-  const uint32_t styleBurstMs = (now - modeStartedMs_) % 2200; // selection-relative 500 ms burst, then calm.
-  if (activeMode == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::CONFUSED && styleBurstMs < 500) {
-    // Upstream anim_confused: approximately 20 px horizontal flicker.
-    shake += static_cast<int16_t>(sinf(static_cast<float>(styleBurstMs) * 0.075f) * 20.0f);
-  }
-  if (activeMode == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::LAUGH && styleBurstMs < 500) {
-    // Upstream anim_laugh: approximately 5 px vertical flicker; HAPPY rests between bursts.
-    verticalOffset += static_cast<int16_t>(sinf(static_cast<float>(styleBurstMs) * 0.075f) * 5.0f);
-  }
-
-  int16_t height = baseHeight;
-  if (blinkPhase_ == BlinkPhase::HALF_CLOSED || blinkPhase_ == BlinkPhase::HALF_OPEN) {
-    height = static_cast<int16_t>(baseHeight * 0.40f);
-  } else if (blinkPhase_ == BlinkPhase::CLOSED) {
-    height = static_cast<int16_t>(baseHeight * 0.07f);
-    if (height < 2) height = 2;
-  }
   if (cyclops) {
-    const int16_t x = (kEyeCanvasWidth - leftW) / 2 + gazeX_ + shake;
-    int16_t y = (kEyeCanvasHeight - baseHeight) / 2 + gazeY_ + floatY + verticalOffset;
-    y += (baseHeight - height) / 2;
-    const int16_t radius = height > 3 ? height / 2 : 1;
-    eyeCanvas_.fillRoundRect(x, y, leftW, height, radius, 1);
+    const int16_t x = (kEyeCanvasWidth - leftW) / 2 + gazeX_ + motion.xOffset;
+    if (pose.closureStyle == NewoEyeClosureStyle::CURVED) {
+      const int16_t y = kEyeCanvasHeight / 2 + gazeY_ + motion.yOffset + pose.leftYOffset;
+      drawClosedEyeCurve(x, y, leftW);
+    } else {
+      int16_t y = (kEyeCanvasHeight - leftBaseHeight) / 2 + gazeY_ + motion.yOffset + pose.leftYOffset;
+      y += (leftBaseHeight - leftHeight) / 2;
+      eyeCanvas_.fillRoundRect(x, y, leftW, leftHeight, leftHeight > 3 ? leftHeight / 2 : 1, 1);
+    }
   } else {
     const int16_t totalWidth = leftW + gap + rightW;
-    int16_t leftX = (kEyeCanvasWidth - totalWidth) / 2 + gazeX_ + shake;
-    int16_t rightX = leftX + leftW + gap;
-    int16_t y = (kEyeCanvasHeight - baseHeight) / 2 + gazeY_ + floatY + verticalOffset;
-    y += (baseHeight - height) / 2;
-    const int16_t radius = height > 3 ? height / 2 : 1;
+    const int16_t leftX = (kEyeCanvasWidth - totalWidth) / 2 + gazeX_ + motion.xOffset;
+    const int16_t rightX = leftX + leftW + gap;
+    int16_t leftY = (kEyeCanvasHeight - leftBaseHeight) / 2 + gazeY_ + motion.yOffset + pose.leftYOffset;
+    int16_t rightY = (kEyeCanvasHeight - rightBaseHeight) / 2 + gazeY_ + motion.yOffset + pose.rightYOffset;
+    leftY += (leftBaseHeight - leftHeight) / 2;
+    rightY += (rightBaseHeight - rightHeight) / 2;
 
-    int16_t leftHeight = height;
-    int16_t rightHeight = height;
-    int16_t leftY = y;
-    int16_t rightY = y;
-    if (winkActive_) {
+    if (winkActive_ && pose.closureStyle == NewoEyeClosureStyle::FILLED) {
       const uint32_t winkElapsedMs = now - winkStartedMs_;
-      int16_t winkHeight = baseHeight;
-      if (winkElapsedMs < 60 || winkElapsedMs >= 180) winkHeight = static_cast<int16_t>(baseHeight * 0.40f);
-      else winkHeight = static_cast<int16_t>(baseHeight * 0.07f);
-      if (winkHeight < 2) winkHeight = 2;
+      const uint8_t winkOpen = (winkElapsedMs < 60 || winkElapsedMs >= 180) ? 40 : 7;
       if (winkLeft_) {
-        leftHeight = winkHeight;
-        leftY += (baseHeight - winkHeight) / 2;
+        leftHeight = static_cast<int16_t>(leftBaseHeight * pose.openness * winkOpen / 10'000U);
+        if (leftHeight < 2) leftHeight = 2;
+        leftY = (kEyeCanvasHeight - leftBaseHeight) / 2 + gazeY_ + motion.yOffset + pose.leftYOffset +
+                (leftBaseHeight - leftHeight) / 2;
       } else {
-        rightHeight = winkHeight;
-        rightY += (baseHeight - winkHeight) / 2;
+        rightHeight = static_cast<int16_t>(rightBaseHeight * pose.openness * winkOpen / 10'000U);
+        if (rightHeight < 2) rightHeight = 2;
+        rightY = (kEyeCanvasHeight - rightBaseHeight) / 2 + gazeY_ + motion.yOffset + pose.rightYOffset +
+                 (rightBaseHeight - rightHeight) / 2;
       }
     }
-    if (height >= 8 && curiousLeftLift) {
-      leftHeight += curiousLeftLift;
-      leftY -= curiousLeftLift / 2;
-    }
-    if (height >= 8 && curiousRightLift) {
-      rightHeight += curiousRightLift;
-      rightY -= curiousRightLift / 2;
-    }
 
-    eyeCanvas_.fillRoundRect(leftX, leftY, leftW, leftHeight, leftHeight > 3 ? leftHeight / 2 : 1, 1);
-    eyeCanvas_.fillRoundRect(rightX, rightY, rightW, rightHeight, rightHeight > 3 ? rightHeight / 2 : 1, 1);
-    applyEyeExpression(leftX, rightX, y, leftW, rightW, height, activeMode);
-
-    if (activeMode == NewoDisplayMode::IDLE && faceStyle_ == NewoFaceStyle::SWEAT && height >= 8) {
-      // Three independent phase offsets across the forehead; each falls, grows, then shrinks.
-      for (uint8_t drop = 0; drop < 3; ++drop) {
-        const uint16_t phase = static_cast<uint16_t>((now / 9 + drop * 31) % 100);
-        const int16_t dropX = 42 + drop * 58;
-        const int16_t dropY = 3 + phase / 4;
-        const int16_t radius = phase < 50 ? 1 + phase / 25 : 1 + (99 - phase) / 25;
-        eyeCanvas_.fillCircle(dropX, dropY + radius, radius, 1);
-        eyeCanvas_.fillTriangle(dropX, dropY - radius - 1, dropX - radius, dropY + radius, dropX + radius, dropY + radius, 1);
-      }
+    if (pose.closureStyle == NewoEyeClosureStyle::CURVED) {
+      drawClosedEyeCurve(leftX, static_cast<int16_t>(kEyeCanvasHeight / 2 + gazeY_ + motion.yOffset + pose.leftYOffset), leftW);
+      drawClosedEyeCurve(rightX, static_cast<int16_t>(kEyeCanvasHeight / 2 + gazeY_ + motion.yOffset + pose.rightYOffset), rightW);
+    } else {
+      eyeCanvas_.fillRoundRect(leftX, leftY, leftW, leftHeight, leftHeight > 3 ? leftHeight / 2 : 1, 1);
+      eyeCanvas_.fillRoundRect(rightX, rightY, rightW, rightHeight, rightHeight > 3 ? rightHeight / 2 : 1, 1);
+      applyResolvedPoseCuts(leftX, rightX, leftY, rightY, leftW, rightW, leftHeight, rightHeight, pose);
     }
   }
 
+  drawSecondaryEffect(now, secondaryEffectFor(now, activeMode));
   blitMonoCanvasFast(eyeCanvas_, kEyeCanvasX, kEyeCanvasY, kEyeCanvasWidth, kEyeCanvasHeight);
-
-  if (blinkPhase_ != BlinkPhase::OPEN) {
-    if (--blinkFramesRemaining_ == 0) {
-      if (blinkPhase_ == BlinkPhase::HALF_CLOSED) {
-        blinkPhase_ = BlinkPhase::CLOSED;
-        blinkFramesRemaining_ = longBlink_ ? 3 : 1;
-      } else if (blinkPhase_ == BlinkPhase::CLOSED) {
-        blinkPhase_ = BlinkPhase::HALF_OPEN;
-        blinkFramesRemaining_ = 1;
-      } else {
-        blinkPhase_ = BlinkPhase::OPEN;
-        longBlink_ = false;
-        if (blinkSchedulerState_ == BlinkSchedulerState::DOUBLE_PAUSE) {
-          blinkSchedulerState_ = BlinkSchedulerState::DOUBLE_SECOND;
-          nextBlinkMs_ = now + static_cast<uint32_t>(random(120, 251));
-        } else {
-          blinkSchedulerState_ = BlinkSchedulerState::WAITING;
-          scheduleNextBilateralBlink(now);
-        }
-      }
-    }
-  }
-
+  advanceBlinkAfterFrame(now);
   drawStateAnimation(now);
   recordFaceFrame(micros() - frameStartedUs);
 }
@@ -1166,8 +993,6 @@ void NewoDisplay::blitMonoCanvasFast(GFXcanvas1& canvas, int16_t x, int16_t y, i
 }
 
 void NewoDisplay::recordFaceFrame(uint32_t elapsedUs) {
-  // Wall time includes any preemption by the higher-priority speaker task; a
-  // large value here does not imply that display SPI blocked audio for that long.
   if (!frameMetricsStartedMs_) frameMetricsStartedMs_ = millis();
   frameMetricsTotalUs_ += elapsedUs;
   if (elapsedUs > frameMetricsWorstUs_) frameMetricsWorstUs_ = elapsedUs;
@@ -1218,10 +1043,7 @@ void NewoDisplay::drawFaceResponse() {
   char response[49] = {};
   strncpy(response, text_, sizeof(response) - 1);
   if (strlen(text_) >= sizeof(response)) {
-    response[44] = '.';
-    response[45] = '.';
-    response[46] = '.';
-    response[47] = '\0';
+    response[44] = '.'; response[45] = '.'; response[46] = '.'; response[47] = '\0';
   }
   drawWrapped(response, 204, false, false, 2);
 }
@@ -1253,21 +1075,14 @@ void NewoDisplay::drawMessage() {
   uint8_t words = 0;
   bool inWord = false;
   for (const char* cursor = text_; *cursor; ++cursor) {
-    if (*cursor == '\n') {
-      words = 3;
-      break;
-    }
-    if (*cursor != ' ' && !inWord) {
-      ++words;
-      inWord = true;
-    }
+    if (*cursor == '\n') { words = 3; break; }
+    if (*cursor != ' ' && !inWord) { ++words; inWord = true; }
     if (*cursor == ' ') inWord = false;
   }
   const bool shortMessage = words > 0 && words <= 2 && strlen(text_) <= 14;
   if (shortMessage) {
     display_.setFont(&FreeSans18pt7b);
-    int16_t x1, y1;
-    uint16_t w, h;
+    int16_t x1, y1; uint16_t w, h;
     display_.getTextBounds(text_, 0, 0, &x1, &y1, &w, &h);
     display_.setCursor((kWidth - w) / 2, 132);
     display_.print(text_);
@@ -1304,8 +1119,7 @@ void NewoDisplay::drawEco() {
 
 void NewoDisplay::drawCentered(const char* text, int16_t y) {
   display_.setFont(&FreeSans9pt7b);
-  int16_t x1, y1;
-  uint16_t w, h;
+  int16_t x1, y1; uint16_t w, h;
   display_.getTextBounds(text, 0, y, &x1, &y1, &w, &h);
   display_.setCursor((kWidth - w) / 2, y);
   display_.print(text);
@@ -1325,30 +1139,18 @@ void NewoDisplay::drawWrapped(const char* text, int16_t firstY, bool info, bool 
   auto flush = [&]() {
     if (length == 0 || y > 230) return;
     line[length] = '\0';
-    if (centered)
-      drawCentered(line, y);
-    else {
-      display_.setCursor(kMargin, y);
-      display_.print(line);
-    }
+    if (centered) drawCentered(line, y);
+    else { display_.setCursor(kMargin, y); display_.print(line); }
     display_.setFont(info ? &FreeMono9pt7b : &FreeSans9pt7b);
     y += lineHeight;
     ++lines;
     length = 0;
   };
   while (*cursor && y <= 230 && (!maxLines || lines < maxLines)) {
-    if (*cursor == '\n') {
-      flush();
-      ++cursor;
-      continue;
-    }
+    if (*cursor == '\n') { flush(); ++cursor; continue; }
     while (*cursor == ' ') ++cursor;
     if (!*cursor) break;
-    if (*cursor == '\n') {
-      flush();
-      ++cursor;
-      continue;
-    }
+    if (*cursor == '\n') { flush(); ++cursor; continue; }
     char word[97] = {};
     size_t wordLength = 0;
     while (cursor[wordLength] && cursor[wordLength] != ' ' && cursor[wordLength] != '\n' &&
@@ -1360,8 +1162,7 @@ void NewoDisplay::drawWrapped(const char* text, int16_t firstY, bool info, bool 
     cursor += wordLength;
     char candidate[97] = {};
     snprintf(candidate, sizeof(candidate), "%s%s%s", line, length ? " " : "", word);
-    int16_t x1, y1;
-    uint16_t width, height;
+    int16_t x1, y1; uint16_t width, height;
     display_.getTextBounds(candidate, 0, 0, &x1, &y1, &width, &height);
     if (width <= maxWidth) {
       strncpy(line, candidate, sizeof(line) - 1);

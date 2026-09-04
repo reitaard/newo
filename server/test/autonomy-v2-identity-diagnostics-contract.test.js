@@ -4,28 +4,269 @@ import { readFile } from "node:fs/promises";
 
 const source = async (path) => readFile(new URL(path, import.meta.url), "utf8");
 
-test("Autonomy V2 has a distinguishable identity and bounded eye diagnostics", async () => {
-  const [config, display, cloud, ino, server, validation] = await Promise.all([
+test("Autonomy V2 keeps state, behavior, presentation, pose, motion, blink, and rendering separated", async () => {
+  const [config, display, header, stateHeader, stateSource, presentationHeader, presentationSource,
+    poseHeader, poseSource, poseResolver, blinkSource, cloud, ino, server] = await Promise.all([
     source("../../Newo/newo_config.h"),
     source("../../Newo/newo_display.cpp"),
+    source("../../Newo/newo_display.h"),
+    source("../../Newo/newo_autonomy_state.h"),
+    source("../../Newo/newo_autonomy_state.cpp"),
+    source("../../Newo/newo_presentation.h"),
+    source("../../Newo/newo_presentation.cpp"),
+    source("../../Newo/newo_eye_pose.h"),
+    source("../../Newo/newo_eye_pose.cpp"),
+    source("../../Newo/newo_display_pose.cpp"),
+    source("../../Newo/newo_display_blink.cpp"),
     source("../../Newo/newo_cloud.cpp"),
     source("../../Newo/Newo.ino"),
     source("../src/index.js"),
-    source("../../Newo/PHYSICAL_OPUS_VALIDATION.md"),
   ]);
+  const renderer = display.match(/void NewoDisplay::drawFaceFrame\(uint32_t now\) \{([\s\S]*?)\n\}\n\nvoid NewoDisplay::blitMonoCanvasFast/);
+  assert.ok(renderer, "drawFaceFrame body should be discoverable for renderer-boundary checks");
 
-  assert.match(config, /FIRMWARE_VERSION\[\] = "0\.5\.0-dev"/);
+  assert.match(config, /FIRMWARE_VERSION\[\] = "0\.5\.3-dev"/);
   assert.match(config, /AUTONOMY_REVISION = 2/);
   assert.match(ino, /Firmware: %s/);
   assert.match(ino, /Autonomy: V%u/);
   assert.match(cloud, /doc\["autonomy_revision"\] = NewoConfig::AUTONOMY_REVISION/);
   assert.match(server, /autonomy_revision: z\.number\(\)\.int\(\)\.nonnegative\(\)\.optional\(\)/);
-  assert.match(server, /autonomy_revision: device\.hello\?\.autonomy_revision \?\? null/);
-  assert.match(display, /eyeContextChanges_/);
+
+  // Slow character state has one owner and never selects presentation or geometry.
+  assert.match(header, /#include "newo_autonomy_state\.h"/);
+  assert.match(header, /NewoAutonomyState autonomyState_/);
+  assert.doesNotMatch(header, /uint8_t energy_|uint8_t curiosity_|uint8_t social_|uint8_t stress_|lastInteractionMs_|idleDriftTicks_/);
+  assert.match(stateHeader, /class NewoAutonomyState/);
+  assert.match(stateHeader, /enum class NewoInactivityStage[\s\S]*ACTIVE[\s\S]*RELAXED[\s\S]*DROWSY/);
+  assert.match(stateHeader, /uint8_t fatigue\(\) const \{ return static_cast<uint8_t>\(100 - energy_\); \}/);
+  assert.match(stateHeader, /kRelaxedInactivityMs = 120'000/);
+  assert.match(stateHeader, /kDrowsyInactivityMs = 300'000/);
+  assert.match(stateSource, /kEngagementEnergyRecoveryMs = 18'000/);
+  assert.match(stateSource, /case NewoInactivityStage::DROWSY: return 35/);
+  assert.doesNotMatch(stateSource, /AutonomousExpression|NewoSecondaryEffect|NewoFaceCaption|NewoEyePose|draw/);
+  assert.doesNotMatch(stateSource, /malloc|new\s|std::vector|std::map/);
+  assert.match(display, /autonomyState_\.reset\(now\)/);
+  assert.match(display, /autonomyState_\.noteInteraction\(now, energyGain, curiosityGain, socialGain\)/);
+  assert.match(display, /autonomyState_\.noteError\(\)/);
+  assert.match(display, /autonomyState_\.update\(now, autonomyEngagementFor\(effectiveMode\(now\)\)\)/);
+  assert.match(display, /const NewoInactivityStage stage = autonomyState_\.stage\(now\)/);
+  assert.match(display, /fatigue=%u[\s\S]*stage=%s/);
+  assert.doesNotMatch(renderer[1], /autonomyState_|NewoInactivityStage|energy|curiosity|social|stress/);
+
+  // Presentation semantics are portable data and a pure deterministic policy.
+  assert.match(header, /#include "newo_presentation\.h"/);
+  assert.match(presentationHeader, /enum class NewoSecondaryEffect[\s\S]*NONE[\s\S]*ZZZ[\s\S]*QUESTION[\s\S]*EXCLAMATION[\s\S]*SURPRISE_MARK[\s\S]*ELLIPSIS[\s\S]*SWEAT/);
+  assert.match(presentationHeader, /enum class NewoFaceCaption[\s\S]*NONE[\s\S]*HUH[\s\S]*WOAH[\s\S]*HMM[\s\S]*HEY[\s\S]*WTF[\s\S]*TSK/);
+  assert.match(presentationHeader, /enum class NewoPresentationCue[\s\S]*CURIOUS[\s\S]*SOCIAL[\s\S]*ALERT_SURPRISE[\s\S]*ALERT_CONFUSED[\s\S]*LOW_ENERGY[\s\S]*SLEEPING[\s\S]*UNIMPRESSED/);
+  assert.match(presentationHeader, /struct NewoPresentationIntent[\s\S]*NewoSecondaryEffect effect[\s\S]*NewoFaceCaption caption[\s\S]*effectDurationMs[\s\S]*captionDurationMs/);
+  assert.match(presentationSource, /NewoPresentationIntent newoComposePresentation/);
+  assert.match(presentationSource, /case NewoPresentationCue::CURIOUS/);
+  assert.match(presentationSource, /NewoSecondaryEffect::QUESTION/);
+  assert.match(presentationSource, /NewoFaceCaption::HUH/);
+  assert.match(presentationSource, /NewoPresentationCue::ALERT_SURPRISE[\s\S]*NewoSecondaryEffect::SURPRISE_MARK/);
+  assert.match(presentationSource, /strength >= 95 && roll < 6[\s\S]*NewoFaceCaption::WTF/);
+  assert.match(presentationSource, /NewoPresentationCue::ALERT_CONFUSED[\s\S]*NewoFaceCaption::HMM/);
+  assert.match(presentationSource, /NewoPresentationCue::SLEEPING[\s\S]*NewoSecondaryEffect::ZZZ/);
+  assert.match(presentationSource, /NewoPresentationCue::UNIMPRESSED[\s\S]*NewoFaceCaption::TSK/);
+  assert.doesNotMatch(presentationSource, /Arduino|millis\(|random\(|Adafruit|draw|GFXcanvas/);
+  assert.doesNotMatch(presentationSource, /malloc|new\s|std::vector|std::map/);
+
+  // Pose is data; transition mechanics live outside the display behavior scheduler.
+  assert.match(poseHeader, /struct NewoEyePose/);
+  assert.match(poseHeader, /leftWidth/);
+  assert.match(poseHeader, /rightHeight/);
+  assert.match(poseHeader, /openness/);
+  assert.match(poseHeader, /NewoEyeClosureStyle/);
+  assert.match(poseHeader, /class NewoEyePoseEngine/);
+  assert.match(poseSource, /transitionTo/);
+  assert.match(poseSource, /EASE_IN_OUT/);
+  assert.match(poseSource, /blend\(const NewoEyePose& neutral/);
+  assert.doesNotMatch(poseSource, /malloc|new\s|std::vector|std::map/);
+
+  assert.match(poseSource, /interpolateClosureStyle/);
+  assert.match(poseSource, /to == NewoEyeClosureStyle::CURVED[\s\S]*permille < 850/);
+  assert.match(poseSource, /return permille < 150 \? from : to/);
+  assert.match(poseSource, /current_\.closureStyle = interpolateClosureStyle/);
+
+  // Episodes emit semantic expression intent; pose/motion resolver never inspects episode identity.
+  assert.match(header, /enum class AutonomousExpression[\s\S]*CURIOUS[\s\S]*HAPPY[\s\S]*TIRED[\s\S]*SLEEPY[\s\S]*SURPRISED[\s\S]*CONFUSED[\s\S]*SLEEPING/);
+  assert.match(header, /AutonomousExpression autonomousExpression_/);
+  assert.match(display, /setAutonomousExpression\(AutonomousExpression::CURIOUS/);
+  assert.match(display, /setAutonomousExpression\(AutonomousExpression::HAPPY/);
+  assert.match(display, /setAutonomousExpression\(AutonomousExpression::SLEEPING, 100\)/);
+  assert.match(poseResolver, /switch \(autonomousExpression_\)/);
+  assert.doesNotMatch(poseResolver, /autonomousEpisode_/);
+  assert.match(poseResolver, /autonomousExpression_ == AutonomousExpression::CONFUSED/);
+  assert.match(poseResolver, /NewoEyePoseEngine::blend\(neutral, target, autonomousExpressionIntensity_\)/);
+
+  // Transient motion is resolved outside the renderer.
+  assert.match(header, /struct EyeMotionOverlay/);
+  assert.match(header, /EyeMotionOverlay resolveEyeMotionOverlay/);
+  assert.match(poseResolver, /NewoDisplay::EyeMotionOverlay NewoDisplay::resolveEyeMotionOverlay/);
+  assert.match(renderer[1], /motion\.xOffset/);
+  assert.match(renderer[1], /motion\.yOffset/);
+  assert.match(renderer[1], /motion\.leftWidthDelta/);
+  assert.match(renderer[1], /motion\.leftHeightDelta/);
+  assert.doesNotMatch(renderer[1], /NewoFaceStyle::CONFUSED|NewoFaceStyle::LAUGH/);
+  assert.doesNotMatch(renderer[1], /AutonomousEpisode::ALERT_CHECK/);
+  assert.doesNotMatch(renderer[1], /NewoDisplayMode::THINKING|NewoDisplayMode::ERROR/);
+  assert.doesNotMatch(renderer[1], /sinf\(/);
+
+  // Renderer consumes resolved layers and does not schedule blinks.
+  assert.match(header, /NewoEyePoseEngine eyePoseEngine_/);
+  assert.match(renderer[1], /updateBlinkBeforeFrame\(now, activeMode\)/);
+  assert.match(renderer[1], /advanceBlinkAfterFrame\(now\)/);
+  assert.match(renderer[1], /resolveEyePose\(now, activeMode\)/);
+  assert.match(renderer[1], /combinedOpen = static_cast<uint16_t>\(pose\.openness\) \* blinkOpen/);
+  assert.match(renderer[1], /applyResolvedPoseCuts/);
+  assert.match(renderer[1], /drawSecondaryEffect/);
+  assert.doesNotMatch(renderer[1], /startBilateralBlink|blinkSchedulerState_|nextBlinkMs_|nextWinkMs_/);
+  assert.match(blinkSource, /void NewoDisplay::updateBlinkBeforeFrame/);
+  assert.match(blinkSource, /void NewoDisplay::advanceBlinkAfterFrame/);
+  assert.match(blinkSource, /AutonomousEpisode::DROWSY_REST/);
+  assert.match(blinkSource, /startBilateralBlink\(false, kForceLongBlink\)/);
+  assert.match(blinkSource, /BlinkSchedulerState::DOUBLE_SECOND/);
+  assert.doesNotMatch(display, /applyEyeExpression\(/);
+
+  // Continuous default gaze remains wide but bounded.
+  assert.match(display, /kAutonomousGazeHardX = 20/);
+  assert.match(display, /kAutonomousGazeHardY = 12/);
+  assert.match(display, /const uint8_t energy = autonomyState_\.energy\(\)[\s\S]*sideRangeX = energy < 55 \? 16 : energy > 80 \? 20 : 18/);
+  assert.match(display, /random\(-12, -3\)/);
+  assert.match(display, /candidate >= -kAutonomousGazeHardY && candidate <= kAutonomousGazeHardY/);
+
+  // Directional curiosity remains strongly asymmetric.
+  assert.match(poseResolver, /pose\.leftWidth = 50/);
+  assert.match(poseResolver, /pose\.leftHeight = 30/);
+  assert.match(poseResolver, /pose\.rightWidth = 68/);
+  assert.match(poseResolver, /pose\.rightHeight = 50/);
+
+  // CLOSED/DETACHED/SLEEPING/UNIMPRESSED semantics remain explicit.
+  assert.match(header, /DETACHED, SLEEPING, UNIMPRESSED, SKEPTICAL/);
+  assert.match(header, /DROWSY_REST/);
+  assert.match(poseResolver, /case NewoFaceStyle::CLOSED:[\s\S]*NewoEyeClosureStyle::CURVED/);
+  assert.match(poseResolver, /case NewoFaceStyle::DETACHED:[\s\S]*leftHeight = pose\.rightHeight = 4/);
+  assert.match(poseResolver, /faceStyle_ == NewoFaceStyle::DETACHED[\s\S]*overlay\.xOffset -= gazeX_[\s\S]*overlay\.yOffset -= gazeY_/);
+  assert.match(poseResolver, /case NewoFaceStyle::SLEEPING:[\s\S]*NewoEyeClosureStyle::CURVED/);
+  assert.match(poseResolver, /case NewoFaceStyle::UNIMPRESSED:[\s\S]*leftHeight = 25[\s\S]*rightHeight = 22[\s\S]*openness = 86/);
+  assert.match(poseResolver, /faceStyle_ == NewoFaceStyle::UNIMPRESSED[\s\S]*overlay\.xOffset -= gazeX_ \/ 2[\s\S]*overlay\.yOffset -= gazeY_/);
+
+  const skeptical = poseResolver.match(/case NewoFaceStyle::SKEPTICAL: \{([\s\S]*?)\n      break;\n    \}/);
+  assert.ok(skeptical, "skeptical pose should be a directional pose block");
+  assert.match(skeptical[1], /direction = gazeTargetX_ < -5 \? -1 : gazeTargetX_ > 5 \? 1/);
+  const skepticalRight = skeptical[1].match(/if \(direction > 0\) \{([\s\S]*?)\n      \} else/);
+  const skepticalLeft = skeptical[1].match(/else \{([\s\S]*?)\n      \}/);
+  assert.ok(skepticalRight && skepticalLeft, "skeptical pose should mirror both gaze directions");
+  assert.match(skepticalRight[1], /leftWidth = 50[\s\S]*leftHeight = 24[\s\S]*leftTopCut = -12[\s\S]*rightWidth = 62[\s\S]*rightHeight = 38/);
+  assert.doesNotMatch(skepticalRight[1], /rightTopCut/);
+  assert.match(skepticalLeft[1], /leftWidth = 62[\s\S]*leftHeight = 38[\s\S]*rightWidth = 50[\s\S]*rightHeight = 24[\s\S]*rightTopCut = -12/);
+  assert.doesNotMatch(skepticalLeft[1], /leftTopCut/);
+
+  // Phase E effect runtime remains independent from pose and behavior composition.
+  assert.match(header, /bool setSecondaryEffect\(NewoSecondaryEffect effect, uint32_t durationMs = 6'000\)/);
+  assert.match(header, /secondaryEffectOverride_ = NewoSecondaryEffect::NONE/);
+  assert.match(header, /secondaryEffectStartedMs_/);
+  assert.match(header, /secondaryEffectUntilMs_/);
+  assert.match(poseResolver, /bool NewoDisplay::setSecondaryEffect\(NewoSecondaryEffect effect, uint32_t durationMs\)/);
+  assert.match(poseResolver, /durationMs < 500 \|\| durationMs > 15'000/);
+  assert.match(poseResolver, /if \(mode != NewoDisplayMode::IDLE\) return NewoSecondaryEffect::NONE/);
+  assert.match(poseResolver, /static_cast<int32_t>\(now - secondaryEffectUntilMs_\) < 0/);
+  assert.match(poseResolver, /autonomousExpression_ == AutonomousExpression::SLEEPING \? NewoSecondaryEffect::ZZZ/);
+  assert.match(poseResolver, /void NewoDisplay::drawZ[\s\S]*if \(size < 5\) return;[\s\S]*fillRect\(x, y, size \+ 1, 2, 1\)/);
+  assert.match(poseResolver, /effect == NewoSecondaryEffect::ZZZ[\s\S]*index < 2[\s\S]*index == 0 \? 7 : 10/);
+  for (const effect of ["QUESTION", "EXCLAMATION", "SURPRISE_MARK", "ELLIPSIS", "SWEAT"]) {
+    assert.match(poseResolver, new RegExp(`effect == NewoSecondaryEffect::${effect}`), `missing procedural effect: ${effect}`);
+  }
+  const effectResolver = poseResolver.match(/NewoSecondaryEffect NewoDisplay::secondaryEffectFor\(uint32_t now, NewoDisplayMode mode\) const \{([\s\S]*?)\n\}/);
+  assert.ok(effectResolver, "secondary effect resolver should be discoverable");
+  assert.doesNotMatch(effectResolver[1], /CURIOUS.*QUESTION|SURPRISED.*EXCLAMATION|CONFUSED.*QUESTION/);
+
+  // Manual effect transport stays silent and separate.
+  assert.match(cloud, /strcmp\(mode, "effect"\) == 0/);
+  for (const [name, effect] of [
+    ["zzz", "ZZZ"], ["question", "QUESTION"], ["exclamation", "EXCLAMATION"],
+    ["surprise", "SURPRISE_MARK"], ["ellipsis", "ELLIPSIS"], ["sweat", "SWEAT"],
+  ]) assert.match(cloud, new RegExp(`strcmp\\(text, "${name}"\\).*NewoSecondaryEffect::${effect}`));
+  assert.match(cloud, /display_\.setSecondaryEffect\(/);
+  assert.match(server, /const SECONDARY_EFFECTS = \["none", "question", "exclamation", "surprise", "ellipsis", "sweat", "zzz"\]/);
+  assert.match(server, /function secondaryEffectCommand\(effect\) \{ return `\/effect_\$\{effect\}`; \}/);
+  assert.match(server, /sendDeviceRequest\("display_set", "display_ack", \{ mode: "effect", text: input, duration_ms: durationMs \}/);
+  assert.match(server, /bot\.command\(\["effect", "fx"\], handleEffectCommand\)/);
+  assert.match(server, /for \(const effect of SECONDARY_EFFECTS\) bot\.command\(`effect_\$\{effect\}`/);
+  const effectHandler = server.match(/async function handleEffectCommand\(ctx, selectedInput = null\) \{([\s\S]*?)\n\}/);
+  assert.ok(effectHandler, "Telegram effect handler should be discoverable");
+  assert.match(effectHandler[1], /newoSpeak: false/);
+
+  // Phase F caption runtime remains independent and allocation-free in the display loop.
+  assert.match(header, /bool setFaceCaption\(NewoFaceCaption caption, uint32_t durationMs = 4'000\)/);
+  assert.match(header, /faceCaptionOverride_ = NewoFaceCaption::NONE/);
+  assert.match(header, /faceCaptionStartedMs_/);
+  assert.match(header, /faceCaptionUntilMs_/);
+  assert.match(header, /faceCaptionRegionVisible_ = false/);
+  assert.doesNotMatch(header, /GFXcanvas1\s+caption/i);
+  assert.match(poseResolver, /#include <Fonts\/FreeSans9pt7b\.h>/);
+  assert.match(poseResolver, /bool NewoDisplay::setFaceCaption\(NewoFaceCaption caption, uint32_t durationMs\)/);
+  assert.match(poseResolver, /caption > NewoFaceCaption::TSK/);
+  assert.match(poseResolver, /durationMs < 500 \|\| durationMs > 8'000/);
+  const captionResolver = poseResolver.match(/NewoFaceCaption NewoDisplay::faceCaptionFor\(uint32_t now, NewoDisplayMode mode\) const \{([\s\S]*?)\n\}/);
+  assert.ok(captionResolver, "caption resolver should be discoverable");
+  assert.match(captionResolver[1], /mode != NewoDisplayMode::IDLE/);
+  assert.match(captionResolver[1], /faceCaptionOverride_/);
+  assert.doesNotMatch(captionResolver[1], /autonomousExpression_|faceStyle_|autonomousEpisode_/);
+  for (const [caption, text] of [
+    ["HUH", "Huh\\?"], ["WOAH", "Woah!!"], ["HMM", "Hmm\\.\\.\\."],
+    ["HEY", "Hey!"], ["WTF", "WTF!!"], ["TSK", "Tsk!"],
+  ]) {
+    assert.match(poseResolver, new RegExp(`NewoFaceCaption::${caption}.*return "${text}"`));
+  }
+  assert.match(poseResolver, /kCaptionY = 124/);
+  assert.match(poseResolver, /kCaptionH = 36/);
+  assert.match(poseResolver, /kCaptionBaseline = 155/);
+  assert.match(poseResolver, /display_\.setTextSize\(2\)/);
+  assert.match(poseResolver, /if \(!faceCaptionRegionVisible_\) return/);
+  assert.match(poseResolver, /drawFaceCaption\(now, faceCaptionFor\(now, effectiveMode\(now\)\)\)/);
+
+  // Manual caption transport stays silent and separate.
+  assert.match(cloud, /strcmp\(mode, "caption"\) == 0/);
+  for (const [name, caption] of [
+    ["huh", "HUH"], ["woah", "WOAH"], ["hmm", "HMM"], ["hey", "HEY"],
+    ["wtf", "WTF"], ["tsk", "TSK"],
+  ]) {
+    assert.match(cloud, new RegExp(`strcmp\\(text, "${name}"\\).*NewoFaceCaption::${caption}`));
+  }
+  assert.match(cloud, /display_\.setFaceCaption\(/);
+  assert.match(cloud, /durationMs < 500 \|\| durationMs > 8'000/);
+  assert.match(server, /const FACE_CAPTIONS = \["none", "huh", "woah", "hmm", "hey", "wtf", "tsk"\]/);
+  assert.match(server, /function faceCaptionCommand\(caption\) \{ return `\/caption_\$\{caption\}`; \}/);
+  assert.match(server, /sendDeviceRequest\("display_set", "display_ack", \{ mode: "caption", text: input, duration_ms: durationMs \}/);
+  assert.match(server, /bot\.command\(\["caption", "cap"\], handleCaptionCommand\)/);
+  assert.match(server, /for \(const caption of FACE_CAPTIONS\) bot\.command\(`caption_\$\{caption\}`/);
+  const captionHandler = server.match(/async function handleCaptionCommand\(ctx, selectedInput = null\) \{([\s\S]*?)\n\}/);
+  assert.ok(captionHandler, "Telegram caption handler should be discoverable");
+  assert.match(captionHandler[1], /newoSpeak: false/);
+
+  // Composed reaction commands bundle a face, effect, and caption without weakening the independent controls.
+  assert.match(server, /const REACTION_PRESETS = Object\.freeze/);
+  assert.match(server, /huh: \{ face: "curious", effect: "question", caption: "huh" \}/);
+  assert.match(server, /woah: \{ face: "surprised", effect: "surprise", caption: "woah" \}/);
+  assert.match(server, /tsk: \{ face: "unimpressed", effect: "ellipsis", caption: "tsk" \}/);
+  assert.match(server, /const steps = \[[\s\S]*mode: preset\.face[\s\S]*mode: "effect"[\s\S]*mode: "caption"/);
+  assert.match(server, /bot\.command\(\["reaction", "rx"\], handleReactionCommand\)/);
+  assert.match(server, /for \(const reaction of REACTION_NAMES\) bot\.command\(`reaction_\$\{reaction\}`/);
+
+  assert.match(display, /case AutonomousEpisode::DROWSY_REST:[\s\S]*AutonomousExpression::SLEEPY/);
+  assert.match(display, /AutonomousEpisode::DROWSY_REST[\s\S]*AutonomousExpression::SLEEPING, 100/);
+  assert.match(cloud, /strcmp\(mode, "detached"\)/);
+  assert.match(cloud, /strcmp\(mode, "sleeping"\)/);
+  assert.match(cloud, /strcmp\(mode, "unimpressed"\)/);
+  assert.match(cloud, /strcmp\(mode, "skeptical"\)/);
+  assert.match(server, /"face_unimpressed", description: "Unimpressed face"/);
+
+  assert.match(display, /scheduleNextBilateralBlink/);
+  assert.match(display, /startBilateralBlink/);
   assert.match(display, /eyeMeaningfulGazeEvents_/);
   assert.match(display, /eyeDoubleBlinkEvents_/);
   assert.match(display, /eyeEpisodeCompletions_/);
   assert.match(display, /\[EYES_STATS\]/);
-  assert.match(display, /nextAutonomousStateLogMs_ = now \+ kAutonomousStateLogMs/);
-  assert.match(validation, /firmware `0\.5\.0-dev`/);
+  assert.match(display, /\[EYES\] expr=%s intensity=%u/);
 });
