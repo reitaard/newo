@@ -114,6 +114,16 @@ const REBOOT_RETURN_TIMEOUT_MS = 60_000;
 const FACE_STYLES = ["default", "happy", "angry", "tired", "curious", "confused", "laugh", "sweat", "cyclops", "closed", "detached", "sleeping", "unimpressed", "skeptical", "wink_left", "wink_right", "look_left", "look_right", "look_up", "look_down", "look_up_left", "look_up_right", "look_down_left", "look_down_right", "surprised", "sleepy"];
 const SECONDARY_EFFECTS = ["none", "question", "exclamation", "surprise", "ellipsis", "sweat", "zzz"];
 const FACE_CAPTIONS = ["none", "huh", "woah", "hmm", "hey", "wtf", "tsk"];
+const REACTION_PRESETS = Object.freeze({
+  none: { face: "default", effect: "none", caption: "none" },
+  huh: { face: "curious", effect: "question", caption: "huh" },
+  woah: { face: "surprised", effect: "surprise", caption: "woah" },
+  hmm: { face: "confused", effect: "question", caption: "hmm" },
+  hey: { face: "happy", effect: "exclamation", caption: "hey" },
+  wtf: { face: "surprised", effect: "surprise", caption: "wtf" },
+  tsk: { face: "unimpressed", effect: "ellipsis", caption: "tsk" },
+});
+const REACTION_NAMES = Object.keys(REACTION_PRESETS);
 let bot = null;
 let pendingReboot = null;
 let shuttingDown = false;
@@ -370,6 +380,14 @@ const TELEGRAM_COMMANDS = [
   { command: "caption_hey", description: "Show Hey! caption" },
   { command: "caption_wtf", description: "Show WTF!! caption" },
   { command: "caption_tsk", description: "Show Tsk! caption" },
+  { command: "reaction", description: "Choose a composed reaction" },
+  { command: "reaction_none", description: "Return to autonomous face" },
+  { command: "reaction_huh", description: "Curious Huh? reaction" },
+  { command: "reaction_woah", description: "Surprised Woah!! reaction" },
+  { command: "reaction_hmm", description: "Confused Hmm... reaction" },
+  { command: "reaction_hey", description: "Happy Hey! reaction" },
+  { command: "reaction_wtf", description: "Strong surprise reaction" },
+  { command: "reaction_tsk", description: "Unimpressed Tsk! reaction" },
   { command: "eco", description: "Toggle eco display" },
   { command: "clock", description: "Toggle clock" },
   { command: "voice", description: "Toggle voice" },
@@ -460,6 +478,44 @@ async function handleCaptionCommand(ctx, selectedInput = null) {
     return commandReply(ctx, commandMessage("caption", [quote([detail])]), "response", request.requestId, { newoSpeak: false });
   }
   return commandReply(ctx, commandMessage("caption", [quote(["Caption update was not acknowledged."])]), result.kind, request.requestId, { newoSpeak: false });
+}
+
+function reactionCommand(reaction) { return `/reaction_${reaction}`; }
+
+async function handleReactionCommand(ctx, selectedInput = null) {
+  const input = selectedInput ?? String(ctx.match ?? "").trim().toLowerCase();
+  if (!input) return commandReply(ctx, commandMessage("reaction", [quote(REACTION_NAMES.map(reactionCommand))]), "usage", null, { newoSpeak: false });
+  const preset = REACTION_PRESETS[input];
+  if (!preset) return commandReply(ctx, commandMessage("reaction", [quote(["Choose one:", ...REACTION_NAMES.map(reactionCommand)])]), "usage", null, { newoSpeak: false });
+
+  const durationMs = input === "none" ? 0 : 4_000;
+  const steps = [
+    { mode: preset.face, text: "" },
+    { mode: "effect", text: preset.effect, duration_ms: durationMs },
+    { mode: "caption", text: preset.caption, duration_ms: durationMs },
+  ];
+  const requests = [];
+  for (const fields of steps) {
+    const request = sendDeviceRequest("display_set", "display_ack", fields, commandTrace(ctx));
+    if (request.kind === "offline") return commandReply(ctx, statusMessage("reaction", "offline"), "offline", null, { newoSpeak: false });
+    requests.push(request);
+  }
+
+  const results = await Promise.all(requests.map((request) => request.promise));
+  const failedIndex = results.findIndex((result) => result.kind !== "response");
+  if (failedIndex !== -1) {
+    const failed = results[failedIndex];
+    return commandReply(ctx, commandMessage("reaction", [quote(["Reaction update was not acknowledged."])]), failed.kind, requests[failedIndex].requestId, { newoSpeak: false });
+  }
+
+  const lastRequestId = requests.at(-1)?.requestId ?? null;
+  if (input === "none") return commandReply(ctx, commandMessage("reaction", [quote(["Reaction: cleared", "Autonomy: enabled"])]), "response", lastRequestId, { newoSpeak: false });
+  return commandReply(ctx, commandMessage("reaction", [quote([
+    `Reaction: ${bold(input)}`,
+    `Face: ${bold(preset.face)}`,
+    `Effect: ${bold(preset.effect)}`,
+    `Caption: ${bold(preset.caption)}`,
+  ])]), "response", lastRequestId, { newoSpeak: false });
 }
 
 async function handleStatusCommand(ctx) {
@@ -702,6 +758,8 @@ if (env.TELEGRAM_BOT_TOKEN) {
   for (const effect of SECONDARY_EFFECTS) bot.command(`effect_${effect}`, (ctx) => handleEffectCommand(ctx, effect));
   bot.command(["caption", "cap"], handleCaptionCommand);
   for (const caption of FACE_CAPTIONS) bot.command(`caption_${caption}`, (ctx) => handleCaptionCommand(ctx, caption));
+  bot.command(["reaction", "rx"], handleReactionCommand);
+  for (const reaction of REACTION_NAMES) bot.command(`reaction_${reaction}`, (ctx) => handleReactionCommand(ctx, reaction));
   bot.command("eco", primaryModeHandlers.eco);
   bot.command("clock", primaryModeHandlers.clock);
   bot.command(["voice", "v"], primaryModeHandlers.voice);
