@@ -84,6 +84,18 @@ export class SherpaAsrBackend {
     this.recognizer = new this.sherpa.OnlineRecognizer(recognizerConfig);
   }
 
+  async prewarm() {
+    // Constructing the recognizer does not execute the first native decode path.
+    // Prime feature extraction and model kernels before any physical PCM arrives.
+    const stream = await this.createStream({
+      format: { sampleRate: 16_000, channels: 1, bitsPerSample: 16 },
+      onEvent() {},
+    });
+    const silence = Buffer.alloc(3_200); // One 100 ms PCM16 batch.
+    for (let index = 0; index < 10; ++index) await stream.acceptAudio(silence);
+    await stream.stop();
+  }
+
   async createStream({ format, onEvent }) {
     if (format.sampleRate !== 16_000 || format.channels !== 1 || format.bitsPerSample !== 16) {
       throw new Error("Sherpa ASR requires mono 16 kHz signed 16-bit PCM");

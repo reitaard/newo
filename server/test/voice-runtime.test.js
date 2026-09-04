@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { createVoiceRuntime, WorkerAsrBackend } from "../src/voice.js";
+import { createVoiceRuntime, SherpaAsrBackend, WorkerAsrBackend } from "../src/voice.js";
 
 class FakeSocket extends EventEmitter {
   constructor() { super(); this.readyState = 1; }
@@ -23,6 +23,23 @@ class FakeSherpaWorker extends EventEmitter {
   }
   async terminate() { this.terminated = true; this.emit("exit", 0); return 0; }
 }
+
+test("Sherpa native prewarm primes decode with ten 100 ms batches before readiness", async () => {
+  const lengths = [];
+  let stopped = 0;
+  const backend = Object.create(SherpaAsrBackend.prototype);
+  backend.createStream = async ({ format, onEvent }) => {
+    assert.deepEqual(format, { sampleRate: 16000, channels: 1, bitsPerSample: 16 });
+    assert.equal(typeof onEvent, "function");
+    return {
+      async acceptAudio(chunk) { lengths.push(chunk.length); },
+      async stop() { stopped += 1; },
+    };
+  };
+  await backend.prewarm();
+  assert.deepEqual(lengths, Array(10).fill(3200));
+  assert.equal(stopped, 1);
+});
 
 test("Sherpa prewarms to ready and stays warm after its last stream closes", async () => {
   const logs = [];

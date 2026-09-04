@@ -11,6 +11,7 @@ try {
   // Native module loading, recognizer ownership, Float32 conversion, and every
   // synchronous decode occur in this worker, never in Fastify's main thread.
   backend = new SherpaAsrBackend(workerData);
+  await backend.prewarm();
   parentPort.postMessage({ type: "ready" });
 } catch (error) {
   parentPort.postMessage({ type: "fatal", error: error?.message ?? "ASR worker startup failed" });
