@@ -585,7 +585,7 @@ esp_err_t msc_host_read_sector(msc_host_device_handle_t device, size_t sector, v
     return scsi_cmd_read10(dev, data, sector, 1, dev->disk.block_size);
 }
 
-esp_err_t msc_host_write_sector(msc_host_device_handle_t device, size_t sector, void *data, size_t size)
+esp_err_t msc_host_write_sector(msc_host_device_handle_t device, size_t sector, const void *data, size_t size)
 {
     MSC_RETURN_ON_INVALID_ARG(device);
     msc_device_t *dev = (msc_device_t *)device;
