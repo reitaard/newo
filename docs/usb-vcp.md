@@ -62,6 +62,7 @@ Latest production build validation:
 - Program storage: 2,886,815 of 3,145,728 bytes (91%).
 - Global variables: 81,960 of 327,680 bytes (25%).
 - Arduino wire framing and USB audio descriptor/policy host tests: passed.
+- COM5 production upload: bootloader, partitions, application and `srmodels.bin` written with hash verification; hard reset completed.
 - Physical VCP and three-class hub validation remains pending until the steps below are executed.
 
 ## Physical validation (pending)
