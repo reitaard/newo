@@ -2,19 +2,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "newo_usb_host.h"
+
 namespace NewoUac {
 constexpr unsigned kMaxAlts = 16;
 constexpr unsigned kMaxRates = 16;
-// ESP32-S3 DWC host FIFO budget is 200 lines, four bytes each. Keep enough
-// RX capacity for the observed 208-byte UAC IN endpoint while preserving
-// non-periodic OUT for MSC/control and periodic OUT for USB speaker tests.
-constexpr unsigned kRxLines = 72;
-constexpr unsigned kNptxLines = 32;
-constexpr unsigned kPtxLines = 96;
-constexpr unsigned kFifoLinesTotal = kRxLines + kNptxLines + kPtxLines;
-constexpr unsigned kInMps = (kRxLines - 2) * 4;
-constexpr unsigned kOutMps = kPtxLines * 4;
-static_assert(kFifoLinesTotal == 200, "ESP32-S3 USB host FIFO budget");
+// Audio diagnostics consume the global limits owned by NewoUsbHost. USB class
+// clients must never carry independent FIFO policy because all devices behind
+// the hub share the same ESP32-S3 DWC hardware budget.
+constexpr unsigned kInMps = NewoUsbHost::kMaxInPacketBytes;
+constexpr unsigned kOutMps = NewoUsbHost::kMaxPeriodicOutBytes;
 struct Alt {
   uint8_t interfaceNumber = 0, alternate = 0, protocol = 0;
   uint8_t endpoint = 0, attributes = 0, interval = 0, endpoints = 0;

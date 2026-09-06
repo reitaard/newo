@@ -9,6 +9,8 @@ NewoUsbAudio newoUsbAudio;
 namespace {
 constexpr uint8_t kUac2CurRequest = 0x01;
 constexpr uint8_t kUac2ClockSamFreqControl = 0x01;
+constexpr UBaseType_t kAudioClientTaskPriority = 1;
+constexpr uint32_t kAudioClientTaskStack = 8192;
 
 void logUsbAudioError(const char* action, esp_err_t error) {
   Serial.printf("[usb-uac2] %s — reason=%s\n", action, esp_err_to_name(error));
@@ -70,15 +72,11 @@ NewoUsbAudio::PlaybackCandidate NewoUsbAudio::findPlayback(const usb_config_desc
       bits = 0;
     } else if (type == 0x24 && length >= 3 && ifaceClass == 0x01 && ifaceProtocol == 0x20) {
       const uint8_t subtype = descriptor[2];
-
-      // UAC2 Input Terminal representing the USB streaming source.
       if (ifaceSubclass == 0x01 && subtype == 0x02 && length >= 17 &&
           le16(descriptor + 4) == 0x0101) {
         streamingTerminal = descriptor[3];
         clockId = descriptor[7];
       }
-
-      // UAC2 AudioStreaming AS_GENERAL.
       if (ifaceSubclass == 0x02 && subtype == 0x01 && length >= 16) {
         terminalLink = descriptor[3];
         const uint8_t formatType = descriptor[5];
@@ -86,8 +84,6 @@ NewoUsbAudio::PlaybackCandidate NewoUsbAudio::findPlayback(const usb_config_desc
         channels = descriptor[10];
         if (formatType != 0x01 || (formats & 0x00000001U) == 0) channels = 0;
       }
-
-      // UAC2 Type-I format descriptor.
       if (ifaceSubclass == 0x02 && subtype == 0x02 && length >= 6 && descriptor[3] == 0x01) {
         subslot = descriptor[4];
         bits = descriptor[5];
@@ -110,20 +106,82 @@ NewoUsbAudio::PlaybackCandidate NewoUsbAudio::findPlayback(const usb_config_desc
         return result;
       }
     }
-
     pos += length;
   }
-
   return result;
 }
 
-bool NewoUsbAudio::begin(usb_host_client_handle_t client) {
-  client_ = client;
-  Serial.println("[usb-uac2] production D07 playback ready; preferred output when connected");
-  return client_ != nullptr;
+bool NewoUsbAudio::begin(NewoUsbHost& host) {
+  if (host_ != nullptr) return host_ == &host && client_ != nullptr;
+  if (!host.ready()) {
+    Serial.println("[usb-uac2] CLIENT_FAILED — reason=host_not_ready");
+    return false;
+  }
+
+  host_ = &host;
+  const usb_host_client_config_t config = {
+      .is_synchronous = false,
+      .max_num_event_msg = 8,
+      .async = {
+          .client_event_callback = clientEvent,
+          .callback_arg = this,
+      },
+  };
+  if (!host.registerClient(config, &client_, "audio-uac2")) {
+    host_ = nullptr;
+    return false;
+  }
+  if (xTaskCreate(clientTaskEntry, "newo-usb-audio", kAudioClientTaskStack, this,
+                  kAudioClientTaskPriority, &clientTask_) != pdPASS) {
+    Serial.println("[usb-uac2] CLIENT_FAILED — reason=client_task");
+    host.deregisterClient(client_, "audio-uac2");
+    client_ = nullptr;
+    host_ = nullptr;
+    return false;
+  }
+
+  Serial.println("[usb-uac2] CLIENT_READY — dedicated D07 client; preferred output when connected");
+  return true;
 }
 
-bool NewoUsbAudio::connected(usb_device_handle_t device, uint8_t address) {
+void NewoUsbAudio::clientTaskEntry(void* arg) {
+  static_cast<NewoUsbAudio*>(arg)->clientTask();
+}
+
+void NewoUsbAudio::clientEvent(const usb_host_client_event_msg_t* event, void* arg) {
+  auto* audio = static_cast<NewoUsbAudio*>(arg);
+  if (event == nullptr || audio == nullptr) return;
+  if (event->event == USB_HOST_CLIENT_EVENT_NEW_DEV) {
+    audio->handleConnected(event->new_dev.address);
+  } else if (event->event == USB_HOST_CLIENT_EVENT_DEV_GONE) {
+    audio->handleDisconnected(event->dev_gone.dev_hdl);
+  }
+}
+
+void NewoUsbAudio::clientTask() {
+  while (client_ != nullptr) {
+    const esp_err_t result = usb_host_client_handle_events(client_, pdMS_TO_TICKS(5));
+    if (result != ESP_OK && result != ESP_ERR_TIMEOUT) {
+      logUsbAudioError("CLIENT_EVENT_FAILED", result);
+      vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    service();
+  }
+  clientTask_ = nullptr;
+  vTaskDelete(nullptr);
+}
+
+void NewoUsbAudio::handleConnected(uint8_t address) {
+  if (client_ == nullptr) return;
+  usb_device_handle_t device = nullptr;
+  const esp_err_t open = usb_host_device_open(client_, address, &device);
+  if (open != ESP_OK || device == nullptr) return;
+  if (!attachIfD07(device, address)) {
+    usb_host_device_close(client_, device);
+  }
+}
+
+bool NewoUsbAudio::attachIfD07(usb_device_handle_t device, uint8_t address) {
   if (client_ == nullptr || device == nullptr) return false;
 
   const usb_device_desc_t* deviceDescriptor = nullptr;
@@ -147,7 +205,7 @@ bool NewoUsbAudio::connected(usb_device_handle_t device, uint8_t address) {
   }
 
   if (device_ != nullptr) {
-    Serial.println("[usb-uac2] another D07 reference is already retained");
+    Serial.println("[usb-uac2] D07_IGNORED — reason=audio_slot_busy");
     return false;
   }
 
@@ -163,7 +221,7 @@ bool NewoUsbAudio::connected(usb_device_handle_t device, uint8_t address) {
   return true;
 }
 
-void NewoUsbAudio::disconnected(usb_device_handle_t device) {
+void NewoUsbAudio::handleDisconnected(usb_device_handle_t device) {
   if (device == nullptr || device != device_) return;
   ready_.store(false);
   removed_.store(true);
@@ -176,21 +234,10 @@ void NewoUsbAudio::controlDone(usb_transfer_t* transfer) {
   auto* wait = static_cast<ControlWait*>(transfer->context);
   wait->status = transfer->status;
   wait->actualBytes = transfer->actual_num_bytes;
-
-  // Wake first, then publish COMPLETED as this callback's final access to the
-  // caller-owned objects. A woken caller waits for the state transition before
-  // freeing anything, so the callback can never touch a deleted semaphore or
-  // transfer even on dual-core scheduling.
   xSemaphoreGive(wait->done);
   ControlState expected = ControlState::WAITING;
-  if (wait->state.compare_exchange_strong(expected, ControlState::COMPLETED)) {
-    return;
-  }
-
+  if (wait->state.compare_exchange_strong(expected, ControlState::COMPLETED)) return;
   if (expected == ControlState::ABANDONED) {
-    // The caller timed out and transferred ownership to this callback. We are
-    // running only after USB completion, so the transfer is no longer in-flight
-    // and may now be released safely.
     SemaphoreHandle_t done = wait->done;
     transfer->context = nullptr;
     usb_host_transfer_free(transfer);
@@ -251,19 +298,12 @@ esp_err_t NewoUsbAudio::controlRequest(uint8_t requestType, uint8_t request, uin
   if (!signaled) {
     ControlState expected = ControlState::WAITING;
     if (wait->state.compare_exchange_strong(expected, ControlState::ABANDONED)) {
-      // The async callback remains the sole owner of all request resources.
-      // It will free them after completion, including NO_DEVICE on hot-unplug.
       Serial.printf("[usb-uac2] control request 0x%02x timed out; callback owns cleanup\n", request);
       return ESP_ERR_TIMEOUT;
     }
     if (expected != ControlState::COMPLETED) return ESP_ERR_INVALID_STATE;
   } else {
-    // xSemaphoreGive() can wake this higher-priority speaker task before the USB
-    // monitor callback gets to its final atomic state store. Sleep a tick rather
-    // than spinning so the monitor task can finish the hand-off on the same core.
-    while (wait->state.load() == ControlState::WAITING) {
-      vTaskDelay(pdMS_TO_TICKS(1));
-    }
+    while (wait->state.load() == ControlState::WAITING) vTaskDelay(pdMS_TO_TICKS(1));
     if (wait->state.load() != ControlState::COMPLETED) return ESP_ERR_INVALID_STATE;
   }
 
@@ -419,8 +459,7 @@ void NewoUsbAudio::speakerTransferDone(usb_transfer_t* transfer) {
 }
 
 void NewoUsbAudio::onSpeakerTransferDone(usb_transfer_t* transfer) {
-  bool transferOk = transfer->status == USB_TRANSFER_STATUS_COMPLETED;
-  if (!transferOk) transferErrors_.fetch_add(1);
+  if (transfer->status != USB_TRANSFER_STATUS_COMPLETED) transferErrors_.fetch_add(1);
   completedBytes_.fetch_add(static_cast<uint32_t>(transfer->actual_num_bytes));
 
   for (uint8_t packet = 0; packet < kPacketsPerTransfer; ++packet) {
@@ -428,7 +467,6 @@ void NewoUsbAudio::onSpeakerTransferDone(usb_transfer_t* transfer) {
       completedPackets_.fetch_add(1);
     } else {
       packetErrors_.fetch_add(1);
-      transferOk = false;
     }
   }
 

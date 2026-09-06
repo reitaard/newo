@@ -36,8 +36,8 @@ void NewoWiFi::begin() {
   WiFi.mode(WIFI_STA);
 
   if (storage_.count() == 0) {
-    Serial.println("[wifi] No saved networks; opening BLE provisioning");
-    startBleProvisioning();
+    Serial.println("[wifi] No saved networks; opening SoftAP provisioning");
+    startProvisioning();
     return;
   }
 
@@ -48,8 +48,8 @@ void NewoWiFi::begin() {
     return;
   }
 
-  Serial.println("[wifi] No saved network is reachable; opening BLE provisioning");
-  startBleProvisioning();
+  Serial.println("[wifi] No saved network is reachable; opening SoftAP provisioning");
+  startProvisioning();
 }
 
 bool NewoWiFi::connectSavedNetworks(uint32_t windowMs) {
@@ -171,7 +171,7 @@ bool NewoWiFi::connectToSavedNetwork(const NewoWifiCredential& network, uint32_t
   return false;
 }
 
-void NewoWiFi::startBleProvisioning() {
+void NewoWiFi::startProvisioning() {
   if (provisioningAttempted_ || rebootAtMs_ != 0) {
     return;
   }
@@ -180,21 +180,26 @@ void NewoWiFi::startBleProvisioning() {
   provisioningStartedAtMs_ = millis();
   provisioningActive_ = true;
 
-  // Security 1 keeps the BLE session encrypted. A null PoP is intentional for
-  // this prototype; a display can provide a per-device PoP and QR flow later.
+  // Arduino-ESP32 3.3.7 through at least 3.3.11 has a confirmed ESP32-S3
+  // BLE-controller startup regression that can LoadProhibited immediately
+  // after the controller's MAGIC/version banner. Newo is pinned to 3.3.10,
+  // so use the same provisioning manager over SoftAP instead of entering the
+  // broken BLE path. Security 1 still encrypts the provisioning exchange; a
+  // null PoP is intentional for this prototype and is supported by Security 1.
+  Serial.println("[prov] ESP32-S3 core 3.3.10 BLE workaround: using SoftAP");
   WiFiProv.beginProvision(
-      NETWORK_PROV_SCHEME_BLE,
-      NETWORK_PROV_SCHEME_HANDLER_FREE_BLE,
+      NETWORK_PROV_SCHEME_SOFTAP,
+      NETWORK_PROV_SCHEME_HANDLER_NONE,
       NETWORK_PROV_SECURITY_1,
       nullptr,
       NewoConfig::PROVISIONING_DEVICE_NAME,
       nullptr,
       nullptr,
       true);
-  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_STARTED");
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_STARTED", "transport=softap");
 }
 
-void NewoWiFi::stopBleProvisioning() {
+void NewoWiFi::stopProvisioning() {
   if (!provisioningActive_) {
     return;
   }
@@ -254,7 +259,7 @@ void NewoWiFi::handleWiFiEvent(arduino_event_id_t eventId, const arduino_event_i
       break;
 
     case ARDUINO_EVENT_PROV_END:
-      Serial.println("[prov] BLE provisioning service ended");
+      Serial.println("[prov] Provisioning service ended");
       break;
 
     default:
@@ -283,15 +288,15 @@ void NewoWiFi::processProvisioningHandoff() {
 
   if (!storage_.addOrUpdateNetwork(String(ssid), String(password))) {
     // The provisioning framework has already accepted the network. Preserve
-    // the old transactional list, close BLE, and reboot instead of remaining
-    // in an ambiguous successful-but-unsaved session.
+    // the old transactional list, close provisioning, and reboot instead of
+    // remaining in an ambiguous successful-but-unsaved session.
     NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::PROV, "PROV_SAVE_FAILED");
-    stopBleProvisioning();
+    stopProvisioning();
     scheduleReboot();
     return;
   }
 
-  stopBleProvisioning();
+  stopProvisioning();
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_SAVED");
   pendingLedEvent_ = LedEvent::SAVED;
   scheduleReboot();
@@ -340,7 +345,7 @@ void NewoWiFi::loop() {
     if (provisioningTimedOut()) {
       NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::PROV, "PROV_TIMEOUT");
       pendingLedEvent_ = LedEvent::TIMEOUT;
-      stopBleProvisioning();
+      stopProvisioning();
     }
     return;
   }

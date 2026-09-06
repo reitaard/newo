@@ -7,6 +7,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <sys/queue.h>
 #include "esp_err.h"
 #include "esp_check.h"
@@ -35,53 +36,36 @@ typedef struct {
 typedef struct msc_host_device {
     STAILQ_ENTRY(msc_host_device) tailq_entry;
     SemaphoreHandle_t transfer_done;
+    // The driver owns one reusable usb_transfer_t per MSC device. Serialize the
+    // complete BOT command (CBW -> data -> CSW) so concurrent VFS/script users
+    // can never interleave packets on that transfer object.
+    SemaphoreHandle_t io_lock;
     usb_device_handle_t handle;
     usb_transfer_t *xfer;
     msc_config_t config;
     usb_disk_t disk;
+
+    // BOT devices can expose multiple logical units. Every SCSI CBW uses
+    // active_lun, and Newo only changes it while no filesystem is mounted.
+    // GET_MAX_LUN is clamped to the BOT-defined 0..15 range.
+    uint8_t max_lun;
+    uint8_t active_lun;
+
+    // USB transport and media are separate lifetimes. A reader/controller may
+    // remain enumerated with no medium. DEV_GONE flips `gone` before VFS cleanup
+    // so new I/O fails closed instead of touching an invalid USB handle.
+    volatile bool gone;
+    volatile bool media_ready;
 } msc_device_t;
 
-/**
- * @brief Trigger a BULK transfer to device
- *
- * Data buffer ownership is transferred to the MSC driver and the application cannot access it before the transfer finishes.
- *
- * @param[in]    device_handle MSC device handle
- * @param[inout] data          Data buffer. Direction depends on 'ep'.
- * @param[in]    size          Size of buffer in bytes
- * @param[in]    ep            Direction of the transfer
- * @return esp_err_t
- */
 esp_err_t msc_bulk_transfer(msc_device_t *device_handle, uint8_t *data, size_t size, msc_endpoint_t ep);
-
-/**
- * @brief Trigger a CTRL transfer to device
- *
- * The request and data must be filled by accessing private device_handle->xfer before calling this function
- *
- * @param[in] device_handle MSC device handle
- * @param[in] len           Length of the transfer
- * @return esp_err_t
- */
 esp_err_t msc_control_transfer(msc_device_t *device_handle, size_t len);
-
-/**
- * @brief Reset endpoint and clear feature
- *
- * @param[in] device   MSC device handle
- * @param[in] endpoint Endpoint number
- * @return esp_err_t
- */
 esp_err_t clear_feature(msc_device_t *device, uint8_t endpoint);
 
 #define MSC_GOTO_ON_ERROR(exp) ESP_GOTO_ON_ERROR(exp, fail, TAG, "")
-
 #define MSC_GOTO_ON_FALSE(exp, err) ESP_GOTO_ON_FALSE( (exp), err, fail, TAG, "" )
-
 #define MSC_RETURN_ON_ERROR(exp) ESP_RETURN_ON_ERROR((exp), TAG, "")
-
 #define MSC_RETURN_ON_FALSE(exp, err) ESP_RETURN_ON_FALSE( (exp), (err), TAG, "")
-
 #define MSC_RETURN_ON_INVALID_ARG(exp) ESP_RETURN_ON_FALSE((exp) != NULL, ESP_ERR_INVALID_ARG, TAG, "")
 
 #ifdef __cplusplus

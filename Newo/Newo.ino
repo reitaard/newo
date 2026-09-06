@@ -8,7 +8,10 @@
 #include "newo_led.h"
 #include "newo_speaker.h"
 #include "newo_storage.h"
+#include "newo_usb_audio.h"
+#include "newo_usb_host.h"
 #include "newo_usb_storage.h"
+#include "newo_usb_vcp.h"
 #include "newo_wifi.h"
 
 NewoStorage newoStorage;
@@ -56,8 +59,26 @@ void setup() {
   newoCloud.begin();
   newoAudio.begin();
   newoSpeaker.begin();
-  if (!newoUsbStorage.begin()) {
-    Serial.println("[usb] HOST_FAILED — reason=startup");
+
+  // Install one physical host first, register every independent client while
+  // enumeration is still stopped, then start the shared event pump. A D07,
+  // flash drive or Arduino already plugged into the hub at power-on therefore
+  // cannot race past a client that has not registered yet.
+  if (!newoUsbHost.begin()) {
+    Serial.println("[usb-host] HOST_FAILED — reason=startup");
+  } else {
+    if (!newoUsbAudio.begin(newoUsbHost)) {
+      Serial.println("[usb-uac2] CLIENT_FAILED — reason=startup");
+    }
+    if (!newoUsbStorage.begin(newoUsbHost)) {
+      Serial.println("[usb-storage] CLIENT_FAILED — reason=startup");
+    }
+    if (!newoUsbVcp.begin(newoUsbHost)) {
+      Serial.println("[usb-vcp] CLIENT_FAILED — reason=startup");
+    }
+    if (!newoUsbHost.start()) {
+      Serial.println("[usb-host] HOST_FAILED — reason=event_pump");
+    }
   }
 
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::BOOT, "BOOT_READY");
@@ -91,18 +112,13 @@ void loop() {
     case NewoCloud::LedEvent::REBOOT: newoLed.startRebootSequence(); break;
     case NewoCloud::LedEvent::NONE: break;
   }
-  // Consume every queued control request now. In particular, an OFF/toggle is
-  // never held behind a prior request waiting for a streaming task to exit.
   while (newoCloud.consumeVoiceRequest(voiceRequest)) {
     bool applied = true;
     if (voiceRequest.action == NewoCloud::VoiceRequest::Action::MANUAL_TOGGLE) {
-      // Manual /v is OFF -> STREAMING and STREAMING -> OFF. It never arms
-      // WakeNet and never queues behind speaker playback.
       applied = newoAudio.manualToggle();
     } else {
       bool enable = voiceRequest.action == NewoCloud::VoiceRequest::Action::ON;
       if (voiceRequest.action == NewoCloud::VoiceRequest::Action::TOGGLE) {
-        // Preserve the legacy/future WakeNet toggle semantics.
         enable = newoAudio.state() == NewoVoiceState::OFF;
       }
       applied = newoAudio.setEnabled(enable);
@@ -144,7 +160,7 @@ void loop() {
       }
     } else if (speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::TEMPORARY_CONNECT) {
       applied = newoSpeaker.requestTemporaryConnection();
-      deferAck = true;  // The uncorrelated manual-test request needs no /device acknowledgement.
+      deferAck = true;
     }
     if (applied && speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::SET_VOLUME) {
       newoLed.flashVolume(newoSpeaker.volume());
