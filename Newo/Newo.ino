@@ -60,9 +60,10 @@ void setup() {
   newoAudio.begin();
   newoSpeaker.begin();
 
-  // One physical ESP32-S3 USB host, then independent class clients under it.
-  // Any one client failing does not tear down the host or the other devices on
-  // the hub; I2S remains the speaker fallback when D07 is absent/unavailable.
+  // Install one physical host first, register every independent client while
+  // enumeration is still stopped, then start the shared event pump. A D07,
+  // flash drive or Arduino already plugged into the hub at power-on therefore
+  // cannot race past a client that has not registered yet.
   if (!newoUsbHost.begin()) {
     Serial.println("[usb-host] HOST_FAILED — reason=startup");
   } else {
@@ -74,6 +75,9 @@ void setup() {
     }
     if (!newoUsbVcp.begin(newoUsbHost)) {
       Serial.println("[usb-vcp] CLIENT_FAILED — reason=startup");
+    }
+    if (!newoUsbHost.start()) {
+      Serial.println("[usb-host] HOST_FAILED — reason=event_pump");
     }
   }
 
