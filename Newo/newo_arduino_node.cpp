@@ -110,14 +110,21 @@ void NewoArduinoNode::handleFrame(char* frame) {
   if (strncmp(frame, "NEOWIRE/1 ", 10) != 0) { malformedFrames_.fetch_add(1); return; }
   char idText[16] = {}, value[16] = {};
   if (strncmp(frame + 10, "READY", 5) == 0 && (frame[15] == '\0' || frame[15] == ' ')) {
-    char resetCause[16] = {};
+    char resetCause[16] = {}, caps[kMaxCapabilitiesBytes] = {};
     field(frame, "reset", resetCause, sizeof(resetCause));
     Serial.printf("[arduino] RESET_CAUSE %s\n", resetCause[0] ? resetCause : "unknown");
-    // If initial HELLO was sent while the AVR was still rebooting, resend the
-    // same request ID. A READY received after a completed handshake represents
-    // an application-only reset and starts one new handshake generation.
-    if (ready_.load()) onConnected(observedGeneration_);
-    else sendHello();
+    if (!field(frame, "version", value, sizeof(value)) || strtoul(value, nullptr, 10) != 1) {
+      malformedFrames_.fetch_add(1);
+      return;
+    }
+    field(frame, "capabilities", caps, sizeof(caps));
+    strlcpy(capabilities_, caps, sizeof(capabilities_));
+    protocolVersion_.store(1);
+    ready_.store(true);
+    handshakeDeadline_ = 0;
+    handshakeGeneration_.fetch_add(1);
+    Serial.printf("[arduino] HANDSHAKE_READY version=1 capabilities=%s source=peer_ready\n",
+                  capabilities_[0] ? capabilities_ : "none");
     return;
   }
   if (strncmp(frame + 10, "HELLO_ACK ", 10) == 0) {

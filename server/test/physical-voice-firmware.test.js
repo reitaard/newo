@@ -13,14 +13,15 @@ test("physical trigger uses the direct voice path without changing manual toggle
   assert.match(sketch, /Action::MANUAL_TOGGLE[\s\S]*newoAudio\.manualToggle\(\)/);
 });
 
-test("Nano reset bootstrap renews the handshake and emits only an armed external trigger", async () => {
+test("Nano peer-ready bootstrap renews the handshake before one armed external trigger", async () => {
   const [node, nano] = await Promise.all([
     repoFile("Newo/newo_arduino_node.cpp"),
     repoFile("arduino/nano-reset-voice-test/nano-reset-voice-test.ino"),
   ]);
   assert.match(node, /strncmp\(frame \+ 10, "READY"/);
-  assert.match(node, /onConnected\(observedGeneration_\)/);
+  assert.match(node, /source=peer_ready/);
   assert.match(node, /handshakeGeneration_\.fetch_add\(1\)/);
+  assert.match(nano, /version=1 capabilities=reset_trigger,led/);
   assert.match(nano, /resetTrigger\.arm\(resetCause\)/);
   assert.match(nano, /if \(resetTrigger\.take\(\)\)/);
   assert.match(nano, /EVENT name=voice_trigger payload=reset/);

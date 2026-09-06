@@ -4,7 +4,7 @@
 
 The sketch at `arduino/nano-reset-voice-test/nano-reset-voice-test.ino` turns a classic Nano's onboard RESET button into a one-shot physical voice trigger. The Nano carries no microphone audio. Newo continues to capture INMP441 PCM, send it to the existing `/voice` stream, stop on the existing Sherpa `final` event or 30-second firmware timeout, and enter the existing assistant/speaker path exactly once.
 
-The Nano reads and clears `MCUSR` during AVR early initialization. Power-on, watchdog and brownout resets do not trigger voice. An external reset arms one event, emitted only after a successful NEOWIRE/1 handshake. `READY` covers Nano resets where the USB-serial bridge never disconnects.
+The Nano reads and clears `MCUSR` during AVR early initialization. Power-on, watchdog and brownout resets do not trigger voice. A versioned `READY` completes the peer-ready NEOWIRE/1 handshake, followed by one event only for an external reset. This avoids waiting for reverse-link HELLO delivery on CH340 bridges and covers Nano resets where USB never disconnects.
 
 Classic Nano hardware cannot distinguish the onboard RESET switch from another source that pulls RESET low, including some USB-serial DTR transitions. Record whether initial VCP open produces an external-reset trigger on the exact board/bridge used.
 

@@ -20,7 +20,6 @@ size_t lineLength = 0;
 bool lineDiscard = false;
 bool handshakeReady = false;
 NanoResetPolicy::TriggerOnce resetTrigger;
-uint32_t nextReadyMs = 0;
 
 enum class LedMode : uint8_t { BOOT, OFF, ON, FAST, SLOW, ERROR };
 LedMode ledMode = LedMode::BOOT;
@@ -52,11 +51,11 @@ const char* field(const char* frame, const char* key) {
 }
 
 void sendReady() {
-  Serial.print(F("NEOWIRE/1 READY reset="));
-  Serial.println(resetCauseName());
-  // Newo retransmits one stable HELLO ID while pending. This slow fallback is
-  // only for a genuinely lost READY/HELLO pair, not normal handshake pacing.
-  nextReadyMs = millis() + 3000;
+  Serial.print(F("NEOWIRE/1 READY reset=")); Serial.print(resetCauseName());
+  Serial.println(F(" version=1 capabilities=reset_trigger,led"));
+  handshakeReady = true;
+  if (resetTrigger.take())
+    Serial.println(F("NEOWIRE/1 EVENT name=voice_trigger payload=reset"));
 }
 
 void handleLedRequest(const char* id, const char* payload) {
@@ -82,9 +81,6 @@ void handleFrame(char* frame) {
     Serial.print(F("NEOWIRE/1 HELLO_ACK id=")); Serial.print(id);
     Serial.println(F(" version=1 capabilities=reset_trigger,led"));
     handshakeReady = true;
-    if (resetTrigger.take()) {
-      Serial.println(F("NEOWIRE/1 EVENT name=voice_trigger payload=reset"));
-    }
     return;
   }
   if (!strncmp(frame, "NEOWIRE/1 REQ ", 14)) {
@@ -150,5 +146,4 @@ void setup() {
 void loop() {
   serviceSerial();
   serviceLed();
-  if (!handshakeReady && static_cast<int32_t>(millis() - nextReadyMs) >= 0) sendReady();
 }

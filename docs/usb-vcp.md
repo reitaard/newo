@@ -37,14 +37,14 @@ One printable-ASCII frame per LF, maximum 255 bytes including content but exclud
 
 ```text
 NEOWIRE/1 HELLO id=1 min=1 max=1
-NEOWIRE/1 READY reset=external
+NEOWIRE/1 READY reset=external version=1 capabilities=reset_trigger,led
 NEOWIRE/1 HELLO_ACK id=1 version=1 capabilities=gpio,sensors
 NEOWIRE/1 REQ id=2 command=ping payload=
 NEOWIRE/1 ACK id=2 status=ok payload=pong
 NEOWIRE/1 EVENT name=button payload=pressed
 ```
 
-The Arduino must answer `HELLO` within 1500 ms. `READY` lets an Arduino request a fresh handshake after an application-only reset that leaves its USB bridge connected. Requests time out after 2000 ms. Capability names and application commands are defined only in application layers, never in `NewoUsbVcp`.
+The Arduino must answer `HELLO` within 1500 ms. A versioned `READY` is an idempotent peer-ready handshake after an application-only reset that leaves its USB bridge connected; an event in the following frame can be accepted without waiting for reverse-link HELLO delivery. Requests time out after 2000 ms. Capability names and application commands are defined only in application layers, never in `NewoUsbVcp`.
 
 ## Host validation
 
