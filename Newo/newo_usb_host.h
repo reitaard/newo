@@ -18,6 +18,20 @@
 // the hub from racing past a client that has not registered yet.
 class NewoUsbHost {
  public:
+  // ESP32-S3 DWC has 200 FIFO lines (4 bytes each). This is a host-wide
+  // resource, not an audio setting: periodic OUT fits the D07's 384-byte
+  // packet, non-periodic OUT remains available for MSC/control, and RX remains
+  // large enough for the 208-byte USB-audio endpoint observed on the bench.
+  static constexpr unsigned kRxFifoLines = 72;
+  static constexpr unsigned kNptxFifoLines = 32;
+  static constexpr unsigned kPtxFifoLines = 96;
+  static constexpr unsigned kFifoLinesTotal =
+      kRxFifoLines + kNptxFifoLines + kPtxFifoLines;
+  static constexpr unsigned kMaxPeriodicOutBytes = kPtxFifoLines * 4;
+  static constexpr unsigned kMaxNonPeriodicOutBytes = kNptxFifoLines * 4;
+  static constexpr unsigned kMaxInPacketBytes = (kRxFifoLines - 2) * 4;
+  static_assert(kFifoLinesTotal == 200, "ESP32-S3 USB host FIFO budget");
+
   bool begin();
   bool start();
 
