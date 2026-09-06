@@ -9,17 +9,21 @@
 
 // Owns the one ESP32-S3 USB Host Library instance for all Newo USB features.
 //
-// Functional subsystems are clients of this manager:
-//   - NewoUsbStorage: ESP-IDF MSC class driver
-//   - NewoUsbAudio:   dedicated async USB Host client
-//   - NewoUsbVcp:     dedicated async USB Host client for Arduino/CDC discovery
+// Startup is intentionally two-phase:
+//   1. begin() installs the physical host and freezes the global FIFO budget.
+//   2. storage/audio/VCP register as independent clients.
+//   3. start() begins host event processing and enumeration.
 //
-// No subsystem may call usb_host_install()/usb_host_uninstall() itself. This
-// keeps hub/device lifetime and the S3 FIFO budget global and deterministic.
+// Registering clients before enumeration prevents a power-on device already on
+// the hub from racing past a client that has not registered yet.
 class NewoUsbHost {
  public:
   bool begin();
-  bool ready() const { return ready_.load(); }
+  bool start();
+
+  // ready(): host library is installed, so clients may register.
+  bool ready() const { return hostInstalled_.load(); }
+  bool running() const { return running_.load(); }
 
   bool registerClient(const usb_host_client_config_t& config,
                       usb_host_client_handle_t* handle,
@@ -40,8 +44,8 @@ class NewoUsbHost {
   void hostTask();
 
   TaskHandle_t hostTask_ = nullptr;
-  std::atomic<bool> ready_{false};
   std::atomic<bool> hostInstalled_{false};
+  std::atomic<bool> running_{false};
   std::atomic<bool> mscInstalled_{false};
   std::atomic<uint32_t> directClients_{0};
 };
