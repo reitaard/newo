@@ -1,6 +1,7 @@
 #include "newo_usb_audio.h"
 
 #include <cstring>
+#include <new>
 #include <esp_err.h>
 
 NewoUsbAudio newoUsbAudio;
@@ -177,21 +178,45 @@ void NewoUsbAudio::controlDone(usb_transfer_t* transfer) {
   auto* wait = static_cast<ControlWait*>(transfer->context);
   wait->status = transfer->status;
   wait->actualBytes = transfer->actual_num_bytes;
-  xSemaphoreGive(wait->done);
+
+  ControlState expected = ControlState::WAITING;
+  if (wait->state.compare_exchange_strong(expected, ControlState::COMPLETED)) {
+    // Publish COMPLETED before waking the caller. Once the semaphore is given,
+    // this callback must not touch wait/transfer again because the caller owns
+    // and may immediately free both.
+    xSemaphoreGive(wait->done);
+    return;
+  }
+
+  if (expected == ControlState::ABANDONED) {
+    // The caller timed out and deliberately transferred ownership to us. The
+    // callback means the transfer is no longer in-flight, so it is now legal to
+    // release the transfer and its heap-owned wait context.
+    SemaphoreHandle_t done = wait->done;
+    transfer->context = nullptr;
+    usb_host_transfer_free(transfer);
+    if (done != nullptr) vSemaphoreDelete(done);
+    delete wait;
+  }
 }
 
 esp_err_t NewoUsbAudio::controlRequest(uint8_t requestType, uint8_t request, uint16_t value,
                                        uint16_t index, void* data, uint16_t length) {
   if (client_ == nullptr || device_ == nullptr || removed_.load()) return ESP_ERR_INVALID_STATE;
 
-  ControlWait wait;
-  wait.done = xSemaphoreCreateBinary();
-  if (wait.done == nullptr) return ESP_ERR_NO_MEM;
+  auto* wait = new (std::nothrow) ControlWait();
+  if (wait == nullptr) return ESP_ERR_NO_MEM;
+  wait->done = xSemaphoreCreateBinary();
+  if (wait->done == nullptr) {
+    delete wait;
+    return ESP_ERR_NO_MEM;
+  }
 
   usb_transfer_t* transfer = nullptr;
   esp_err_t error = usb_host_transfer_alloc(sizeof(usb_setup_packet_t) + length, 0, &transfer);
   if (error != ESP_OK) {
-    vSemaphoreDelete(wait.done);
+    vSemaphoreDelete(wait->done);
+    delete wait;
     return error;
   }
 
@@ -210,27 +235,49 @@ esp_err_t NewoUsbAudio::controlRequest(uint8_t requestType, uint8_t request, uin
   transfer->device_handle = device_;
   transfer->bEndpointAddress = 0;
   transfer->callback = controlDone;
-  transfer->context = &wait;
+  transfer->context = wait;
   transfer->timeout_ms = 1000;
   transfer->num_bytes = sizeof(usb_setup_packet_t) + length;
 
   error = usb_host_transfer_submit_control(client_, transfer);
-  if (error == ESP_OK) {
-    if (xSemaphoreTake(wait.done, pdMS_TO_TICKS(1500)) != pdTRUE) {
-      error = ESP_ERR_TIMEOUT;
-    } else if (wait.status != USB_TRANSFER_STATUS_COMPLETED) {
-      error = ESP_FAIL;
-    } else if (input && length > 0 && data != nullptr) {
-      memcpy(data, transfer->data_buffer + sizeof(usb_setup_packet_t), length);
+  if (error != ESP_OK) {
+    transfer->context = nullptr;
+    usb_host_transfer_free(transfer);
+    vSemaphoreDelete(wait->done);
+    delete wait;
+    return error;
+  }
+
+  if (xSemaphoreTake(wait->done, pdMS_TO_TICKS(1500)) != pdTRUE) {
+    ControlState expected = ControlState::WAITING;
+    if (wait->state.compare_exchange_strong(expected, ControlState::ABANDONED)) {
+      // Do not free anything here: the asynchronous callback still owns an
+      // in-flight transfer. It will free transfer + semaphore + context after
+      // completion, including hot-unplug/NO_DEVICE completion.
+      Serial.printf("[usb-uac2] control request 0x%02x timed out; callback owns cleanup\n", request);
+      return ESP_ERR_TIMEOUT;
+    }
+
+    // The callback won the race and marked COMPLETED just as our timed wait
+    // expired. It committed to giving the semaphore immediately, so wait for
+    // that hand-off rather than misreporting a timeout or freeing underneath it.
+    if (expected == ControlState::COMPLETED) {
+      xSemaphoreTake(wait->done, portMAX_DELAY);
+    } else {
+      return ESP_ERR_INVALID_STATE;
     }
   }
 
-  // A 1.5 second control timeout is already a fatal playback failure. The D07
-  // completed every bench control request in a few milliseconds; normally this
-  // transfer is never still in flight here.
-  if (error != ESP_ERR_TIMEOUT) usb_host_transfer_free(transfer);
-  else Serial.printf("[usb-uac2] control request 0x%02x timed out; transfer retained until disconnect\n", request);
-  vSemaphoreDelete(wait.done);
+  if (wait->status != USB_TRANSFER_STATUS_COMPLETED) {
+    error = ESP_FAIL;
+  } else if (input && length > 0 && data != nullptr) {
+    memcpy(data, transfer->data_buffer + sizeof(usb_setup_packet_t), length);
+  }
+
+  transfer->context = nullptr;
+  usb_host_transfer_free(transfer);
+  vSemaphoreDelete(wait->done);
+  delete wait;
   return error;
 }
 
