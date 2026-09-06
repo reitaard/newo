@@ -168,11 +168,16 @@ void loop() {
     if (strcmp(arduinoEvent.name, "voice_trigger") != 0 || strcmp(arduinoEvent.payload, "reset") != 0) continue;
     Serial.println("[arduino] EVENT voice_trigger reset");
     const char* rejection = nullptr;
-    const auto decision = physicalTriggerGate.decide(
-        newoArduinoNode.handshakeGeneration(), newoAudio.state() == NewoVoiceState::STREAMING,
-        newoSpeaker.playing());
+    const bool offline = !newoWiFi.connected();
+    const bool cloudUnavailable = !offline && !newoCloud.ready();
+    const bool assistantBusy = !offline && !cloudUnavailable && newoCloud.assistantThinking();
+    const auto decision = physicalTriggerGate.decide(newoArduinoNode.handshakeGeneration(),
+        newoAudio.state() == NewoVoiceState::STREAMING, newoSpeaker.playing());
     if (decision == NewoPhysicalVoice::TriggerDecision::DUPLICATE) rejection = "duplicate";
+    else if (offline) rejection = "offline";
+    else if (cloudUnavailable) rejection = "cloud_unavailable";
     else if (decision == NewoPhysicalVoice::TriggerDecision::VOICE_ACTIVE) rejection = "voice_active";
+    else if (assistantBusy) rejection = "assistant_busy";
     else if (decision == NewoPhysicalVoice::TriggerDecision::SPEAKER_BUSY) rejection = "speaker_busy";
     if (rejection == nullptr && newoAudio.startPhysicalVoiceTrigger()) {
       Serial.println("[voice] PHYSICAL_TRIGGER_ACCEPTED");
@@ -272,7 +277,7 @@ void loop() {
   else if (newoAudio.state() == NewoVoiceState::STREAMING) newoLed.setState(NewoLed::State::LISTENING);
   else if (newoCloud.assistantThinking()) newoLed.setState(NewoLed::State::THINKING);
   else newoLed.setState(NewoLed::State::IDLE);
-  if (static_cast<int32_t>(nanoLedErrorUntilMs - millis()) > 0) nanoLedDesired = LedState::ERROR;
+  if (static_cast<int32_t>(nanoLedErrorUntilMs - millis()) > 0 || newoCloud.assistantError()) nanoLedDesired = LedState::ERROR;
   else if (newoSpeaker.audiblePlaybackActive()) nanoLedDesired = LedState::SPEAKING;
   else if (newoAudio.state() == NewoVoiceState::STREAMING) nanoLedDesired = LedState::LISTENING;
   else if (newoCloud.assistantThinking()) nanoLedDesired = LedState::THINKING;

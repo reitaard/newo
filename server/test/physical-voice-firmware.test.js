@@ -32,3 +32,11 @@ test("physical feedback stays in Arduino application code", async () => {
   assert.match(sketch, /request\("led", NewoPhysicalVoice::ledPayload/);
   assert.doesNotMatch(vcp, /voice_trigger|blink_fast|blink_slow|command=led/);
 });
+
+test("physical trigger is consumed and rejected before capture when runtime is unavailable", async () => {
+  const sketch = await repoFile("Newo/Newo.ino");
+  assert.match(sketch, /physicalTriggerGate\.decide[\s\S]*rejection = "offline"/);
+  assert.match(sketch, /rejection = "cloud_unavailable"/);
+  assert.match(sketch, /rejection = "assistant_busy"/);
+  assert.match(sketch, /rejection = "speaker_busy"/);
+});

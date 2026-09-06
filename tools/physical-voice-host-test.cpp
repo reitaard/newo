@@ -1,4 +1,5 @@
 #include "../Newo/newo_physical_voice.h"
+#include "../Newo/newo_usb_vcp_policy.h"
 #include "../arduino/nano-reset-voice-test/nano_reset_policy.h"
 
 #include <cassert>
@@ -29,6 +30,9 @@ int main() {
   assert(std::strcmp(NewoPhysicalVoice::ledPayload(LedState::SPEAKING), "blink_slow") == 0);
   assert(std::strcmp(NewoPhysicalVoice::ledPayload(LedState::ERROR), "error") == 0);
   assert(std::strcmp(NewoPhysicalVoice::ledPayload(LedState::IDLE), "off") == 0);
+  assert(NewoUsbVcpPolicy::guardInitialAutoReset(0x1a86, 0x7523));
+  assert(!NewoUsbVcpPolicy::guardInitialAutoReset(0x1a86, 0x5523));
+  assert(!NewoUsbVcpPolicy::guardInitialAutoReset(0x0403, 0x6001));
 
   std::puts("Physical voice policy tests passed");
 }

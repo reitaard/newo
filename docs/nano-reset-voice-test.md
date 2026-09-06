@@ -8,6 +8,8 @@ The Nano reads and clears `MCUSR` during AVR early initialization. Power-on, wat
 
 Classic Nano hardware cannot distinguish the onboard RESET switch from another source that pulls RESET low, including some USB-serial DTR transitions. Record whether initial VCP open produces an external-reset trigger on the exact board/bridge used.
 
+For the physically observed CH340 `1a86:7523`, Newo deasserts DTR and RTS during initial VCP open to avoid deliberately creating an auto-reset edge. Later explicit serial configuration remains available through the generic transport API.
+
 ## Build
 
 With Arduino AVR Boards installed:
@@ -36,7 +38,7 @@ Newo USB serial:
 [arduino] LED_STATE idle
 ```
 
-A busy or duplicate trigger prints `PHYSICAL_TRIGGER_REJECTED reason=voice_active`, `speaker_busy`, `duplicate`, or `unavailable`, and sends `LED_STATE error`.
+A trigger received while offline, cloud-unavailable, voice-active, assistant-busy, speaker-busy, duplicate, or otherwise unavailable is consumed, rejected with that reason, and sends `LED_STATE error`.
 
 ## Physical sequence
 
