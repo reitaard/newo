@@ -27,6 +27,8 @@ A 240x240 ST7789 display is wired over SPI: SCK GPIO42, MOSI GPIO41, RST GPIO40,
 
 Newo uses the ESP32-S3 native OTG port as a USB host. The IDF USB Host Library, hub support, and Espressif MSC BOT/SCSI driver mount one FAT/FAT32 flash drive at `/usb`; both a direct OTG flash drive and one drive through an external hub are supported. Host, class-driver, discovery, and mount work run in dedicated FreeRTOS tasks, and unplug unmounts/releases the MSC device. GPIO19 (D-) and GPIO20 (D+) remain dedicated to the native USB PHY and are not repurposed as GPIOs. No Lua or Telegram USB controls are included.
 
+USB Audio Class diagnostics and opt-in UAC1 microphone/tone/duplex tests share this host with MSC. They do not replace the I2S audio paths. See [USB audio validation](docs/usb-audio.md) for serial commands, supported formats, FIFO/MPS analysis and the physical test procedure.
+
 ## Wi-Fi and provisioning
 
 Newo stores up to eight Wi-Fi networks in ESP32 Preferences/NVS. At boot it scans the supported 2.4 GHz band, filters the results to saved SSIDs, ranks visible saved networks by RSSI, and attempts them strongest-first. A disconnected device retries saved networks within bounded recovery windows.

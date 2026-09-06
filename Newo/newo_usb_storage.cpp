@@ -1,4 +1,5 @@
 #include "newo_usb_storage.h"
+#include "newo_usb_audio.h"
 
 #include <inttypes.h>
 
@@ -15,7 +16,7 @@ constexpr UBaseType_t kMonitorTaskPriority = 1;
 constexpr UBaseType_t kWorkerTaskPriority = 1;
 constexpr uint32_t kHostTaskStack = 4096;
 constexpr uint32_t kMscTaskStack = 4096;
-constexpr uint32_t kMonitorTaskStack = 3072;
+constexpr uint32_t kMonitorTaskStack = 8192;
 constexpr uint32_t kWorkerTaskStack = 6144;
 
 const char* speedName(usb_speed_t speed) {
@@ -75,6 +76,11 @@ void NewoUsbStorage::hostTask() {
   hostConfig.intr_flags = ESP_INTR_FLAG_LEVEL1;
   // NULL is intentional on 3.3.10: no application filter is required.
   hostConfig.enum_filter_cb = nullptr;
+  // IDF 5.5.4 runtime FIFO API: retain bulk OUT capacity for MSC while
+  // allowing audio IN >128 bytes. Never rewrite endpoint wMaxPacketSize.
+  hostConfig.fifo_settings_custom.rx_fifo_lines = NewoUac::kRxLines;
+  hostConfig.fifo_settings_custom.nptx_fifo_lines = NewoUac::kNptxLines;
+  hostConfig.fifo_settings_custom.ptx_fifo_lines = NewoUac::kPtxLines;
   esp_err_t error = usb_host_install(&hostConfig);
   if (error != ESP_OK) {
     logError("HOST_FAILED", error);
@@ -82,6 +88,9 @@ void NewoUsbStorage::hostTask() {
     return;
   }
   hostInstalled_ = true;
+  Serial.printf("[usb-uac] FIFO lines RX=%u NPTX=%u PTX=%u; MPS IN=%u bulk-OUT=%u periodic-OUT=%u\n",
+                NewoUac::kRxLines, NewoUac::kNptxLines, NewoUac::kPtxLines,
+                NewoUac::kInMps, NewoUac::kNptxLines * 4, NewoUac::kOutMps);
 
   msc_host_driver_config_t mscConfig = {};
   mscConfig.create_backround_task = true;
@@ -134,12 +143,14 @@ void NewoUsbStorage::monitorTask() {
     return;
   }
 
+  newoUsbAudio.begin(monitorClient_);
   while (true) {
-    const esp_err_t result = usb_host_client_handle_events(monitorClient_, portMAX_DELAY);
-    if (result != ESP_OK) {
+    const esp_err_t result = usb_host_client_handle_events(monitorClient_, pdMS_TO_TICKS(2));
+    if (result != ESP_OK && result != ESP_ERR_TIMEOUT) {
       logError("HOST_FAILED", result);
       break;
     }
+    newoUsbAudio.service();
   }
 
   usb_host_client_deregister(monitorClient_);
@@ -178,6 +189,8 @@ void NewoUsbStorage::monitorClientEvent(const usb_host_client_event_msg_t* event
   if (event == nullptr || arg == nullptr) return;
   if (event->event == USB_HOST_CLIENT_EVENT_NEW_DEV) {
     static_cast<NewoUsbStorage*>(arg)->logDevice(event->new_dev.address);
+  } else if (event->event == USB_HOST_CLIENT_EVENT_DEV_GONE) {
+    newoUsbAudio.disconnected(event->dev_gone.dev_hdl);
   }
 }
 
@@ -216,7 +229,7 @@ void NewoUsbStorage::logDevice(uint8_t address) {
   if (descriptorError == ESP_OK && descriptor != nullptr && descriptor->bDeviceClass == kUsbHubClass) {
     Serial.println("[usb] HUB_CONNECTED");
   }
-  usb_host_device_close(monitorClient_, device);
+  if (!newoUsbAudio.connected(device, address)) usb_host_device_close(monitorClient_, device);
 }
 
 void NewoUsbStorage::handleConnected(uint8_t address) {
