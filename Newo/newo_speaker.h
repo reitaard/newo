@@ -1,7 +1,6 @@
 #pragma once
 
 #include <Arduino.h>
-#include <ESP_I2S.h>
 #include <WebSocketsClient.h>
 #include <freertos/stream_buffer.h>
 #include <freertos/queue.h>
@@ -9,12 +8,13 @@
 
 #include "newo_audio.h"
 #include "newo_display.h"
+#include "newo_speaker_output.h"
 #include "newo_storage.h"
 #include "newo_wifi.h"
 
-// Dedicated MAX98357A output. The authenticated /speaker WebSocket is persistent
-// only while Speaker is enabled; I2S remains playback-scoped. PCM remains the
-// compatibility transport; Opus is decoded into the same bounded PCM buffer.
+// Authenticated /speaker WebSocket with bounded PCM/Opus buffering. Physical
+// output is selected per playback: the proven D07 UAC2 path is preferred when
+// connected, while the existing MAX98357A I2S output remains the fallback.
 class NewoSpeaker {
  public:
   struct Result {
@@ -35,7 +35,7 @@ class NewoSpeaker {
   bool consumePlaybackStarted(PlaybackStarted& started);
 
   bool playing() const { return task_ != nullptr || decoderTask_ != nullptr; }
-  // True only from the prebuffer/I2S playback boundary through final drain.
+  // True only from the prebuffer/physical playback boundary through final drain.
   bool audiblePlaybackActive() const { return playbackStarted_; }
   bool enabled() const { return enabled_; }
   bool ready() const { return connected_; }
@@ -101,7 +101,7 @@ class NewoSpeaker {
   NewoDisplay& display_;
   NewoAudio& audio_;
   NewoStorage& storage_;
-  I2SClass i2s_;
+  NewoSpeakerOutput i2s_;
   WebSocketsClient webSocket_;
   StreamBufferHandle_t buffer_ = nullptr;
   TaskHandle_t task_ = nullptr;
