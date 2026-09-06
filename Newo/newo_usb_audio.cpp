@@ -146,8 +146,6 @@ bool NewoUsbAudio::connected(usb_device_handle_t device, uint8_t address) {
     return false;
   }
 
-  // The monitor keeps exactly one D07 reference. A second audio device remains
-  // diagnostics-only and is closed by NewoUsbStorage.
   if (device_ != nullptr) {
     Serial.println("[usb-uac2] another D07 reference is already retained");
     return false;
@@ -179,19 +177,20 @@ void NewoUsbAudio::controlDone(usb_transfer_t* transfer) {
   wait->status = transfer->status;
   wait->actualBytes = transfer->actual_num_bytes;
 
+  // Wake first, then publish COMPLETED as this callback's final access to the
+  // caller-owned objects. A woken caller waits for the state transition before
+  // freeing anything, so the callback can never touch a deleted semaphore or
+  // transfer even on dual-core scheduling.
+  xSemaphoreGive(wait->done);
   ControlState expected = ControlState::WAITING;
   if (wait->state.compare_exchange_strong(expected, ControlState::COMPLETED)) {
-    // Publish COMPLETED before waking the caller. Once the semaphore is given,
-    // this callback must not touch wait/transfer again because the caller owns
-    // and may immediately free both.
-    xSemaphoreGive(wait->done);
     return;
   }
 
   if (expected == ControlState::ABANDONED) {
-    // The caller timed out and deliberately transferred ownership to us. The
-    // callback means the transfer is no longer in-flight, so it is now legal to
-    // release the transfer and its heap-owned wait context.
+    // The caller timed out and transferred ownership to this callback. We are
+    // running only after USB completion, so the transfer is no longer in-flight
+    // and may now be released safely.
     SemaphoreHandle_t done = wait->done;
     transfer->context = nullptr;
     usb_host_transfer_free(transfer);
@@ -248,24 +247,24 @@ esp_err_t NewoUsbAudio::controlRequest(uint8_t requestType, uint8_t request, uin
     return error;
   }
 
-  if (xSemaphoreTake(wait->done, pdMS_TO_TICKS(1500)) != pdTRUE) {
+  const bool signaled = xSemaphoreTake(wait->done, pdMS_TO_TICKS(1500)) == pdTRUE;
+  if (!signaled) {
     ControlState expected = ControlState::WAITING;
     if (wait->state.compare_exchange_strong(expected, ControlState::ABANDONED)) {
-      // Do not free anything here: the asynchronous callback still owns an
-      // in-flight transfer. It will free transfer + semaphore + context after
-      // completion, including hot-unplug/NO_DEVICE completion.
+      // The async callback remains the sole owner of all request resources.
+      // It will free them after completion, including NO_DEVICE on hot-unplug.
       Serial.printf("[usb-uac2] control request 0x%02x timed out; callback owns cleanup\n", request);
       return ESP_ERR_TIMEOUT;
     }
-
-    // The callback won the race and marked COMPLETED just as our timed wait
-    // expired. It committed to giving the semaphore immediately, so wait for
-    // that hand-off rather than misreporting a timeout or freeing underneath it.
-    if (expected == ControlState::COMPLETED) {
-      xSemaphoreTake(wait->done, portMAX_DELAY);
-    } else {
-      return ESP_ERR_INVALID_STATE;
+    if (expected != ControlState::COMPLETED) return ESP_ERR_INVALID_STATE;
+  } else {
+    // xSemaphoreGive() can wake this higher-priority speaker task before the USB
+    // monitor callback gets to its final atomic state store. Sleep a tick rather
+    // than spinning so the monitor task can finish the hand-off on the same core.
+    while (wait->state.load() == ControlState::WAITING) {
+      vTaskDelay(pdMS_TO_TICKS(1));
     }
+    if (wait->state.load() != ControlState::COMPLETED) return ESP_ERR_INVALID_STATE;
   }
 
   if (wait->status != USB_TRANSFER_STATUS_COMPLETED) {
@@ -458,8 +457,6 @@ bool NewoUsbAudio::writeSpeakerMono24(const int16_t* samples, size_t sampleCount
   int16_t* output = reinterpret_cast<int16_t*>(transfer->data_buffer);
   for (size_t i = 0; i < kMono24SamplesPerBatch; ++i) {
     const int16_t sample = i < sampleCount ? samples[i] : 0;
-    // Two identical 48 kHz frames for every 24 kHz source sample. Each frame
-    // is stereo, so one mono input sample expands to L,R,L,R.
     *output++ = sample;
     *output++ = sample;
     *output++ = sample;
@@ -539,8 +536,6 @@ bool NewoUsbAudio::endSpeakerPlayback(uint32_t* drainMs) {
 }
 
 void NewoUsbAudio::service() {
-  // Device close belongs to the monitor/client owner and must happen only after
-  // every in-flight transfer callback has returned.
   if (!removed_.load() || playing_.load() || activeTransfers_.load() != 0) return;
   releaseTransfers();
   interfaceClaimed_.store(false);
