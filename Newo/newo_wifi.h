@@ -38,8 +38,8 @@ class NewoWiFi {
   bool connectSavedNetworks(uint32_t windowMs);
   bool scanAndConnect(uint32_t deadlineMs);
   bool connectToSavedNetwork(const NewoWifiCredential& network, uint32_t timeoutMs);
-  void startBleProvisioning();
-  void stopBleProvisioning();
+  void startProvisioning();
+  void stopProvisioning();
   void handleWiFiEvent(arduino_event_id_t eventId, const arduino_event_info_t& info);
   void processProvisioningHandoff();
   bool provisioningTimedOut() const;
