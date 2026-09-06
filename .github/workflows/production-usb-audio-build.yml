@@ -1,0 +1,130 @@
+name: Production Newo USB audio build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - production-usb-audio
+    paths:
+      - "Newo/**"
+      - "experiments/usb-uac-idf-probe/**"
+      - ".github/workflows/production-usb-audio-build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Build the ESP-IDF 5.5.4 USB component with the exact host settings
+      # already proven on the physical D07/hub bench. Arduino's stock prebuilt
+      # USB archive has CONTROL_TRANSFER_MAX_SIZE=256; D07 needs 270 bytes.
+      - name: Build proven USB host library with ESP-IDF 5.5.4
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.4
+          target: esp32s3
+          path: experiments/usb-uac-idf-probe
+          command: idf.py build
+
+      - name: Set up Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Install ESP32 core 3.3.10 and pinned Newo libraries
+        run: |
+          arduino-cli config init
+          arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core install esp32:esp32@3.3.10 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli lib update-index
+          arduino-cli lib install "ArduinoJson@7.4.3"
+          arduino-cli lib install "WebSockets@2.7.2"
+          arduino-cli lib install "Adafruit GFX Library@1.12.6"
+          arduino-cli lib install "Adafruit ST7735 and ST7789 Library@1.11.0"
+          arduino-cli lib install "esp32_opus@1.0.3"
+
+      - name: Replace stock ESP32-S3 USB archive with proven 2048-byte-control build
+        run: |
+          set -euo pipefail
+          SOURCE="experiments/usb-uac-idf-probe/build/esp-idf/usb/libusb.a"
+          test -s "$SOURCE"
+          mapfile -t TARGETS < <(find "$HOME/.arduino15/packages/esp32" -type f -name libusb.a -path '*esp32s3*')
+          if [ "${#TARGETS[@]}" -eq 0 ]; then
+            echo "No ESP32-S3 Arduino libusb.a found" >&2
+            find "$HOME/.arduino15/packages/esp32" -name 'libusb.a' -print || true
+            exit 1
+          fi
+          echo "Replacing ${#TARGETS[@]} ESP32-S3 USB archive(s)"
+          for target in "${TARGETS[@]}"; do
+            echo "  $target"
+            cp "$SOURCE" "$target"
+          done
+
+      - name: Prepare compile credentials
+        id: credentials
+        env:
+          DEVICE_ID: ${{ secrets.NEWO_DEVICE_ID }}
+          DEVICE_SECRET: ${{ secrets.NEWO_DEVICE_SECRET }}
+          CLOUD_CA_CERT: ${{ secrets.NEWO_CLOUD_CA_CERT }}
+        run: |
+          set -euo pipefail
+          FLASHABLE=false
+          if [ -n "${DEVICE_SECRET:-}" ] && [ -n "${CLOUD_CA_CERT:-}" ]; then
+            FLASHABLE=true
+          else
+            DEVICE_ID="ci-build"
+            DEVICE_SECRET="ci-placeholder-not-for-device"
+            CLOUD_CA_CERT="ci-placeholder-ca"
+          fi
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          def cpp(s):
+              return s.replace('\\', '\\\\').replace('"', '\\"').replace('\r', '').replace('\n', '\\n')
+          device_id = os.environ.get('DEVICE_ID') or 'newo-01'
+          secret = os.environ['DEVICE_SECRET']
+          ca = os.environ['CLOUD_CA_CERT']
+          Path('Newo/newo_secrets.h').write_text(
+              '#pragma once\nnamespace NewoSecrets {\n'
+              f'constexpr char DEVICE_ID[] = "{cpp(device_id)}";\n'
+              f'constexpr char DEVICE_SECRET[] = "{cpp(secret)}";\n'
+              f'constexpr char CLOUD_CA_CERT[] = "{cpp(ca)}";\n'
+              '}\n', encoding='utf-8')
+          PY
+          echo "flashable=$FLASHABLE" >> "$GITHUB_OUTPUT"
+          echo "Credentials available for flashable artifact: $FLASHABLE"
+
+      - name: Compile full Newo firmware
+        run: |
+          set -euo pipefail
+          mkdir -p build/production-usb-audio
+          arduino-cli compile \
+            --fqbn 'esp32:esp32:esp32s3:UploadSpeed=921600,USBMode=hwcdc,CDCOnBoot=default,MSCOnBoot=default,DFUOnBoot=default,UploadMode=default,CPUFreq=240,FlashMode=qio,FlashSize=16M,PartitionScheme=esp_sr_16,DebugLevel=none,PSRAM=opi,LoopCore=1,EventsCore=1,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default' \
+            --build-path build/production-usb-audio \
+            Newo
+          test -s build/production-usb-audio/Newo.ino.bin
+          sha256sum build/production-usb-audio/Newo.ino.bin | tee build/production-usb-audio/Newo.ino.bin.sha256
+          echo "App binary size: $(stat -c%s build/production-usb-audio/Newo.ino.bin) bytes"
+
+      - name: Upload compile-validation firmware
+        if: steps.credentials.outputs.flashable != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: newo-production-usb-audio-COMPILE-ONLY
+          path: |
+            build/production-usb-audio/Newo.ino.bin
+            build/production-usb-audio/Newo.ino.bin.sha256
+          if-no-files-found: error
+
+      - name: Upload flashable production firmware
+        if: steps.credentials.outputs.flashable == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: newo-production-usb-audio
+          path: |
+            build/production-usb-audio/Newo.ino.bin
+            build/production-usb-audio/Newo.ino.bin.sha256
+          if-no-files-found: error
