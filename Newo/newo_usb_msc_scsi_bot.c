@@ -400,13 +400,12 @@ esp_err_t scsi_cmd_unit_ready(msc_host_device_handle_t dev)
         .opcode = SCSI_CMD_TEST_UNIT_READY,
     };
 
-    esp_err_t ret = bot_execute_command(device, &cbw.base, NULL, 0);
-
-    // In case of an error, get an error code
-    if (unlikely(ret != ESP_OK)) {
-        MSC_RETURN_ON_ERROR( scsi_cmd_sense(device, NULL));
-    }
-    return ret;
+    // Do not consume REQUEST SENSE here. msc_wait_for_ready_state() owns the
+    // sense request so it can distinguish transient UNIT ATTENTION from
+    // NOT READY / ASC 0x3A (medium not present). Consuming it here cleared the
+    // exact condition before the caller could classify it, causing the retry
+    // storm seen on 0.5.5-dev.
+    return bot_execute_command(device, &cbw.base, NULL, 0);
 }
 
 esp_err_t scsi_cmd_sense(msc_host_device_handle_t dev, scsi_sense_data_t *sense)
@@ -463,7 +462,7 @@ esp_err_t scsi_cmd_mode_sense(msc_host_device_handle_t dev)
     mode_sense_response_t response = { 0 };
 
     mode_sense_t cbw = {
-        CBW_BASE_INIT(IN_DIR, CBW_CMD_SIZE(mode_sense_t), sizeof(response)),
+        CBW_BASE_INIT(IN_DIR, CBW_CMD_SIZE(cbw_mode_sense_t), sizeof(response)),
         .opcode = SCSI_CMD_MODE_SENSE,
         .pc_page_code = 0x3F,
         .parameter_list_length = sizeof(response),
@@ -482,7 +481,7 @@ esp_err_t scsi_cmd_prevent_removal(msc_host_device_handle_t dev, bool prevent)
 {
     msc_device_t *device = (msc_device_t *)dev;
     prevent_allow_medium_removal_t cbw = {
-        CBW_BASE_INIT(OUT_DIR, CBW_CMD_SIZE(prevent_allow_medium_removal_t), 0),
+        CBW_BASE_INIT(OUT_DIR, CBW_CMD_SIZE(cbw_prevent_allow_medium_removal_t), 0),
         .opcode = SCSI_CMD_PREVENT_ALLOW_MEDIUM_REMOVAL,
         .prevent = (uint8_t) prevent,
     };
