@@ -35,4 +35,11 @@ class NewoUsbStorage {
   msc_host_device_handle_t device_ = nullptr;
   msc_host_vfs_handle_t vfs_ = nullptr;
   volatile bool mounted_ = false;
+
+  // A card reader (or a thumb-drive controller during recovery) can enumerate
+  // correctly while reporting SCSI NOT READY / MEDIUM NOT PRESENT. Keep the
+  // USB host and other class clients alive and reprobe only the MSC address.
+  bool mediaRetryPending_ = false;
+  uint8_t mediaRetryAddress_ = 0;
+  bool mediaWaiting_ = false;
 };
