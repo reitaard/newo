@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - production-usb-audio
+      - main
     paths:
       - "Newo/**"
       - "experiments/usb-uac-idf-probe/**"
@@ -62,6 +63,37 @@ jobs:
             echo "  $target"
             cp "$SOURCE" "$target"
           done
+
+      - name: Package proven USB host archive
+        run: |
+          set -euo pipefail
+          mkdir -p build/proven-libusb
+          cp experiments/usb-uac-idf-probe/build/esp-idf/usb/libusb.a build/proven-libusb/libusb.a
+          sha256sum build/proven-libusb/libusb.a | tee build/proven-libusb/libusb.a.sha256
+          cat > build/proven-libusb/INSTALL-WINDOWS.txt <<'EOF'
+          Newo ESP32-S3 / Arduino-ESP32 3.3.10 USB host archive
+
+          This archive is built from ESP-IDF 5.5.4 with the Newo production USB
+          settings, including CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=2048 and
+          external-hub support. The Audiocular D07 configuration descriptor is
+          270 bytes, so the stock 256-byte Arduino archive cannot enumerate it.
+
+          Before a LOCAL Newo build with Arduino-ESP32 3.3.10:
+          1. Back up the stock file if you want to restore it later.
+          2. Replace:
+             %LOCALAPPDATA%\Arduino15\packages\esp32\tools\esp32s3-libs\3.3.10\lib\libusb.a
+             with this libusb.a.
+          3. Build/upload Newo normally. Keep Newo/newo_secrets.h local and untracked.
+
+          Reinstalling/updating the ESP32 Arduino core restores the stock archive.
+          EOF
+
+      - name: Upload proven USB host archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: newo-esp32s3-libusb-control2048-arduino-3.3.10
+          path: build/proven-libusb
+          if-no-files-found: error
 
       - name: Prepare compile credentials
         id: credentials
