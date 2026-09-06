@@ -5,7 +5,7 @@
 ```text
 Newo/Newo.ino
   +-- newo_storage   up to eight Wi-Fi credentials in Preferences/NVS
-  +-- newo_wifi      scan/rank/connect/recover plus BLE WiFiProv
+  +-- newo_wifi      scan/rank/connect/recover plus browser setup AP
   +-- newo_cloud     authenticated outbound WSS, telemetry, commands
   +-- newo_audio     local ESP_SR WakeNet plus temporary authenticated WSS PCM sender
   +-- newo_display   ST7789 state, face, and autonomous-eye rendering
@@ -22,16 +22,15 @@ boot
   -> scan 2.4 GHz and rank visible saved SSIDs by RSSI
   -> connect strongest-first within the 18-second recovery window
        -> connected: authenticated outbound WSS on :443
-       -> none reachable: BLE provisioning as PROV_NEWO
-            -> Security 1, null PoP prototype
-            -> test candidate connection
-            -> save/add only on credential success
+       -> none reachable: captive portal as newo@wifi
+            -> select or manually enter a 2.4 GHz SSID
+            -> save/add transactionally, then reboot
             -> stop BLE and reboot
 ```
 
 Existing saved networks are preserved when provisioning adds or updates one entry. Storage is capped at eight. Runtime disconnects trigger bounded scan-first recovery rather than relying on `WiFiMulti` or an arbitrary last-used network.
 
-BLE is provisioning-only. Normal operation is Wi-Fi plus outbound WSS. The firmware contains no SoftAP, captive DNS, local web server, or mDNS service.
+The setup AP, captive DNS, and local HTTP portal run only while provisioning. Normal operation remains Wi-Fi plus outbound WSS; the portal stops after five minutes or after credentials are saved and Newo reboots.
 
 Visible clock preference is a firmware-owned `clock-on` boolean in the existing `newo-wifi` Preferences namespace and defaults ON. Correlated cloud `clock_control` / `clock_ack` messages let Telegram toggle, set, or query it. It only controls clock pixels in the normal face view; `configTzTime`, SNTP, timezone conversion, and internal timekeeping always continue.
 
@@ -94,6 +93,6 @@ Wi-Fi credentials are encoded in a compact JSON list under the `newo-wifi` NVS n
 
 Important application events are printed to USB Serial and mirrored into a fixed 64-entry RAM ring buffer. It uses stable level/subsystem/code/detail fields, collapses consecutive identical entries, and is protected for callback/loop access. It is volatile by design: no filesystem or NVS logging, and it disappears on reboot. Health copies only small logger metadata; log export copies at most 40 selected entries into temporary PSRAM, falling back to normal heap and reporting a clean failure if allocation fails. No large ring snapshot is placed on Arduino `loopTask`'s 8 KiB stack. The authenticated WSS channel serves bounded health/log snapshots; the VPS translates codes into readable Telegram text. Public HTTP `/health` remains minimal cloud-service health and never exposes device logs or detailed device telemetry.
 
-BLE Security 1 encrypts provisioning traffic, but null proof-of-possession permits nearby onboarding attempts and is suitable only for this personal prototype. Production work should add per-device PoP/QR material, physical provisioning/reset gating, authenticated OTA with recovery, and hardware regression tests.
+The open setup AP is suitable only for this personal prototype. Production work should add physical provisioning/reset gating, per-device authentication, authenticated OTA with recovery, and hardware regression tests.
 
-Physical BLE provisioning, reboot, and reconnect validation remains pending while the ESP32 is disconnected.
+Physical captive-portal provisioning, legacy credential migration, reboot, and reconnect validation remain required on hardware.

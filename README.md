@@ -37,11 +37,11 @@ The classic Nano RESET-button voice-trigger test is documented in [Nano reset vo
 
 Newo stores up to eight Wi-Fi networks in ESP32 Preferences/NVS. At boot it scans the supported 2.4 GHz band, filters the results to saved SSIDs, ranks visible saved networks by RSSI, and attempts them strongest-first. A disconnected device retries saved networks within bounded recovery windows.
 
-If no saved network exists or none is reachable during the initial 18-second recovery window, Newo starts official Arduino-ESP32 `WiFiProv` over BLE as `PROV_NEWO`. Use the Espressif **ESP BLE Provisioning** app and select Security 1 with no proof-of-possession value. Credentials cross from the provisioning callback through fixed-size buffers and are added or updated in NVS only after `ARDUINO_EVENT_PROV_CRED_SUCCESS`. Existing networks are preserved. Newo then stops BLE and reboots.
+If no saved network exists or none is reachable during the initial 18-second recovery window, Newo starts the `newo@wifi` captive portal. Connect a phone to that 2.4 GHz setup network; the browser should open automatically, or browse to `http://192.168.4.1`. Select a network, enter its password, and choose **Save and connect**. The credential is added or updated transactionally in NVS, then Newo reboots.
 
-BLE provisioning times out after five minutes. Reboot to retry. There is no setup AP, captive portal, local HTTP server, or mDNS service.
+Browser provisioning times out after five minutes. Reboot to retry. On an empty Newo credential list, firmware first attempts to reconnect using a valid legacy Arduino station credential and migrates it only after a successful connection.
 
-Security 1 encrypts the session, but null PoP is a prototype tradeoff. Production provisioning should use a per-device PoP/QR flow and physical gating. Physical BLE and reconnect validation is pending while the board is disconnected.
+The setup AP is intentionally open for phone captive-portal compatibility, so provisioning should be performed only in a trusted location. Production provisioning should add physical gating and per-device authentication.
 
 ## Cloud endpoint
 

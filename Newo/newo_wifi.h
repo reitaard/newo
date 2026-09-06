@@ -2,9 +2,6 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiProv.h>
-#include <freertos/FreeRTOS.h>
-
 #include <vector>
 
 #include "newo_storage.h"
@@ -26,6 +23,7 @@ class NewoWiFi {
   uint32_t disconnectCount() const;
   const char* lastDisconnectReason() const;
   bool provisioningActive() const { return provisioningActive_; }
+  IPAddress provisioningIp() const { return WiFi.softAPIP(); }
   enum class LedEvent : uint8_t { NONE, ACCEPTED, REJECTED, SAVED, TIMEOUT };
   LedEvent consumeLedEvent();
 
@@ -38,15 +36,12 @@ class NewoWiFi {
   bool connectSavedNetworks(uint32_t windowMs);
   bool scanAndConnect(uint32_t deadlineMs);
   bool connectToSavedNetwork(const NewoWifiCredential& network, uint32_t timeoutMs);
+  bool recoverLegacyNetwork();
   void startProvisioning();
   void stopProvisioning();
   void handleWiFiEvent(arduino_event_id_t eventId, const arduino_event_info_t& info);
-  void processProvisioningHandoff();
   bool provisioningTimedOut() const;
-  void scheduleReboot();
   static bool deadlineReached(uint32_t deadlineMs);
-  static void copyProvisioningField(char* destination, size_t destinationSize,
-                                    const uint8_t* source, size_t sourceSize);
 
   NewoStorage& storage_;
   bool provisioningAttempted_ = false;
@@ -54,7 +49,6 @@ class NewoWiFi {
   bool hasConnected_ = false;
   uint32_t provisioningStartedAtMs_ = 0;
   uint32_t lastReconnectAttemptMs_ = 0;
-  uint32_t rebootAtMs_ = 0;
   uint32_t scanCount_ = 0;
   uint32_t connectAttemptCount_ = 0;
   uint32_t connectSuccessCount_ = 0;
@@ -63,9 +57,5 @@ class NewoWiFi {
   char lastDisconnectReason_[48] = "Unknown";
 
   portMUX_TYPE provisioningMux_ = portMUX_INITIALIZER_UNLOCKED;
-  char pendingProvisioningSsid_[33] = {};
-  char pendingProvisioningPassword_[65] = {};
-  volatile bool provisioningCredentialsPending_ = false;
-  volatile bool provisioningCredentialsSucceeded_ = false;
   volatile LedEvent pendingLedEvent_ = LedEvent::NONE;
 };

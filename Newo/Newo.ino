@@ -8,6 +8,7 @@
 #include "newo_log.h"
 #include "newo_led.h"
 #include "newo_physical_voice.h"
+#include "newo_portal.h"
 #include "newo_speaker.h"
 #include "newo_storage.h"
 #include "newo_usb_audio.h"
@@ -19,6 +20,7 @@
 NewoStorage newoStorage;
 NewoUsbStorage newoUsbStorage;
 NewoWiFi newoWiFi(newoStorage);
+NewoPortal newoPortal(newoStorage, newoWiFi);
 NewoLed newoLed;
 NewoDisplay newoDisplay;
 NewoCloud newoCloud(newoWiFi, newoDisplay, newoStorage);
@@ -88,6 +90,7 @@ void setup() {
   }
 
   newoWiFi.begin();
+  newoPortal.begin();
   newoCloud.begin();
   newoAudio.begin();
   newoSpeaker.begin();
@@ -131,6 +134,7 @@ void loop() {
   NewoSpeaker::PlaybackStarted speakerStarted;
   NewoSpeaker::Result speakerResult;
   newoWiFi.loop();
+  newoPortal.loop();
   newoCloud.loop();
   newoLed.setProvisioning(newoWiFi.provisioningActive());
   newoLed.setConnectivity(newoWiFi.connected() && newoCloud.connected());
