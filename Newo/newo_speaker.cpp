@@ -694,7 +694,9 @@ void NewoSpeaker::playbackTask() {
       i2sDrainMs_ = millis() - drainStartedMs;
     }
 
-    i2s_.end();
+    // NewoSpeakerOutput::end() also drains/release the selected D07 UAC2 sink.
+    // Completion must fail if that final physical USB drain reports an error.
+    if (!i2s_.end()) fail("speaker_output_end_failed");
     if (playbackStarted) playbackDurationMs_ = millis() - playbackStartedMs;
   }
   const uint32_t finalStackBytes = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
