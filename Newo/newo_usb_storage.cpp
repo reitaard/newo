@@ -88,9 +88,10 @@ void NewoUsbStorage::hostTask() {
     return;
   }
   hostInstalled_ = true;
-  Serial.printf("[usb-uac] FIFO lines RX=%u NPTX=%u PTX=%u; MPS IN=%u bulk-OUT=%u periodic-OUT=%u\n",
+  Serial.printf("[usb-uac] FIFO lines RX=%u NPTX=%u PTX=%u TOTAL=%u; MPS IN=%u bulk-OUT=%u periodic-OUT=%u\n",
                 NewoUac::kRxLines, NewoUac::kNptxLines, NewoUac::kPtxLines,
-                NewoUac::kInMps, NewoUac::kNptxLines * 4, NewoUac::kOutMps);
+                NewoUac::kFifoLinesTotal, NewoUac::kInMps,
+                NewoUac::kNptxLines * 4, NewoUac::kOutMps);
 
   msc_host_driver_config_t mscConfig = {};
   mscConfig.create_backround_task = true;
