@@ -1,0 +1,19 @@
+# ESP32-S3 / Newo hardware baseline
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+
+# Preserve the exact Arduino esp_sr_16 partition layout so the existing
+# srmodels.bin at 0xC10000 and NVS are not overwritten by this probe.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+
+# The Arduino-ESP32 prebuilt IDF library was capped at 256 bytes. This probe is
+# built by ESP-IDF itself, so the enumeration control buffer can be enlarged.
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=2048
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+CONFIG_USB_HOST_HUB_MULTI_LEVEL=y
