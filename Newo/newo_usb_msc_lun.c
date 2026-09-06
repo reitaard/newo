@@ -1,9 +1,5 @@
 /*
- * Newo-specific USB MSC diagnostics/recovery helpers.
- *
- * GET_MAX_LUN is intentionally kept outside Espressif's vendored MSC driver so
- * we can diagnose multi-slot readers without changing the proven LUN0 data path
- * before the physical device tells us what it actually exposes.
+ * Newo-specific USB MSC logical-unit helpers.
  */
 
 #include "newo_usb_msc_lun.h"
@@ -38,9 +34,10 @@ esp_err_t newo_msc_get_max_lun(msc_host_device_handle_t device, uint8_t *max_lun
         return ESP_ERR_TIMEOUT;
     }
 
+    esp_err_t result = ESP_OK;
     if (dev->gone) {
-        xSemaphoreGiveRecursive(dev->io_lock);
-        return ESP_ERR_INVALID_STATE;
+        result = ESP_ERR_INVALID_STATE;
+        goto done;
     }
 
     usb_setup_packet_t *setup = (usb_setup_packet_t *)dev->xfer->data_buffer;
@@ -48,21 +45,61 @@ esp_err_t newo_msc_get_max_lun(msc_host_device_handle_t device, uint8_t *max_lun
 
     const esp_err_t ret = msc_control_transfer(dev, USB_SETUP_PACKET_SIZE + 1);
     if (ret == ESP_OK) {
-        // BOT allows LUN values 0..15. Clamp a malformed peer rather than ever
-        // emitting an out-of-range CBW value in later diagnostics.
+        // BOT bCBWLUN is four bits. Clamp malformed peers to 15.
         const uint8_t reported = dev->xfer->data_buffer[USB_SETUP_PACKET_SIZE];
-        *max_lun = reported > 15 ? 15 : reported;
+        dev->max_lun = reported > 15 ? 15 : reported;
     } else if (dev->gone) {
-        xSemaphoreGiveRecursive(dev->io_lock);
-        return ESP_ERR_INVALID_STATE;
+        result = ESP_ERR_INVALID_STATE;
+        goto done;
     } else {
-        // BOT 1.0 explicitly permits a single-LUN device to STALL GET_MAX_LUN.
-        // The current control helper folds STALL into a transport error, so any
-        // failure here falls back to the required single-LUN assumption. The
-        // normal INQUIRY/TUR path remains authoritative for actual media health.
-        *max_lun = 0;
+        // BOT 1.0 permits a single-LUN device to STALL GET_MAX_LUN.
+        dev->max_lun = 0;
+    }
+
+    if (dev->active_lun > dev->max_lun) dev->active_lun = 0;
+    *max_lun = dev->max_lun;
+
+done:
+    xSemaphoreGiveRecursive(dev->io_lock);
+    return result;
+}
+
+esp_err_t newo_msc_select_lun(msc_host_device_handle_t device, uint8_t lun)
+{
+    if (device == NULL) return ESP_ERR_INVALID_ARG;
+    msc_device_t *dev = (msc_device_t *)device;
+    if (dev->gone || dev->io_lock == NULL) return ESP_ERR_INVALID_STATE;
+    if (lun > dev->max_lun || lun > 15) return ESP_ERR_INVALID_ARG;
+
+    if (xSemaphoreTakeRecursive(dev->io_lock, pdMS_TO_TICKS(1500)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    esp_err_t result = ESP_OK;
+    if (dev->gone) {
+        result = ESP_ERR_INVALID_STATE;
+    } else if (dev->media_ready && lun != dev->active_lun) {
+        // Never let a mounted/ready filesystem silently switch backing LUNs.
+        result = ESP_ERR_INVALID_STATE;
+    } else if (lun != dev->active_lun) {
+        dev->active_lun = lun;
+        dev->media_ready = false;
+        dev->disk.block_size = 0;
+        dev->disk.block_count = 0;
     }
 
     xSemaphoreGiveRecursive(dev->io_lock);
+    return result;
+}
+
+esp_err_t newo_msc_get_lun_state(msc_host_device_handle_t device,
+                                 uint8_t *active_lun,
+                                 uint8_t *max_lun)
+{
+    if (device == NULL || active_lun == NULL || max_lun == NULL) return ESP_ERR_INVALID_ARG;
+    msc_device_t *dev = (msc_device_t *)device;
+    if (dev->gone) return ESP_ERR_INVALID_STATE;
+    *active_lun = dev->active_lun;
+    *max_lun = dev->max_lun;
     return ESP_OK;
 }

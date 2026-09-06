@@ -45,6 +45,12 @@ typedef struct msc_host_device {
     msc_config_t config;
     usb_disk_t disk;
 
+    // BOT devices can expose multiple logical units. Every SCSI CBW uses
+    // active_lun, and Newo only changes it while no filesystem is mounted.
+    // GET_MAX_LUN is clamped to the BOT-defined 0..15 range.
+    uint8_t max_lun;
+    uint8_t active_lun;
+
     // USB transport and media are separate lifetimes. A reader/controller may
     // remain enumerated with no medium. DEV_GONE flips `gone` before VFS cleanup
     // so new I/O fails closed instead of touching an invalid USB handle.

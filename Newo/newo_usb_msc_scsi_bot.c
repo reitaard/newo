@@ -42,7 +42,7 @@ static const char *TAG = "USB_MSC_SCSI";
         .tag = ++cbw_tag,                      \
         .data_length = data_len,               \
         .flags = dir,                          \
-        .lun = 0,                              \
+        .lun = device->active_lun,             \
         .cbw_length = cbw_len,                 \
     }
 
@@ -355,7 +355,13 @@ esp_err_t scsi_cmd_read_capacity(msc_host_device_handle_t dev, uint32_t *block_s
         return ret;
     }
 
-    *block_count = __builtin_bswap32(response.block_count);
+    const uint32_t last_lba = __builtin_bswap32(response.block_count);
+    if (last_lba == UINT32_MAX) {
+        // READ CAPACITY(10) uses 0xffffffff as the sentinel for larger media.
+        // Newo does not issue READ CAPACITY(16) yet, so fail closed.
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    *block_count = last_lba + 1;
     *block_size = __builtin_bswap32(response.block_size);
     return ESP_OK;
 }

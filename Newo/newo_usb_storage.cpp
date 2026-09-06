@@ -29,6 +29,51 @@ uint32_t nextBackoff(uint8_t failures) {
   }
   return delay > kMediaRetryMaxMs ? kMediaRetryMaxMs : delay;
 }
+
+esp_err_t probeAnyLun(msc_host_device_handle_t device,
+                      bool verbose,
+                      uint8_t& selectedLun,
+                      uint8_t& maxLun) {
+  uint8_t activeLun = 0;
+  esp_err_t stateError = newo_msc_get_lun_state(device, &activeLun, &maxLun);
+  if (stateError != ESP_OK) return stateError;
+
+  // Probe the previously selected LUN first so card reinsertion into the same
+  // slot is one SCSI transaction path. Then scan the remaining reported LUNs.
+  for (uint8_t pass = 0; pass <= maxLun; ++pass) {
+    uint8_t lun = 0;
+    if (pass == 0) {
+      lun = activeLun;
+    } else {
+      const uint8_t candidate = static_cast<uint8_t>(pass - 1);
+      lun = candidate >= activeLun ? static_cast<uint8_t>(candidate + 1) : candidate;
+      if (lun > maxLun) continue;
+    }
+
+    esp_err_t selectError = newo_msc_select_lun(device, lun);
+    if (selectError != ESP_OK) return selectError;
+
+    const esp_err_t probeError = msc_host_probe_media(device);
+    if (probeError == ESP_OK) {
+      selectedLun = lun;
+      return ESP_OK;
+    }
+    if (probeError == ESP_ERR_MSC_MOUNT_FAILED) {
+      if (verbose) {
+        Serial.printf("[usb-storage] LUN_EMPTY — lun=%u\n",
+                      static_cast<unsigned>(lun));
+      }
+      continue;
+    }
+
+    // Transport errors are not equivalent to an empty slot. Preserve the
+    // existing BOT reset/backoff path instead of hiding a real USB failure by
+    // continuing to another LUN.
+    return probeError;
+  }
+
+  return ESP_ERR_MSC_MOUNT_FAILED;
+}
 }  // namespace
 
 bool NewoUsbStorage::begin(NewoUsbHost& host) {
@@ -174,9 +219,6 @@ void NewoUsbStorage::handleConnected(uint8_t address) {
   Serial.printf("[usb-storage] TRANSPORT_CONNECTED — address=%u\n",
                 static_cast<unsigned>(address));
 
-  // Diagnose the persistent 0x3A state before changing the data path. A BOT
-  // device may expose several logical units (for example a multi-slot reader),
-  // while Espressif's stock host path addresses LUN0 only.
   uint8_t maxLun = 0;
   const esp_err_t lunError = newo_msc_get_max_lun(device_, &maxLun);
   msc_host_device_info_t usbInfo = {};
@@ -191,7 +233,7 @@ void NewoUsbStorage::handleConnected(uint8_t address) {
                   esp_err_to_name(infoError), esp_err_to_name(lunError));
   }
   if (maxLun > 0) {
-    Serial.printf("[usb-storage] MULTI_LUN_DETECTED — max_lun=%u; media probe currently LUN0\n",
+    Serial.printf("[usb-storage] MULTI_LUN_ENABLED — scanning=0..%u\n",
                   static_cast<unsigned>(maxLun));
   }
 
@@ -201,20 +243,26 @@ void NewoUsbStorage::handleConnected(uint8_t address) {
 void NewoUsbStorage::probeMediaAndMount(bool firstProbe) {
   if (device_ == nullptr || releaseRetryPending_) return;
 
-  esp_err_t error = msc_host_probe_media(device_);
+  uint8_t selectedLun = 0;
+  uint8_t maxLun = 0;
+  esp_err_t error = probeAnyLun(device_, firstProbe, selectedLun, maxLun);
   if (error == ESP_OK) {
     const bool wasWaiting = mediaWaiting_;
     mediaWaiting_ = false;
     probeFailures_ = 0;
     retryDelayMs_ = kMediaRetryBaseMs;
-    if (wasWaiting) Serial.println("[usb-storage] MEDIA_READY");
+    if (firstProbe || wasWaiting) {
+      Serial.printf("[usb-storage] MEDIA_READY — lun=%u\n",
+                    static_cast<unsigned>(selectedLun));
+    }
     if (!mounted_) mountFilesystem();
     return;
   }
 
   if (error == ESP_ERR_MSC_MOUNT_FAILED) {
     if (firstProbe || !mediaWaiting_) {
-      Serial.printf("[usb-storage] MEDIA_ABSENT — reprobe=%lums\n",
+      Serial.printf("[usb-storage] MEDIA_ABSENT — luns=0..%u reprobe=%lums\n",
+                    static_cast<unsigned>(maxLun),
                     static_cast<unsigned long>(kMediaRetryBaseMs));
     }
     mediaWaiting_ = true;
@@ -237,7 +285,7 @@ void NewoUsbStorage::probeMediaAndMount(bool firstProbe) {
     mediaWaiting_ = true;
     probeFailures_ = 0;
     retryDelayMs_ = kMediaRetryBaseMs;
-    Serial.println("[usb-storage] MEDIA_ABSENT — recovered transport, media still absent");
+    Serial.println("[usb-storage] MEDIA_ABSENT — recovered transport, selected LUN still absent");
     return;
   }
 
@@ -252,11 +300,20 @@ void NewoUsbStorage::probeMediaAndMount(bool firstProbe) {
 bool NewoUsbStorage::mountFilesystem() {
   if (device_ == nullptr || !msc_host_media_ready(device_)) return false;
 
+  uint8_t activeLun = 0;
+  uint8_t maxLun = 0;
+  const esp_err_t lunState = newo_msc_get_lun_state(device_, &activeLun, &maxLun);
+
   msc_host_device_info_t info = {};
   if (msc_host_get_device_info(device_, &info) == ESP_OK) {
     const uint64_t capacity = static_cast<uint64_t>(info.sector_count) * info.sector_size;
-    Serial.printf("[usb-storage] capacity=%" PRIu64 " sector=%" PRIu32 "\n",
-                  capacity, info.sector_size);
+    if (lunState == ESP_OK) {
+      Serial.printf("[usb-storage] capacity=%" PRIu64 " sector=%" PRIu32 " lun=%u\n",
+                    capacity, info.sector_size, static_cast<unsigned>(activeLun));
+    } else {
+      Serial.printf("[usb-storage] capacity=%" PRIu64 " sector=%" PRIu32 "\n",
+                    capacity, info.sector_size);
+    }
   }
 
   esp_vfs_fat_mount_config_t mountConfig = {};
