@@ -5,46 +5,32 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
+#include <freertos/task.h>
 #include <usb/usb_host.h>
 
 #include "newo_usb_audio_descriptors.h"
+#include "newo_usb_host.h"
 
-// Production USB speaker path for the bench-validated Audiocular D07.
+// Dedicated D07 UAC2 client of NewoUsbHost.
 //
-// The D07 is UAC2 and exposes PCM16 stereo playback on interface 1 alt 1.
-// Newo's cloud speaker stream remains 24 kHz mono PCM16; this class converts
-// each 24 kHz mono sample into two identical 48 kHz stereo frames, preserving
-// full digital amplitude at 100% volume while matching the D07 clock exactly.
-//
-// USB client callbacks are serviced by NewoUsbStorage's monitor task. Control
-// requests may therefore block in the speaker task without blocking the host
-// event loop. Isochronous callbacks only recycle fixed transfer objects.
+// This class owns its own USB Host client handle and event task. It can retain,
+// claim and stream the D07 while storage and Arduino/VCP clients simultaneously
+// own different devices/interfaces behind the same hub.
 class NewoUsbAudio {
  public:
   static constexpr uint32_t kOutputRate = 48'000;
   static constexpr size_t kMono24SamplesPerBatch = 192;  // 8 ms at 24 kHz.
 
-  bool begin(usb_host_client_handle_t client);
-  bool connected(usb_device_handle_t device, uint8_t address);
-  void disconnected(usb_device_handle_t device);
-  void service();
+  bool begin(NewoUsbHost& host);
 
   bool speakerReady() const {
     return ready_.load() && !removed_.load() && device_ != nullptr && candidate_.valid;
   }
   bool speakerPlaying() const { return playing_.load(); }
 
-  // Claim the D07 PCM16 stereo alternate and set its UAC2 clock to 48 kHz.
   bool beginSpeakerPlayback();
-
-  // Queue up to one 8 ms batch of already-volume-scaled 24 kHz mono PCM16.
-  // Short final batches are padded with digital silence only after all valid
-  // source samples, so Newo's original PCM byte accounting is unchanged.
   bool writeSpeakerMono24(const int16_t* samples, size_t sampleCount,
                           uint32_t timeoutMs = 100);
-
-  // Drain all submitted USB packets, return the interface to alt 0 and release
-  // it. Returns false if any transfer/packet/control error occurred.
   bool endSpeakerPlayback(uint32_t* drainMs = nullptr);
 
   uint32_t transferErrors() const { return transferErrors_.load(); }
@@ -67,9 +53,6 @@ class NewoUsbAudio {
     ABANDONED = 2,
   };
 
-  // Heap-owned because a USB control callback can legally arrive after the
-  // caller's timeout. If the caller abandons a request, the callback becomes
-  // the owner of the transfer/semaphore/context and frees all three.
   struct ControlWait {
     SemaphoreHandle_t done = nullptr;
     std::atomic<ControlState> state{ControlState::WAITING};
@@ -82,13 +65,20 @@ class NewoUsbAudio {
   static constexpr uint8_t kControlInterface = 0;
   static constexpr uint8_t kPacketsPerTransfer = 8;
   static constexpr uint8_t kTransferCount = 4;
-  static constexpr size_t kPacketBytes = 192;   // 1 ms: 48 frames * stereo * 16-bit.
+  static constexpr size_t kPacketBytes = 192;
   static constexpr size_t kTransferBytes = kPacketBytes * kPacketsPerTransfer;
 
   static uint16_t le16(const uint8_t* value);
   static uint32_t le32(const uint8_t* value);
   static void putLe32(uint8_t* value, uint32_t data);
   static PlaybackCandidate findPlayback(const usb_config_desc_t* config);
+
+  static void clientTaskEntry(void* arg);
+  static void clientEvent(const usb_host_client_event_msg_t* event, void* arg);
+  void clientTask();
+  void handleConnected(uint8_t address);
+  void handleDisconnected(usb_device_handle_t device);
+  void service();
 
   static void controlDone(usb_transfer_t* transfer);
   static void speakerTransferDone(usb_transfer_t* transfer);
@@ -100,11 +90,14 @@ class NewoUsbAudio {
   esp_err_t getClockRate(uint32_t* rate);
   esp_err_t setInterface(uint8_t alt);
 
+  bool attachIfD07(usb_device_handle_t device, uint8_t address);
   bool allocateTransfers();
   void releaseTransfers();
   bool waitForDrain(uint32_t timeoutMs);
   void resetTransportStats();
 
+  NewoUsbHost* host_ = nullptr;
+  TaskHandle_t clientTask_ = nullptr;
   usb_host_client_handle_t client_ = nullptr;
   usb_device_handle_t device_ = nullptr;
   uint8_t address_ = 0;
