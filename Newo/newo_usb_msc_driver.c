@@ -89,6 +89,7 @@ static portMUX_TYPE msc_lock = portMUX_INITIALIZER_UNLOCKED;
 #define MSC_NO_SENSE        0x00
 #define MSC_NOT_READY       0x02
 #define MSC_UNIT_ATTENTION  0x06
+#define MSC_MEDIUM_NOT_PRESENT 0x3A
 
 static const char *TAG = "USB_MSC";
 typedef struct {
@@ -296,6 +297,14 @@ static esp_err_t msc_wait_for_ready_state(msc_device_t *dev, size_t timeout_ms)
         } else {
             // Some MSC devices report 'NOT READY TO READY TRANSITION - MEDIA CHANGED', which isn't cleared until a REQUEST SENSE is performed.
             MSC_RETURN_ON_ERROR( scsi_cmd_sense(dev, &sense) );
+            // ASC 0x3A means the USB MSC interface is present but the storage
+            // medium is not. Waiting 5 s and issuing TEST UNIT READY every
+            // 100 ms cannot change that state. Return a distinct install-time
+            // result so Newo can keep the shared host alive and reprobe the
+            // media at a low rate without blocking UAC/VCP clients.
+            if (sense.key == MSC_NOT_READY && sense.code == MSC_MEDIUM_NOT_PRESENT) {
+                return ESP_ERR_MSC_MOUNT_FAILED;
+            }
             if (sense.key != MSC_NOT_READY &&
                     sense.key != MSC_UNIT_ATTENTION &&
                     sense.key != MSC_NO_SENSE) {
@@ -576,7 +585,7 @@ esp_err_t msc_host_read_sector(msc_host_device_handle_t device, size_t sector, v
     return scsi_cmd_read10(dev, data, sector, 1, dev->disk.block_size);
 }
 
-esp_err_t msc_host_write_sector(msc_host_device_handle_t device, size_t sector, const void *data, size_t size)
+esp_err_t msc_host_write_sector(msc_host_device_handle_t device, size_t sector, void *data, size_t size)
 {
     MSC_RETURN_ON_INVALID_ARG(device);
     msc_device_t *dev = (msc_device_t *)device;
