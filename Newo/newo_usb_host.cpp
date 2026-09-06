@@ -33,6 +33,8 @@ bool NewoUsbHost::begin() {
   Serial.printf("[usb-host] FIFO RX=%u NPTX=%u PTX=%u TOTAL=%u MPS-IN=%u bulk-OUT=%u periodic-OUT=%u\n",
                 kRxFifoLines, kNptxFifoLines, kPtxFifoLines, kFifoLinesTotal,
                 kMaxInPacketBytes, kMaxNonPeriodicOutBytes, kMaxPeriodicOutBytes);
+  Serial.printf("[usb-host] CHANNEL_BUDGET total=%u enumeration_reserve=%u exhaustion=clean-fail\n",
+                kHostChannels, kEnumerationChannelReserve);
   Serial.println("[usb-host] HOST_INSTALLED — waiting for clients");
   return true;
 }
@@ -54,9 +56,9 @@ bool NewoUsbHost::start() {
     return false;
   }
 
-  Serial.printf("[usb-host] HOST_READY — shared manager direct_clients=%lu msc=%u\n",
+  Serial.printf("[usb-host] HOST_READY — shared manager direct_clients=%lu msc=%u cdc=%u\n",
                 static_cast<unsigned long>(directClients_.load()),
-                mscInstalled_.load() ? 1U : 0U);
+                mscInstalled_.load() ? 1U : 0U, cdcInstalled_.load() ? 1U : 0U);
   return true;
 }
 
@@ -130,5 +132,29 @@ bool NewoUsbHost::uninstallMscClient() {
   }
   mscInstalled_.store(false);
   Serial.println("[usb-host] CLIENT_RELEASED — name=storage-msc");
+  return true;
+}
+
+bool NewoUsbHost::installCdcClient(const cdc_acm_host_driver_config_t& config) {
+  if (!hostInstalled_.load() || cdcInstalled_.load()) return false;
+  const esp_err_t error = cdc_acm_host_install(&config);
+  if (error != ESP_OK) {
+    logHostError("CDC_CLIENT_FAILED", error);
+    return false;
+  }
+  cdcInstalled_.store(true);
+  Serial.println("[usb-host] CLIENT_READY — name=vcp-cdc");
+  return true;
+}
+
+bool NewoUsbHost::uninstallCdcClient() {
+  if (!cdcInstalled_.load()) return true;
+  const esp_err_t error = cdc_acm_host_uninstall();
+  if (error != ESP_OK) {
+    logHostError("CDC_CLIENT_RELEASE_FAILED", error);
+    return false;
+  }
+  cdcInstalled_.store(false);
+  Serial.println("[usb-host] CLIENT_RELEASED — name=vcp-cdc");
   return true;
 }

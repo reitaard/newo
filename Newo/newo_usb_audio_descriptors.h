@@ -2,7 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "newo_usb_host.h"
+#include "newo_usb_host_limits.h"
 
 namespace NewoUac {
 constexpr unsigned kMaxAlts = 16;
@@ -10,8 +10,9 @@ constexpr unsigned kMaxRates = 16;
 // Audio diagnostics consume the global limits owned by NewoUsbHost. USB class
 // clients must never carry independent FIFO policy because all devices behind
 // the hub share the same ESP32-S3 DWC hardware budget.
-constexpr unsigned kInMps = NewoUsbHost::kMaxInPacketBytes;
-constexpr unsigned kOutMps = NewoUsbHost::kMaxPeriodicOutBytes;
+constexpr unsigned kInMps = NewoUsbHostLimits::kMaxInPacketBytes;
+constexpr unsigned kOutMps = NewoUsbHostLimits::kMaxPeriodicOutBytes;
+constexpr unsigned kNptxLines = NewoUsbHostLimits::kNptxFifoLines;
 struct Alt {
   uint8_t interfaceNumber = 0, alternate = 0, protocol = 0;
   uint8_t endpoint = 0, attributes = 0, interval = 0, endpoints = 0;

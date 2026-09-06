@@ -5,7 +5,10 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <usb/msc_host.h>
+#include <usb/cdc_acm_host.h>
 #include <usb/usb_host.h>
+
+#include "newo_usb_host_limits.h"
 
 // Owns the one ESP32-S3 USB Host Library instance for all Newo USB features.
 //
@@ -22,15 +25,15 @@ class NewoUsbHost {
   // resource, not an audio setting: periodic OUT fits the D07's 384-byte
   // packet, non-periodic OUT remains available for MSC/control, and RX remains
   // large enough for the 208-byte USB-audio endpoint observed on the bench.
-  static constexpr unsigned kRxFifoLines = 72;
-  static constexpr unsigned kNptxFifoLines = 32;
-  static constexpr unsigned kPtxFifoLines = 96;
-  static constexpr unsigned kFifoLinesTotal =
-      kRxFifoLines + kNptxFifoLines + kPtxFifoLines;
-  static constexpr unsigned kMaxPeriodicOutBytes = kPtxFifoLines * 4;
-  static constexpr unsigned kMaxNonPeriodicOutBytes = kNptxFifoLines * 4;
-  static constexpr unsigned kMaxInPacketBytes = (kRxFifoLines - 2) * 4;
-  static_assert(kFifoLinesTotal == 200, "ESP32-S3 USB host FIFO budget");
+  static constexpr unsigned kRxFifoLines = NewoUsbHostLimits::kRxFifoLines;
+  static constexpr unsigned kNptxFifoLines = NewoUsbHostLimits::kNptxFifoLines;
+  static constexpr unsigned kPtxFifoLines = NewoUsbHostLimits::kPtxFifoLines;
+  static constexpr unsigned kFifoLinesTotal = NewoUsbHostLimits::kFifoLinesTotal;
+  static constexpr unsigned kMaxPeriodicOutBytes = NewoUsbHostLimits::kMaxPeriodicOutBytes;
+  static constexpr unsigned kMaxNonPeriodicOutBytes = NewoUsbHostLimits::kMaxNonPeriodicOutBytes;
+  static constexpr unsigned kMaxInPacketBytes = NewoUsbHostLimits::kMaxInPacketBytes;
+  static constexpr unsigned kHostChannels = NewoUsbHostLimits::kHostChannels;
+  static constexpr unsigned kEnumerationChannelReserve = NewoUsbHostLimits::kEnumerationChannelReserve;
 
   bool begin();
   bool start();
@@ -50,8 +53,14 @@ class NewoUsbHost {
   bool installMscClient(const msc_host_driver_config_t& config);
   bool uninstallMscClient();
 
+  // Espressif class drivers own their internal clients, but NewoUsbHost owns
+  // installation order/lifetime so no feature can create another host stack.
+  bool installCdcClient(const cdc_acm_host_driver_config_t& config);
+  bool uninstallCdcClient();
+
   uint32_t directClientCount() const { return directClients_.load(); }
   bool mscClientInstalled() const { return mscInstalled_.load(); }
+  bool cdcClientInstalled() const { return cdcInstalled_.load(); }
 
  private:
   static void hostTaskEntry(void* arg);
@@ -61,6 +70,7 @@ class NewoUsbHost {
   std::atomic<bool> hostInstalled_{false};
   std::atomic<bool> running_{false};
   std::atomic<bool> mscInstalled_{false};
+  std::atomic<bool> cdcInstalled_{false};
   std::atomic<uint32_t> directClients_{0};
 };
 

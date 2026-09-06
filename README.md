@@ -29,6 +29,8 @@ Newo uses the ESP32-S3 native OTG port as a USB host. The IDF USB Host Library, 
 
 USB Audio Class diagnostics and opt-in UAC1 microphone/tone/duplex tests share this host with MSC. They do not replace the I2S audio paths. See [USB audio validation](docs/usb-audio.md) for serial commands, supported formats, FIFO/MPS analysis and the physical test procedure.
 
+Arduino USB serial support shares the same host through a generic bounded VCP transport backed by Espressif CDC-ACM, CH34x, CP210x and FTDI drivers. The separate Arduino-node layer provides a version/capability handshake, request IDs, acknowledgements and unsolicited events; no servo, buzzer, relay or firmware-flashing features are enabled. See [Arduino USB/VCP validation](docs/usb-vcp.md).
+
 ## Wi-Fi and provisioning
 
 Newo stores up to eight Wi-Fi networks in ESP32 Preferences/NVS. At boot it scans the supported 2.4 GHz band, filters the results to saved SSIDs, ranks visible saved networks by RSSI, and attempts them strongest-first. A disconnected device retries saved networks within bounded recovery windows.

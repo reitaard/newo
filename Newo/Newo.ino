@@ -1,6 +1,7 @@
 #include <Arduino.h>
 
 #include "newo_audio.h"
+#include "newo_arduino_node.h"
 #include "newo_cloud.h"
 #include "newo_config.h"
 #include "newo_display.h"
@@ -75,6 +76,8 @@ void setup() {
     }
     if (!newoUsbVcp.begin(newoUsbHost)) {
       Serial.println("[usb-vcp] CLIENT_FAILED — reason=startup");
+    } else if (!newoArduinoNode.begin(newoUsbVcp)) {
+      Serial.println("[arduino] START_FAILED — reason=startup");
     }
     if (!newoUsbHost.start()) {
       Serial.println("[usb-host] HOST_FAILED — reason=event_pump");

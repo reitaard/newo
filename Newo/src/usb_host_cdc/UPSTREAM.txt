@@ -1,0 +1,5 @@
+Espressif esp-usb CDC/VCP sources
+Repository: https://github.com/espressif/esp-usb
+Commit: 9067a5e6abee710b7df0c4dde973b54cb2699ea7
+Components: usb_host_cdc_acm 2.4.1 plus CH34x, CP210x and FTDI C drivers
+License: Apache-2.0 (see LICENSE)

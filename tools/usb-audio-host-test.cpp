@@ -26,7 +26,7 @@ int main() {
   Alt a; uint32_t hz = 0;
   assert(select(d,2,true,a,hz) && hz == 16000 && a.mps == 208 && a.alternate == 3);
   assert(!select(d,2,false,a,hz));
-  assert(kInMps == 504 && kOutMps == 384 && kNptxLines * 4 >= 64);
+  assert(kInMps == 280 && kOutMps == 384 && kNptxLines * 4 >= 64);
   d.alts[1].mps = 505; assert(!select(d,2,true,a,hz));
   d.alts[1].mps = 208; d.alts[1].interval = 2; assert(!select(d,2,true,a,hz));
   d.alts[1].interval = 1; d.alts[1].endpoints = 2; assert(!select(d,2,true,a,hz));
