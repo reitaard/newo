@@ -19,10 +19,58 @@
 static usb_disk_t *s_disks[FF_VOLUMES] = { NULL };
 static const char *TAG = "diskio_usb";
 
+// Keep each BOT data phase modest on ESP32-S3. FatFS may request many sectors
+// at once; splitting them avoids making a single large USB transfer the failure
+// domain. Reads are safe to retry once after BOT reset recovery. Writes are
+// deliberately never retried because a device may have committed an interrupted
+// WRITE10 even if the host did not receive the final CSW.
+#define MSC_IO_MAX_BYTES 4096U
+
 static msc_device_t *get_device(BYTE pdrv)
 {
     if (pdrv >= FF_VOLUMES || s_disks[pdrv] == NULL) return NULL;
     return __containerof(s_disks[pdrv], msc_device_t, disk);
+}
+
+static UINT max_sectors_per_bot(const msc_device_t *dev)
+{
+    if (dev == NULL || dev->disk.block_size == 0) return 1;
+    UINT sectors = (UINT)(MSC_IO_MAX_BYTES / dev->disk.block_size);
+    return sectors == 0 ? 1 : sectors;
+}
+
+static esp_err_t read_chunk_with_recovery(msc_device_t *dev, BYTE *buff,
+                                          DWORD sector, UINT count)
+{
+    esp_err_t err = scsi_cmd_read10(dev, buff, sector, count, dev->disk.block_size);
+    if (err == ESP_OK) return ESP_OK;
+
+    if (dev->gone || err == ESP_ERR_MSC_MOUNT_FAILED || !dev->media_ready) {
+        dev->media_ready = false;
+        return err;
+    }
+
+    // A read is idempotent, so a single BOT reset + retry is safe. This also
+    // distinguishes a transient full-speed USB error from an actual removal.
+    ESP_LOGW(TAG, "read transport error (%s), recovering sector=%"PRIu32" count=%u",
+             esp_err_to_name(err), (uint32_t)sector, (unsigned)count);
+    const esp_err_t recovery = msc_host_reset_recovery(dev);
+    if (recovery != ESP_OK || dev->gone) {
+        dev->media_ready = false;
+        ESP_LOGE(TAG, "read recovery failed (%s)", esp_err_to_name(recovery));
+        return recovery != ESP_OK ? recovery : err;
+    }
+
+    err = scsi_cmd_read10(dev, buff, sector, count, dev->disk.block_size);
+    if (err != ESP_OK || dev->gone) {
+        dev->media_ready = false;
+        ESP_LOGE(TAG, "read retry failed (%s)", esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGW(TAG, "read recovered sector=%"PRIu32" count=%u",
+             (uint32_t)sector, (unsigned)count);
+    return ESP_OK;
 }
 
 static DSTATUS usb_disk_initialize(BYTE pdrv)
@@ -47,26 +95,28 @@ static DRESULT usb_disk_read(BYTE pdrv, BYTE *buff, DWORD sector, UINT count)
 
     const size_t sector_size = dev->disk.block_size;
     if (sector_size == 0) return RES_NOTRDY;
-    const esp_err_t err = scsi_cmd_read10(dev, buff, sector, count, sector_size);
-    if (err != ESP_OK) {
-        /*
-         * Fail closed on every failed sector transaction, not only an already
-         * classified MEDIUM NOT PRESENT condition. During a physical unplug the
-         * BOT/data transfer can fail a few milliseconds before DEV_GONE reaches
-         * the MSC client. Leaving media_ready=true in that window lets FatFS
-         * issue more requests against a transport that is already failing.
-         *
-         * Reads are safe to abandon and re-open after the storage worker has
-         * invalidated/re-probed the mount. Do not retry here: BOT recovery and
-         * remount belong to the storage state machine.
-         */
-        dev->media_ready = false;
-        if (err != ESP_ERR_MSC_MOUNT_FAILED && !dev->gone) {
+
+    const UINT max_sectors = max_sectors_per_bot(dev);
+    UINT remaining = count;
+    DWORD current_sector = sector;
+    BYTE *current = buff;
+
+    while (remaining > 0) {
+        const UINT chunk = remaining > max_sectors ? max_sectors : remaining;
+        const esp_err_t err = read_chunk_with_recovery(dev, current, current_sector, chunk);
+        if (err != ESP_OK) {
+            if (err == ESP_ERR_MSC_MOUNT_FAILED || dev->gone || !dev->media_ready) {
+                dev->media_ready = false;
+                return RES_NOTRDY;
+            }
+            dev->media_ready = false;
             ESP_LOGE(TAG, "read failed (%s); media invalidated", esp_err_to_name(err));
+            return RES_ERROR;
         }
-        return RES_NOTRDY;
+        current += (size_t)chunk * sector_size;
+        current_sector += chunk;
+        remaining -= chunk;
     }
-    if (dev->gone || !dev->media_ready) return RES_NOTRDY;
     return RES_OK;
 }
 
@@ -78,21 +128,28 @@ static DRESULT usb_disk_write(BYTE pdrv, const BYTE *buff, DWORD sector, UINT co
 
     const size_t sector_size = dev->disk.block_size;
     if (sector_size == 0) return RES_NOTRDY;
-    const esp_err_t err = scsi_cmd_write10(dev, buff, sector, count, sector_size);
-    if (err != ESP_OK) {
-        /*
-         * An interrupted write has unknown commit state. Never retry it: the
-         * target may have accepted the payload even if the host missed the CSW.
-         * Invalidate the mount immediately so no later FatFS request can build on
-         * an uncertain filesystem state. Recovery is a clean re-probe/remount.
-         */
-        dev->media_ready = false;
-        if (err != ESP_ERR_MSC_MOUNT_FAILED && !dev->gone) {
+
+    const UINT max_sectors = max_sectors_per_bot(dev);
+    UINT remaining = count;
+    DWORD current_sector = sector;
+    const BYTE *current = buff;
+
+    while (remaining > 0) {
+        const UINT chunk = remaining > max_sectors ? max_sectors : remaining;
+        const esp_err_t err = scsi_cmd_write10(dev, current, current_sector,
+                                               chunk, sector_size);
+        if (err != ESP_OK) {
+            // Never retry an uncertain write. Fail closed and force a clean
+            // remount/probe before any subsequent filesystem operation.
+            dev->media_ready = false;
+            if (err == ESP_ERR_MSC_MOUNT_FAILED || dev->gone) return RES_NOTRDY;
             ESP_LOGE(TAG, "write failed (%s); media invalidated", esp_err_to_name(err));
+            return RES_ERROR;
         }
-        return RES_NOTRDY;
+        current += (size_t)chunk * sector_size;
+        current_sector += chunk;
+        remaining -= chunk;
     }
-    if (dev->gone || !dev->media_ready) return RES_NOTRDY;
     return RES_OK;
 }
 
