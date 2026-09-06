@@ -1,10 +1,11 @@
-name: Production Newo USB audio build
+name: Production Newo USB host build
 
 on:
   workflow_dispatch:
   push:
     branches:
       - production-usb-audio
+      - usb-host-manager
       - main
     paths:
       - "Newo/**"
@@ -21,9 +22,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Build the ESP-IDF 5.5.4 USB component with the exact host settings
-      # already proven on the physical D07/hub bench. Arduino's stock prebuilt
-      # USB archive has CONTROL_TRANSFER_MAX_SIZE=256; D07 needs 270 bytes.
       - name: Build proven USB host library with ESP-IDF 5.5.4
         uses: espressif/esp-idf-ci-action@v1
         with:
