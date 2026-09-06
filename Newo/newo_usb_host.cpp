@@ -16,8 +16,7 @@ void logHostError(const char* event, esp_err_t error) {
 }  // namespace
 
 bool NewoUsbHost::begin() {
-  if (ready_.load()) return true;
-  if (hostInstalled_.load()) return false;
+  if (hostInstalled_.load()) return true;
 
   usb_host_config_t hostConfig = {};
   hostConfig.intr_flags = ESP_INTR_FLAG_LEVEL1;
@@ -29,28 +28,37 @@ bool NewoUsbHost::begin() {
   hostConfig.fifo_settings_custom.nptx_fifo_lines = NewoUac::kNptxLines;
   hostConfig.fifo_settings_custom.ptx_fifo_lines = NewoUac::kPtxLines;
 
-  esp_err_t error = usb_host_install(&hostConfig);
+  const esp_err_t error = usb_host_install(&hostConfig);
   if (error != ESP_OK) {
     logHostError("HOST_FAILED", error);
     return false;
   }
   hostInstalled_.store(true);
 
-  if (xTaskCreate(hostTaskEntry, "newo-usb-host", kHostTaskStack, this,
-                  kHostTaskPriority, &hostTask_) != pdPASS) {
-    Serial.println("[usb-host] HOST_FAILED — reason=host_task");
-    usb_host_uninstall();
-    hostInstalled_.store(false);
-    hostTask_ = nullptr;
-    return false;
-  }
-
-  ready_.store(true);
   Serial.printf("[usb-host] FIFO RX=%u NPTX=%u PTX=%u TOTAL=%u MPS-IN=%u bulk-OUT=%u periodic-OUT=%u\n",
                 NewoUac::kRxLines, NewoUac::kNptxLines, NewoUac::kPtxLines,
                 NewoUac::kFifoLinesTotal, NewoUac::kInMps,
                 NewoUac::kNptxLines * 4, NewoUac::kOutMps);
-  Serial.println("[usb-host] HOST_READY — shared manager");
+  Serial.println("[usb-host] HOST_INSTALLED — waiting for clients");
+  return true;
+}
+
+bool NewoUsbHost::start() {
+  if (!hostInstalled_.load()) return false;
+  if (running_.load()) return true;
+  if (hostTask_ != nullptr) return false;
+
+  if (xTaskCreate(hostTaskEntry, "newo-usb-host", kHostTaskStack, this,
+                  kHostTaskPriority, &hostTask_) != pdPASS) {
+    Serial.println("[usb-host] HOST_FAILED — reason=host_task");
+    hostTask_ = nullptr;
+    return false;
+  }
+
+  running_.store(true);
+  Serial.printf("[usb-host] HOST_READY — shared manager direct_clients=%lu msc=%u\n",
+                static_cast<unsigned long>(directClients_.load()),
+                mscInstalled_.load() ? 1U : 0U);
   return true;
 }
 
@@ -64,7 +72,7 @@ void NewoUsbHost::hostTask() {
     const esp_err_t error = usb_host_lib_handle_events(portMAX_DELAY, &eventFlags);
     if (error == ESP_OK || error == ESP_ERR_TIMEOUT) continue;
     logHostError("HOST_EVENT_FAILED", error);
-    ready_.store(false);
+    running_.store(false);
     break;
   }
   hostTask_ = nullptr;
@@ -74,7 +82,7 @@ void NewoUsbHost::hostTask() {
 bool NewoUsbHost::registerClient(const usb_host_client_config_t& config,
                                  usb_host_client_handle_t* handle,
                                  const char* name) {
-  if (!ready_.load() || handle == nullptr || *handle != nullptr) return false;
+  if (!hostInstalled_.load() || handle == nullptr || *handle != nullptr) return false;
   const esp_err_t error = usb_host_client_register(&config, handle);
   if (error != ESP_OK) {
     Serial.printf("[usb-host] CLIENT_FAILED — name=%s reason=%s\n",
@@ -104,7 +112,7 @@ bool NewoUsbHost::deregisterClient(usb_host_client_handle_t handle, const char* 
 }
 
 bool NewoUsbHost::installMscClient(const msc_host_driver_config_t& config) {
-  if (!ready_.load() || mscInstalled_.load()) return false;
+  if (!hostInstalled_.load() || mscInstalled_.load()) return false;
   const esp_err_t error = msc_host_install(&config);
   if (error != ESP_OK) {
     logHostError("MSC_CLIENT_FAILED", error);
