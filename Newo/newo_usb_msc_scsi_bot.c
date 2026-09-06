@@ -462,7 +462,7 @@ esp_err_t scsi_cmd_mode_sense(msc_host_device_handle_t dev)
     mode_sense_response_t response = { 0 };
 
     mode_sense_t cbw = {
-        CBW_BASE_INIT(IN_DIR, CBW_CMD_SIZE(cbw_mode_sense_t), sizeof(response)),
+        CBW_BASE_INIT(IN_DIR, CBW_CMD_SIZE(mode_sense_t), sizeof(response)),
         .opcode = SCSI_CMD_MODE_SENSE,
         .pc_page_code = 0x3F,
         .parameter_list_length = sizeof(response),
@@ -481,7 +481,7 @@ esp_err_t scsi_cmd_prevent_removal(msc_host_device_handle_t dev, bool prevent)
 {
     msc_device_t *device = (msc_device_t *)dev;
     prevent_allow_medium_removal_t cbw = {
-        CBW_BASE_INIT(OUT_DIR, CBW_CMD_SIZE(cbw_prevent_allow_medium_removal_t), 0),
+        CBW_BASE_INIT(OUT_DIR, CBW_CMD_SIZE(prevent_allow_medium_removal_t), 0),
         .opcode = SCSI_CMD_PREVENT_ALLOW_MEDIUM_REMOVAL,
         .prevent = (uint8_t) prevent,
     };
