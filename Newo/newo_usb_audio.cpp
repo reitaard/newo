@@ -1,237 +1,513 @@
 #include "newo_usb_audio.h"
-#include <cmath>
+
 #include <cstring>
-#include <esp_heap_caps.h>
+#include <esp_err.h>
 
 NewoUsbAudio newoUsbAudio;
+
 namespace {
-constexpr uint32_t kRingBytes = 8192;
-void error(const char* action, esp_err_t e) {
-  Serial.printf("[usb-uac] %s reason=%s\n", action, esp_err_to_name(e));
+constexpr uint8_t kUac2CurRequest = 0x01;
+constexpr uint8_t kUac2ClockSamFreqControl = 0x01;
+
+void logUsbAudioError(const char* action, esp_err_t error) {
+  Serial.printf("[usb-uac2] %s — reason=%s\n", action, esp_err_to_name(error));
 }
-void stringDescriptor(const char* name, const usb_str_desc_t* str) {
-  char text[128] = {};
-  if (str && str->bLength >= 2) {
-    unsigned count = (str->bLength - 2) / 2;
-    if (count > sizeof(text) - 1) count = sizeof(text) - 1;
-    for (unsigned i = 0; i < count; ++i) {
-      const uint16_t c = str->wData[i];
-      text[i] = c >= 32 && c < 127 ? char(c) : '?';
+}  // namespace
+
+uint16_t NewoUsbAudio::le16(const uint8_t* value) {
+  return static_cast<uint16_t>(value[0]) |
+         (static_cast<uint16_t>(value[1]) << 8);
+}
+
+uint32_t NewoUsbAudio::le32(const uint8_t* value) {
+  return static_cast<uint32_t>(value[0]) |
+         (static_cast<uint32_t>(value[1]) << 8) |
+         (static_cast<uint32_t>(value[2]) << 16) |
+         (static_cast<uint32_t>(value[3]) << 24);
+}
+
+void NewoUsbAudio::putLe32(uint8_t* value, uint32_t data) {
+  value[0] = static_cast<uint8_t>(data);
+  value[1] = static_cast<uint8_t>(data >> 8);
+  value[2] = static_cast<uint8_t>(data >> 16);
+  value[3] = static_cast<uint8_t>(data >> 24);
+}
+
+NewoUsbAudio::PlaybackCandidate NewoUsbAudio::findPlayback(const usb_config_desc_t* config) {
+  PlaybackCandidate result;
+  if (config == nullptr) return result;
+
+  const uint8_t* raw = reinterpret_cast<const uint8_t*>(config);
+  const size_t total = config->wTotalLength;
+  uint8_t iface = 0;
+  uint8_t alt = 0;
+  uint8_t ifaceClass = 0;
+  uint8_t ifaceSubclass = 0;
+  uint8_t ifaceProtocol = 0;
+  uint8_t terminalLink = 0;
+  uint8_t channels = 0;
+  uint8_t subslot = 0;
+  uint8_t bits = 0;
+  uint8_t streamingTerminal = 0;
+  uint8_t clockId = 0;
+
+  for (size_t pos = 0; pos + 2 <= total;) {
+    const uint8_t* descriptor = raw + pos;
+    const uint8_t length = descriptor[0];
+    const uint8_t type = descriptor[1];
+    if (length < 2 || pos + length > total) break;
+
+    if (type == 0x04 && length >= 9) {
+      iface = descriptor[2];
+      alt = descriptor[3];
+      ifaceClass = descriptor[5];
+      ifaceSubclass = descriptor[6];
+      ifaceProtocol = descriptor[7];
+      terminalLink = 0;
+      channels = 0;
+      subslot = 0;
+      bits = 0;
+    } else if (type == 0x24 && length >= 3 && ifaceClass == 0x01 && ifaceProtocol == 0x20) {
+      const uint8_t subtype = descriptor[2];
+
+      // UAC2 Input Terminal representing the USB streaming source.
+      if (ifaceSubclass == 0x01 && subtype == 0x02 && length >= 17 &&
+          le16(descriptor + 4) == 0x0101) {
+        streamingTerminal = descriptor[3];
+        clockId = descriptor[7];
+      }
+
+      // UAC2 AudioStreaming AS_GENERAL.
+      if (ifaceSubclass == 0x02 && subtype == 0x01 && length >= 16) {
+        terminalLink = descriptor[3];
+        const uint8_t formatType = descriptor[5];
+        const uint32_t formats = le32(descriptor + 6);
+        channels = descriptor[10];
+        if (formatType != 0x01 || (formats & 0x00000001U) == 0) channels = 0;
+      }
+
+      // UAC2 Type-I format descriptor.
+      if (ifaceSubclass == 0x02 && subtype == 0x02 && length >= 6 && descriptor[3] == 0x01) {
+        subslot = descriptor[4];
+        bits = descriptor[5];
+      }
+    } else if (type == 0x05 && length >= 7 && ifaceClass == 0x01 &&
+               ifaceSubclass == 0x02 && ifaceProtocol == 0x20) {
+      const uint8_t endpoint = descriptor[2];
+      const uint8_t attributes = descriptor[3];
+      const uint16_t mps = le16(descriptor + 4) & 0x07ff;
+      const bool outputIsochronous = ((endpoint & 0x80) == 0) && ((attributes & 0x03) == 0x01);
+      if (outputIsochronous && channels == 2 && subslot == 2 && bits == 16 &&
+          terminalLink != 0 && terminalLink == streamingTerminal && clockId != 0 &&
+          mps >= kPacketBytes && mps <= 384) {
+        result.iface = iface;
+        result.alt = alt;
+        result.endpoint = endpoint;
+        result.clockId = clockId;
+        result.mps = mps;
+        result.valid = true;
+        return result;
+      }
     }
+
+    pos += length;
   }
-  Serial.printf("[usb-uac] %s=%s\n", name, str ? text : "<unavailable>");
+
+  return result;
 }
-}
+
 bool NewoUsbAudio::begin(usb_host_client_handle_t client) {
   client_ = client;
-  uac_host_driver_config_t config = {};
-  config.create_background_task = true;
-  config.task_priority = 2;
-  config.stack_size = 4096;
-  config.core_id = tskNO_AFFINITY;
-  // Discovery/diagnostics use the existing monitor client, not a second daemon.
-  config.callback = [](uint8_t, uint8_t, uac_host_driver_event_t, void*) {};
-  const esp_err_t e = uac_host_install(&config);
-  enabled_ = e == ESP_OK;
-  if (!enabled_) error("driver unavailable; diagnostics remain available", e);
-  Serial.printf("[usb-uac] UAC1 experimental driver=%s; no automatic audio. Commands: uac mic | uac tone | uac duplex | uac stop | uac status\n", enabled_ ? "ready" : "unavailable");
-  return enabled_;
+  Serial.println("[usb-uac2] production D07 playback ready; preferred output when connected");
+  return client_ != nullptr;
 }
+
 bool NewoUsbAudio::connected(usb_device_handle_t device, uint8_t address) {
-  const usb_config_desc_t* cfg = nullptr;
-  esp_err_t e = usb_host_get_active_config_descriptor(device, &cfg);
-  if (e != ESP_OK || !cfg) { error("descriptor read failed", e); return false; }
-  const auto set = NewoUac::parse(reinterpret_cast<const uint8_t*>(cfg), cfg->wTotalLength);
-  Serial.printf("[usb] CLASSIFY address=%u audio=%u msc=%u descriptors=%s\n", address, set.audio, set.msc, set.valid ? "valid" : "malformed");
-  if (!set.audio) return false;
-  Serial.printf("[usb-uac] connected address=%u\n", address);
-  const usb_device_desc_t* desc = nullptr;
-  if (usb_host_get_device_descriptor(device, &desc) == ESP_OK)
-    Serial.printf("[usb-uac] vid=%04x pid=%04x\n", desc->idVendor, desc->idProduct);
-  usb_device_info_t info = {};
-  if (usb_host_device_info(device, &info) == ESP_OK) {
-    stringDescriptor("manufacturer", info.str_desc_manufacturer);
-    stringDescriptor("product", info.str_desc_product);
-    Serial.printf("[usb-uac] speed=%s\n", info.speed == USB_SPEED_FULL ? "full-speed (12Mbps)" : "unsupported");
+  if (client_ == nullptr || device == nullptr) return false;
+
+  const usb_device_desc_t* deviceDescriptor = nullptr;
+  if (usb_host_get_device_descriptor(device, &deviceDescriptor) != ESP_OK ||
+      deviceDescriptor == nullptr || deviceDescriptor->idVendor != kD07Vid ||
+      deviceDescriptor->idProduct != kD07Pid) {
+    return false;
   }
-  Serial.printf("[usb-uac] UAC version=0x%04x valid=%u truncated=%u\n", set.version, set.valid, set.overflow);
-  // Include control interfaces and every endpoint, including feedback endpoints
-  // that the conservative streaming policy intentionally refuses to open.
-  const auto* raw = reinterpret_cast<const uint8_t*>(cfg);
-  bool audioInterface = false;
-  uint8_t iface = 0, alternate = 0;
-  for (size_t pos = 0; pos + 2 <= cfg->wTotalLength;) {
-    const uint8_t* d = raw + pos;
-    if (d[0] < 2 || d[0] > cfg->wTotalLength - pos) break;
-    if (d[1] == 4 && d[0] >= 9) {
-      audioInterface = d[5] == 1; iface = d[2]; alternate = d[3];
-      if (audioInterface) Serial.printf("[usb-uac] interface=%u alt=%u subclass=%u protocol=0x%02x\n", iface, alternate, d[6], d[7]);
-    } else if (audioInterface && d[1] == 5 && d[0] >= 7) {
-      const char* types[] = {"control", "isochronous", "bulk", "interrupt"};
-      Serial.printf("[usb-uac] interface=%u alt=%u endpoint=0x%02x direction=%s transfer=%s MPS=%u usage=%u sync=%u\n", iface, alternate, d[2], (d[2] & 0x80) ? "IN" : "OUT", types[d[3] & 3], d[4] | (unsigned(d[5]) << 8), (d[3] >> 4) & 3, (d[3] >> 2) & 3);
-    }
-    pos += d[0];
+
+  const usb_config_desc_t* config = nullptr;
+  const esp_err_t configError = usb_host_get_active_config_descriptor(device, &config);
+  if (configError != ESP_OK || config == nullptr) {
+    logUsbAudioError("D07 descriptor read failed", configError);
+    return false;
   }
-  for (unsigned i = 0; i < set.count; ++i) {
-    const auto& a = set.alts[i];
-    const char* direction = !a.endpoint ? "AS" : (a.endpoint & 0x80) ? "MIC" : "SPK";
-    Serial.printf("[usb-uac] %s interface=%u alt=%u protocol=0x%02x ep=0x%02x transfer=%u attr=0x%02x MPS=%u interval=%u endpoints=%u\n", direction, a.interfaceNumber, a.alternate, a.protocol, a.endpoint, a.attributes & 3, a.attributes, a.mps, a.interval, a.endpoints);
-    Serial.printf("[usb-uac] format=%u channels=%u bits=%u subframe=%u rates=%s\n", a.format, a.channels, a.bits, a.subframe, a.protocol ? "clock/control query required; UAC2/3 not decoded as UAC1" : a.continuous ? "continuous range" : "discrete Hz");
-    for (unsigned r = 0; r < a.rateCount; ++r) Serial.printf("[usb-uac] rate[%u]=%lu\n", r, static_cast<unsigned long>(a.rates[r]));
-    if (const char* reason = a.rejection()) Serial.printf("[usb-uac] interface=%u alt=%u test-unavailable=%s\n", a.interfaceNumber, a.alternate, reason);
-    if (a.mps > 128 && (a.endpoint & 0x80)) Serial.printf("[usb-uac] MPS=%u exceeds old default IN=128; configured IN=%u. Descriptor unchanged.\n", a.mps, NewoUac::kInMps);
+
+  const PlaybackCandidate candidate = findPlayback(config);
+  if (!candidate.valid) {
+    Serial.println("[usb-uac2] D07 found but proven PCM16 stereo alternate is unavailable");
+    return false;
   }
-  if (device_) { Serial.println("[usb-uac] diagnostics only: one physical audio test device at a time"); return false; }
-  device_ = device; address_ = address; descriptors_ = set; removed_ = false;
-  mic_.passed = spk_.passed = false;
-  // Retain monitor reference until unplug so DEV_GONE is always delivered.
+
+  // The monitor keeps exactly one D07 reference. A second audio device remains
+  // diagnostics-only and is closed by NewoUsbStorage.
+  if (device_ != nullptr) {
+    Serial.println("[usb-uac2] another D07 reference is already retained");
+    return false;
+  }
+
+  device_ = device;
+  address_ = address;
+  candidate_ = candidate;
+  removed_.store(false);
+  ready_.store(true);
+  Serial.printf("[usb-uac2] D07_READY — address=%u iface=%u alt=%u ep=0x%02x MPS=%u clock=%u output=48000Hz PCM16 stereo\n",
+                static_cast<unsigned>(address_), static_cast<unsigned>(candidate_.iface),
+                static_cast<unsigned>(candidate_.alt), static_cast<unsigned>(candidate_.endpoint),
+                static_cast<unsigned>(candidate_.mps), static_cast<unsigned>(candidate_.clockId));
   return true;
 }
+
 void NewoUsbAudio::disconnected(usb_device_handle_t device) {
-  if (device == device_) {
-    removed_ = true;
-    Serial.printf("[usb-uac] disconnected address=%u; cleanup pending\n", address_);
+  if (device == nullptr || device != device_) return;
+  ready_.store(false);
+  removed_.store(true);
+  Serial.printf("[usb-uac2] D07_DISCONNECTED — address=%u cleanup=pending\n",
+                static_cast<unsigned>(address_));
+}
+
+void NewoUsbAudio::controlDone(usb_transfer_t* transfer) {
+  if (transfer == nullptr || transfer->context == nullptr) return;
+  auto* wait = static_cast<ControlWait*>(transfer->context);
+  wait->status = transfer->status;
+  wait->actualBytes = transfer->actual_num_bytes;
+  xSemaphoreGive(wait->done);
+}
+
+esp_err_t NewoUsbAudio::controlRequest(uint8_t requestType, uint8_t request, uint16_t value,
+                                       uint16_t index, void* data, uint16_t length) {
+  if (client_ == nullptr || device_ == nullptr || removed_.load()) return ESP_ERR_INVALID_STATE;
+
+  ControlWait wait;
+  wait.done = xSemaphoreCreateBinary();
+  if (wait.done == nullptr) return ESP_ERR_NO_MEM;
+
+  usb_transfer_t* transfer = nullptr;
+  esp_err_t error = usb_host_transfer_alloc(sizeof(usb_setup_packet_t) + length, 0, &transfer);
+  if (error != ESP_OK) {
+    vSemaphoreDelete(wait.done);
+    return error;
   }
+
+  auto* setup = reinterpret_cast<usb_setup_packet_t*>(transfer->data_buffer);
+  setup->bmRequestType = requestType;
+  setup->bRequest = request;
+  setup->wValue = value;
+  setup->wIndex = index;
+  setup->wLength = length;
+
+  const bool input = (requestType & USB_BM_REQUEST_TYPE_DIR_IN) != 0;
+  if (!input && length > 0 && data != nullptr) {
+    memcpy(transfer->data_buffer + sizeof(usb_setup_packet_t), data, length);
+  }
+
+  transfer->device_handle = device_;
+  transfer->bEndpointAddress = 0;
+  transfer->callback = controlDone;
+  transfer->context = &wait;
+  transfer->timeout_ms = 1000;
+  transfer->num_bytes = sizeof(usb_setup_packet_t) + length;
+
+  error = usb_host_transfer_submit_control(client_, transfer);
+  if (error == ESP_OK) {
+    if (xSemaphoreTake(wait.done, pdMS_TO_TICKS(1500)) != pdTRUE) {
+      error = ESP_ERR_TIMEOUT;
+    } else if (wait.status != USB_TRANSFER_STATUS_COMPLETED) {
+      error = ESP_FAIL;
+    } else if (input && length > 0 && data != nullptr) {
+      memcpy(data, transfer->data_buffer + sizeof(usb_setup_packet_t), length);
+    }
+  }
+
+  // A 1.5 second control timeout is already a fatal playback failure. The D07
+  // completed every bench control request in a few milliseconds; normally this
+  // transfer is never still in flight here.
+  if (error != ESP_ERR_TIMEOUT) usb_host_transfer_free(transfer);
+  else Serial.printf("[usb-uac2] control request 0x%02x timed out; transfer retained until disconnect\n", request);
+  vSemaphoreDelete(wait.done);
+  return error;
 }
-void NewoUsbAudio::deviceEvent(uac_host_device_handle_t, uac_host_device_event_t event, void* arg) {
-  auto& s = *static_cast<Stream*>(arg);
-  if (event == UAC_HOST_DRIVER_EVENT_DISCONNECTED) s.gone.store(true);
-  if (event == UAC_HOST_DEVICE_EVENT_TRANSFER_ERROR) s.errors.fetch_add(1);
+
+esp_err_t NewoUsbAudio::setClockRate(uint32_t rate) {
+  uint8_t payload[4];
+  putLe32(payload, rate);
+  return controlRequest(USB_BM_REQUEST_TYPE_DIR_OUT |
+                            USB_BM_REQUEST_TYPE_TYPE_CLASS |
+                            USB_BM_REQUEST_TYPE_RECIP_INTERFACE,
+                        kUac2CurRequest,
+                        static_cast<uint16_t>(kUac2ClockSamFreqControl) << 8,
+                        (static_cast<uint16_t>(candidate_.clockId) << 8) | kControlInterface,
+                        payload, sizeof(payload));
 }
-bool NewoUsbAudio::start(Stream& s, bool mic) {
-  if (!enabled_ || !device_ || removed_ || s.handle) return false;
-  bool found = false;
-  for (unsigned i = 0; i < descriptors_.count && !found; ++i)
-    found = NewoUac::select(descriptors_, descriptors_.alts[i].interfaceNumber, mic, s.alt, s.rate);
-  if (!found) { Serial.printf("[usb-uac] %s no supported test format; inspect alternate diagnostics\n", mic ? "MIC" : "SPK"); return false; }
-  s.gone.store(false); s.errors.store(0); s.passed = false;
-  uac_host_device_config_t config = {};
-  config.addr = address_; config.iface_num = s.alt.interfaceNumber;
-  config.buffer_size = kRingBytes; config.buffer_threshold = 2048;
-  config.callback = deviceEvent; config.callback_arg = &s;
-  esp_err_t e = uac_host_device_open(&config, &s.handle);
-  if (e != ESP_OK) { error("open failed", e); return false; }
-  uac_host_stream_config_t format = {};
-  format.channels = s.alt.channels; format.bit_resolution = 16; format.sample_freq = s.rate;
-  e = uac_host_device_start(s.handle, &format);
-  if (e != ESP_OK) { error("start failed (claim/control/allocation)", e); stop(s); return false; }
-  s.active = true; s.started = s.reported = millis();
-  s.bytes = s.lastBytes = s.samples = s.peak = s.toneFrames = s.writeFailures = s.activeUnderruns = 0; s.squares = 0;
-  Serial.printf("[usb-uac] %s start interface=%u alt=%u ep=0x%02x %luHz PCM16 channels=%u MPS=%u ring=%lu DMA-payload=%u\n", mic ? "MIC" : "SPK", s.alt.interfaceNumber, s.alt.alternate, s.alt.endpoint, static_cast<unsigned long>(s.rate), s.alt.channels, s.alt.mps, static_cast<unsigned long>(kRingBytes), 9 * s.alt.mps);
+
+esp_err_t NewoUsbAudio::getClockRate(uint32_t* rate) {
+  uint8_t payload[4] = {};
+  const esp_err_t error = controlRequest(USB_BM_REQUEST_TYPE_DIR_IN |
+                                             USB_BM_REQUEST_TYPE_TYPE_CLASS |
+                                             USB_BM_REQUEST_TYPE_RECIP_INTERFACE,
+                                         kUac2CurRequest,
+                                         static_cast<uint16_t>(kUac2ClockSamFreqControl) << 8,
+                                         (static_cast<uint16_t>(candidate_.clockId) << 8) | kControlInterface,
+                                         payload, sizeof(payload));
+  if (error == ESP_OK && rate != nullptr) *rate = le32(payload);
+  return error;
+}
+
+esp_err_t NewoUsbAudio::setInterface(uint8_t alt) {
+  return controlRequest(USB_BM_REQUEST_TYPE_DIR_OUT |
+                            USB_BM_REQUEST_TYPE_TYPE_STANDARD |
+                            USB_BM_REQUEST_TYPE_RECIP_INTERFACE,
+                        USB_B_REQUEST_SET_INTERFACE, alt, candidate_.iface, nullptr, 0);
+}
+
+void NewoUsbAudio::resetTransportStats() {
+  transferErrors_.store(0);
+  packetErrors_.store(0);
+  completedPackets_.store(0);
+  completedBytes_.store(0);
+}
+
+bool NewoUsbAudio::allocateTransfers() {
+  if (freeTransfers_ != nullptr || drained_ != nullptr) return false;
+  freeTransfers_ = xQueueCreate(kTransferCount, sizeof(usb_transfer_t*));
+  drained_ = xSemaphoreCreateBinary();
+  if (freeTransfers_ == nullptr || drained_ == nullptr) {
+    releaseTransfers();
+    return false;
+  }
+
+  for (uint8_t i = 0; i < kTransferCount; ++i) {
+    esp_err_t error = usb_host_transfer_alloc(kTransferBytes, kPacketsPerTransfer, &transfers_[i]);
+    if (error != ESP_OK || transfers_[i] == nullptr) {
+      logUsbAudioError("transfer allocation failed", error);
+      releaseTransfers();
+      return false;
+    }
+    transfers_[i]->device_handle = device_;
+    transfers_[i]->bEndpointAddress = candidate_.endpoint;
+    transfers_[i]->callback = speakerTransferDone;
+    transfers_[i]->context = this;
+    transfers_[i]->timeout_ms = 1000;
+    usb_transfer_t* transfer = transfers_[i];
+    if (xQueueSend(freeTransfers_, &transfer, 0) != pdTRUE) {
+      releaseTransfers();
+      return false;
+    }
+  }
   return true;
 }
-bool NewoUsbAudio::stop(Stream& s) {
-  if (!s.handle) return true;
-  s.closing = true;
-  const esp_err_t e = uac_host_device_close(s.handle);
-  if (e != ESP_OK) { error("close pending; retaining handle for retry", e); return false; }
-  s.handle = nullptr; s.active = false; s.closing = false; s.gone.store(false);
-  return true;
-}
-void NewoUsbAudio::report(Stream& s, bool mic) {
-  if (!s.handle) return;
-  newo_uac_stats_t stats = {};
-  newo_uac_get_stats(s.handle, &stats);
-  const uint32_t now = millis(), elapsed = now - s.reported;
-  const uint32_t bps = elapsed ? uint64_t(s.bytes - s.lastBytes) * 1000 / elapsed : 0;
-  const double rms = s.samples ? sqrt(double(s.squares) / s.samples) / 32768.0 : 0;
-  Serial.printf("[usb-uac] %s bytes/s=%lu effective-Hz=%lu packets=%lu packet-errors/late=%lu dropped=%lu underruns=%lu submit-errors=%lu transfer-errors=%lu write-retries=%lu buffer-HWM=%lu/%lu rms=%.4f peak=%.4f heap=%u internal=%u PSRAM=%u stack=%u\n", mic ? "MIC" : "SPK", static_cast<unsigned long>(bps), static_cast<unsigned long>(bps / (s.alt.channels * 2)), static_cast<unsigned long>(stats.packets), static_cast<unsigned long>(stats.packet_errors), static_cast<unsigned long>(stats.dropped_packets), static_cast<unsigned long>(stats.underruns), static_cast<unsigned long>(stats.submit_errors), static_cast<unsigned long>(s.errors.load()), static_cast<unsigned long>(s.writeFailures), static_cast<unsigned long>(stats.buffer_high_water), static_cast<unsigned long>(kRingBytes), rms, s.peak / 32768.0, ESP.getFreeHeap(), heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT), ESP.getFreePsram(), uxTaskGetStackHighWaterMark(nullptr));
-  s.reported = now; s.lastBytes = s.bytes; s.samples = s.peak = 0; s.squares = 0;
-}
-void NewoUsbAudio::pumpMic() {
-  // Bound work per service pass even if capture outruns this worker.
-  for (unsigned n = 0; n < 4; ++n) {
-    uint32_t bytes = 0;
-    uac_host_device_read(mic_.handle, reinterpret_cast<uint8_t*>(pcm_), sizeof(pcm_), &bytes, 0);
-    if (!bytes) break;
-    mic_.bytes += bytes;
-    for (unsigned i = 0; i < bytes / 2; ++i) {
-      const int32_t sample = pcm_[i];
-      mic_.squares += int64_t(sample) * sample; mic_.samples++;
-      const unsigned peak = sample < 0 ? -sample : sample;
-      if (peak > mic_.peak) mic_.peak = peak;
+
+void NewoUsbAudio::releaseTransfers() {
+  if (activeTransfers_.load() != 0) return;
+  if (freeTransfers_ != nullptr) {
+    vQueueDelete(freeTransfers_);
+    freeTransfers_ = nullptr;
+  }
+  if (drained_ != nullptr) {
+    vSemaphoreDelete(drained_);
+    drained_ = nullptr;
+  }
+  for (uint8_t i = 0; i < kTransferCount; ++i) {
+    if (transfers_[i] != nullptr) {
+      usb_host_transfer_free(transfers_[i]);
+      transfers_[i] = nullptr;
     }
   }
 }
-void NewoUsbAudio::pumpTone() {
-  // Finite one-second 1kHz tone at -30dBFS, then 50ms silence for drain.
-  const uint32_t total = spk_.rate + spk_.rate / 20;
-  if (spk_.toneFrames >= total) return;
-  newo_uac_stats_t stats = {};
-  newo_uac_get_stats(spk_.handle, &stats);
-  spk_.activeUnderruns = stats.underruns;
-  unsigned frames = spk_.rate / 100;
-  if (frames > total - spk_.toneFrames) frames = total - spk_.toneFrames;
-  for (unsigned i = 0; i < frames; ++i) {
-    const uint32_t frame = spk_.toneFrames + i;
-    const float ramp = fminf(1.0f, fminf(frame / (spk_.rate * .01f), (spk_.rate - fminf(frame, spk_.rate)) / (spk_.rate * .01f)));
-    const int16_t sample = frame < spk_.rate ? int16_t(1036 * ramp * sinf(6.28318530718f * 1000 * frame / spk_.rate)) : 0;
-    for (unsigned ch = 0; ch < spk_.alt.channels; ++ch) pcm_[i * spk_.alt.channels + ch] = sample;
+
+bool NewoUsbAudio::beginSpeakerPlayback() {
+  if (!speakerReady() || playing_.load() || interfaceClaimed_.load()) return false;
+  resetTransportStats();
+  activeTransfers_.store(0);
+
+  if (!allocateTransfers()) {
+    Serial.println("[usb-uac2] SPEAKER_START_FAILED — reason=transfer_resources");
+    return false;
   }
-  const uint32_t bytes = frames * spk_.alt.channels * 2;
-  if (uac_host_device_write(spk_.handle, reinterpret_cast<uint8_t*>(pcm_), bytes, 0) == ESP_OK) {
-    spk_.toneFrames += frames; spk_.bytes += bytes;
-  } else spk_.writeFailures++;
+
+  const esp_err_t setRate = setClockRate(kOutputRate);
+  if (setRate != ESP_OK) {
+    Serial.printf("[usb-uac2] clock SET_CUR warning=%s; verifying GET_CUR\n", esp_err_to_name(setRate));
+  }
+  uint32_t actualRate = 0;
+  const esp_err_t getRate = getClockRate(&actualRate);
+  if (getRate != ESP_OK || actualRate != kOutputRate) {
+    Serial.printf("[usb-uac2] SPEAKER_START_FAILED — clock=%lu reason=%s\n",
+                  static_cast<unsigned long>(actualRate), esp_err_to_name(getRate));
+    releaseTransfers();
+    return false;
+  }
+
+  esp_err_t error = usb_host_interface_claim(client_, device_, candidate_.iface, candidate_.alt);
+  if (error != ESP_OK) {
+    logUsbAudioError("interface claim failed", error);
+    releaseTransfers();
+    return false;
+  }
+  interfaceClaimed_.store(true);
+
+  error = setInterface(candidate_.alt);
+  if (error != ESP_OK) {
+    logUsbAudioError("SET_INTERFACE failed", error);
+    usb_host_interface_release(client_, device_, candidate_.iface);
+    interfaceClaimed_.store(false);
+    releaseTransfers();
+    return false;
+  }
+
+  playing_.store(true);
+  Serial.printf("[usb-uac2] SPEAKER_ACTIVE — source=24000Hz mono output=48000Hz stereo ep=0x%02x batches=%u batch_ms=8\n",
+                static_cast<unsigned>(candidate_.endpoint), static_cast<unsigned>(kTransferCount));
+  return true;
 }
-void NewoUsbAudio::command(const char* cmd) {
-  if (!strcmp(cmd, "uac status")) {
-    Serial.printf("[usb-uac] device=%u MIC=%u SPK=%u individual-MIC-pass=%u individual-SPK-pass=%u\n", address_, mic_.active, spk_.active, mic_.passed, spk_.passed);
-  } else if (!strcmp(cmd, "uac stop")) {
-    stop(mic_); stop(spk_); duplex_ = false;
-  } else if (!strcmp(cmd, "uac mic") || !strcmp(cmd, "uac tone") || !strcmp(cmd, "uac duplex")) {
-    if (mic_.handle || spk_.handle) { Serial.println("[usb-uac] busy; uac stop first"); return; }
-    duplex_ = !strcmp(cmd, "uac duplex");
-    if (duplex_ && (!mic_.passed || !spk_.passed)) { Serial.println("[usb-uac] duplex requires successful individual mic and tone tests first"); duplex_ = false; return; }
-    if (duplex_) {
-      if (!start(mic_, true) || !start(spk_, false)) { stop(mic_); stop(spk_); duplex_ = false; }
-      else Serial.println("[usb-uac] duplex running: independent tone + meter, no loopback");
-    } else start(!strcmp(cmd, "uac mic") ? mic_ : spk_, !strcmp(cmd, "uac mic"));
-  } else Serial.println("[usb-uac] commands: uac mic | uac tone | uac duplex | uac stop | uac status");
+
+void NewoUsbAudio::speakerTransferDone(usb_transfer_t* transfer) {
+  if (transfer == nullptr || transfer->context == nullptr) return;
+  static_cast<NewoUsbAudio*>(transfer->context)->onSpeakerTransferDone(transfer);
 }
+
+void NewoUsbAudio::onSpeakerTransferDone(usb_transfer_t* transfer) {
+  bool transferOk = transfer->status == USB_TRANSFER_STATUS_COMPLETED;
+  if (!transferOk) transferErrors_.fetch_add(1);
+  completedBytes_.fetch_add(static_cast<uint32_t>(transfer->actual_num_bytes));
+
+  for (uint8_t packet = 0; packet < kPacketsPerTransfer; ++packet) {
+    if (transfer->isoc_packet_desc[packet].status == USB_TRANSFER_STATUS_COMPLETED) {
+      completedPackets_.fetch_add(1);
+    } else {
+      packetErrors_.fetch_add(1);
+      transferOk = false;
+    }
+  }
+
+  if (freeTransfers_ != nullptr) {
+    usb_transfer_t* completed = transfer;
+    if (xQueueSend(freeTransfers_, &completed, 0) != pdTRUE) transferErrors_.fetch_add(1);
+  }
+
+  const uint32_t previous = activeTransfers_.fetch_sub(1);
+  if (previous <= 1 && drained_ != nullptr) xSemaphoreGive(drained_);
+}
+
+bool NewoUsbAudio::writeSpeakerMono24(const int16_t* samples, size_t sampleCount,
+                                      uint32_t timeoutMs) {
+  if (samples == nullptr || sampleCount == 0 || sampleCount > kMono24SamplesPerBatch ||
+      !playing_.load() || removed_.load() || freeTransfers_ == nullptr) {
+    return false;
+  }
+
+  usb_transfer_t* transfer = nullptr;
+  if (xQueueReceive(freeTransfers_, &transfer, pdMS_TO_TICKS(timeoutMs)) != pdTRUE || transfer == nullptr) {
+    transferErrors_.fetch_add(1);
+    return false;
+  }
+
+  int16_t* output = reinterpret_cast<int16_t*>(transfer->data_buffer);
+  for (size_t i = 0; i < kMono24SamplesPerBatch; ++i) {
+    const int16_t sample = i < sampleCount ? samples[i] : 0;
+    // Two identical 48 kHz frames for every 24 kHz source sample. Each frame
+    // is stereo, so one mono input sample expands to L,R,L,R.
+    *output++ = sample;
+    *output++ = sample;
+    *output++ = sample;
+    *output++ = sample;
+  }
+  for (uint8_t packet = 0; packet < kPacketsPerTransfer; ++packet) {
+    transfer->isoc_packet_desc[packet].num_bytes = kPacketBytes;
+  }
+  transfer->num_bytes = kTransferBytes;
+
+  const uint32_t previous = activeTransfers_.fetch_add(1);
+  if (previous == 0 && drained_ != nullptr) xSemaphoreTake(drained_, 0);
+  const esp_err_t error = usb_host_transfer_submit(transfer);
+  if (error != ESP_OK) {
+    transferErrors_.fetch_add(1);
+    const uint32_t activeBefore = activeTransfers_.fetch_sub(1);
+    if (activeBefore <= 1 && drained_ != nullptr) xSemaphoreGive(drained_);
+    if (freeTransfers_ != nullptr) xQueueSend(freeTransfers_, &transfer, 0);
+    return false;
+  }
+  return true;
+}
+
+bool NewoUsbAudio::waitForDrain(uint32_t timeoutMs) {
+  if (activeTransfers_.load() == 0) return true;
+  if (drained_ == nullptr) return false;
+  if (xSemaphoreTake(drained_, pdMS_TO_TICKS(timeoutMs)) != pdTRUE) return false;
+  return activeTransfers_.load() == 0;
+}
+
+bool NewoUsbAudio::endSpeakerPlayback(uint32_t* drainMs) {
+  const uint32_t started = millis();
+  const bool wasPlaying = playing_.exchange(false);
+  if (!wasPlaying && !interfaceClaimed_.load()) {
+    if (drainMs != nullptr) *drainMs = 0;
+    return true;
+  }
+
+  bool drained = waitForDrain(1500);
+  if (!drained && !removed_.load() && device_ != nullptr) {
+    Serial.println("[usb-uac2] drain timeout; halting speaker endpoint");
+    usb_host_endpoint_halt(device_, candidate_.endpoint);
+    usb_host_endpoint_flush(device_, candidate_.endpoint);
+    usb_host_endpoint_clear(device_, candidate_.endpoint);
+    drained = waitForDrain(500);
+  }
+
+  bool controlsOk = true;
+  if (interfaceClaimed_.load()) {
+    if (!removed_.load() && device_ != nullptr) {
+      const esp_err_t alt0 = setInterface(0);
+      if (alt0 != ESP_OK) {
+        controlsOk = false;
+        logUsbAudioError("SET_INTERFACE alt0 failed", alt0);
+      }
+      const esp_err_t release = usb_host_interface_release(client_, device_, candidate_.iface);
+      if (release != ESP_OK) {
+        controlsOk = false;
+        logUsbAudioError("interface release failed", release);
+      }
+    }
+    interfaceClaimed_.store(false);
+  }
+
+  if (drained) releaseTransfers();
+  if (drainMs != nullptr) *drainMs = millis() - started;
+
+  const bool healthy = drained && controlsOk && transferErrors_.load() == 0 && packetErrors_.load() == 0;
+  Serial.printf("[usb-uac2] SPEAKER_STOP — healthy=%u packets=%lu bytes=%lu transfer-errors=%lu packet-errors=%lu drain_ms=%lu\n",
+                healthy ? 1U : 0U,
+                static_cast<unsigned long>(completedPackets_.load()),
+                static_cast<unsigned long>(completedBytes_.load()),
+                static_cast<unsigned long>(transferErrors_.load()),
+                static_cast<unsigned long>(packetErrors_.load()),
+                static_cast<unsigned long>(millis() - started));
+  return healthy;
+}
+
 void NewoUsbAudio::service() {
-  // On unplug the driver callback only marks gone. This worker owns close;
-  // USB completion events continue on the driver task while cleanup waits.
-  if (mic_.closing) stop(mic_);
-  if (spk_.closing) stop(spk_);
-  if (removed_ || mic_.gone.load() || spk_.gone.load()) {
-    if (mic_.handle && mic_.gone.load()) stop(mic_);
-    if (spk_.handle && spk_.gone.load()) stop(spk_);
-    if (!mic_.handle && !spk_.handle && device_) {
-      const esp_err_t e = usb_host_device_close(client_, device_);
-      if (e == ESP_OK) { device_ = nullptr; address_ = 0; removed_ = false; duplex_ = false; Serial.println("[usb-uac] cleanup complete"); }
-      else error("monitor close pending", e);
-    }
-    return;
-  }
-  // Serial parsing stays off loop(), is bounded, and never accepts partial overflow.
-  for (unsigned i = 0; i < 32 && Serial.available(); ++i) {
-    const char c = Serial.read();
-    if (c == '\r') continue;
-    if (c == '\n') {
-      command_[commandLength_] = 0;
-      if (!commandOverflow_ && commandLength_) command(command_);
-      commandLength_ = 0; commandOverflow_ = false;
-    } else if (commandLength_ < sizeof(command_) - 1) command_[commandLength_++] = c;
-    else commandOverflow_ = true;
-  }
-  if (mic_.active && !mic_.closing) pumpMic();
-  if (spk_.active && !spk_.closing) pumpTone();
-  const uint32_t now = millis();
-  for (Stream* s : {&mic_, &spk_}) {
-    if (!s->active || s->closing) continue;
-    const bool mic = s == &mic_;
-    if (now - s->reported >= 1000) report(*s, mic);
-    const uint32_t duration = mic ? (duplex_ ? 3000 : 5000) : 1500;
-    if (s->errors.load() || now - s->started >= duration) {
-      report(*s, mic);
-      newo_uac_stats_t stats = {};
-      newo_uac_get_stats(s->handle, &stats);
-      const uint32_t expected = uint64_t(now - s->started) * s->rate * s->alt.channels * 2 / 1000;
-      const bool passed = !s->errors.load() && !stats.packet_errors && !stats.submit_errors && !stats.dropped_packets && stats.packets > 0 && (mic ? s->bytes >= expected * 9 / 10 : s->toneFrames >= s->rate && !s->activeUnderruns);
-      if (!mic) Serial.printf("[usb-uac] SPK starvation-during-generation=%lu; total underruns include finite waveform tail\n", static_cast<unsigned long>(s->activeUnderruns));
-      Serial.printf("[usb-uac] %s test=%s; physical audibility/level and timing require observation\n", mic ? "MIC" : "SPK", passed ? "transport-pass" : "failed");
-      if (stop(*s) && !duplex_) s->passed = passed;
+  // Device close belongs to the monitor/client owner and must happen only after
+  // every in-flight transfer callback has returned.
+  if (!removed_.load() || playing_.load() || activeTransfers_.load() != 0) return;
+  releaseTransfers();
+  interfaceClaimed_.store(false);
+  if (device_ != nullptr) {
+    const esp_err_t error = usb_host_device_close(client_, device_);
+    if (error != ESP_OK) {
+      logUsbAudioError("D07 close pending", error);
+      return;
     }
   }
-  if (duplex_ && !mic_.handle && !spk_.handle) { Serial.println("[usb-uac] duplex ended; inspect both counters (not a stability certification)"); duplex_ = false; }
+  device_ = nullptr;
+  address_ = 0;
+  candidate_ = {};
+  removed_.store(false);
+  ready_.store(false);
+  Serial.println("[usb-uac2] D07_CLEANUP_COMPLETE");
 }
