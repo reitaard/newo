@@ -48,14 +48,25 @@ static DRESULT usb_disk_read(BYTE pdrv, BYTE *buff, DWORD sector, UINT count)
     const size_t sector_size = dev->disk.block_size;
     if (sector_size == 0) return RES_NOTRDY;
     const esp_err_t err = scsi_cmd_read10(dev, buff, sector, count, sector_size);
-    if (err == ESP_ERR_MSC_MOUNT_FAILED || dev->gone || !dev->media_ready) {
+    if (err != ESP_OK) {
+        /*
+         * Fail closed on every failed sector transaction, not only an already
+         * classified MEDIUM NOT PRESENT condition. During a physical unplug the
+         * BOT/data transfer can fail a few milliseconds before DEV_GONE reaches
+         * the MSC client. Leaving media_ready=true in that window lets FatFS
+         * issue more requests against a transport that is already failing.
+         *
+         * Reads are safe to abandon and re-open after the storage worker has
+         * invalidated/re-probed the mount. Do not retry here: BOT recovery and
+         * remount belong to the storage state machine.
+         */
         dev->media_ready = false;
+        if (err != ESP_ERR_MSC_MOUNT_FAILED && !dev->gone) {
+            ESP_LOGE(TAG, "read failed (%s); media invalidated", esp_err_to_name(err));
+        }
         return RES_NOTRDY;
     }
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "read failed (%s)", esp_err_to_name(err));
-        return RES_ERROR;
-    }
+    if (dev->gone || !dev->media_ready) return RES_NOTRDY;
     return RES_OK;
 }
 
@@ -68,16 +79,20 @@ static DRESULT usb_disk_write(BYTE pdrv, const BYTE *buff, DWORD sector, UINT co
     const size_t sector_size = dev->disk.block_size;
     if (sector_size == 0) return RES_NOTRDY;
     const esp_err_t err = scsi_cmd_write10(dev, buff, sector, count, sector_size);
-    if (err == ESP_ERR_MSC_MOUNT_FAILED || dev->gone || !dev->media_ready) {
+    if (err != ESP_OK) {
+        /*
+         * An interrupted write has unknown commit state. Never retry it: the
+         * target may have accepted the payload even if the host missed the CSW.
+         * Invalidate the mount immediately so no later FatFS request can build on
+         * an uncertain filesystem state. Recovery is a clean re-probe/remount.
+         */
         dev->media_ready = false;
+        if (err != ESP_ERR_MSC_MOUNT_FAILED && !dev->gone) {
+            ESP_LOGE(TAG, "write failed (%s); media invalidated", esp_err_to_name(err));
+        }
         return RES_NOTRDY;
     }
-    if (err != ESP_OK) {
-        // Do not retry an uncertain write: the target may have committed it even
-        // if the host missed the CSW. Let FatFS surface the I/O error instead.
-        ESP_LOGE(TAG, "write failed (%s)", esp_err_to_name(err));
-        return RES_ERROR;
-    }
+    if (dev->gone || !dev->media_ready) return RES_NOTRDY;
     return RES_OK;
 }
 
