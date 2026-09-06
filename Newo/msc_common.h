@@ -7,6 +7,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <sys/queue.h>
 #include "esp_err.h"
 #include "esp_check.h"
@@ -39,49 +40,23 @@ typedef struct msc_host_device {
     usb_transfer_t *xfer;
     msc_config_t config;
     usb_disk_t disk;
+
+    // Newo recovery state. The USB transport may remain open while its media is
+    // temporarily absent. `gone` is set synchronously from DEV_GONE before the
+    // storage worker touches VFS state so new I/O fails closed instead of using
+    // an invalid USB handle.
+    volatile bool gone;
+    volatile bool media_ready;
 } msc_device_t;
 
-/**
- * @brief Trigger a BULK transfer to device
- *
- * Data buffer ownership is transferred to the MSC driver and the application cannot access it before the transfer finishes.
- *
- * @param[in]    device_handle MSC device handle
- * @param[inout] data          Data buffer. Direction depends on 'ep'.
- * @param[in]    size          Size of buffer in bytes
- * @param[in]    ep            Direction of the transfer
- * @return esp_err_t
- */
 esp_err_t msc_bulk_transfer(msc_device_t *device_handle, uint8_t *data, size_t size, msc_endpoint_t ep);
-
-/**
- * @brief Trigger a CTRL transfer to device
- *
- * The request and data must be filled by accessing private device_handle->xfer before calling this function
- *
- * @param[in] device_handle MSC device handle
- * @param[in] len           Length of the transfer
- * @return esp_err_t
- */
 esp_err_t msc_control_transfer(msc_device_t *device_handle, size_t len);
-
-/**
- * @brief Reset endpoint and clear feature
- *
- * @param[in] device   MSC device handle
- * @param[in] endpoint Endpoint number
- * @return esp_err_t
- */
 esp_err_t clear_feature(msc_device_t *device, uint8_t endpoint);
 
 #define MSC_GOTO_ON_ERROR(exp) ESP_GOTO_ON_ERROR(exp, fail, TAG, "")
-
 #define MSC_GOTO_ON_FALSE(exp, err) ESP_GOTO_ON_FALSE( (exp), err, fail, TAG, "" )
-
 #define MSC_RETURN_ON_ERROR(exp) ESP_RETURN_ON_ERROR((exp), TAG, "")
-
 #define MSC_RETURN_ON_FALSE(exp, err) ESP_RETURN_ON_FALSE( (exp), (err), TAG, "")
-
 #define MSC_RETURN_ON_INVALID_ARG(exp) ESP_RETURN_ON_FALSE((exp) != NULL, ESP_ERR_INVALID_ARG, TAG, "")
 
 #ifdef __cplusplus
