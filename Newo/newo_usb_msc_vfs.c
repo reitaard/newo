@@ -135,9 +135,12 @@ esp_err_t msc_host_vfs_unregister(msc_host_vfs_handle_t vfs_handle)
     if (vfs_handle == NULL) return ESP_ERR_INVALID_ARG;
     msc_host_vfs_t *vfs = (msc_host_vfs_t *)vfs_handle;
 
-    // Make late disk callbacks fail closed before releasing the VFS path.
-    ff_diskio_unregister_msc(vfs->pdrv);
+    // First detach the FatFS volume while its diskio callbacks are still
+    // registered; then clear Newo's disk pointer before releasing the VFS path.
+    // If the USB device is already gone, diskio status is NOT READY and FatFS
+    // unmount still remains a bounded local operation.
     f_mount(NULL, vfs->drive, 0);
+    ff_diskio_unregister_msc(vfs->pdrv);
     esp_err_t ret = esp_vfs_fat_unregister_path(vfs->base_path);
     dealloc_msc_vfs(vfs);
     return ret;
