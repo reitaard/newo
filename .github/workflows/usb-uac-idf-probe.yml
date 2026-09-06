@@ -13,9 +13,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Build ESP32-S3 probe with ESP-IDF 5.5.4
+      - name: Build and merge ESP32-S3 probe with ESP-IDF 5.5.4
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.5.4
           target: esp32s3
           path: experiments/usb-uac-idf-probe
+          command: idf.py build && cd build && esptool.py --chip esp32s3 merge_bin -o newo-usb-uac-probe.bin @flash_args
+      - name: Upload merged probe firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: newo-usb-uac-probe
+          path: experiments/usb-uac-idf-probe/build/newo-usb-uac-probe.bin
+          if-no-files-found: error
