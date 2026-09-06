@@ -7,6 +7,8 @@
 #include <freertos/semphr.h>
 #include <usb/usb_host.h>
 
+#include "newo_usb_audio_descriptors.h"
+
 // Production USB speaker path for the bench-validated Audiocular D07.
 //
 // The D07 is UAC2 and exposes PCM16 stereo playback on interface 1 alt 1.
