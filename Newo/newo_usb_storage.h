@@ -8,13 +8,18 @@
 
 #include "newo_usb_host.h"
 
-// Mass-storage client of NewoUsbHost. It never installs or services the USB
-// Host Library itself; the shared manager owns that lifetime for every device
-// behind the hub.
+// Mass-storage client of NewoUsbHost. USB transport and filesystem/media have
+// deliberately separate lifetimes: an enumerated controller can stay open while
+// media is absent, and D07/VCP keep running while storage recovers.
 class NewoUsbStorage {
  public:
   bool begin(NewoUsbHost& host);
   bool mounted() const { return mounted_; }
+
+  // Changes every time /usb is mounted or invalidated. A future script loader
+  // can snapshot this value while copying a script into RAM/PSRAM and refuse to
+  // continue filesystem I/O if the generation changes underneath it.
+  uint32_t generation() const { return mountGeneration_; }
 
  private:
   static void workerTaskEntry(void* arg);
@@ -23,7 +28,10 @@ class NewoUsbStorage {
   void workerTask();
   void handleConnected(uint8_t address);
   void handleDisconnected(msc_host_device_handle_t device);
-  void releaseMountedDevice();
+  void probeMediaAndMount(bool firstProbe);
+  bool mountFilesystem();
+  void invalidateFilesystem(const char* reason);
+  void releaseDevice();
 
   NewoUsbHost* host_ = nullptr;
   TaskHandle_t workerTask_ = nullptr;
@@ -32,14 +40,14 @@ class NewoUsbStorage {
   uint8_t pendingAddress_ = 0;
   bool disconnectPending_ = false;
   msc_host_device_handle_t pendingDisconnectDevice_ = nullptr;
+
   msc_host_device_handle_t device_ = nullptr;
   msc_host_vfs_handle_t vfs_ = nullptr;
   volatile bool mounted_ = false;
+  volatile uint32_t mountGeneration_ = 0;
 
-  // A card reader (or a thumb-drive controller during recovery) can enumerate
-  // correctly while reporting SCSI NOT READY / MEDIUM NOT PRESENT. Keep the
-  // USB host and other class clients alive and reprobe only the MSC address.
-  bool mediaRetryPending_ = false;
-  uint8_t mediaRetryAddress_ = 0;
   bool mediaWaiting_ = false;
+  bool releaseRetryPending_ = false;
+  uint32_t retryDelayMs_ = 0;
+  uint8_t probeFailures_ = 0;
 };
