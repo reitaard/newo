@@ -5,6 +5,8 @@
 #include <usb/vcp_cp210x.h>
 #include <usb/vcp_ftdi.h>
 
+#include "newo_usb_vcp_policy.h"
+
 NewoUsbVcp newoUsbVcp;
 NewoUsbVcp* NewoUsbVcp::instance_ = nullptr;
 
@@ -188,7 +190,14 @@ void NewoUsbVcp::openCandidate(const Candidate& candidate) {
   address_.store(candidate.address); vid_.store(candidate.vid); pid_.store(candidate.pid);
   driver_.store(selected);
   purgeRx();
-  if (!applyConfig(config_)) { closeDevice("line_config"); return; }
+  SerialConfig initialConfig = config_;
+  if (NewoUsbVcpPolicy::guardInitialAutoReset(candidate.vid, candidate.pid)) {
+    initialConfig.dtr = false;
+    initialConfig.rts = false;
+    Serial.printf("[usb-vcp] AUTO_RESET_GUARD vid=%04x pid=%04x dtr=off rts=off\n",
+                  candidate.vid, candidate.pid);
+  }
+  if (!applyConfig(initialConfig)) { closeDevice("line_config"); return; }
   generation_.fetch_add(1);
   ready_.store(true);
   Serial.printf("[usb-vcp] VCP_READY address=%u vid=%04x pid=%04x driver=%s generation=%lu\n",

@@ -16,6 +16,7 @@ class NewoCloud {
   void begin();
   void loop();
   bool connected() const;
+  bool ready() const { return connected_ && authenticated_; }
   struct VoiceRequest { enum class Action : uint8_t { ON, OFF, TOGGLE, MANUAL_TOGGLE }; Action action; char requestId[40]; };
   struct SpeakerControlRequest {
     enum class Action : uint8_t { STATUS, SET_VOLUME, TOGGLE_MUTE, SET_ENABLED, TEMPORARY_CONNECT };
@@ -31,6 +32,7 @@ class NewoCloud {
   enum class LedEvent : uint8_t { NONE, PING, REBOOT };
   LedEvent consumeLedEvent();
   bool assistantThinking() const { return assistantThinking_; }
+  bool assistantError() const { return static_cast<int32_t>(assistantErrorUntilMs_ - millis()) > 0; }
   void sendSpeakerStarted(const char* playbackId, uint32_t firstPcmToPlayMs);
   void sendSpeakerResult(const char* playbackId, bool success, uint32_t bytes, const char* error = nullptr);
   void sendSpeakerAck(const char* requestId, bool enabled, const char* connection, uint8_t volume,
@@ -86,5 +88,6 @@ class NewoCloud {
   uint32_t voiceWakes_ = 0, voiceSessions_ = 0, voiceFailures_ = 0, voiceTimeouts_ = 0;
   uint32_t minimumLoopStackBytes_ = UINT32_MAX;
   bool assistantThinking_ = false;
+  uint32_t assistantErrorUntilMs_ = 0;
   LedEvent pendingLedEvent_ = LedEvent::NONE;
 };

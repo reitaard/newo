@@ -182,6 +182,27 @@ bool NewoAudio::manualToggle() {
   return beginStreaming(false);
 }
 
+bool NewoAudio::startPhysicalVoiceTrigger() {
+  if (state_ == NewoVoiceState::STREAMING || streamTask_) {
+    NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO,
+                 "PHYSICAL_TRIGGER_REJECTED", "reason=voice_active");
+    return false;
+  }
+  if (playbackSuppressed_) {
+    NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO,
+                 "PHYSICAL_TRIGGER_REJECTED", "reason=speaker_busy");
+    return false;
+  }
+  if (!beginStreaming(false)) {
+    NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO,
+                 "PHYSICAL_TRIGGER_REJECTED", "reason=unavailable");
+    return false;
+  }
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO,
+               "PHYSICAL_TRIGGER_ACCEPTED");
+  return true;
+}
+
 void NewoAudio::streamTaskEntry(void* context) { static_cast<NewoAudio*>(context)->streamTask(); }
 
 void NewoAudio::streamTask() {

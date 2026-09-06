@@ -6,7 +6,7 @@ namespace NewoConfig {
 
 constexpr char FIRMWARE_VERSION[] = "0.6";
 constexpr uint8_t AUTONOMY_REVISION = 2;
-constexpr char PROVISIONING_DEVICE_NAME[] = "PROV_NEWO";
+constexpr char PROVISIONING_DEVICE_NAME[] = "newo@wifi";
 
 constexpr char CLOUD_HOST[] = "newo.reitaard.de";
 constexpr char CLOUD_PATH[] = "/device";
