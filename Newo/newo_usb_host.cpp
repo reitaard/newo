@@ -2,8 +2,6 @@
 
 #include <esp_err.h>
 
-#include "newo_usb_audio_descriptors.h"
-
 NewoUsbHost newoUsbHost;
 
 namespace {
@@ -21,12 +19,9 @@ bool NewoUsbHost::begin() {
   usb_host_config_t hostConfig = {};
   hostConfig.intr_flags = ESP_INTR_FLAG_LEVEL1;
   hostConfig.enum_filter_cb = nullptr;
-  // One global FIFO budget for every device behind the hub. These are the
-  // bench-proven ESP32-S3/ESP-IDF 5.5.4 values: MSC bulk OUT remains usable
-  // while D07 384-byte periodic OUT packets fit exactly.
-  hostConfig.fifo_settings_custom.rx_fifo_lines = NewoUac::kRxLines;
-  hostConfig.fifo_settings_custom.nptx_fifo_lines = NewoUac::kNptxLines;
-  hostConfig.fifo_settings_custom.ptx_fifo_lines = NewoUac::kPtxLines;
+  hostConfig.fifo_settings_custom.rx_fifo_lines = kRxFifoLines;
+  hostConfig.fifo_settings_custom.nptx_fifo_lines = kNptxFifoLines;
+  hostConfig.fifo_settings_custom.ptx_fifo_lines = kPtxFifoLines;
 
   const esp_err_t error = usb_host_install(&hostConfig);
   if (error != ESP_OK) {
@@ -36,9 +31,8 @@ bool NewoUsbHost::begin() {
   hostInstalled_.store(true);
 
   Serial.printf("[usb-host] FIFO RX=%u NPTX=%u PTX=%u TOTAL=%u MPS-IN=%u bulk-OUT=%u periodic-OUT=%u\n",
-                NewoUac::kRxLines, NewoUac::kNptxLines, NewoUac::kPtxLines,
-                NewoUac::kFifoLinesTotal, NewoUac::kInMps,
-                NewoUac::kNptxLines * 4, NewoUac::kOutMps);
+                kRxFifoLines, kNptxFifoLines, kPtxFifoLines, kFifoLinesTotal,
+                kMaxInPacketBytes, kMaxNonPeriodicOutBytes, kMaxPeriodicOutBytes);
   Serial.println("[usb-host] HOST_INSTALLED — waiting for clients");
   return true;
 }
@@ -48,14 +42,18 @@ bool NewoUsbHost::start() {
   if (running_.load()) return true;
   if (hostTask_ != nullptr) return false;
 
+  // Publish running before the task can be scheduled. xTaskCreate may dispatch
+  // immediately on the other core; setting this afterward can overwrite a real
+  // HOST_EVENT_FAILED state reported by that task.
+  running_.store(true);
   if (xTaskCreate(hostTaskEntry, "newo-usb-host", kHostTaskStack, this,
                   kHostTaskPriority, &hostTask_) != pdPASS) {
+    running_.store(false);
     Serial.println("[usb-host] HOST_FAILED — reason=host_task");
     hostTask_ = nullptr;
     return false;
   }
 
-  running_.store(true);
   Serial.printf("[usb-host] HOST_READY — shared manager direct_clients=%lu msc=%u\n",
                 static_cast<unsigned long>(directClients_.load()),
                 mscInstalled_.load() ? 1U : 0U);
