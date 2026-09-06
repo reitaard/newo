@@ -1,4 +1,5 @@
 #include "newo_usb_storage.h"
+#include "newo_usb_msc_lun.h"
 
 #include <inttypes.h>
 
@@ -172,6 +173,28 @@ void NewoUsbStorage::handleConnected(uint8_t address) {
   retryDelayMs_ = kMediaRetryBaseMs;
   Serial.printf("[usb-storage] TRANSPORT_CONNECTED — address=%u\n",
                 static_cast<unsigned>(address));
+
+  // Diagnose the persistent 0x3A state before changing the data path. A BOT
+  // device may expose several logical units (for example a multi-slot reader),
+  // while Espressif's stock host path addresses LUN0 only.
+  uint8_t maxLun = 0;
+  const esp_err_t lunError = newo_msc_get_max_lun(device_, &maxLun);
+  msc_host_device_info_t usbInfo = {};
+  const esp_err_t infoError = msc_host_get_device_info(device_, &usbInfo);
+  if (lunError == ESP_OK && infoError == ESP_OK) {
+    Serial.printf("[usb-storage] DEVICE — vid=%04x pid=%04x max_lun=%u\n",
+                  static_cast<unsigned>(usbInfo.idVendor),
+                  static_cast<unsigned>(usbInfo.idProduct),
+                  static_cast<unsigned>(maxLun));
+  } else {
+    Serial.printf("[usb-storage] DEVICE_INFO_PARTIAL — info=%s lun=%s\n",
+                  esp_err_to_name(infoError), esp_err_to_name(lunError));
+  }
+  if (maxLun > 0) {
+    Serial.printf("[usb-storage] MULTI_LUN_DETECTED — max_lun=%u; media probe currently LUN0\n",
+                  static_cast<unsigned>(maxLun));
+  }
+
   probeMediaAndMount(true);
 }
 
