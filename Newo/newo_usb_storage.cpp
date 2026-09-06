@@ -1,97 +1,37 @@
 #include "newo_usb_storage.h"
-#include "newo_usb_audio.h"
 
 #include <inttypes.h>
 
 #include <esp_err.h>
 #include <esp_vfs_fat.h>
 #include <freertos/task.h>
-#include <usb/usb_host.h>
 
 namespace {
-constexpr uint8_t kUsbHubClass = 0x09;
-constexpr UBaseType_t kHostTaskPriority = 2;
 constexpr UBaseType_t kMscTaskPriority = 2;
-constexpr UBaseType_t kMonitorTaskPriority = 1;
 constexpr UBaseType_t kWorkerTaskPriority = 1;
-constexpr uint32_t kHostTaskStack = 4096;
 constexpr uint32_t kMscTaskStack = 4096;
-constexpr uint32_t kMonitorTaskStack = 8192;
 constexpr uint32_t kWorkerTaskStack = 6144;
 
-const char* speedName(usb_speed_t speed) {
-  switch (speed) {
-    case USB_SPEED_LOW: return "low";
-    case USB_SPEED_FULL: return "full";
-    case USB_SPEED_HIGH: return "high";
-    default: return "unknown";
-  }
-}
-
 void logError(const char* event, esp_err_t error) {
-  Serial.printf("[usb] %s — reason=%s\n", event, esp_err_to_name(error));
+  Serial.printf("[usb-storage] %s — reason=%s\n", event, esp_err_to_name(error));
 }
 }  // namespace
 
-NewoUsbStorage* NewoUsbStorage::instance_ = nullptr;
+bool NewoUsbStorage::begin(NewoUsbHost& host) {
+  if (host_ != nullptr) return host_ == &host;
+  if (!host.ready()) {
+    Serial.println("[usb-storage] CLIENT_FAILED — reason=host_not_ready");
+    return false;
+  }
 
-bool NewoUsbStorage::begin() {
-  if (instance_ != nullptr) return instance_ == this;
-
-  instance_ = this;
-  TaskHandle_t workerTask = nullptr;
+  host_ = &host;
   if (xTaskCreate(workerTaskEntry, "newo-usb-vfs", kWorkerTaskStack, this,
-                  kWorkerTaskPriority, &workerTask) != pdPASS) {
-    Serial.println("[usb] MOUNT_FAILED — reason=worker_task");
-    instance_ = nullptr;
-    return false;
-  }
-  workerTask_ = workerTask;
-  if (xTaskCreate(hostTaskEntry, "newo-usb-host", kHostTaskStack, this,
-                  kHostTaskPriority, nullptr) != pdPASS) {
-    Serial.println("[usb] MOUNT_FAILED — reason=host_task");
-    vTaskDelete(workerTask);
+                  kWorkerTaskPriority, &workerTask_) != pdPASS) {
+    Serial.println("[usb-storage] CLIENT_FAILED — reason=worker_task");
+    host_ = nullptr;
     workerTask_ = nullptr;
-    instance_ = nullptr;
     return false;
   }
-
-  return true;
-}
-
-void NewoUsbStorage::hostTaskEntry(void* arg) {
-  static_cast<NewoUsbStorage*>(arg)->hostTask();
-}
-
-void NewoUsbStorage::monitorTaskEntry(void* arg) {
-  static_cast<NewoUsbStorage*>(arg)->monitorTask();
-}
-
-void NewoUsbStorage::workerTaskEntry(void* arg) {
-  static_cast<NewoUsbStorage*>(arg)->workerTask();
-}
-
-void NewoUsbStorage::hostTask() {
-  usb_host_config_t hostConfig = {};
-  hostConfig.intr_flags = ESP_INTR_FLAG_LEVEL1;
-  // NULL is intentional on 3.3.10: no application filter is required.
-  hostConfig.enum_filter_cb = nullptr;
-  // IDF 5.5.4 runtime FIFO API: retain bulk OUT capacity for MSC while
-  // allowing audio IN >128 bytes. Never rewrite endpoint wMaxPacketSize.
-  hostConfig.fifo_settings_custom.rx_fifo_lines = NewoUac::kRxLines;
-  hostConfig.fifo_settings_custom.nptx_fifo_lines = NewoUac::kNptxLines;
-  hostConfig.fifo_settings_custom.ptx_fifo_lines = NewoUac::kPtxLines;
-  esp_err_t error = usb_host_install(&hostConfig);
-  if (error != ESP_OK) {
-    logError("HOST_FAILED", error);
-    vTaskDelete(nullptr);
-    return;
-  }
-  hostInstalled_ = true;
-  Serial.printf("[usb-uac] FIFO lines RX=%u NPTX=%u PTX=%u TOTAL=%u; MPS IN=%u bulk-OUT=%u periodic-OUT=%u\n",
-                NewoUac::kRxLines, NewoUac::kNptxLines, NewoUac::kPtxLines,
-                NewoUac::kFifoLinesTotal, NewoUac::kInMps,
-                NewoUac::kNptxLines * 4, NewoUac::kOutMps);
 
   msc_host_driver_config_t mscConfig = {};
   mscConfig.create_backround_task = true;
@@ -100,63 +40,20 @@ void NewoUsbStorage::hostTask() {
   mscConfig.core_id = tskNO_AFFINITY;
   mscConfig.callback = mscEvent;
   mscConfig.callback_arg = this;
-  error = msc_host_install(&mscConfig);
-  if (error != ESP_OK) {
-    logError("HOST_FAILED", error);
-    usb_host_uninstall();
-    hostInstalled_ = false;
-    vTaskDelete(nullptr);
-    return;
-  }
-  mscInstalled_ = true;
-
-  if (xTaskCreate(monitorTaskEntry, "newo-usb-monitor", kMonitorTaskStack, this,
-                  kMonitorTaskPriority, nullptr) != pdPASS) {
-    Serial.println("[usb] HOST_FAILED — reason=monitor_task");
-  }
-  Serial.println("[usb] HOST_READY");
-
-  while (true) {
-    uint32_t eventFlags = 0;
-    error = usb_host_lib_handle_events(portMAX_DELAY, &eventFlags);
-    if (error != ESP_OK && error != ESP_ERR_TIMEOUT) {
-      logError("HOST_FAILED", error);
-      break;
-    }
+  if (!host.installMscClient(mscConfig)) {
+    Serial.println("[usb-storage] CLIENT_FAILED — reason=msc_install");
+    vTaskDelete(workerTask_);
+    workerTask_ = nullptr;
+    host_ = nullptr;
+    return false;
   }
 
-  vTaskDelete(nullptr);
+  Serial.println("[usb-storage] CLIENT_READY — mount=/usb");
+  return true;
 }
 
-void NewoUsbStorage::monitorTask() {
-  const usb_host_client_config_t config = {
-      .is_synchronous = false,
-      .max_num_event_msg = 4,
-      .async = {
-          .client_event_callback = monitorClientEvent,
-          .callback_arg = this,
-      },
-  };
-  const esp_err_t error = usb_host_client_register(&config, &monitorClient_);
-  if (error != ESP_OK) {
-    logError("HOST_FAILED", error);
-    vTaskDelete(nullptr);
-    return;
-  }
-
-  newoUsbAudio.begin(monitorClient_);
-  while (true) {
-    const esp_err_t result = usb_host_client_handle_events(monitorClient_, pdMS_TO_TICKS(2));
-    if (result != ESP_OK && result != ESP_ERR_TIMEOUT) {
-      logError("HOST_FAILED", result);
-      break;
-    }
-    newoUsbAudio.service();
-  }
-
-  usb_host_client_deregister(monitorClient_);
-  monitorClient_ = nullptr;
-  vTaskDelete(nullptr);
+void NewoUsbStorage::workerTaskEntry(void* arg) {
+  static_cast<NewoUsbStorage*>(arg)->workerTask();
 }
 
 void NewoUsbStorage::workerTask() {
@@ -186,15 +83,6 @@ void NewoUsbStorage::workerTask() {
   }
 }
 
-void NewoUsbStorage::monitorClientEvent(const usb_host_client_event_msg_t* event, void* arg) {
-  if (event == nullptr || arg == nullptr) return;
-  if (event->event == USB_HOST_CLIENT_EVENT_NEW_DEV) {
-    static_cast<NewoUsbStorage*>(arg)->logDevice(event->new_dev.address);
-  } else if (event->event == USB_HOST_CLIENT_EVENT_DEV_GONE) {
-    newoUsbAudio.disconnected(event->dev_gone.dev_hdl);
-  }
-}
-
 void NewoUsbStorage::mscEvent(const msc_host_event_t* event, void* arg) {
   NewoUsbStorage* storage = static_cast<NewoUsbStorage*>(arg);
   if (event == nullptr || storage == nullptr || storage->workerTask_ == nullptr) return;
@@ -204,7 +92,6 @@ void NewoUsbStorage::mscEvent(const msc_host_event_t* event, void* arg) {
     storage->pendingAddress_ = event->device.address;
     storage->connectPending_ = true;
   } else if (event->event == msc_host_event_t::MSC_DEVICE_DISCONNECTED) {
-    // A disconnect must never be dropped behind a slow mount/probe operation.
     storage->pendingDisconnectDevice_ = event->device.handle;
     storage->disconnectPending_ = true;
   } else {
@@ -215,27 +102,10 @@ void NewoUsbStorage::mscEvent(const msc_host_event_t* event, void* arg) {
   xTaskNotifyGive(storage->workerTask_);
 }
 
-void NewoUsbStorage::logDevice(uint8_t address) {
-  usb_device_handle_t device = nullptr;
-  if (usb_host_device_open(monitorClient_, address, &device) != ESP_OK) return;
-
-  usb_device_info_t info = {};
-  const usb_device_desc_t* descriptor = nullptr;
-  const esp_err_t infoError = usb_host_device_info(device, &info);
-  const esp_err_t descriptorError = usb_host_get_device_descriptor(device, &descriptor);
-  if (infoError == ESP_OK) {
-    Serial.printf("[usb] DEVICE_CONNECTED — address=%u speed=%s\n",
-                  static_cast<unsigned>(address), speedName(info.speed));
-  }
-  if (descriptorError == ESP_OK && descriptor != nullptr && descriptor->bDeviceClass == kUsbHubClass) {
-    Serial.println("[usb] HUB_CONNECTED");
-  }
-  if (!newoUsbAudio.connected(device, address)) usb_host_device_close(monitorClient_, device);
-}
-
 void NewoUsbStorage::handleConnected(uint8_t address) {
   if (device_ != nullptr) {
-    Serial.println("[usb] MOUNT_FAILED — reason=busy");
+    Serial.printf("[usb-storage] MSC_IGNORED — address=%u reason=storage_slot_busy\n",
+                  static_cast<unsigned>(address));
     return;
   }
 
@@ -246,7 +116,7 @@ void NewoUsbStorage::handleConnected(uint8_t address) {
     return;
   }
   device_ = device;
-  Serial.println("[usb] MSC_CONNECTED");
+  Serial.printf("[usb-storage] MSC_CONNECTED — address=%u\n", static_cast<unsigned>(address));
 
   msc_host_device_info_t info = {};
   error = msc_host_get_device_info(device_, &info);
@@ -257,7 +127,7 @@ void NewoUsbStorage::handleConnected(uint8_t address) {
     return;
   }
   const uint64_t capacity = static_cast<uint64_t>(info.sector_count) * info.sector_size;
-  Serial.printf("[usb] capacity=%" PRIu64 " sector=%" PRIu32 "\n", capacity, info.sector_size);
+  Serial.printf("[usb-storage] capacity=%" PRIu64 " sector=%" PRIu32 "\n", capacity, info.sector_size);
 
   esp_vfs_fat_mount_config_t mountConfig = {};
   mountConfig.format_if_mount_failed = false;
@@ -273,12 +143,12 @@ void NewoUsbStorage::handleConnected(uint8_t address) {
   }
 
   mounted_ = true;
-  Serial.println("[usb] MOUNTED — path=/usb");
+  Serial.println("[usb-storage] MOUNTED — path=/usb");
 }
 
 void NewoUsbStorage::handleDisconnected(msc_host_device_handle_t device) {
   if (device == nullptr || device != device_) return;
-  Serial.println("[usb] MSC_DISCONNECTED");
+  Serial.println("[usb-storage] MSC_DISCONNECTED");
   releaseMountedDevice();
 }
 
@@ -288,7 +158,7 @@ void NewoUsbStorage::releaseMountedDevice() {
     if (error != ESP_OK) logError("UNMOUNT_FAILED", error);
     vfs_ = nullptr;
     mounted_ = false;
-    Serial.println("[usb] UNMOUNTED");
+    Serial.println("[usb-storage] UNMOUNTED");
   }
   if (device_ != nullptr) {
     const esp_err_t error = msc_host_uninstall_device(device_);
