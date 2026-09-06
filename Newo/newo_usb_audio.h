@@ -61,8 +61,18 @@ class NewoUsbAudio {
     bool valid = false;
   };
 
+  enum class ControlState : uint8_t {
+    WAITING = 0,
+    COMPLETED = 1,
+    ABANDONED = 2,
+  };
+
+  // Heap-owned because a USB control callback can legally arrive after the
+  // caller's timeout. If the caller abandons a request, the callback becomes
+  // the owner of the transfer/semaphore/context and frees all three.
   struct ControlWait {
     SemaphoreHandle_t done = nullptr;
+    std::atomic<ControlState> state{ControlState::WAITING};
     usb_transfer_status_t status = USB_TRANSFER_STATUS_ERROR;
     int actualBytes = 0;
   };
