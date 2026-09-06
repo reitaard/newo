@@ -11,6 +11,7 @@ constexpr UBaseType_t kMscTaskPriority = 2;
 constexpr UBaseType_t kWorkerTaskPriority = 1;
 constexpr uint32_t kMscTaskStack = 4096;
 constexpr uint32_t kWorkerTaskStack = 6144;
+constexpr uint32_t kMediaRetryMs = 2000;
 
 void logError(const char* event, esp_err_t error) {
   Serial.printf("[usb-storage] %s — reason=%s\n", event, esp_err_to_name(error));
@@ -58,7 +59,16 @@ void NewoUsbStorage::workerTaskEntry(void* arg) {
 
 void NewoUsbStorage::workerTask() {
   while (true) {
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    // MEDIA NOT PRESENT does not generate another USB connect event when a card
+    // is later inserted into an already-enumerated reader. Wake periodically
+    // only while that state is active; otherwise this worker sleeps forever.
+    const bool retryArmed = mediaRetryPending_;
+    const TickType_t waitTicks = retryArmed ? pdMS_TO_TICKS(kMediaRetryMs) : portMAX_DELAY;
+    const uint32_t notifications = ulTaskNotifyTake(pdTRUE, waitTicks);
+    const bool retryDue = retryArmed && notifications == 0;
+
+    // Drain real connect/disconnect events first. They always take precedence
+    // over a scheduled media reprobe.
     while (true) {
       bool disconnect = false;
       uint8_t address = 0;
@@ -72,6 +82,7 @@ void NewoUsbStorage::workerTask() {
       } else if (connectPending_) {
         address = pendingAddress_;
         connectPending_ = false;
+        mediaRetryPending_ = false;
       } else {
         portEXIT_CRITICAL(&eventLock_);
         break;
@@ -79,6 +90,12 @@ void NewoUsbStorage::workerTask() {
       portEXIT_CRITICAL(&eventLock_);
       if (disconnect) handleDisconnected(device);
       else handleConnected(address);
+    }
+
+    if (retryDue && mediaRetryPending_) {
+      const uint8_t address = mediaRetryAddress_;
+      mediaRetryPending_ = false;
+      handleConnected(address);
     }
   }
 }
@@ -111,10 +128,38 @@ void NewoUsbStorage::handleConnected(uint8_t address) {
 
   msc_host_device_handle_t device = nullptr;
   esp_err_t error = msc_host_install_device(address, &device);
-  if (error != ESP_OK) {
-    logError("MOUNT_FAILED", error);
+  if (error == ESP_ERR_MSC_MOUNT_FAILED) {
+    // In Newo's vendored MSC driver this install-time value specifically means
+    // SCSI NOT READY / ASC 0x3A (medium not present). Do not hammer TEST UNIT
+    // READY at 100 ms or tear down the shared USB host: keep only this address
+    // in a low-rate reprobe state so inserted/recovered media is discovered.
+    if (!mediaWaiting_) {
+      Serial.printf("[usb-storage] MEDIA_ABSENT — address=%u; reprobe=%lums\n",
+                    static_cast<unsigned>(address),
+                    static_cast<unsigned long>(kMediaRetryMs));
+    }
+    mediaWaiting_ = true;
+    mediaRetryAddress_ = address;
+    mediaRetryPending_ = true;
     return;
   }
+  if (error != ESP_OK) {
+    if (mediaWaiting_) {
+      Serial.printf("[usb-storage] MEDIA_PROBE_STOPPED — address=%u reason=%s\n",
+                    static_cast<unsigned>(address), esp_err_to_name(error));
+    } else {
+      logError("MOUNT_FAILED", error);
+    }
+    mediaWaiting_ = false;
+    mediaRetryPending_ = false;
+    return;
+  }
+
+  if (mediaWaiting_) {
+    Serial.printf("[usb-storage] MEDIA_READY — address=%u\n", static_cast<unsigned>(address));
+  }
+  mediaWaiting_ = false;
+  mediaRetryPending_ = false;
   device_ = device;
   Serial.printf("[usb-storage] MSC_CONNECTED — address=%u\n", static_cast<unsigned>(address));
 
@@ -153,6 +198,8 @@ void NewoUsbStorage::handleDisconnected(msc_host_device_handle_t device) {
 }
 
 void NewoUsbStorage::releaseMountedDevice() {
+  mediaRetryPending_ = false;
+  mediaWaiting_ = false;
   if (vfs_ != nullptr) {
     const esp_err_t error = msc_host_vfs_unregister(vfs_);
     if (error != ESP_OK) logError("UNMOUNT_FAILED", error);
