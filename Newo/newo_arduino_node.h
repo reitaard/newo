@@ -12,6 +12,7 @@
 // Owns the Newo <-> Arduino protocol. Transport details stay in NewoUsbVcp.
 // Wire format is bounded ASCII, one frame per LF:
 //   NEOWIRE/1 HELLO id=N min=1 max=1
+//   NEOWIRE/1 READY reset=external
 //   NEOWIRE/1 HELLO_ACK id=N version=1 capabilities=csv
 //   NEOWIRE/1 REQ id=N command=name payload=escaped-text
 //   NEOWIRE/1 ACK id=N status=ok payload=escaped-text
@@ -40,6 +41,7 @@ class NewoArduinoNode {
   bool begin(NewoUsbVcp& transport);
   bool ready() const { return ready_.load(); }
   uint16_t protocolVersion() const { return protocolVersion_.load(); }
+  uint32_t handshakeGeneration() const { return handshakeGeneration_.load(); }
   const char* capabilities() const { return capabilities_; }
   uint32_t request(const char* command, const char* payload = nullptr);
   bool receiveEvent(Event& event, uint32_t timeoutMs = 0);
@@ -74,6 +76,7 @@ class NewoArduinoNode {
   std::atomic<uint32_t> nextRequestId_{1};
   std::atomic<bool> ready_{false};
   std::atomic<uint16_t> protocolVersion_{0};
+  std::atomic<uint32_t> handshakeGeneration_{0};
   std::atomic<uint32_t> malformedFrames_{0};
   std::atomic<uint32_t> timedOutRequests_{0};
 };

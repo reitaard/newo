@@ -21,6 +21,9 @@ class NewoAudio {
   // Starts one direct microphone session, or cancels it when already streaming.
   // It intentionally does not enable or re-arm WakeNet.
   bool manualToggle();
+  // Starts one direct session from a physical control. Unlike manualToggle(),
+  // this never turns off or cancels an existing session.
+  bool startPhysicalVoiceTrigger();
   // Temporarily releases WakeNet while preserving the user's OFF/ARMED choice.
   // Returns false only when an active STREAMING session makes playback unsafe.
   bool setPlaybackActive(bool active);

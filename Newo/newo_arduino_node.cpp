@@ -61,6 +61,11 @@ void NewoArduinoNode::onConnected(uint32_t generation) {
   protocolVersion_.store(0);
   capabilities_[0] = '\0';
   assembler_.reset();
+  portENTER_CRITICAL(&pendingLock_);
+  for (auto& item : pending_) item.active = false;
+  portEXIT_CRITICAL(&pendingLock_);
+  xQueueReset(events_);
+  xQueueReset(acknowledgements_);
   handshakeId_ = nextRequestId_.fetch_add(1);
   char hello[96];
   snprintf(hello, sizeof(hello), "NEOWIRE/1 HELLO id=%lu min=1 max=1\n",
@@ -97,6 +102,15 @@ void NewoArduinoNode::consume(const uint8_t* data, size_t length) {
 void NewoArduinoNode::handleFrame(char* frame) {
   if (strncmp(frame, "NEOWIRE/1 ", 10) != 0) { malformedFrames_.fetch_add(1); return; }
   char idText[16] = {}, value[16] = {};
+  if (strncmp(frame + 10, "READY", 5) == 0 && (frame[15] == '\0' || frame[15] == ' ')) {
+    char resetCause[16] = {};
+    field(frame, "reset", resetCause, sizeof(resetCause));
+    Serial.printf("[arduino] RESET_CAUSE %s\n", resetCause[0] ? resetCause : "unknown");
+    // The Nano's USB-serial bridge can remain enumerated while only the
+    // ATmega328P restarts, so explicitly renew the application handshake.
+    onConnected(observedGeneration_);
+    return;
+  }
   if (strncmp(frame + 10, "HELLO_ACK ", 10) == 0) {
     char caps[kMaxCapabilitiesBytes] = {};
     if (!field(frame, "id", idText, sizeof(idText)) || !field(frame, "version", value, sizeof(value)) ||
@@ -106,6 +120,7 @@ void NewoArduinoNode::handleFrame(char* frame) {
     field(frame, "capabilities", caps, sizeof(caps));
     strlcpy(capabilities_, caps, sizeof(capabilities_));
     protocolVersion_.store(1); ready_.store(true); handshakeDeadline_ = 0;
+    handshakeGeneration_.fetch_add(1);
     Serial.printf("[arduino] HANDSHAKE_READY version=1 capabilities=%s\n",
                   capabilities_[0] ? capabilities_ : "none");
     return;

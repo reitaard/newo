@@ -31,6 +31,8 @@ USB Audio Class diagnostics and opt-in UAC1 microphone/tone/duplex tests share t
 
 Arduino USB serial support shares the same host through a generic bounded VCP transport backed by Espressif CDC-ACM, CH34x, CP210x and FTDI drivers. The separate Arduino-node layer provides a version/capability handshake, request IDs, acknowledgements and unsolicited events; no servo, buzzer, relay or firmware-flashing features are enabled. See [Arduino USB/VCP validation](docs/usb-vcp.md).
 
+The classic Nano RESET-button voice-trigger test is documented in [Nano reset voice test](docs/nano-reset-voice-test.md). It uses Newo's existing INMP441 and voice pipeline; it does not move audio capture to the Nano.
+
 ## Wi-Fi and provisioning
 
 Newo stores up to eight Wi-Fi networks in ESP32 Preferences/NVS. At boot it scans the supported 2.4 GHz band, filters the results to saved SSIDs, ranks visible saved networks by RSSI, and attempts them strongest-first. A disconnected device retries saved networks within bounded recovery windows.
