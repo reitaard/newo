@@ -36,15 +36,18 @@ typedef struct {
 typedef struct msc_host_device {
     STAILQ_ENTRY(msc_host_device) tailq_entry;
     SemaphoreHandle_t transfer_done;
+    // The driver owns one reusable usb_transfer_t per MSC device. Serialize the
+    // complete BOT command (CBW -> data -> CSW) so concurrent VFS/script users
+    // can never interleave packets on that transfer object.
+    SemaphoreHandle_t io_lock;
     usb_device_handle_t handle;
     usb_transfer_t *xfer;
     msc_config_t config;
     usb_disk_t disk;
 
-    // Newo recovery state. The USB transport may remain open while its media is
-    // temporarily absent. `gone` is set synchronously from DEV_GONE before the
-    // storage worker touches VFS state so new I/O fails closed instead of using
-    // an invalid USB handle.
+    // USB transport and media are separate lifetimes. A reader/controller may
+    // remain enumerated with no medium. DEV_GONE flips `gone` before VFS cleanup
+    // so new I/O fails closed instead of touching an invalid USB handle.
     volatile bool gone;
     volatile bool media_ready;
 } msc_device_t;
