@@ -54,7 +54,9 @@ const char* field(const char* frame, const char* key) {
 void sendReady() {
   Serial.print(F("NEOWIRE/1 READY reset="));
   Serial.println(resetCauseName());
-  nextReadyMs = millis() + 500;
+  // Newo retransmits one stable HELLO ID while pending. This slow fallback is
+  // only for a genuinely lost READY/HELLO pair, not normal handshake pacing.
+  nextReadyMs = millis() + 3000;
 }
 
 void handleLedRequest(const char* id, const char* payload) {

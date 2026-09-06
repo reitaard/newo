@@ -54,6 +54,7 @@ class NewoArduinoNode {
   static void taskEntry(void* arg);
   void task();
   void onConnected(uint32_t generation);
+  bool sendHello();
   void onDisconnected();
   void consume(const uint8_t* data, size_t length);
   void handleFrame(char* frame);

@@ -48,7 +48,7 @@ void NewoArduinoNode::task() {
     const uint32_t now = millis();
     if (!ready_.load() && handshakeDeadline_ != 0 && static_cast<int32_t>(now - handshakeDeadline_) >= 0) {
       Serial.printf("[arduino] HANDSHAKE_TIMEOUT id=%lu\n", static_cast<unsigned long>(handshakeId_));
-      handshakeDeadline_ = 0;
+      sendHello();
     }
     expireRequests(now);
     vTaskDelay(pdMS_TO_TICKS(1));
@@ -67,14 +67,21 @@ void NewoArduinoNode::onConnected(uint32_t generation) {
   xQueueReset(events_);
   xQueueReset(acknowledgements_);
   handshakeId_ = nextRequestId_.fetch_add(1);
+  sendHello();
+}
+
+bool NewoArduinoNode::sendHello() {
   char hello[96];
   snprintf(hello, sizeof(hello), "NEOWIRE/1 HELLO id=%lu min=1 max=1\n",
            static_cast<unsigned long>(handshakeId_));
   if (sendFrame(hello)) {
     handshakeDeadline_ = millis() + kHandshakeTimeoutMs;
     Serial.printf("[arduino] HANDSHAKE_SENT id=%lu transport_generation=%lu\n",
-                  static_cast<unsigned long>(handshakeId_), static_cast<unsigned long>(generation));
+                  static_cast<unsigned long>(handshakeId_), static_cast<unsigned long>(observedGeneration_));
+    return true;
   }
+  handshakeDeadline_ = millis() + kHandshakeTimeoutMs;
+  return false;
 }
 
 void NewoArduinoNode::onDisconnected() {
@@ -106,9 +113,11 @@ void NewoArduinoNode::handleFrame(char* frame) {
     char resetCause[16] = {};
     field(frame, "reset", resetCause, sizeof(resetCause));
     Serial.printf("[arduino] RESET_CAUSE %s\n", resetCause[0] ? resetCause : "unknown");
-    // The Nano's USB-serial bridge can remain enumerated while only the
-    // ATmega328P restarts, so explicitly renew the application handshake.
-    onConnected(observedGeneration_);
+    // If initial HELLO was sent while the AVR was still rebooting, resend the
+    // same request ID. A READY received after a completed handshake represents
+    // an application-only reset and starts one new handshake generation.
+    if (ready_.load()) onConnected(observedGeneration_);
+    else sendHello();
     return;
   }
   if (strncmp(frame + 10, "HELLO_ACK ", 10) == 0) {
@@ -119,6 +128,7 @@ void NewoArduinoNode::handleFrame(char* frame) {
     }
     field(frame, "capabilities", caps, sizeof(caps));
     strlcpy(capabilities_, caps, sizeof(capabilities_));
+    if (ready_.load()) return;  // Retransmitted HELLO produced a duplicate ACK.
     protocolVersion_.store(1); ready_.store(true); handshakeDeadline_ = 0;
     handshakeGeneration_.fetch_add(1);
     Serial.printf("[arduino] HANDSHAKE_READY version=1 capabilities=%s\n",
