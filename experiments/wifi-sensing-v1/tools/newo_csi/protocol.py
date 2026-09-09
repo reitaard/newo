@@ -11,9 +11,11 @@ VERSION = 1
 CSI = 1
 STATUS = 2
 SYNC = 3
-CSI_HEADER_SIZE = 64
+DIAGNOSTIC = 4
+CSI_HEADER_SIZE = 88
 STATUS_SIZE = 80
 SYNC_SIZE = 64
+DIAGNOSTIC_SIZE = 104
 MAX_RECORD_SIZE = 4096
 PATH_NAMES = {0: "UNKNOWN", 1: "ROUTER_NEWO", 2: "ROUTER_NEWO2", 3: "NEWO2_NEWO"}
 
@@ -66,6 +68,15 @@ class CsiRecord(Common):
     path_id: int
     sanitized_prefix_bytes: int
     iq_order: int
+    driver_rx_timestamp_us: int
+    phy_rate: int
+    mcs: int
+    rx_flags: int
+    ampdu_count: int
+    rx_state: int
+    packet_length: int
+    driver_rx_sequence: int
+    destination_mac: bytes
     iq_bytes: bytes
 
 
@@ -103,7 +114,32 @@ class SyncRecord(Common):
     sync_source: int
 
 
-Record = Union[CsiRecord, StatusRecord, SyncRecord, Common]
+@dataclass(frozen=True)
+class DiagnosticRecord(Common):
+    node_id: int
+    receiver_mac: bytes
+    diagnostic_flags: int
+    boot_id: int
+    diagnostic_sequence: int
+    timestamp_us: int
+    status_transport_ok: int
+    status_transport_drops: int
+    probe_tx_attempted: int
+    probe_tx_queued: int
+    probe_tx_success: int
+    probe_tx_link_failure: int
+    probe_tx_submit_failure: int
+    probe_tx_skipped_busy: int
+    probe_tx_skipped_unassociated: int
+    probe_rx_valid: int
+    probe_rx_invalid: int
+    path_1_gate_drops: int
+    path_2_gate_drops: int
+    path_3_gate_drops: int
+    association_epoch: int
+
+
+Record = Union[CsiRecord, StatusRecord, SyncRecord, DiagnosticRecord, Common]
 
 
 def _validate_common(data: bytes) -> tuple[int, int, int, int]:
@@ -138,6 +174,11 @@ def decode(data: bytes) -> Record:
         (node_id, receiver, source, sequence, timestamp_us, channel, secondary,
          bandwidth, phy, rssi, noise, antenna, ltf, driver_length, payload_length,
          subcarriers, flags, path_id, sanitized, iq_order) = fields
+        (driver_timestamp, phy_rate, mcs, rx_flags, ampdu_count, rx_state,
+         packet_length, driver_sequence, reserved, destination,
+         trailing_reserved) = struct.unpack_from("<IBBHBBHHH6sH", data, 64)
+        if reserved != 0 or trailing_reserved != 0:
+            raise ProtocolError("non-zero reserved CSI field")
         payload = data[header_length:]
         if payload_length != len(payload) or driver_length != payload_length:
             raise ProtocolError("CSI payload length mismatch")
@@ -153,7 +194,9 @@ def decode(data: bytes) -> Record:
         return CsiRecord(*common, node_id, receiver, source, sequence, timestamp_us,
                          channel, secondary, bandwidth, phy, rssi, noise, antenna,
                          ltf, driver_length, payload_length, subcarriers, flags,
-                         path_id, sanitized, iq_order, payload)
+                         path_id, sanitized, iq_order, driver_timestamp, phy_rate,
+                         mcs, rx_flags, ampdu_count, rx_state, packet_length,
+                         driver_sequence, destination, payload)
     if record_type == STATUS:
         if header_length != STATUS_SIZE or record_length != STATUS_SIZE:
             raise ProtocolError("invalid STATUS length")
@@ -164,4 +207,9 @@ def decode(data: bytes) -> Record:
             raise ProtocolError("invalid SYNC length")
         fields = struct.unpack_from("<I6sHIIQQIII", data, 16)
         return SyncRecord(*common, *fields)
+    if record_type == DIAGNOSTIC:
+        if header_length != DIAGNOSTIC_SIZE or record_length != DIAGNOSTIC_SIZE:
+            raise ProtocolError("invalid DIAGNOSTIC length")
+        fields = struct.unpack_from("<I6sHIIQ15I", data, 16)
+        return DiagnosticRecord(*common, *fields)
     return Common(*common)

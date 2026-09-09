@@ -6,7 +6,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
-from .protocol import CsiRecord, PATH_NAMES, Record, StatusRecord, mac_text
+from .protocol import CsiRecord, DiagnosticRecord, PATH_NAMES, Record, StatusRecord, mac_text
 
 
 @dataclass
@@ -29,6 +29,7 @@ class CaptureStats:
         self.csi_frames = 0
         self.status_records = 0
         self.sync_records = 0
+        self.diagnostic_records = 0
         self.unknown_records = 0
         self.rejected_datagrams = 0
         self.rejection_reasons: Counter[str] = Counter()
@@ -42,6 +43,9 @@ class CaptureStats:
         self.latest_status: dict[tuple[int, int], StatusRecord] = {}
         self.first_status: dict[tuple[int, int], StatusRecord] = {}
         self._boot_by_receiver: dict[tuple[int, bytes], int] = {}
+        self.latest_diagnostic: dict[tuple[int, int], DiagnosticRecord] = {}
+        self.diagnostic_sequence_gaps: Counter[str] = Counter()
+        self._last_diagnostic_sequence: dict[tuple[int, int], int] = {}
 
     def reject(self, reason: str = "protocol") -> None:
         self.rejected_datagrams += 1
@@ -65,6 +69,16 @@ class CaptureStats:
             self._boot_by_receiver[receiver_key] = record.boot_id
         elif record.record_type == 3:
             self.sync_records += 1
+        elif isinstance(record, DiagnosticRecord):
+            self.diagnostic_records += 1
+            key = (record.node_id, record.boot_id)
+            previous = self._last_diagnostic_sequence.get(key)
+            if previous is not None:
+                delta = (record.diagnostic_sequence - previous) & 0xFFFFFFFF
+                if 0 < delta < 0x80000000:
+                    self.diagnostic_sequence_gaps[f"node={record.node_id},boot={record.boot_id}"] += delta - 1
+            self._last_diagnostic_sequence[key] = record.diagnostic_sequence
+            self.latest_diagnostic[key] = record
         else:
             self.unknown_records += 1
 
@@ -144,16 +158,41 @@ class CaptureStats:
                     "device_transport_drops": delta(value.transport_drops, first.transport_drops),
                 },
             })
+        diagnostics = []
+        for (node, boot), value in sorted(self.latest_diagnostic.items()):
+            diagnostics.append({
+                "node_id": node, "boot_id": boot,
+                "association_epoch": value.association_epoch,
+                "status_transport_ok": value.status_transport_ok,
+                "status_transport_drops": value.status_transport_drops,
+                "probe_tx_attempted": value.probe_tx_attempted,
+                "probe_tx_queued": value.probe_tx_queued,
+                "probe_tx_success": value.probe_tx_success,
+                "probe_tx_link_failure": value.probe_tx_link_failure,
+                "probe_tx_submit_failure": value.probe_tx_submit_failure,
+                "probe_tx_skipped_busy": value.probe_tx_skipped_busy,
+                "probe_tx_skipped_unassociated": value.probe_tx_skipped_unassociated,
+                "probe_rx_valid": value.probe_rx_valid,
+                "probe_rx_invalid": value.probe_rx_invalid,
+                "path_gate_drops": {
+                    "ROUTER_NEWO": value.path_1_gate_drops,
+                    "ROUTER_NEWO2": value.path_2_gate_drops,
+                    "NEWO2_NEWO": value.path_3_gate_drops,
+                },
+            })
         return {
             "duration_seconds": round(duration_s, 6),
             "record_counts": {"total": self.total_records, "csi": self.csi_frames,
                               "status": self.status_records, "sync": self.sync_records,
+                              "diagnostic": self.diagnostic_records,
                               "unknown": self.unknown_records,
                               "rejected_datagrams": self.rejected_datagrams},
             "rejection_reasons": dict(sorted(self.rejection_reasons.items())),
             "sequence_gap_estimate_by_receiver": dict(sorted(self.sequence_gaps.items())),
             "duplicates_by_receiver": dict(sorted(self.duplicates.items())),
             "out_of_order_by_receiver": dict(sorted(self.out_of_order.items())),
+            "diagnostic_sequence_gap_estimate": dict(sorted(self.diagnostic_sequence_gaps.items())),
             "paths": paths,
             "latest_device_drop_counters": status,
+            "latest_device_diagnostics": diagnostics,
         }

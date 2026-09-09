@@ -9,8 +9,8 @@ import struct
 from typing import BinaryIO, Iterator
 
 ARCHIVE_MAGIC = b"NCAP"
-ARCHIVE_VERSION = 1
-ENVELOPE = struct.Struct("<4sBBHQI4sHH")
+ARCHIVE_VERSION = 2
+ENVELOPE = struct.Struct("<4sBBHQQI4sHH")
 
 
 class ArchiveError(ValueError):
@@ -19,7 +19,8 @@ class ArchiveError(ValueError):
 
 @dataclass(frozen=True)
 class ArchivedRecord:
-    host_received_ns: int
+    host_monotonic_ns: int
+    host_wall_ns: int
     source_ip: str
     source_port: int
     record: bytes
@@ -29,11 +30,11 @@ class ArchiveWriter:
     def __init__(self, path: Path):
         self._file: BinaryIO = path.open("xb")
 
-    def append(self, record: bytes, host_received_ns: int,
+    def append(self, record: bytes, host_monotonic_ns: int, host_wall_ns: int,
                source: tuple[str, int]) -> None:
         ip = ipaddress.IPv4Address(source[0]).packed
         self._file.write(ENVELOPE.pack(ARCHIVE_MAGIC, ARCHIVE_VERSION, 0,
-                                      ENVELOPE.size, host_received_ns,
+                                      ENVELOPE.size, host_monotonic_ns, host_wall_ns,
                                       len(record), ip, source[1], 0))
         self._file.write(record)
 
@@ -58,7 +59,8 @@ def iter_archive(path: Path) -> Iterator[ArchivedRecord]:
                 return
             if len(header) != ENVELOPE.size:
                 raise ArchiveError("truncated archive envelope")
-            magic, version, flags, header_size, received_ns, length, ip, port, reserved = (
+            (magic, version, flags, header_size, monotonic_ns, wall_ns, length,
+             ip, port, reserved) = (
                 ENVELOPE.unpack(header)
             )
             if magic != ARCHIVE_MAGIC or version != ARCHIVE_VERSION:
@@ -70,4 +72,5 @@ def iter_archive(path: Path) -> Iterator[ArchivedRecord]:
             record = stream.read(length)
             if len(record) != length:
                 raise ArchiveError("truncated embedded record")
-            yield ArchivedRecord(received_ns, str(ipaddress.IPv4Address(ip)), port, record)
+            yield ArchivedRecord(monotonic_ns, wall_ns,
+                                 str(ipaddress.IPv4Address(ip)), port, record)

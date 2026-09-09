@@ -11,13 +11,21 @@ datasets/<session_id>/
   summary.json    final counts, rates, RF geometry, and loss diagnostics
 ```
 
-Each 28-byte `NCAP` envelope stores host receive time, sender IPv4/port, and
+Each 36-byte version-2 `NCAP` envelope stores authoritative host monotonic
+receive nanoseconds, separate wall-clock nanoseconds, sender IPv4/port, and
 record length followed by the original NCSI datagram without re-encoding it.
 The strict decoder validates magic, version, lengths, CSI geometry,
 first-word sanitation, I/Q order, and CRC-32C before archival.
 The collector requests a 4 MiB UDP receive buffer by default and records the
 effective OS value in session metadata; sequence/status counters remain the
 authoritative indicators of loss.
+
+The little-endian NCAP v2 envelope layout is: magic `NCAP` (4 bytes), version
+`2` (1), flags `0` (1), header size `36` (2), host monotonic ns (8), host wall
+ns (8), embedded record length (4), sender IPv4 (4), sender UDP port (2), and
+reserved zero (2). v1 archives are intentionally rejected: no physical
+datasets existed when monotonic timing became mandatory, so silent conversion
+of the old wall-time-only field would be misleading.
 
 Run without installation from this directory:
 
@@ -34,14 +42,18 @@ python -m unittest discover -s tests -v
 
 Use `--speed 1` for recorded replay timing, `--speed 2` for twice real time, or
 `--speed 0` for no delays. Replay sends the exact embedded NCSI records as UDP
-datagrams. CSV export is derived inspection data only; it emits signed
+datagrams and derives delays only from monotonic capture timestamps, so host
+wall-clock corrections cannot distort RF timing. Wall time is retained for
+human chronology. CSV export is derived inspection data only; it emits signed
 imaginary/real bytes, amplitude, and wrapped phase for selected subcarriers.
 It must not replace `frames.ncsi`.
 
 Sequence loss is calculated across each receiver's node-ID/MAC stream because
 device CSI sequence numbers are node-local and may interleave paths. Status
-records separately expose intentional rate gating, source filtering, ring-full
-drops, and device UDP failures; those categories are not conflated.
+records separately expose intentional per-path rate gating, source filtering,
+ring-full drops, and CSI-only device UDP failures. Diagnostic records expose
+STATUS transport, association epochs, per-path gate drops, and ESP-NOW probe
+outcomes; diagnostic sequence gaps reveal diagnostic-record loss.
 
 For reproducible research captures, supply all three MAC options shown above.
 They validate the receiver/source tuple for `ROUTER_NEWO`, `ROUTER_NEWO2`, and

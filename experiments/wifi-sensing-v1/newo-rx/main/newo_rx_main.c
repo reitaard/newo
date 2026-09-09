@@ -32,6 +32,7 @@
 
 #include "ncsi_protocol.h"
 #include "probe_protocol.h"
+#include "rate_gate.h"
 
 #ifndef CONFIG_ESP_WIFI_CSI_ENABLED
 #error "CONFIG_ESP_WIFI_CSI_ENABLED must be enabled for the Newo CSI receiver"
@@ -68,8 +69,10 @@ static const char *TAG = "newo_csi_rx";
 
 typedef struct {
     uint8_t source_mac[6];
+    uint8_t destination_mac[6];
     uint32_t sequence;
     uint64_t timestamp_us;
+    uint32_t driver_rx_timestamp_us;
     uint8_t channel;
     uint8_t secondary_channel;
     uint8_t bandwidth;
@@ -81,6 +84,13 @@ typedef struct {
     uint16_t flags;
     uint16_t path_id;
     uint16_t driver_length;
+    uint16_t driver_rx_sequence;
+    uint16_t rx_flags;
+    uint16_t packet_length;
+    uint8_t phy_rate;
+    uint8_t mcs;
+    uint8_t ampdu_count;
+    uint8_t rx_state;
     uint8_t sanitized_prefix_bytes;
     uint8_t csi[NCSI_MAX_CSI_BYTES];
 } csi_slot_t;
@@ -103,6 +113,13 @@ static uint8_t s_peer_mac[6];
 static bool s_csi_enabled;
 static bool s_self_ping_enabled;
 static volatile bool s_associated;
+static volatile bool s_identity_ready;
+static volatile uint32_t s_refresh_requested;
+static volatile uint32_t s_refresh_handled;
+static volatile uint32_t s_association_epoch;
+static uint8_t s_ap_primary;
+static uint8_t s_ap_secondary;
+static uint32_t s_gateway_address;
 static uint32_t s_boot_id;
 static int s_udp_socket = -1;
 static struct sockaddr_in s_collector_address;
@@ -111,7 +128,7 @@ static esp_ping_handle_t s_ping_handle;
 static csi_slot_t s_ring[CONFIG_NEWO_QUEUE_DEPTH];
 static volatile uint32_t s_ring_write;
 static volatile uint32_t s_ring_read;
-static volatile int64_t s_last_accepted_us;
+static newo_rate_gate_t s_rate_gate;
 
 static volatile uint32_t s_callbacks_total;
 static volatile uint32_t s_rate_gate_drops;
@@ -123,14 +140,24 @@ static volatile uint32_t s_transport_drops;
 static volatile uint32_t s_invalid_frame_drops;
 static volatile uint32_t s_next_sequence;
 static volatile uint32_t s_status_sequence;
+static volatile uint32_t s_diagnostic_sequence;
+static volatile uint32_t s_status_transport_ok;
+static volatile uint32_t s_status_transport_drops;
+static volatile uint32_t s_path_gate_drops[NEWO_PATH_COUNT];
+static volatile uint32_t s_probe_tx_attempted;
 static volatile uint32_t s_probe_tx_queued;
-static volatile uint32_t s_probe_tx_ok;
-static volatile uint32_t s_probe_tx_fail;
-static volatile uint32_t s_probe_rx_ok;
+static volatile uint32_t s_probe_tx_success;
+static volatile uint32_t s_probe_tx_link_failure;
+static volatile uint32_t s_probe_tx_submit_failure;
+static volatile uint32_t s_probe_tx_skipped_busy;
+static volatile uint32_t s_probe_tx_skipped_unassociated;
+static volatile uint32_t s_probe_rx_valid;
 static volatile uint32_t s_probe_rx_invalid;
 static volatile bool s_probe_in_flight;
 
 static portMUX_TYPE s_sample_lock = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE s_identity_lock = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE s_gate_lock = portMUX_INITIALIZER_UNLOCKED;
 static last_sample_t s_last_sample;
 
 static inline uint32_t counter_get(volatile uint32_t *counter)
@@ -178,6 +205,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ESP_ERROR_CHECK(esp_wifi_connect());
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         s_associated = false;
+        s_identity_ready = false;
+        s_self_ping_enabled = false;
         if (s_wifi_retry_count++ < WIFI_MAXIMUM_RETRY) {
             esp_wifi_connect();
         } else {
@@ -186,6 +215,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         s_wifi_retry_count = 0;
         s_associated = true;
+        counter_increment(&s_refresh_requested);
         xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
     }
 }
@@ -241,26 +271,9 @@ static void initialise_wifi(void)
     }
 }
 
-static wifi_ap_record_t inspect_access_point(void)
-{
-    wifi_ap_record_t ap = {0};
-    ESP_ERROR_CHECK(esp_wifi_sta_get_ap_info(&ap));
-    memcpy(s_ap_bssid, ap.bssid, sizeof(s_ap_bssid));
-    ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_STA, s_receiver_mac));
-
-    char ap_mac[18];
-    char receiver_mac[18];
-    format_mac(ap.bssid, ap_mac);
-    format_mac(s_receiver_mac, receiver_mac);
-    ESP_LOGI(TAG, "associated receiver=%s bssid=%s primary=%u secondary=%u rssi=%d",
-             receiver_mac, ap_mac, (unsigned)ap.primary, (unsigned)ap.second, ap.rssi);
-    return ap;
-}
-
 static void configure_source_filter(void)
 {
 #if CONFIG_NEWO_SOURCE_FILTER_AP
-    memcpy(s_filter_mac, s_ap_bssid, sizeof(s_filter_mac));
     s_filter_enabled = true;
 #elif CONFIG_NEWO_SOURCE_FILTER_CUSTOM
     if (!parse_mac(CONFIG_NEWO_SOURCE_MAC, s_filter_mac)) {
@@ -272,12 +285,19 @@ static void configure_source_filter(void)
     s_filter_enabled = false;
 #endif
 
+#if !CONFIG_NEWO_SOURCE_FILTER_AP
     if (s_filter_enabled) {
         char mac[18];
         format_mac(s_filter_mac, mac);
         ESP_LOGI(TAG, "source filter enabled: %s", mac);
-    } else {
+    } else
+#endif
+    {
+#if CONFIG_NEWO_SOURCE_FILTER_AP
+        ESP_LOGI(TAG, "source filter follows the associated AP BSSID");
+#else
         ESP_LOGW(TAG, "source filter disabled; path identity must be validated by host");
+#endif
     }
 }
 
@@ -316,6 +336,22 @@ static uint8_t infer_ltf_mask(uint8_t sig_mode, bool stbc)
     return mask;
 }
 
+static uint16_t encode_rx_flags(const wifi_pkt_rx_ctrl_t *rx)
+{
+    uint16_t flags = 0;
+#if !CONFIG_PM_ENABLE
+    flags |= NCSI_RX_FLAG_TIMESTAMP_PRECISE;
+#endif
+    if (rx->sig_mode == 0) flags |= NCSI_RX_FLAG_RATE_VALID;
+    if (rx->sig_mode == 1) flags |= NCSI_RX_FLAG_MCS_VALID;
+    if (rx->sgi) flags |= NCSI_RX_FLAG_SHORT_GI;
+    if (rx->aggregation) flags |= NCSI_RX_FLAG_AGGREGATED;
+    if (rx->fec_coding) flags |= NCSI_RX_FLAG_LDPC;
+    if (rx->smoothing) flags |= NCSI_RX_FLAG_SMOOTHING;
+    if (rx->not_sounding) flags |= NCSI_RX_FLAG_NOT_SOUNDING;
+    return flags;
+}
+
 static void csi_callback(void *ctx, wifi_csi_info_t *info)
 {
     (void)ctx;
@@ -326,10 +362,22 @@ static void csi_callback(void *ctx, wifi_csi_info_t *info)
         return;
     }
 
+    if (!s_identity_ready) {
+        counter_increment(&s_source_filter_drops);
+        return;
+    }
+
+    bool filter_enabled;
+    uint8_t filter_mac[6];
+    portENTER_CRITICAL(&s_identity_lock);
+    filter_enabled = s_filter_enabled;
+    memcpy(filter_mac, s_filter_mac, sizeof(filter_mac));
+    portEXIT_CRITICAL(&s_identity_lock);
+
     bool peer_source = source_is_peer(info->mac);
     bool filter_matched = peer_source;
-    if (!peer_source && s_filter_enabled) {
-        if (memcmp(info->mac, s_filter_mac, 6) != 0) {
+    if (!peer_source && filter_enabled) {
+        if (memcmp(info->mac, filter_mac, 6) != 0) {
             counter_increment(&s_source_filter_drops);
             return;
         }
@@ -338,12 +386,17 @@ static void csi_callback(void *ctx, wifi_csi_info_t *info)
 
     int64_t now_us = esp_timer_get_time();
     const int64_t interval_us = 1000000LL / CONFIG_NEWO_CSI_RATE_HZ;
-    int64_t prior_us = __atomic_load_n(&s_last_accepted_us, __ATOMIC_RELAXED);
-    if (prior_us != 0 && now_us - prior_us < interval_us) {
+    uint16_t path_id = peer_source ? 3u : CONFIG_NEWO_PATH_ID;
+    portENTER_CRITICAL(&s_gate_lock);
+    bool gate_accepted = newo_rate_gate_accept(&s_rate_gate, path_id, now_us, interval_us);
+    portEXIT_CRITICAL(&s_gate_lock);
+    if (!gate_accepted) {
         counter_increment(&s_rate_gate_drops);
+        if (path_id >= 1 && path_id <= NEWO_PATH_COUNT) {
+            counter_increment(&s_path_gate_drops[path_id - 1u]);
+        }
         return;
     }
-    __atomic_store_n(&s_last_accepted_us, now_us, __ATOMIC_RELAXED);
 
     uint32_t sequence = counter_increment(&s_next_sequence);
     counter_increment(&s_accepted_total);
@@ -357,8 +410,10 @@ static void csi_callback(void *ctx, wifi_csi_info_t *info)
 
     csi_slot_t *slot = &s_ring[write];
     memcpy(slot->source_mac, info->mac, 6);
+    memcpy(slot->destination_mac, info->dmac, 6);
     slot->sequence = sequence;
     slot->timestamp_us = (uint64_t)now_us;
+    slot->driver_rx_timestamp_us = info->rx_ctrl.timestamp;
     slot->channel = info->rx_ctrl.channel;
     slot->secondary_channel = encode_secondary(info->rx_ctrl.secondary_channel);
     slot->bandwidth = info->rx_ctrl.cwb ? 1 : 0;
@@ -368,12 +423,20 @@ static void csi_callback(void *ctx, wifi_csi_info_t *info)
     slot->antenna = (uint8_t)info->rx_ctrl.ant;
     slot->ltf_mask = infer_ltf_mask(info->rx_ctrl.sig_mode, info->rx_ctrl.stbc != 0);
     slot->flags = 0;
+    slot->flags |= NCSI_FLAG_RX_METADATA_VALID;
     if (filter_matched) slot->flags |= NCSI_FLAG_SOURCE_FILTER_MATCHED;
     if (info->rx_ctrl.stbc) slot->flags |= NCSI_FLAG_STBC;
     if (s_self_ping_enabled) slot->flags |= NCSI_FLAG_CONTROL_TRAFFIC_ACTIVE;
     if (slot->sequence == 0) slot->flags |= NCSI_FLAG_SEQUENCE_RESET;
     slot->driver_length = info->len;
-    slot->path_id = peer_source ? 3u : CONFIG_NEWO_PATH_ID;
+    slot->driver_rx_sequence = info->rx_seq;
+    slot->rx_flags = encode_rx_flags(&info->rx_ctrl);
+    slot->packet_length = info->rx_ctrl.sig_len;
+    slot->phy_rate = info->rx_ctrl.rate;
+    slot->mcs = info->rx_ctrl.mcs;
+    slot->ampdu_count = info->rx_ctrl.ampdu_cnt;
+    slot->rx_state = info->rx_ctrl.rx_state;
+    slot->path_id = path_id;
     slot->sanitized_prefix_bytes = 0;
     memcpy(slot->csi, info->buf, info->len);
     if (info->first_word_invalid) {
@@ -450,12 +513,47 @@ static void send_status_and_log(uint32_t *previous_callbacks, uint32_t *previous
         .raw_target_hz = CONFIG_NEWO_CSI_RATE_HZ,
         .dsp_target_hz = 0,
     };
+    portENTER_CRITICAL(&s_identity_lock);
     memcpy(status.receiver_mac, s_receiver_mac, 6);
+    portEXIT_CRITICAL(&s_identity_lock);
 
     uint8_t wire[NCSI_STATUS_RECORD_SIZE];
     size_t length = ncsi_serialize_status(&status, wire, sizeof(wire));
     if (length == 0 || !udp_send_record(wire, length)) {
-        counter_increment(&s_transport_drops);
+        counter_increment(&s_status_transport_drops);
+    } else {
+        counter_increment(&s_status_transport_ok);
+    }
+
+    ncsi_diagnostic_record_t diagnostic = {
+        .node_id = CONFIG_NEWO_NODE_ID,
+        .diagnostic_flags = status.status_flags,
+        .boot_id = s_boot_id,
+        .diagnostic_sequence = counter_increment(&s_diagnostic_sequence),
+        .timestamp_us = (uint64_t)esp_timer_get_time(),
+        .status_transport_ok = counter_get(&s_status_transport_ok),
+        .status_transport_drops = counter_get(&s_status_transport_drops),
+        .probe_tx_attempted = counter_get(&s_probe_tx_attempted),
+        .probe_tx_queued = counter_get(&s_probe_tx_queued),
+        .probe_tx_success = counter_get(&s_probe_tx_success),
+        .probe_tx_link_failure = counter_get(&s_probe_tx_link_failure),
+        .probe_tx_submit_failure = counter_get(&s_probe_tx_submit_failure),
+        .probe_tx_skipped_busy = counter_get(&s_probe_tx_skipped_busy),
+        .probe_tx_skipped_unassociated = counter_get(&s_probe_tx_skipped_unassociated),
+        .probe_rx_valid = counter_get(&s_probe_rx_valid),
+        .probe_rx_invalid = counter_get(&s_probe_rx_invalid),
+        .association_epoch = counter_get(&s_association_epoch),
+    };
+    memcpy(diagnostic.receiver_mac, status.receiver_mac, 6);
+    for (size_t i = 0; i < NEWO_PATH_COUNT; ++i) {
+        diagnostic.path_gate_drops[i] = counter_get(&s_path_gate_drops[i]);
+    }
+    uint8_t diagnostic_wire[NCSI_DIAGNOSTIC_RECORD_SIZE];
+    size_t diagnostic_length = ncsi_serialize_diagnostic(
+        &diagnostic, diagnostic_wire, sizeof(diagnostic_wire));
+    if (diagnostic_length == 0 || !udp_send_record(diagnostic_wire, diagnostic_length)) {
+        ESP_LOGW(TAG, "diagnostic UDP record not delivered sequence=%" PRIu32,
+                 diagnostic.diagnostic_sequence);
     }
 
     last_sample_t sample;
@@ -472,15 +570,25 @@ static void send_status_and_log(uint32_t *previous_callbacks, uint32_t *previous
              "diag cb=%" PRIu32 "/s accepted=%" PRIu32 "/s udp_ok=%" PRIu32
              " udp_fail=%" PRIu32 " queue_drop=%" PRIu32 " invalid=%" PRIu32
              " rssi=%d len=%u ch=%u src=%s sta=%s espnow=%s"
-             " probe_tx=%" PRIu32 "/%" PRIu32 "/%" PRIu32
-             " probe_rx=%" PRIu32 "/%" PRIu32,
+             " status_udp=%" PRIu32 "/%" PRIu32
+             " gate_path=%" PRIu32 "/%" PRIu32 "/%" PRIu32
+             " epoch=%" PRIu32
+             " probe_tx=try:%" PRIu32 " queued:%" PRIu32 " ok:%" PRIu32
+             " link_fail:%" PRIu32 " submit_fail:%" PRIu32
+             " busy:%" PRIu32 " unassoc:%" PRIu32
+             " probe_rx=valid:%" PRIu32 " invalid:%" PRIu32,
              callback_rate, accepted_rate, counter_get(&s_transport_ok),
              counter_get(&s_transport_drops), counter_get(&s_ring_full_drops),
              counter_get(&s_invalid_frame_drops), sample.rssi,
              (unsigned)sample.csi_length, (unsigned)sample.channel, source,
              s_associated ? "up" : "down", ESPNOW_ROLE,
-             counter_get(&s_probe_tx_queued), counter_get(&s_probe_tx_ok),
-             counter_get(&s_probe_tx_fail), counter_get(&s_probe_rx_ok),
+             counter_get(&s_status_transport_ok), counter_get(&s_status_transport_drops),
+             counter_get(&s_path_gate_drops[0]), counter_get(&s_path_gate_drops[1]),
+             counter_get(&s_path_gate_drops[2]), counter_get(&s_association_epoch),
+             counter_get(&s_probe_tx_attempted), counter_get(&s_probe_tx_queued),
+             counter_get(&s_probe_tx_success), counter_get(&s_probe_tx_link_failure),
+             counter_get(&s_probe_tx_submit_failure), counter_get(&s_probe_tx_skipped_busy),
+             counter_get(&s_probe_tx_skipped_unassociated), counter_get(&s_probe_rx_valid),
              counter_get(&s_probe_rx_invalid));
 }
 
@@ -513,11 +621,22 @@ static void sender_task(void *arg)
                 .csi_flags = slot->flags,
                 .path_id = slot->path_id,
                 .sanitized_prefix_bytes = slot->sanitized_prefix_bytes,
+                .driver_rx_timestamp_us = slot->driver_rx_timestamp_us,
+                .phy_rate = slot->phy_rate,
+                .mcs = slot->mcs,
+                .rx_flags = slot->rx_flags,
+                .ampdu_count = slot->ampdu_count,
+                .rx_state = slot->rx_state,
+                .packet_length = slot->packet_length,
+                .driver_rx_sequence = slot->driver_rx_sequence,
                 .csi = slot->csi,
                 .csi_length = slot->driver_length,
             };
+            portENTER_CRITICAL(&s_identity_lock);
             memcpy(record.receiver_mac, s_receiver_mac, 6);
+            portEXIT_CRITICAL(&s_identity_lock);
             memcpy(record.source_mac, slot->source_mac, 6);
+            memcpy(record.destination_mac, slot->destination_mac, 6);
             size_t length = ncsi_serialize_csi(&record, wire, sizeof(wire));
             if (length != 0 && udp_send_record(wire, length)) {
                 counter_increment(&s_transport_ok);
@@ -550,7 +669,7 @@ static void espnow_receive_callback(const esp_now_recv_info_t *info,
     }
     newo_probe_t probe;
     if (newo_probe_decode(data, (size_t)length, &probe)) {
-        counter_increment(&s_probe_rx_ok);
+        counter_increment(&s_probe_rx_valid);
     } else {
         counter_increment(&s_probe_rx_invalid);
     }
@@ -562,8 +681,8 @@ static void espnow_send_callback(const wifi_tx_info_t *info,
                                  esp_now_send_status_t status)
 {
     (void)info;
-    counter_increment(status == ESP_NOW_SEND_SUCCESS ? &s_probe_tx_ok
-                                                      : &s_probe_tx_fail);
+    counter_increment(status == ESP_NOW_SEND_SUCCESS ? &s_probe_tx_success
+                                                      : &s_probe_tx_link_failure);
     __atomic_store_n(&s_probe_in_flight, false, __ATOMIC_RELEASE);
 }
 
@@ -574,9 +693,13 @@ static void probe_sender_task(void *arg)
     const TickType_t period = pdMS_TO_TICKS(1000u / CONFIG_NEWO_ESPNOW_PROBE_HZ);
     uint32_t sequence = 0;
     while (true) {
-        if (!s_associated ||
-            __atomic_exchange_n(&s_probe_in_flight, true, __ATOMIC_ACQ_REL)) {
-            counter_increment(&s_probe_tx_fail);
+        if (!s_associated) {
+            counter_increment(&s_probe_tx_skipped_unassociated);
+            vTaskDelayUntil(&next, period);
+            continue;
+        }
+        if (__atomic_exchange_n(&s_probe_in_flight, true, __ATOMIC_ACQ_REL)) {
+            counter_increment(&s_probe_tx_skipped_busy);
             vTaskDelayUntil(&next, period);
             continue;
         }
@@ -587,11 +710,17 @@ static void probe_sender_task(void *arg)
         };
         uint8_t wire[NEWO_PROBE_SIZE];
         size_t length = newo_probe_encode(&probe, wire, sizeof(wire));
-        if (length == 0 || esp_now_send(s_peer_mac, wire, length) != ESP_OK) {
-            counter_increment(&s_probe_tx_fail);
+        if (length == 0) {
+            counter_increment(&s_probe_tx_submit_failure);
             __atomic_store_n(&s_probe_in_flight, false, __ATOMIC_RELEASE);
         } else {
-            counter_increment(&s_probe_tx_queued);
+            counter_increment(&s_probe_tx_attempted);
+            if (esp_now_send(s_peer_mac, wire, length) != ESP_OK) {
+                counter_increment(&s_probe_tx_submit_failure);
+                __atomic_store_n(&s_probe_in_flight, false, __ATOMIC_RELEASE);
+            } else {
+                counter_increment(&s_probe_tx_queued);
+            }
         }
         vTaskDelayUntil(&next, period);
     }
@@ -632,19 +761,29 @@ static void initialise_espnow(void)
 #endif
 }
 
-static void start_gateway_ping(void)
+static void stop_gateway_ping(void)
 {
 #if CONFIG_NEWO_GATEWAY_PING_ENABLE
-    esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    esp_netif_ip_info_t ip_info;
-    if (sta == NULL || esp_netif_get_ip_info(sta, &ip_info) != ESP_OK ||
-        ip_info.gw.addr == 0) {
+    if (s_ping_handle != NULL) {
+        (void)esp_ping_stop(s_ping_handle);
+        (void)esp_ping_delete_session(s_ping_handle);
+        s_ping_handle = NULL;
+    }
+#endif
+    s_self_ping_enabled = false;
+}
+
+static void start_gateway_ping(const esp_ip4_addr_t *gateway_address)
+{
+#if CONFIG_NEWO_GATEWAY_PING_ENABLE
+    stop_gateway_ping();
+    if (gateway_address == NULL || gateway_address->addr == 0) {
         ESP_LOGW(TAG, "gateway unavailable; controlled self-ping disabled");
         return;
     }
 
     char gateway[16];
-    esp_ip4addr_ntoa(&ip_info.gw, gateway, sizeof(gateway));
+    esp_ip4addr_ntoa(gateway_address, gateway, sizeof(gateway));
     ip_addr_t target = {0};
     if (!ipaddr_aton(gateway, &target)) {
         ESP_LOGW(TAG, "could not parse gateway address; self-ping disabled");
@@ -662,6 +801,9 @@ static void start_gateway_ping(void)
     if (error == ESP_OK) error = esp_ping_start(s_ping_handle);
     if (error != ESP_OK) {
         ESP_LOGW(TAG, "gateway self-ping failed: %s", esp_err_to_name(error));
+        if (s_ping_handle != NULL) {
+            (void)esp_ping_delete_session(s_ping_handle);
+        }
         s_ping_handle = NULL;
         return;
     }
@@ -669,6 +811,82 @@ static void start_gateway_ping(void)
     ESP_LOGI(TAG, "gateway self-ping target=%s rate=%dHz payload=1 byte",
              gateway, CONFIG_NEWO_GATEWAY_PING_HZ);
 #endif
+}
+
+static bool refresh_association_state(void)
+{
+    wifi_ap_record_t ap = {0};
+    uint8_t receiver_mac[6];
+    esp_netif_ip_info_t ip_info = {0};
+    esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+
+    s_identity_ready = false;
+    stop_gateway_ping();
+    if (!s_associated || sta == NULL || esp_wifi_sta_get_ap_info(&ap) != ESP_OK ||
+        esp_wifi_get_mac(WIFI_IF_STA, receiver_mac) != ESP_OK ||
+        esp_netif_get_ip_info(sta, &ip_info) != ESP_OK || ip_info.gw.addr == 0) {
+        ESP_LOGW(TAG, "association refresh deferred: AP identity or gateway unavailable");
+        return false;
+    }
+
+    bool changed = counter_get(&s_association_epoch) == 0 ||
+                   memcmp(s_ap_bssid, ap.bssid, 6) != 0 ||
+                   s_ap_primary != ap.primary ||
+                   s_ap_secondary != encode_secondary(ap.second) ||
+                   s_gateway_address != ip_info.gw.addr;
+
+    portENTER_CRITICAL(&s_identity_lock);
+    memcpy(s_ap_bssid, ap.bssid, 6);
+    memcpy(s_receiver_mac, receiver_mac, 6);
+#if CONFIG_NEWO_SOURCE_FILTER_AP
+    memcpy(s_filter_mac, ap.bssid, 6);
+#endif
+    s_ap_primary = ap.primary;
+    s_ap_secondary = encode_secondary(ap.second);
+    s_gateway_address = ip_info.gw.addr;
+    portEXIT_CRITICAL(&s_identity_lock);
+
+    portENTER_CRITICAL(&s_gate_lock);
+    memset(&s_rate_gate, 0, sizeof(s_rate_gate));
+    portEXIT_CRITICAL(&s_gate_lock);
+
+    start_gateway_ping(&ip_info.gw);
+    uint32_t epoch = counter_increment(&s_association_epoch) + 1u;
+    s_identity_ready = true;
+
+    char ap_mac[18];
+    char station_mac[18];
+    char gateway[16];
+    format_mac(ap.bssid, ap_mac);
+    format_mac(receiver_mac, station_mac);
+    esp_ip4addr_ntoa(&ip_info.gw, gateway, sizeof(gateway));
+    ESP_LOGI(TAG,
+             "association epoch=%" PRIu32 " changed=%s station=%s bssid=%s"
+             " primary=%u secondary=%u gateway=%s filter_refreshed=%s",
+             epoch, changed ? "yes" : "no", station_mac, ap_mac,
+             (unsigned)ap.primary, (unsigned)encode_secondary(ap.second), gateway,
+#if CONFIG_NEWO_SOURCE_FILTER_AP
+             "yes"
+#else
+             "not-ap-mode"
+#endif
+    );
+    return true;
+}
+
+static void association_refresh_task(void *arg)
+{
+    (void)arg;
+    while (true) {
+        uint32_t requested = counter_get(&s_refresh_requested);
+        if (!s_associated) {
+            stop_gateway_ping();
+        } else if (requested != counter_get(&s_refresh_handled) &&
+                   refresh_association_state()) {
+            __atomic_store_n(&s_refresh_handled, requested, __ATOMIC_RELAXED);
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
 }
 
 static void start_csi(void)
@@ -705,13 +923,24 @@ void app_main(void)
 
     ESP_LOGI(TAG, "standalone measurement plane; no inference or production integration");
     initialise_wifi();
-    (void)inspect_access_point();
     configure_source_filter();
     initialise_udp();
+    if (!refresh_association_state()) {
+        ESP_LOGE(TAG, "initial association identity refresh failed");
+        abort();
+    }
+    __atomic_store_n(&s_refresh_handled, counter_get(&s_refresh_requested),
+                     __ATOMIC_RELAXED);
     initialise_espnow();
 
-    start_gateway_ping();
     start_csi();
+
+    BaseType_t refresh_created = xTaskCreatePinnedToCore(
+        association_refresh_task, "association_refresh", 4096, NULL, 5, NULL, 1);
+    if (refresh_created != pdPASS) {
+        ESP_LOGE(TAG, "failed to create association refresh task");
+        abort();
+    }
 
     BaseType_t created = xTaskCreatePinnedToCore(sender_task, "ncsi_sender", 6144,
                                                  NULL, 5, NULL, 1);

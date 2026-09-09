@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "newo_rx_main.c" "ncsi_protocol.c" "probe_protocol.c"
+    SRCS "newo_rx_main.c" "ncsi_protocol.c" "probe_protocol.c" "rate_gate.c"
     INCLUDE_DIRS "."
     REQUIRES esp_event esp_netif esp_timer esp_wifi lwip nvs_flash
 )

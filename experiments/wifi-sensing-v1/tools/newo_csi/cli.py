@@ -85,6 +85,7 @@ def collect(args: argparse.Namespace) -> int:
         sock.close()
         raise
     started_at = utc_now()
+    started_monotonic_ns = time.monotonic_ns()
     metadata = {
         "schema_version": 1, "session_id": session_id, "room_id": args.room_id,
         "scenario_label": args.scenario, "person_label": args.person,
@@ -92,6 +93,7 @@ def collect(args: argparse.Namespace) -> int:
         "camera_frame_id": args.camera_frame_id, "notes": args.notes,
         "path_mapping": mapping_metadata(mapping),
         "capture_started_at": started_at,
+        "capture_started_monotonic_ns": started_monotonic_ns,
         "udp_receive_buffer_bytes": sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF),
     }
     write_json(session_dir / "session.json", metadata)
@@ -108,7 +110,8 @@ def collect(args: argparse.Namespace) -> int:
                     payload, source = sock.recvfrom(4097)
                 except socket.timeout:
                     continue
-                received_ns = time.time_ns()
+                received_monotonic_ns = time.monotonic_ns()
+                received_wall_ns = time.time_ns()
                 try:
                     record = decode(payload)
                 except ProtocolError:
@@ -119,8 +122,8 @@ def collect(args: argparse.Namespace) -> int:
                     if expected is None or expected != (record.receiver_mac, record.source_mac):
                         stats.reject("path_identity_mismatch")
                         continue
-                archive.append(payload, received_ns, source)
-                stats.add(record, received_ns)
+                archive.append(payload, received_monotonic_ns, received_wall_ns, source)
+                stats.add(record, received_monotonic_ns)
                 if stats.total_records % 100 == 0:
                     archive.flush()
     except KeyboardInterrupt:
@@ -128,7 +131,9 @@ def collect(args: argparse.Namespace) -> int:
     finally:
         sock.close()
         ended_at = utc_now()
+        ended_monotonic_ns = time.monotonic_ns()
         metadata["capture_ended_at"] = ended_at
+        metadata["capture_ended_monotonic_ns"] = ended_monotonic_ns
         write_json(session_dir / "session.json", metadata)
         summary = stats.as_dict()
         summary.update({"schema_version": 1, "session_id": session_id,
@@ -144,7 +149,7 @@ def collect(args: argparse.Namespace) -> int:
 def load_stats(path: Path) -> CaptureStats:
     stats = CaptureStats()
     for item in iter_archive(path):
-        stats.add(decode(item.record), item.host_received_ns)
+        stats.add(decode(item.record), item.host_monotonic_ns)
     return stats
 
 
@@ -162,7 +167,8 @@ def inspect_command(args: argparse.Namespace) -> int:
         return 0
     counts = result["record_counts"]
     print(f"records={counts['total']} csi={counts['csi']} status={counts['status']} "
-          f"sync={counts['sync']} duration={result['duration_seconds']:.3f}s")
+          f"sync={counts['sync']} diagnostic={counts['diagnostic']} "
+          f"duration={result['duration_seconds']:.3f}s")
     gaps = sum(result["sequence_gap_estimate_by_receiver"].values())
     print(f"sequence_gap_estimate={gaps} "
           f"capture_rejected={result.get('capture_rejected_datagrams', 'unavailable')}")
@@ -185,11 +191,11 @@ def replay(args: argparse.Namespace) -> int:
             if args.csi_only and not isinstance(record, CsiRecord):
                 continue
             if previous_ns is not None and args.speed > 0:
-                delay = (item.host_received_ns - previous_ns) / 1e9 / args.speed
+                delay = (item.host_monotonic_ns - previous_ns) / 1e9 / args.speed
                 if delay > 0:
                     time.sleep(delay)
             sock.sendto(item.record, (args.host, args.port))
-            previous_ns = item.host_received_ns
+            previous_ns = item.host_monotonic_ns
             sent += 1
     finally:
         sock.close()
@@ -210,7 +216,7 @@ def export(args: argparse.Namespace) -> int:
     rows = 0
     with Path(args.output).open("x", newline="", encoding="utf-8") as target:
         writer = csv.writer(target)
-        writer.writerow(("host_received_ns", "path", "node_id", "sequence",
+        writer.writerow(("host_monotonic_ns", "host_wall_ns", "path", "node_id", "sequence",
                          "receiver_timestamp_us", "subcarrier", "imag", "real",
                          "amplitude", "phase_radians"))
         for item in iter_archive(archive_path(args.session)):
@@ -220,7 +226,7 @@ def export(args: argparse.Namespace) -> int:
             for index in selected_indices(args.subcarriers, record.subcarrier_item_count):
                 imag = int.from_bytes(record.iq_bytes[index * 2:index * 2 + 1], "little", signed=True)
                 real = int.from_bytes(record.iq_bytes[index * 2 + 1:index * 2 + 2], "little", signed=True)
-                writer.writerow((item.host_received_ns,
+                writer.writerow((item.host_monotonic_ns, item.host_wall_ns,
                                  PATH_NAMES.get(record.path_id, f"PATH_{record.path_id}"),
                                  record.node_id, record.sequence, record.timestamp_us,
                                  index, imag, real, math.hypot(real, imag),

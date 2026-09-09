@@ -13,8 +13,11 @@
 #define NCSI_VERSION_MAJOR 1u
 #define NCSI_RECORD_CSI 1u
 #define NCSI_RECORD_STATUS 2u
-#define NCSI_CSI_HEADER_SIZE 64u
+#define NCSI_RECORD_SYNC 3u
+#define NCSI_RECORD_DIAGNOSTIC 4u
+#define NCSI_CSI_HEADER_SIZE 88u
 #define NCSI_STATUS_RECORD_SIZE 80u
+#define NCSI_DIAGNOSTIC_RECORD_SIZE 104u
 #define NCSI_MAX_CSI_BYTES 612u
 #define NCSI_MAX_RECORD_SIZE (NCSI_CSI_HEADER_SIZE + NCSI_MAX_CSI_BYTES)
 
@@ -32,6 +35,15 @@
 #define NCSI_STATUS_FILTER_ENABLED    (1u << 2)
 #define NCSI_STATUS_SELF_PING_ENABLED (1u << 3)
 #define NCSI_STATUS_RING_HEALTHY      (1u << 4)
+
+#define NCSI_RX_FLAG_RATE_VALID        (1u << 0)
+#define NCSI_RX_FLAG_MCS_VALID         (1u << 1)
+#define NCSI_RX_FLAG_SHORT_GI          (1u << 2)
+#define NCSI_RX_FLAG_AGGREGATED        (1u << 3)
+#define NCSI_RX_FLAG_LDPC              (1u << 4)
+#define NCSI_RX_FLAG_SMOOTHING         (1u << 5)
+#define NCSI_RX_FLAG_NOT_SOUNDING      (1u << 6)
+#define NCSI_RX_FLAG_TIMESTAMP_PRECISE (1u << 7)
 
 typedef struct {
     uint32_t node_id;
@@ -51,6 +63,15 @@ typedef struct {
     uint16_t csi_flags;
     uint16_t path_id;
     uint8_t sanitized_prefix_bytes;
+    uint32_t driver_rx_timestamp_us;
+    uint8_t phy_rate;
+    uint8_t mcs;
+    uint16_t rx_flags;
+    uint8_t ampdu_count;
+    uint8_t rx_state;
+    uint16_t packet_length;
+    uint16_t driver_rx_sequence;
+    uint8_t destination_mac[6];
     const uint8_t *csi;
     uint16_t csi_length;
 } ncsi_csi_record_t;
@@ -74,8 +95,32 @@ typedef struct {
     uint16_t dsp_target_hz;
 } ncsi_status_record_t;
 
+typedef struct {
+    uint32_t node_id;
+    uint8_t receiver_mac[6];
+    uint16_t diagnostic_flags;
+    uint32_t boot_id;
+    uint32_t diagnostic_sequence;
+    uint64_t timestamp_us;
+    uint32_t status_transport_ok;
+    uint32_t status_transport_drops;
+    uint32_t probe_tx_attempted;
+    uint32_t probe_tx_queued;
+    uint32_t probe_tx_success;
+    uint32_t probe_tx_link_failure;
+    uint32_t probe_tx_submit_failure;
+    uint32_t probe_tx_skipped_busy;
+    uint32_t probe_tx_skipped_unassociated;
+    uint32_t probe_rx_valid;
+    uint32_t probe_rx_invalid;
+    uint32_t path_gate_drops[3];
+    uint32_t association_epoch;
+} ncsi_diagnostic_record_t;
+
 uint32_t ncsi_crc32c(const uint8_t *data, size_t length);
 uint8_t ncsi_sanitize_invalid_prefix(uint8_t *csi, uint16_t length,
                                      bool first_word_invalid);
 size_t ncsi_serialize_csi(const ncsi_csi_record_t *record, uint8_t *output, size_t capacity);
 size_t ncsi_serialize_status(const ncsi_status_record_t *record, uint8_t *output, size_t capacity);
+size_t ncsi_serialize_diagnostic(const ncsi_diagnostic_record_t *record,
+                                 uint8_t *output, size_t capacity);

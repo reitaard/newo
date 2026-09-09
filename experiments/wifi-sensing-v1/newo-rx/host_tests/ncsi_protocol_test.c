@@ -52,6 +52,15 @@ int main(void)
                      NCSI_FLAG_INVALID_PREFIX_SANITIZED,
         .path_id = 1,
         .sanitized_prefix_bytes = 4,
+        .driver_rx_timestamp_us = 0x55667788u,
+        .phy_rate = 11,
+        .mcs = 5,
+        .rx_flags = NCSI_RX_FLAG_MCS_VALID | NCSI_RX_FLAG_SHORT_GI,
+        .ampdu_count = 3,
+        .rx_state = 0,
+        .packet_length = 128,
+        .driver_rx_sequence = 0x3344,
+        .destination_mac = {0x02, 0, 0, 0, 0, 3},
         .csi = iq,
         .csi_length = sizeof(iq),
     };
@@ -67,6 +76,13 @@ int main(void)
     assert(get_u16(wire + 54) == sizeof(iq));
     assert(get_u16(wire + 56) == sizeof(iq) / 2);
     assert(wire[62] == 4 && wire[63] == 1);
+    assert(get_u32(wire + 64) == 0x55667788u);
+    assert(wire[68] == 11 && wire[69] == 5);
+    assert(get_u16(wire + 70) == (NCSI_RX_FLAG_MCS_VALID | NCSI_RX_FLAG_SHORT_GI));
+    assert(wire[72] == 3 && wire[73] == 0);
+    assert(get_u16(wire + 74) == 128);
+    assert(get_u16(wire + 76) == 0x3344);
+    assert(memcmp(wire + 80, record.destination_mac, 6) == 0);
     assert(memcmp(wire + NCSI_CSI_HEADER_SIZE, iq, sizeof(iq)) == 0);
     verify_record_crc(wire, length);
 
@@ -83,6 +99,36 @@ int main(void)
     record.driver_csi_length = sizeof(iq);
     iq[0] = 1;
     assert(ncsi_serialize_csi(&record, wire, sizeof(wire)) == 0);
+
+    ncsi_diagnostic_record_t diagnostic = {
+        .node_id = 7,
+        .receiver_mac = {1, 2, 3, 4, 5, 6},
+        .diagnostic_flags = NCSI_STATUS_ASSOCIATED,
+        .boot_id = 8,
+        .diagnostic_sequence = 9,
+        .timestamp_us = 10,
+        .status_transport_ok = 11,
+        .status_transport_drops = 12,
+        .probe_tx_attempted = 13,
+        .probe_tx_queued = 14,
+        .probe_tx_success = 15,
+        .probe_tx_link_failure = 16,
+        .probe_tx_submit_failure = 17,
+        .probe_tx_skipped_busy = 18,
+        .probe_tx_skipped_unassociated = 19,
+        .probe_rx_valid = 20,
+        .probe_rx_invalid = 21,
+        .path_gate_drops = {22, 23, 24},
+        .association_epoch = 25,
+    };
+    length = ncsi_serialize_diagnostic(&diagnostic, wire, sizeof(wire));
+    assert(length == NCSI_DIAGNOSTIC_RECORD_SIZE);
+    assert(wire[5] == NCSI_RECORD_DIAGNOSTIC);
+    assert(get_u32(wire + 52) == 13);
+    assert(get_u32(wire + 64) == 16);
+    assert(get_u32(wire + 88) == 22);
+    assert(get_u32(wire + 100) == 25);
+    verify_record_crc(wire, length);
 
     puts("ncsi protocol tests passed");
     return 0;

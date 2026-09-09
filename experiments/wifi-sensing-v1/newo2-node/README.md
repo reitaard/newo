@@ -26,6 +26,12 @@ Newo2 pings its DHCP gateway for controlled router replies and sends a separate
 version-1 probe to Newo at 20 Hz by default. Both rates are configurable from
 1 through the experiment hard maximum of 50 Hz.
 
+Every successful reassociation creates an explicit association epoch. Outside
+the event callback, the node refreshes its BSSID, channel state, AP filter,
+gateway, and self-ping target before CSI capture resumes. Newo2's
+`ROUTER_NEWO2` cadence gate is receiver-local; Newo independently gates its two
+accepted sources.
+
 ## Required local MAC configuration
 
 Configure credentials, collector address, and **Newo's station MAC** under
@@ -48,8 +54,8 @@ Newo2 does not capture a `NEWO_NEWO2` probe path in Phase 3.
 
 Tested with ESP-IDF v5.5.5 and `espressif/idf:v5.5.5`. From this directory:
 
-The credential-free reference build produced `newo2_csi_node.bin` at
-**730,608 bytes (`0xb25f0`)**, leaving 30% of the default 1 MiB application
+The hardened credential-free reference build produced `newo2_csi_node.bin` at
+**733,296 bytes (`0xb3070`)**, leaving 30% of the default 1 MiB application
 partition free. Size is configuration-dependent.
 
 ```sh
@@ -71,8 +77,10 @@ supports secret-free CI compilation but deliberately aborts at runtime. Do not
 flash as part of this phase.
 
 Diagnostics once per second report STA association, CSI callback/accepted
-rates, UDP and queue counters, current CSI source/channel, the ESP-NOW role, and
-probe queued/delivery/receive counters. ESP-NOW link-layer success is useful
+rates, CSI and STATUS transport separately, current CSI source/channel, the
+association epoch, per-path gate drops, and versioned ESP-NOW attempted,
+queued, link-success, link-failure, submit-failure, busy, unassociated, and
+receive counters. ESP-NOW link-layer success is useful
 coexistence evidence, not proof that every probe produced a CSI callback.
 
 Probes are deliberately unencrypted and contain no credentials or application

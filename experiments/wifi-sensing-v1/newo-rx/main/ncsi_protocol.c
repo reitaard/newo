@@ -110,6 +110,17 @@ size_t ncsi_serialize_csi(const ncsi_csi_record_t *r, uint8_t *out, size_t capac
     put_u16(out + 60, r->path_id);
     out[62] = r->sanitized_prefix_bytes;
     out[63] = 1; /* IMAG_REAL_S8 */
+    put_u32(out + 64, r->driver_rx_timestamp_us);
+    out[68] = r->phy_rate;
+    out[69] = r->mcs;
+    put_u16(out + 70, r->rx_flags);
+    out[72] = r->ampdu_count;
+    out[73] = r->rx_state;
+    put_u16(out + 74, r->packet_length);
+    put_u16(out + 76, r->driver_rx_sequence);
+    put_u16(out + 78, 0);
+    memcpy(out + 80, r->destination_mac, 6);
+    put_u16(out + 86, 0);
     memcpy(out + NCSI_CSI_HEADER_SIZE, r->csi, r->csi_length);
     finish_crc(out, length);
     return length;
@@ -142,4 +153,39 @@ size_t ncsi_serialize_status(const ncsi_status_record_t *r, uint8_t *out, size_t
     put_u16(out + 78, r->dsp_target_hz);
     finish_crc(out, NCSI_STATUS_RECORD_SIZE);
     return NCSI_STATUS_RECORD_SIZE;
+}
+
+size_t ncsi_serialize_diagnostic(const ncsi_diagnostic_record_t *r,
+                                 uint8_t *out, size_t capacity)
+{
+    if (r == NULL || out == NULL || capacity < NCSI_DIAGNOSTIC_RECORD_SIZE) {
+        return 0;
+    }
+    memset(out, 0, NCSI_DIAGNOSTIC_RECORD_SIZE);
+    put_common_header(out, NCSI_RECORD_DIAGNOSTIC,
+                      NCSI_DIAGNOSTIC_RECORD_SIZE,
+                      NCSI_DIAGNOSTIC_RECORD_SIZE);
+    put_u32(out + 16, r->node_id);
+    memcpy(out + 20, r->receiver_mac, 6);
+    put_u16(out + 26, r->diagnostic_flags);
+    put_u32(out + 28, r->boot_id);
+    put_u32(out + 32, r->diagnostic_sequence);
+    put_u64(out + 36, r->timestamp_us);
+    put_u32(out + 44, r->status_transport_ok);
+    put_u32(out + 48, r->status_transport_drops);
+    put_u32(out + 52, r->probe_tx_attempted);
+    put_u32(out + 56, r->probe_tx_queued);
+    put_u32(out + 60, r->probe_tx_success);
+    put_u32(out + 64, r->probe_tx_link_failure);
+    put_u32(out + 68, r->probe_tx_submit_failure);
+    put_u32(out + 72, r->probe_tx_skipped_busy);
+    put_u32(out + 76, r->probe_tx_skipped_unassociated);
+    put_u32(out + 80, r->probe_rx_valid);
+    put_u32(out + 84, r->probe_rx_invalid);
+    put_u32(out + 88, r->path_gate_drops[0]);
+    put_u32(out + 92, r->path_gate_drops[1]);
+    put_u32(out + 96, r->path_gate_drops[2]);
+    put_u32(out + 100, r->association_epoch);
+    finish_crc(out, NCSI_DIAGNOSTIC_RECORD_SIZE);
+    return NCSI_DIAGNOSTIC_RECORD_SIZE;
 }

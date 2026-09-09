@@ -11,7 +11,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from newo_csi.archive import ArchiveError, ArchiveWriter, iter_archive
-from newo_csi.protocol import CsiRecord, ProtocolError, StatusRecord, SyncRecord, crc32c, decode
+from newo_csi.protocol import (CsiRecord, DiagnosticRecord, ProtocolError,
+                               StatusRecord, SyncRecord, crc32c, decode)
 from newo_csi.statistics import CaptureStats
 from newo_csi.cli import path_mapping, replay
 
@@ -21,28 +22,36 @@ def csi_frame(*, node: int = 1, path: int = 1, sequence: int = 0,
               source: bytes = b"\x20\x21\x22\x23\x24\x25",
               iq: bytes = b"\x01\x02\xfd\x04", flags: int = 0x04,
               timestamp: int = 123456) -> bytes:
-    length = 64 + len(iq)
+    length = 88 + len(iq)
     output = bytearray(length)
-    struct.pack_into("<4sBBHII", output, 0, b"NCSI", 1, 1, 64, length, 0)
+    struct.pack_into("<4sBBHII", output, 0, b"NCSI", 1, 1, 88, length, 0)
     struct.pack_into("<I6s6sIQBBBBbbBBHHHHHBB", output, 16,
                      node, receiver, source, sequence, timestamp,
                      6, 0, 0, 1, -42, -91, 0, 3,
                      len(iq), len(iq), len(iq) // 2, flags, path, 0, 1)
-    output[64:] = iq
+    struct.pack_into("<IBBHBBHHH6sH", output, 64,
+                     0x12345678, 0, 4, 0x8e, 2, 0, 120, 77, 0,
+                     receiver, 0)
+    output[88:] = iq
     struct.pack_into("<I", output, 12, crc32c(output))
     return bytes(output)
 
 
 def fixed_frame(record_type: int) -> bytes:
-    length = 80 if record_type == 2 else 64
+    length = {2: 80, 3: 64, 4: 104}[record_type]
     output = bytearray(length)
     struct.pack_into("<4sBBHII", output, 0, b"NCSI", 1, record_type, length, length, 0)
     if record_type == 2:
         struct.pack_into("<I6sHIIQIIIIIIIIHH", output, 16, 1, b"\x10" * 6,
                          0x1f, 99, 3, 1000, 200, 150, 20, 30, 1, 29, 1, 29, 20, 0)
-    else:
+    elif record_type == 3:
         struct.pack_into("<I6sHIIQQIII", output, 16, 1, b"\x10" * 6,
                          3, 99, 4, 1000, 2000, 50, 29, 1)
+    else:
+        struct.pack_into("<I6sHIIQ15I", output, 16, 1, b"\x10" * 6,
+                         0x1f, 99, 5, 1000,
+                         10, 1, 20, 19, 18, 1, 2, 3, 4, 17, 6,
+                         101, 102, 103, 7)
     struct.pack_into("<I", output, 12, crc32c(output))
     return bytes(output)
 
@@ -55,6 +64,10 @@ class ProtocolTests(unittest.TestCase):
         self.assertIsInstance(record, CsiRecord)
         self.assertEqual(record.raw, wire)
         self.assertEqual(record.iq_bytes, raw_iq)
+        self.assertEqual(record.driver_rx_timestamp_us, 0x12345678)
+        self.assertEqual(record.mcs, 4)
+        self.assertEqual(record.driver_rx_sequence, 77)
+        self.assertEqual(record.destination_mac, record.receiver_mac)
 
     def test_truncated_frame(self) -> None:
         with self.assertRaisesRegex(ProtocolError, "length"):
@@ -69,13 +82,19 @@ class ProtocolTests(unittest.TestCase):
             with self.assertRaisesRegex(ProtocolError, message):
                 decode(wire)
 
-    def test_status_and_sync_records(self) -> None:
+    def test_status_sync_and_diagnostic_records(self) -> None:
         status = decode(fixed_frame(2))
         sync = decode(fixed_frame(3))
         self.assertIsInstance(status, StatusRecord)
         self.assertEqual(status.transport_drops, 1)
         self.assertIsInstance(sync, SyncRecord)
         self.assertEqual(sync.host_timestamp_us, 2000)
+        diagnostic = decode(fixed_frame(4))
+        self.assertIsInstance(diagnostic, DiagnosticRecord)
+        self.assertEqual(diagnostic.probe_tx_attempted, 20)
+        self.assertEqual(diagnostic.probe_tx_submit_failure, 2)
+        self.assertEqual(diagnostic.path_3_gate_drops, 103)
+        self.assertEqual(diagnostic.association_epoch, 7)
 
 
 class StatisticsTests(unittest.TestCase):
@@ -107,6 +126,23 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual(mapping[3], (bytes.fromhex("101112131415"),
                                       bytes.fromhex("202122232425")))
 
+    def test_diagnostic_sequence_gap_and_host_visible_counters(self) -> None:
+        first = bytearray(fixed_frame(4))
+        second = bytearray(fixed_frame(4))
+        struct.pack_into("<I", first, 32, 10)
+        struct.pack_into("<I", second, 32, 13)
+        for wire in (first, second):
+            wire[12:16] = b"\0" * 4
+            struct.pack_into("<I", wire, 12, crc32c(wire))
+        stats = CaptureStats()
+        stats.add(decode(first), 1_000_000_000)
+        stats.add(decode(second), 2_000_000_000)
+        result = stats.as_dict()
+        self.assertEqual(sum(result["diagnostic_sequence_gap_estimate"].values()), 2)
+        latest = result["latest_device_diagnostics"][0]
+        self.assertEqual(latest["probe_tx_success"], 18)
+        self.assertEqual(latest["path_gate_drops"]["NEWO2_NEWO"], 103)
+
 
 class ArchiveTests(unittest.TestCase):
     def test_archive_round_trip_preserves_complete_radio_record(self) -> None:
@@ -114,11 +150,12 @@ class ArchiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "frames.ncsi"
             with ArchiveWriter(path) as writer:
-                writer.append(wire, 99, ("192.0.2.8", 5005))
+                writer.append(wire, 99, 123456789, ("192.0.2.8", 5005))
             items = list(iter_archive(path))
             self.assertEqual(len(items), 1)
             self.assertEqual(items[0].record, wire)
-            self.assertEqual(items[0].host_received_ns, 99)
+            self.assertEqual(items[0].host_monotonic_ns, 99)
+            self.assertEqual(items[0].host_wall_ns, 123456789)
             self.assertEqual(items[0].source_ip, "192.0.2.8")
             self.assertEqual(items[0].source_port, 5005)
 
@@ -145,14 +182,31 @@ class ArchiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "frames.ncsi"
             with ArchiveWriter(path) as writer:
-                writer.append(first, 100, ("192.0.2.1", 5005))
-                writer.append(second, 200, ("192.0.2.2", 5005))
+                writer.append(first, 100, 1000, ("192.0.2.1", 5005))
+                writer.append(second, 200, 900, ("192.0.2.2", 5005))
             args = SimpleNamespace(session=str(path), host="127.0.0.1", port=6000,
                                    speed=0.0, csi_only=False)
             with patch("newo_csi.cli.socket.socket", return_value=fake):
                 self.assertEqual(replay(args), 0)
         self.assertEqual([item[0] for item in fake.sent], [first, second])
         self.assertEqual({item[1] for item in fake.sent}, {("127.0.0.1", 6000)})
+
+    def test_replay_uses_monotonic_delta_despite_wall_clock_jump(self) -> None:
+        fake = SimpleNamespace(sent=[], sendto=lambda data, destination: None,
+                               close=lambda: None)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "frames.ncsi"
+            with ArchiveWriter(path) as writer:
+                writer.append(csi_frame(sequence=1), 1_000_000_000,
+                              9_000_000_000, ("192.0.2.1", 5005))
+                writer.append(csi_frame(sequence=2), 1_050_000_000,
+                              1_000_000_000, ("192.0.2.1", 5005))
+            args = SimpleNamespace(session=str(path), host="127.0.0.1", port=6000,
+                                   speed=1.0, csi_only=False)
+            with patch("newo_csi.cli.socket.socket", return_value=fake), \
+                 patch("newo_csi.cli.time.sleep") as sleep:
+                self.assertEqual(replay(args), 0)
+        sleep.assert_called_once_with(0.05)
 
 
 if __name__ == "__main__":

@@ -41,6 +41,12 @@ The experiment deliberately excludes pose models or claims, heart-rate claims, p
 
 Each receiver joins the router and stays on the connected access point's channel. No channel hopping is allowed in v1. Newo and Newo2 capture CSI in the Wi-Fi receive callback, verify the transmitter against an explicit MAC allowlist, sanitize invalid leading CSI bytes, rate-gate accepted frames, and enqueue fixed-size descriptors into a bounded ring. A non-callback task serializes and transports records to the host.
 
+After every `GOT_IP`, a normal task (not the Wi-Fi event callback) refreshes the
+AP BSSID, primary/secondary channel, AP-derived filter, station identity,
+gateway, and self-ping session. CSI acceptance stays disabled until that
+association epoch is coherent, preventing stale BSSID/path attribution after a
+reassociation. ESP-NOW peer channel `0` continues to follow the STA channel.
+
 The callback must not allocate, block, perform DSP, write to storage, or send network packets. Ring-full and rate-gate losses are counted rather than hidden. Raw transport and DSP have separate clocks: retained raw records target **20 Hz per active path** initially and are configurable up to **50 Hz per path**; later DSP may consume a lower uniform cadence without changing or suppressing the raw archive. A faster callback arrival rate is expected and must be gated. This design never assumes 100 Hz is required.
 
 ## Initial measurement paths
@@ -70,7 +76,7 @@ The future firmware implementation must:
 7. Copy raw signed 8-bit complex samples in ESP-IDF order: imaginary byte, then real byte. Do not convert to magnitude or phase in the raw record.
 8. Apply the cadence gate independently after source/path filtering for each active path, so unrelated traffic and one busy source cannot consume another path's budget. Gate retained raw records to 20 Hz per path by default, configurable from 1 through 50 Hz. Do not burst to catch up after delayed callbacks.
 9. Push into a fixed-capacity single-producer/single-consumer ring and increment `ring_full_drops` if no slot is available.
-10. Emit periodic `STATUS` records with packet-yield and loss counters. Keep raw-record cadence independent of later DSP cadence.
+10. Emit periodic `STATUS` records with packet-yield and CSI-only transport loss counters, plus separate versioned diagnostic records for per-path gate, STATUS transport, association, and ESP-NOW counters. Keep raw-record cadence independent of later DSP cadence.
 
 See [PROTOCOL.md](./PROTOCOL.md) for the exact byte contract and host session schema.
 
@@ -134,7 +140,8 @@ injection remain out of scope.
 The dependency-light Python tooling in [`tools/`](./tools/) captures strict
 protocol-v1 UDP records into a binary archive without rewriting their bytes,
 keeps session labels in separate JSON, reports per-path and device loss
-diagnostics, replays original datagrams with recorded timing, and optionally
+diagnostics, archives host monotonic and wall time separately, replays original
+datagrams using monotonic recorded timing, and optionally
 exports selected subcarrier amplitude/phase for inspection. See
 [`RECORDING.md`](./RECORDING.md) before collecting any human-labeled session.
 
