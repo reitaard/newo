@@ -3,8 +3,8 @@
 This ESP-IDF application is the Phase 2 measurement-plane receiver. It targets ESP32-S3 and is intentionally isolated from production firmware in `Newo/`. It captures raw CSI, zeroes only the invalid leading bytes reported by ESP-IDF while preserving buffer geometry, and sends version-1 NCSI datagrams to a host collector. It performs no DSP, inference, ML, camera work, or hardware-specific Newo integration.
 
 Tested build toolchain: **ESP-IDF v5.5.5**, using the official `espressif/idf:v5.5.5` Docker image.
-The credential-free reference build produced `newo_csi_receiver.bin` at
-**704,928 bytes (`0xac1a0`)**, leaving 33% of the default 1 MiB application
+The Phase 3 credential-free reference build produced `newo_csi_receiver.bin`
+at **728,000 bytes (`0xb1bc0`)**, leaving 31% of the default 1 MiB application
 partition free. Size is configuration-dependent.
 
 ## Configuration
@@ -21,6 +21,12 @@ Under **Newo CSI receiver**, set the Wi-Fi SSID/password and collector IPv4/UDP 
 `sdkconfig` is ignored. Do not add it, credentials, captures, binaries, `build/`, `dependencies.lock`, or `managed_components/` to Git. `sdkconfig.defaults` contains only non-secret project defaults.
 
 The default source filter uses the associated AP BSSID. Choose the custom MAC option for a deliberate `NEWO2_NEWO` source. Disabling filtering is diagnostic-only: every datagram still carries the actual callback source MAC and the collector must validate `(receiver_mac, source_mac)` before trusting `path_id`.
+
+For Phase 3, the default ESP-NOW receive role requires Newo2's station MAC.
+Frames from the AP remain `ROUTER_NEWO` (`1`); frames whose callback source is
+that configured peer become `NEWO2_NEWO` (`3`). This explicit two-source
+classification replaces cadence-based inference. Set the ESP-NOW role to
+disabled to reproduce the Phase 2 AP-only setup.
 
 ## Native build
 
@@ -59,16 +65,22 @@ The container writes ignored `sdkconfig` and `build/` outputs into the experimen
 
 ## Host protocol test
 
-The serializer is dependency-free C. With a host C compiler:
+The serializers are dependency-free C. With a host C compiler:
 
 ```sh
 cc -std=c11 -Wall -Wextra -Werror \
   -I main host_tests/ncsi_protocol_test.c main/ncsi_protocol.c \
   -o ncsi_protocol_test
 ./ncsi_protocol_test
+
+cc -std=c11 -Wall -Wextra -Werror \
+  -I main host_tests/probe_protocol_test.c \
+  main/probe_protocol.c main/ncsi_protocol.c -o probe_protocol_test
+./probe_protocol_test
 ```
 
-The test checks CRC-32C, fixed offsets, lengths, I/Q geometry-preserving sanitation, payload identity, and rejection of odd I/Q lengths.
+The tests check CSI framing/sanitation plus probe encoding, decoding, version,
+length, identity fields, and CRC rejection.
 
 ## Run without flashing instructions
 

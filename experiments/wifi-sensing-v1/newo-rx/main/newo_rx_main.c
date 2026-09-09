@@ -17,8 +17,8 @@
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "esp_event.h"
+#include "esp_now.h"
 #include "esp_log.h"
-#include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -31,6 +31,7 @@
 #include "sdkconfig.h"
 
 #include "ncsi_protocol.h"
+#include "probe_protocol.h"
 
 #ifndef CONFIG_ESP_WIFI_CSI_ENABLED
 #error "CONFIG_ESP_WIFI_CSI_ENABLED must be enabled for the Newo CSI receiver"
@@ -44,12 +45,24 @@
 #error "Newo CSI experiment gateway ping rate must not exceed 50 Hz"
 #endif
 
+#if CONFIG_NEWO_ESPNOW_TRANSMIT && CONFIG_NEWO_ESPNOW_PROBE_HZ > 50
+#error "Newo ESP-NOW experiment probe rate must not exceed 50 Hz"
+#endif
+
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAILED_BIT BIT1
 #define WIFI_MAXIMUM_RETRY 10
 #define LTF_LLTF BIT0
 #define LTF_HT BIT1
 #define LTF_STBC_HT BIT2
+
+#if CONFIG_NEWO_ESPNOW_RECEIVE
+#define ESPNOW_ROLE "rx"
+#elif CONFIG_NEWO_ESPNOW_TRANSMIT
+#define ESPNOW_ROLE "tx"
+#else
+#define ESPNOW_ROLE "off"
+#endif
 
 static const char *TAG = "newo_csi_rx";
 
@@ -66,6 +79,7 @@ typedef struct {
     uint8_t antenna;
     uint8_t ltf_mask;
     uint16_t flags;
+    uint16_t path_id;
     uint16_t driver_length;
     uint8_t sanitized_prefix_bytes;
     uint8_t csi[NCSI_MAX_CSI_BYTES];
@@ -84,6 +98,8 @@ static uint8_t s_receiver_mac[6];
 static uint8_t s_ap_bssid[6];
 static uint8_t s_filter_mac[6];
 static bool s_filter_enabled;
+static bool s_peer_enabled;
+static uint8_t s_peer_mac[6];
 static bool s_csi_enabled;
 static bool s_self_ping_enabled;
 static volatile bool s_associated;
@@ -107,6 +123,12 @@ static volatile uint32_t s_transport_drops;
 static volatile uint32_t s_invalid_frame_drops;
 static volatile uint32_t s_next_sequence;
 static volatile uint32_t s_status_sequence;
+static volatile uint32_t s_probe_tx_queued;
+static volatile uint32_t s_probe_tx_ok;
+static volatile uint32_t s_probe_tx_fail;
+static volatile uint32_t s_probe_rx_ok;
+static volatile uint32_t s_probe_rx_invalid;
+static volatile bool s_probe_in_flight;
 
 static portMUX_TYPE s_sample_lock = portMUX_INITIALIZER_UNLOCKED;
 static last_sample_t s_last_sample;
@@ -127,7 +149,7 @@ static void format_mac(const uint8_t mac[6], char output[18])
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
-#if CONFIG_NEWO_SOURCE_FILTER_CUSTOM
+#if CONFIG_NEWO_SOURCE_FILTER_CUSTOM || !CONFIG_NEWO_ESPNOW_NONE
 static bool parse_mac(const char *text, uint8_t output[6])
 {
     unsigned values[6];
@@ -224,7 +246,7 @@ static wifi_ap_record_t inspect_access_point(void)
     wifi_ap_record_t ap = {0};
     ESP_ERROR_CHECK(esp_wifi_sta_get_ap_info(&ap));
     memcpy(s_ap_bssid, ap.bssid, sizeof(s_ap_bssid));
-    ESP_ERROR_CHECK(esp_read_mac(s_receiver_mac, ESP_MAC_WIFI_STA));
+    ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_STA, s_receiver_mac));
 
     char ap_mac[18];
     char receiver_mac[18];
@@ -257,6 +279,16 @@ static void configure_source_filter(void)
     } else {
         ESP_LOGW(TAG, "source filter disabled; path identity must be validated by host");
     }
+}
+
+static bool source_is_peer(const uint8_t mac[6])
+{
+#if CONFIG_NEWO_ESPNOW_RECEIVE
+    return s_peer_enabled && memcmp(mac, s_peer_mac, 6) == 0;
+#else
+    (void)mac;
+    return false;
+#endif
 }
 
 static uint8_t encode_secondary(wifi_second_chan_t secondary)
@@ -294,8 +326,9 @@ static void csi_callback(void *ctx, wifi_csi_info_t *info)
         return;
     }
 
-    bool filter_matched = false;
-    if (s_filter_enabled) {
+    bool peer_source = source_is_peer(info->mac);
+    bool filter_matched = peer_source;
+    if (!peer_source && s_filter_enabled) {
         if (memcmp(info->mac, s_filter_mac, 6) != 0) {
             counter_increment(&s_source_filter_drops);
             return;
@@ -340,6 +373,7 @@ static void csi_callback(void *ctx, wifi_csi_info_t *info)
     if (s_self_ping_enabled) slot->flags |= NCSI_FLAG_CONTROL_TRAFFIC_ACTIVE;
     if (slot->sequence == 0) slot->flags |= NCSI_FLAG_SEQUENCE_RESET;
     slot->driver_length = info->len;
+    slot->path_id = peer_source ? 3u : CONFIG_NEWO_PATH_ID;
     slot->sanitized_prefix_bytes = 0;
     memcpy(slot->csi, info->buf, info->len);
     if (info->first_word_invalid) {
@@ -437,11 +471,17 @@ static void send_status_and_log(uint32_t *previous_callbacks, uint32_t *previous
     ESP_LOGI(TAG,
              "diag cb=%" PRIu32 "/s accepted=%" PRIu32 "/s udp_ok=%" PRIu32
              " udp_fail=%" PRIu32 " queue_drop=%" PRIu32 " invalid=%" PRIu32
-             " rssi=%d len=%u ch=%u src=%s",
+             " rssi=%d len=%u ch=%u src=%s sta=%s espnow=%s"
+             " probe_tx=%" PRIu32 "/%" PRIu32 "/%" PRIu32
+             " probe_rx=%" PRIu32 "/%" PRIu32,
              callback_rate, accepted_rate, counter_get(&s_transport_ok),
              counter_get(&s_transport_drops), counter_get(&s_ring_full_drops),
              counter_get(&s_invalid_frame_drops), sample.rssi,
-             (unsigned)sample.csi_length, (unsigned)sample.channel, source);
+             (unsigned)sample.csi_length, (unsigned)sample.channel, source,
+             s_associated ? "up" : "down", ESPNOW_ROLE,
+             counter_get(&s_probe_tx_queued), counter_get(&s_probe_tx_ok),
+             counter_get(&s_probe_tx_fail), counter_get(&s_probe_rx_ok),
+             counter_get(&s_probe_rx_invalid));
 }
 
 static void sender_task(void *arg)
@@ -471,7 +511,7 @@ static void sender_task(void *arg)
                 .ltf_mask = slot->ltf_mask,
                 .driver_csi_length = slot->driver_length,
                 .csi_flags = slot->flags,
-                .path_id = CONFIG_NEWO_PATH_ID,
+                .path_id = slot->path_id,
                 .sanitized_prefix_bytes = slot->sanitized_prefix_bytes,
                 .csi = slot->csi,
                 .csi_length = slot->driver_length,
@@ -497,6 +537,99 @@ static void sender_task(void *arg)
             next_status_us += ((now_us - next_status_us) / 1000000LL + 1) * 1000000LL;
         }
     }
+}
+
+#if CONFIG_NEWO_ESPNOW_RECEIVE
+static void espnow_receive_callback(const esp_now_recv_info_t *info,
+                                    const uint8_t *data, int length)
+{
+    if (info == NULL || data == NULL || length != NEWO_PROBE_SIZE ||
+        !source_is_peer(info->src_addr)) {
+        counter_increment(&s_probe_rx_invalid);
+        return;
+    }
+    newo_probe_t probe;
+    if (newo_probe_decode(data, (size_t)length, &probe)) {
+        counter_increment(&s_probe_rx_ok);
+    } else {
+        counter_increment(&s_probe_rx_invalid);
+    }
+}
+#endif
+
+#if CONFIG_NEWO_ESPNOW_TRANSMIT
+static void espnow_send_callback(const wifi_tx_info_t *info,
+                                 esp_now_send_status_t status)
+{
+    (void)info;
+    counter_increment(status == ESP_NOW_SEND_SUCCESS ? &s_probe_tx_ok
+                                                      : &s_probe_tx_fail);
+    __atomic_store_n(&s_probe_in_flight, false, __ATOMIC_RELEASE);
+}
+
+static void probe_sender_task(void *arg)
+{
+    (void)arg;
+    TickType_t next = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(1000u / CONFIG_NEWO_ESPNOW_PROBE_HZ);
+    uint32_t sequence = 0;
+    while (true) {
+        if (!s_associated ||
+            __atomic_exchange_n(&s_probe_in_flight, true, __ATOMIC_ACQ_REL)) {
+            counter_increment(&s_probe_tx_fail);
+            vTaskDelayUntil(&next, period);
+            continue;
+        }
+        newo_probe_t probe = {
+            .sender_node_id = CONFIG_NEWO_NODE_ID,
+            .sequence = sequence++,
+            .sender_timestamp_us = (uint64_t)esp_timer_get_time(),
+        };
+        uint8_t wire[NEWO_PROBE_SIZE];
+        size_t length = newo_probe_encode(&probe, wire, sizeof(wire));
+        if (length == 0 || esp_now_send(s_peer_mac, wire, length) != ESP_OK) {
+            counter_increment(&s_probe_tx_fail);
+            __atomic_store_n(&s_probe_in_flight, false, __ATOMIC_RELEASE);
+        } else {
+            counter_increment(&s_probe_tx_queued);
+        }
+        vTaskDelayUntil(&next, period);
+    }
+}
+#endif
+
+static void initialise_espnow(void)
+{
+#if !CONFIG_NEWO_ESPNOW_NONE
+    if (!parse_mac(CONFIG_NEWO_ESPNOW_PEER_MAC, s_peer_mac)) {
+        ESP_LOGE(TAG, "invalid ESP-NOW peer MAC; configure station MAC as aa:bb:cc:dd:ee:ff");
+        abort();
+    }
+    s_peer_enabled = true;
+    ESP_ERROR_CHECK(esp_now_init());
+
+    esp_now_peer_info_t peer = {0};
+    memcpy(peer.peer_addr, s_peer_mac, sizeof(peer.peer_addr));
+    peer.ifidx = WIFI_IF_STA;
+    peer.channel = 0; /* Follow the station interface's associated AP channel. */
+    peer.encrypt = false;
+    ESP_ERROR_CHECK(esp_now_add_peer(&peer));
+
+#if CONFIG_NEWO_ESPNOW_RECEIVE
+    ESP_ERROR_CHECK(esp_now_register_recv_cb(espnow_receive_callback));
+    ESP_LOGI(TAG, "ESP-NOW receive enabled on STA current-channel peer semantics");
+#elif CONFIG_NEWO_ESPNOW_TRANSMIT
+    ESP_ERROR_CHECK(esp_now_register_send_cb(espnow_send_callback));
+    BaseType_t created = xTaskCreatePinnedToCore(probe_sender_task, "newo_probe", 3072,
+                                                 NULL, 4, NULL, 1);
+    if (created != pdPASS) {
+        ESP_LOGE(TAG, "failed to create ESP-NOW probe task");
+        abort();
+    }
+    ESP_LOGI(TAG, "ESP-NOW transmit enabled rate=%dHz channel=0 STA peer",
+             CONFIG_NEWO_ESPNOW_PROBE_HZ);
+#endif
+#endif
 }
 
 static void start_gateway_ping(void)
@@ -575,6 +708,7 @@ void app_main(void)
     (void)inspect_access_point();
     configure_source_filter();
     initialise_udp();
+    initialise_espnow();
 
     start_gateway_ping();
     start_csi();

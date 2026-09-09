@@ -1,6 +1,9 @@
 # Newo Wi-Fi CSI sensing experiment v1
 
-Status: Phase 1 protocol plus an isolated Phase 2 receiver implementation under [`newo-rx/`](./newo-rx/). Nothing is integrated into production `Newo/`, and no ESP has been flashed.
+Status: Phase 1 protocol, isolated Newo receiver under [`newo-rx/`](./newo-rx/),
+and the Phase 3 GOOUUU ESP32-S3-CAM radio node under
+[`newo2-node/`](./newo2-node/). Nothing is integrated into production `Newo/`,
+the camera remains disabled, and no ESP has been flashed.
 
 ## Goal and boundaries
 
@@ -113,6 +116,16 @@ idf.py build
 ```
 
 The Docker commands, host protocol test, configuration fields, and future run/monitor expectations are in the receiver README. Phase 2 builds only; it does not authorize flashing.
+
+## Phase 3 ESP-NOW path
+
+Phase 3 adds one-way, versioned Newo2-to-Newo ESP-NOW probes while both ESPs
+remain ordinary stations on the same AP. The peer is bound to `WIFI_IF_STA` with
+channel `0` so it follows the associated interface channel; there is no channel
+hopping. See [`newo2-node/README.md`](./newo2-node/README.md) for topology and
+explicit MAC configuration, and [`PROBE_PROTOCOL.md`](./PROBE_PROTOCOL.md) for
+the 28-byte probe header. Bidirectional probes, camera streaming, ML, and NDP
+injection remain out of scope.
 
 ## Source lineage
 

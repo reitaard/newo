@@ -8,7 +8,15 @@ Reviewed revision: `d613a576ea848f96a9b15bac4e7f60b6be7c08e7`
 
 RuView measurement-plane concepts informed this experiment design, specifically ESP32-S3 CSI configuration and callbacks, invalid-first-word sanitation, source-MAC filtering, connected-AP channel detection, gateway self-ping for controlled OFDM traffic, callback rate limiting, sequence and RF metadata capture, fixed ring buffers and drop diagnostics, independent raw/DSP cadences, phase extraction/unwrapping, running statistics, and top-K subcarrier selection.
 
-No RuView wire format was copied. Phase 2's standalone receiver adapts the narrow measurement-plane patterns listed above in `newo-rx/main/newo_rx_main.c`; that source carries an attribution header. The Newo serializer, bounded ring, diagnostics, configuration, and protocol tests are original implementations against the Phase 1 format. RuView's pose/health/person-count/fall claims and implementations, WASM support, Matter/Home Assistant integrations, channel hopping, 5 GHz and ESP32-C6 features, NDP injection, Rust platform, and mesh architecture are outside this experiment's scope.
+No RuView wire format was copied. Phase 2's standalone receiver and Phase 3's
+shared Newo2 measurement plane adapt the narrow patterns listed above in
+`newo-rx/main/newo_rx_main.c`; that source carries an attribution header. The
+Newo serializers, ESP-NOW probe format, bounded ring, diagnostics,
+configuration, and protocol tests are original implementations. RuView's
+pose/health/person-count/fall claims and implementations, WASM support,
+Matter/Home Assistant integrations, channel hopping, 5 GHz and ESP32-C6
+features, NDP injection, Rust platform, and mesh architecture are outside this
+experiment's scope.
 
 RuView is distributed under the MIT License:
 
