@@ -41,7 +41,7 @@ The CSI header is exactly 64 bytes including the common header. Its payload begi
 | 56 | 2 | `subcarrier_item_count` | Number of complex byte pairs retained; `csi_payload_length / 2` |
 | 58 | 2 | `csi_flags` | Bit field below |
 | 60 | 2 | `path_id` | `1=ROUTER_NEWO`, `2=ROUTER_NEWO2`, `3=NEWO2_NEWO`, `0=UNKNOWN` |
-| 62 | 1 | `discarded_prefix_bytes` | `0` normally; up to `4` when invalid leading bytes were removed |
+| 62 | 1 | `sanitized_prefix_bytes` | `0` normally; up to `4` when invalid leading bytes were zeroed in place |
 | 63 | 1 | `iq_order` | `1=IMAG_REAL_S8`; all other values unsupported in v1 |
 
 ### CSI flags
@@ -49,7 +49,7 @@ The CSI header is exactly 64 bytes including the common header. Its payload begi
 | Bit | Name | Meaning when set |
 | ---: | --- | --- |
 | 0 | `FIRST_WORD_INVALID_REPORTED` | ESP-IDF reported `first_word_invalid` |
-| 1 | `INVALID_PREFIX_REMOVED` | `discarded_prefix_bytes` were omitted from the payload |
+| 1 | `INVALID_PREFIX_SANITIZED` | `sanitized_prefix_bytes` leading payload bytes were zeroed in place |
 | 2 | `SOURCE_FILTER_MATCHED` | Source matched an explicit configured allowlist entry |
 | 3 | `RX_METADATA_VALID` | Driver indicated receive/channel metadata is valid where that indication is available |
 | 4 | `PAYLOAD_TRUNCATED` | Buffer exceeded the record capacity; such records should normally be dropped instead |
@@ -58,10 +58,10 @@ The CSI header is exactly 64 bytes including the common header. Its payload begi
 | 7 | `SEQUENCE_RESET` | First record after boot/counter reset |
 | 8-15 | — | Reserved; writers set zero, readers ignore |
 
-For ESP32-S3 v1, each complex item is two signed bytes in ESP-IDF order `(imaginary, real)`. If `first_word_invalid` is true, the writer sets bits 0 and 1, sets `discarded_prefix_bytes = min(4, driver_csi_length)`, and starts the payload after that prefix. Therefore:
+For ESP32-S3 v1, each complex item is two signed bytes in ESP-IDF order `(imaginary, real)`. If `first_word_invalid` is true, the writer sets bits 0 and 1, sets `sanitized_prefix_bytes = min(4, driver_csi_length)`, and replaces exactly those leading payload bytes with zero. The bytes are not removed or shifted, so every later I/Q pair retains its driver-reported position. Therefore:
 
 ```text
-csi_payload_length = driver_csi_length - discarded_prefix_bytes
+csi_payload_length = driver_csi_length
 subcarrier_item_count = floor(csi_payload_length / 2)
 ```
 
@@ -144,6 +144,6 @@ The collector associates every stored radio record with `session_id` in its stor
 
 ## Example parser checks
 
-For a CSI record whose common header says `header_length=64` and `record_length=444`, a parser expects `csi_payload_length=380` and `subcarrier_item_count=190`. If `driver_csi_length=384`, `FIRST_WORD_INVALID_REPORTED` and `INVALID_PREFIX_REMOVED` must both be set and `discarded_prefix_bytes` must be 4. A mismatch invalidates the record.
+For a CSI record whose common header says `header_length=64` and `record_length=448`, a parser expects `driver_csi_length=384`, `csi_payload_length=384`, and `subcarrier_item_count=192`. If `first_word_invalid` was reported, `FIRST_WORD_INVALID_REPORTED` and `INVALID_PREFIX_SANITIZED` must both be set, `sanitized_prefix_bytes` must be 4, and payload bytes 0 through 3 must be zero. A mismatch invalidates the record.
 
 Before accepting a path, the host also verifies the configured tuple. For example, `ROUTER_NEWO` is valid only when `receiver_mac` equals Newo's station MAC and `source_mac` equals the configured router BSSID. `path_id` is a convenience field, never stronger evidence than those two addresses.

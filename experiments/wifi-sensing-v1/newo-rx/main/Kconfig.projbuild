@@ -1,0 +1,81 @@
+menu "Newo CSI receiver"
+
+config NEWO_WIFI_SSID
+    string "Wi-Fi SSID"
+    default ""
+    help
+        Configure locally with menuconfig. The generated sdkconfig is ignored
+        and must never be committed.
+
+config NEWO_WIFI_PASSWORD
+    string "Wi-Fi password"
+    default ""
+    help
+        Configure locally with menuconfig. The generated sdkconfig is ignored
+        and must never be committed.
+
+config NEWO_NODE_ID
+    int "Receiver node ID"
+    range 1 4294967295
+    default 1
+
+config NEWO_PATH_ID
+    int "Phase-1 path ID"
+    range 0 3
+    default 1
+    help
+        0=UNKNOWN, 1=ROUTER_NEWO, 2=ROUTER_NEWO2, 3=NEWO2_NEWO.
+
+config NEWO_COLLECTOR_IPV4
+    string "Collector IPv4 address"
+    default "192.168.1.100"
+
+config NEWO_COLLECTOR_PORT
+    int "Collector UDP port"
+    range 1 65535
+    default 5005
+
+config NEWO_CSI_RATE_HZ
+    int "Retained raw CSI frames per second"
+    range 1 50
+    default 20
+    help
+        This is a hard per-source processing gate. The experiment does not
+        support a value above 50 Hz.
+
+choice NEWO_SOURCE_FILTER_MODE
+    prompt "CSI source-MAC filter"
+    default NEWO_SOURCE_FILTER_AP
+
+config NEWO_SOURCE_FILTER_NONE
+    bool "Disabled (accept any source)"
+
+config NEWO_SOURCE_FILTER_AP
+    bool "Connected access-point BSSID"
+
+config NEWO_SOURCE_FILTER_CUSTOM
+    bool "Custom source MAC"
+
+endchoice
+
+config NEWO_SOURCE_MAC
+    string "Custom source MAC (aa:bb:cc:dd:ee:ff)"
+    default ""
+    depends on NEWO_SOURCE_FILTER_CUSTOM
+
+config NEWO_GATEWAY_PING_ENABLE
+    bool "Generate controlled traffic by pinging the STA gateway"
+    default y
+
+config NEWO_GATEWAY_PING_HZ
+    int "Gateway pings per second"
+    range 1 50
+    default 20
+    depends on NEWO_GATEWAY_PING_ENABLE
+
+config NEWO_QUEUE_DEPTH
+    int "Static CSI queue depth"
+    range 4 64
+    default 16
+
+endmenu

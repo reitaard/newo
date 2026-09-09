@@ -1,6 +1,6 @@
 # Newo Wi-Fi CSI sensing experiment v1
 
-Status: design only. Phase 1 defines the measurement plane and capture contract; it does not add firmware, flash either ESP, or claim sensing accuracy.
+Status: Phase 1 protocol plus an isolated Phase 2 receiver implementation under [`newo-rx/`](./newo-rx/). Nothing is integrated into production `Newo/`, and no ESP has been flashed.
 
 ## Goal and boundaries
 
@@ -60,7 +60,7 @@ The future firmware implementation must:
 1. Join the fixed 2.4 GHz router, query the associated AP channel, and remain on it.
 2. Configure ESP32-S3 CSI collection for the chosen legacy/HT LTFs and preserve the receive metadata needed to interpret buffer geometry.
 3. Copy the receiver identity and compare `wifi_csi_info_t.mac` with an explicit source-MAC allowlist before path assignment.
-4. If `first_word_invalid` is set, omit up to the first four invalid bytes from the emitted payload, record the original length and discarded-byte count, and set both corresponding flags. Never feed those bytes into DSP.
+4. If `first_word_invalid` is set, zero up to the first four invalid bytes in place, record the sanitized-byte count, and set both corresponding flags. Preserve the original payload length and I/Q positions; never feed the invalid values into DSP.
 5. Assign a node-local sequence number to every accepted post-filter, post-rate-gate CSI record. Sequence gaps therefore expose downstream queue/transport loss; callback and gate counters expose earlier loss.
 6. Timestamp accepted records from the local monotonic microsecond clock. Wall-clock labels belong to the host metadata, not the CSI callback.
 7. Copy raw signed 8-bit complex samples in ESP-IDF order: imaginary byte, then real byte. Do not convert to magnitude or phase in the raw record.
@@ -99,6 +99,20 @@ Top-K selection is a feature-selection primitive, not evidence for person count,
 - Camera media is not embedded in radio records. `camera_frame_id` is an optional host-side join key only.
 - Generated captures, binaries, build directories, and secret-bearing `sdkconfig` files must remain untracked.
 - No hardware was flashed or exercised in Phase 1.
+
+## Phase 2 build and configuration
+
+The standalone receiver is documented in [`newo-rx/README.md`](./newo-rx/README.md). It is tested against ESP-IDF v5.5.5 and can be built reproducibly with the official `espressif/idf:v5.5.5` Docker image. Configure Wi-Fi credentials and the collector through `idf.py menuconfig`; the generated `sdkconfig` and `build/` directory are ignored and must not be committed.
+
+The normal workflow from `experiments/wifi-sensing-v1/newo-rx/` is:
+
+```sh
+idf.py set-target esp32s3
+idf.py menuconfig
+idf.py build
+```
+
+The Docker commands, host protocol test, configuration fields, and future run/monitor expectations are in the receiver README. Phase 2 builds only; it does not authorize flashing.
 
 ## Source lineage
 
