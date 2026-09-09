@@ -22,11 +22,18 @@ Newo/newo_secrets.h
 node_modules/
 server/.venv-kokoro-onnx/
 server/test/__pycache__/
+__pycache__/
+*.py[cod]
 
 # Downloaded ASR models and development voice captures
 server/models/
 server/voice-captures/
 server/data/
+
+# Privacy-sensitive Wi-Fi sensing datasets and derived inspection exports
+experiments/wifi-sensing-v1/**/datasets/
+experiments/wifi-sensing-v1/**/*.ncsi
+experiments/wifi-sensing-v1/**/*-export.csv
 
 # OS files
 .DS_Store

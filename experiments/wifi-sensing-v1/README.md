@@ -2,8 +2,9 @@
 
 Status: Phase 1 protocol, isolated Newo receiver under [`newo-rx/`](./newo-rx/),
 and the Phase 3 GOOUUU ESP32-S3-CAM radio node under
-[`newo2-node/`](./newo2-node/). Nothing is integrated into production `Newo/`,
-the camera remains disabled, and no ESP has been flashed.
+[`newo2-node/`](./newo2-node/), plus Phase 4 host capture/replay tooling under
+[`tools/`](./tools/). Nothing is integrated into production `Newo/`, the camera
+remains disabled, and no ESP has been flashed.
 
 ## Goal and boundaries
 
@@ -90,10 +91,11 @@ Top-K selection is a feature-selection primitive, not evidence for person count,
 
 1. **Phase 1 — protocol and experiment design (this directory):** freeze record v1, paths, metadata separation, diagnostics, scope, and attribution.
 2. **Phase 2 — isolated receiver firmware:** create experiment-only ESP32-S3 CSI capture targets for Newo and Newo2; add host-side serialization tests; do not merge into production `Newo/` firmware.
-3. **Phase 3 — host collector and calibration:** validate CRC/length/sequence handling, store session metadata separately, measure achieved yield and drops, and collect empty-room baselines for the two router paths.
-4. **Phase 4 — third path and synchronization:** add deliberate Newo2 traffic for `NEWO2_NEWO`, emit synchronization records, and quantify cross-node clock offset/drift before combining paths.
-5. **Phase 5 — offline DSP:** implement geometry-aware phase extraction/unwrapping, running statistics, top-K selection, and reproducible signal-quality reports.
-6. **Phase 6 — labeled feasibility studies:** evaluate one target at a time with held-out sessions and camera-derived labels where consented. Report negative results and uncertainty; make no health or safety claims.
+3. **Phase 3 — third RF path:** add deliberate Newo2 ESP-NOW traffic for `NEWO2_NEWO` while both nodes remain associated with the AP.
+4. **Phase 4 — host collector (current):** validate and archive exact radio records, store session metadata separately, report rates/geometry/loss, and support deterministic replay and derived inspection exports.
+5. **Phase 5 — synchronization and calibration:** emit synchronization records, quantify cross-node clock offset/drift, and collect repeatable empty-room baselines before combining paths.
+6. **Phase 6 — offline DSP:** implement geometry-aware phase extraction/unwrapping, running statistics, top-K selection, and reproducible signal-quality reports.
+7. **Phase 7 — labeled feasibility studies:** evaluate one target at a time with held-out sessions and camera-derived labels where consented. Report negative results and uncertainty; make no health or safety claims.
 
 ## Data and safety notes
 
@@ -126,6 +128,15 @@ hopping. See [`newo2-node/README.md`](./newo2-node/README.md) for topology and
 explicit MAC configuration, and [`PROBE_PROTOCOL.md`](./PROBE_PROTOCOL.md) for
 the 28-byte probe header. Bidirectional probes, camera streaming, ML, and NDP
 injection remain out of scope.
+
+## Phase 4 capture and replay
+
+The dependency-light Python tooling in [`tools/`](./tools/) captures strict
+protocol-v1 UDP records into a binary archive without rewriting their bytes,
+keeps session labels in separate JSON, reports per-path and device loss
+diagnostics, replays original datagrams with recorded timing, and optionally
+exports selected subcarrier amplitude/phase for inspection. See
+[`RECORDING.md`](./RECORDING.md) before collecting any human-labeled session.
 
 ## Source lineage
 
