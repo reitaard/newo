@@ -385,11 +385,20 @@ static void csi_callback(void *ctx, wifi_csi_info_t *info)
     }
 
     int64_t now_us = esp_timer_get_time();
-    const int64_t interval_us = 1000000LL / CONFIG_NEWO_CSI_RATE_HZ;
     uint16_t path_id = peer_source ? 3u : CONFIG_NEWO_PATH_ID;
-    portENTER_CRITICAL(&s_gate_lock);
-    bool gate_accepted = newo_rate_gate_accept(&s_rate_gate, path_id, now_us, interval_us);
-    portEXIT_CRITICAL(&s_gate_lock);
+
+    /*
+     * Hardware validation: retain every qualifying Router->Newo CSI callback.
+     * Peer/ESP-NOW paths keep the configured rate gate.
+     */
+    bool gate_accepted = true;
+    if (peer_source) {
+        const int64_t interval_us = 1000000LL / CONFIG_NEWO_CSI_RATE_HZ;
+        portENTER_CRITICAL(&s_gate_lock);
+        gate_accepted = newo_rate_gate_accept(&s_rate_gate, path_id, now_us, interval_us);
+        portEXIT_CRITICAL(&s_gate_lock);
+    }
+
     if (!gate_accepted) {
         counter_increment(&s_rate_gate_drops);
         if (path_id >= 1 && path_id <= NEWO_PATH_COUNT) {
@@ -912,13 +921,11 @@ static void start_csi(void)
 
 void app_main(void)
 {
-    esp_err_t nvs_error = nvs_flash_init();
-    if (nvs_error == ESP_ERR_NVS_NO_FREE_PAGES ||
-        nvs_error == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        nvs_error = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(nvs_error);
+    /*
+     * Hardware-validation build: deliberately do not initialize or erase
+     * persistent NVS. Wi-Fi/PHY persistence is disabled in sdkconfig so this
+     * temporary CSI firmware leaves production Newo state untouched.
+     */
     s_boot_id = esp_random();
 
     ESP_LOGI(TAG, "standalone measurement plane; no inference or production integration");
