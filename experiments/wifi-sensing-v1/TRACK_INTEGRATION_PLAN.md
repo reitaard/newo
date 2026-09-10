@@ -1,9 +1,8 @@
-# `/track` and real-Newo integration plan
+# `/track` and real-Newo integration plan/implementation record
 
-This is the implementation contract for the development integration after the
-remaining Phase-5 physical and phone validation. It does not authorize a
-firmware merge or flash. `/track` controls RF measurement, not interpretation,
-recording, presence, or localization.
+This remains the contract and records the integration-branch implementation.
+It does not authorize a firmware merge or flash. `/track` controls RF
+measurement, not interpretation, recording, presence, or localization.
 
 ## Command and state contract
 

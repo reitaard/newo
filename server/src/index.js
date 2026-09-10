@@ -208,6 +208,7 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("display_ack"), request_id: z.string().optional(), mode: z.string().max(16) }).passthrough(),
   z.object({ type: z.literal("clock_ack"), request_id: z.string(), enabled: z.boolean(), applied: z.boolean() }).passthrough(),
+  z.object({ type: z.literal("track_ack"), request_id: z.string(), state: z.enum(["off", "active"]), applied: z.boolean(), duplicate: z.boolean().optional(), collector_source: z.enum(["configured", "discovered", "override"]).optional(), error: z.string().optional() }).passthrough(),
   z.object({ type: z.literal("speaker_ack"), request_id: z.string(), enabled: z.boolean(), connection: z.enum(["Ready", "Connecting", "Disconnected"]), volume: z.number().int().min(0).max(100), muted: z.boolean(), applied: z.boolean(), last_playback: z.enum(["None", "Playing", "Complete", "Failed"]), underruns: z.number().int().nonnegative(), overflows: z.number().int().nonnegative(), buffer_bytes: z.number().int().positive() }).passthrough(),
   z.object({ type: z.literal("speaker_started"), playback_id: z.string().uuid(), first_pcm_to_play_ms: z.number().int().nonnegative() }).passthrough(),
   z.object({ type: z.literal("speaker_complete"), playback_id: z.string().uuid(), bytes: z.number().int().nonnegative() }).passthrough(),
@@ -270,7 +271,10 @@ function sendDeviceRequest(requestType, responseType, fields = {}, trace = null)
   pendingRequests.set(requestId, { deviceId: env.NEWO_DEVICE_ID, ws: device.ws, requestType, responseType, startedAt, timer, resolve: resolveRequest, trace });
   app.log.info({ request_id: requestId, request_type: requestType, expected_response_type: responseType, telegram_update_id: trace?.updateId ?? null, created_at: new Date(startedAt).toISOString() }, "Newo request created");
   try {
-    device.ws.send(JSON.stringify({ type: requestType, request_id: requestId, ...fields }), (error) => { if (error) settlePendingRequest(requestId, { kind: "send_error" }); });
+    const correlated = requestType === "track_control"
+      ? { command_epoch: device.commandEpoch, command_sequence: ++device.trackCommandSequence }
+      : {};
+    device.ws.send(JSON.stringify({ type: requestType, request_id: requestId, ...fields, ...correlated }), (error) => { if (error) settlePendingRequest(requestId, { kind: "send_error" }); });
   } catch {
     settlePendingRequest(requestId, { kind: "send_error" });
   }
@@ -360,6 +364,7 @@ app.get("/health", async () => {
 });
 
 const TELEGRAM_COMMANDS = [
+  { command: "track", description: "RF tracking resources" },
   { command: "status", description: "Device status" },
   { command: "health", description: "System health" },
   { command: "face", description: "Choose a display face" },
@@ -765,6 +770,7 @@ if (env.TELEGRAM_BOT_TOKEN) {
   for (const reaction of REACTION_NAMES) bot.command(`reaction_${reaction}`, (ctx) => handleReactionCommand(ctx, reaction));
   bot.command("eco", primaryModeHandlers.eco);
   bot.command("clock", primaryModeHandlers.clock);
+  bot.command("track", primaryModeHandlers.track);
   bot.command(["voice", "v"], primaryModeHandlers.voice);
   bot.command("vs", primaryModeHandlers.voiceStatus);
   bot.command("speaker", primaryModeHandlers.speaker);
@@ -803,7 +809,7 @@ wss.on("connection", (ws, request, deviceId) => {
   const offlineDuration = reconnectingAfterNotifiedOffline ? Math.max(0, Date.now() - previous.offlineSince) : 0;
   cancelOfflineTimer(previous);
   if (previous?.ws.readyState === WebSocket.OPEN) { failPendingRequestsForDevice(deviceId, previous.ws, "disconnected"); previous.ws.close(4001, "replaced by new connection"); }
-  const state = { ws, connectedAt: new Date().toISOString(), lastSeen: new Date().toISOString(), hello: previous?.hello ?? null, status: previous?.status ?? null, hasBeenConnected: previous?.hasBeenConnected ?? true, offlineSince: null, offlineNotified: false, offlineTimer: null, isAlive: true };
+  const state = { ws, connectedAt: new Date().toISOString(), lastSeen: new Date().toISOString(), hello: previous?.hello ?? null, status: previous?.status ?? null, hasBeenConnected: previous?.hasBeenConnected ?? true, offlineSince: null, offlineNotified: false, offlineTimer: null, isAlive: true, commandEpoch: randomUUID(), trackCommandSequence: 0 };
   devices.set(deviceId, state);
   const completedIntentionalReboot = completePendingReboot(deviceId);
   if (reconnectingAfterNotifiedOffline && !completedIntentionalReboot) sendConnectivityNotification(commandMessage("connectivity", [quote([`Status: ${bold("Back online")}`, `Offline for: ${boldItalic(formatDuration(offlineDuration))}`]) ]));

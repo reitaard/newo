@@ -9,6 +9,7 @@
 #include "newo_led.h"
 #include "newo_speaker.h"
 #include "newo_storage.h"
+#include "newo_tracking.h"
 #include "newo_usb_audio.h"
 #include "newo_usb_host.h"
 #include "newo_usb_storage.h"
@@ -23,6 +24,7 @@ NewoDisplay newoDisplay;
 NewoCloud newoCloud(newoWiFi, newoDisplay, newoStorage);
 NewoAudio newoAudio(newoWiFi, newoDisplay);
 NewoSpeaker newoSpeaker(newoWiFi, newoDisplay, newoAudio, newoStorage);
+NewoTracking newoTracking;
 
 void printHardwareInfo() {
   Serial.println();
@@ -60,6 +62,7 @@ void setup() {
   newoCloud.begin();
   newoAudio.begin();
   newoSpeaker.begin();
+  newoTracking.begin();
 
   // Install one physical host first, register every independent client while
   // enumeration is still stopped, then start the shared event pump. A D07,
@@ -97,6 +100,7 @@ void loop() {
   static uint8_t pendingSpeakerAckCount = 0;
   NewoCloud::VoiceRequest voiceRequest;
   NewoCloud::SpeakerControlRequest speakerControlRequest;
+  NewoCloud::TrackRequest trackRequest;
   NewoSpeaker::PlaybackStarted speakerStarted;
   NewoSpeaker::Result speakerResult;
   newoWiFi.loop();
@@ -131,6 +135,13 @@ void loop() {
       strlcpy(pending.requestId, voiceRequest.requestId, sizeof(pending.requestId));
       pending.applied = applied;
     }
+  }
+  while (newoCloud.consumeTrackRequest(trackRequest)) {
+    const NewoTracking::Result result = newoTracking.apply(trackRequest.action, trackRequest.commandEpoch,
+                                                            trackRequest.commandSequence);
+    const NewoTracking::Metrics metrics = newoTracking.metrics();
+    newoCloud.sendTrackAck(trackRequest.requestId, newoTracking.state() == NewoTracking::State::ACTIVE,
+                           result.applied, result.duplicate, metrics.collectorSource, result.error);
   }
   while (newoCloud.consumeSpeakerControlRequest(speakerControlRequest)) {
     bool applied = true;
@@ -178,6 +189,7 @@ void loop() {
     }
   }
   newoAudio.loop();
+  newoTracking.loop();
   newoSpeaker.loop(newoCloud.connected());
   for (uint8_t i = 0; i < pendingSpeakerAckCount;) {
     SpeakerAck& pending = pendingSpeakerAcks[i];

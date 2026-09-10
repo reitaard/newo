@@ -112,6 +112,14 @@ bool NewoCloud::consumeSpeakerControlRequest(SpeakerControlRequest& request) {
   return true;
 }
 
+bool NewoCloud::consumeTrackRequest(TrackRequest& request) {
+  if (trackRequestCount_ == 0) return false;
+  request = trackRequests_[trackRequestHead_];
+  trackRequestHead_ = (trackRequestHead_ + 1) % kTrackRequestQueueDepth;
+  --trackRequestCount_;
+  return true;
+}
+
 NewoCloud::LedEvent NewoCloud::consumeLedEvent() {
   const LedEvent event = pendingLedEvent_;
   pendingLedEvent_ = LedEvent::NONE;
@@ -176,6 +184,17 @@ void NewoCloud::sendVoiceAck(const char* requestId, NewoVoiceState state, bool v
   doc["failures"] = failures;
   doc["timeouts"] = timeouts;
   doc["applied"] = applied;
+  String body; serializeJson(doc, body); webSocket_.sendTXT(body);
+}
+
+void NewoCloud::sendTrackAck(const char* requestId, bool active, bool applied, bool duplicate,
+                             const char* collectorSource, const char* error) {
+  if (!connected_ || !requestId || !requestId[0]) return;
+  JsonDocument doc;
+  doc["type"] = "track_ack"; doc["request_id"] = requestId;
+  doc["state"] = active ? "active" : "off"; doc["applied"] = applied;
+  doc["duplicate"] = duplicate; doc["collector_source"] = collectorSource;
+  if (error && error[0]) doc["error"] = error;
   String body; serializeJson(doc, body); webSocket_.sendTXT(body);
 }
 
@@ -292,6 +311,27 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     }
     if (applied) display_.setClockEnabled(enabled);
     sendClockAck(requestId, display_.clockEnabled(), applied);
+    return;
+  }
+
+  if (strcmp(type, "track_control") == 0) {
+    const char* requestId = doc["request_id"] | "";
+    const char* action = doc["action"] | "";
+    const char* epoch = doc["command_epoch"] | "";
+    const uint32_t sequence = doc["command_sequence"] | 0U;
+    if (!requestId[0] || !epoch[0] || sequence == 0 || strlen(action) >= sizeof(TrackRequest::action) ||
+        (strcmp(action,"on") && strcmp(action,"off") && strcmp(action,"toggle") && strcmp(action,"status"))) {
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "TRACK_INVALID_REQUEST");
+      return;
+    }
+    if (trackRequestCount_ == kTrackRequestQueueDepth) {
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "TRACK_CONTROL_QUEUE_FULL");
+      return;
+    }
+    TrackRequest request = {};
+    strlcpy(request.action, action, sizeof(request.action)); strlcpy(request.requestId, requestId, sizeof(request.requestId));
+    strlcpy(request.commandEpoch, epoch, sizeof(request.commandEpoch)); request.commandSequence = sequence;
+    trackRequests_[trackRequestTail_] = request; trackRequestTail_ = (trackRequestTail_ + 1) % kTrackRequestQueueDepth; ++trackRequestCount_;
     return;
   }
 

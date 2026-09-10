@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createPrimaryModeHandlers, parseClockArgument, parseVolumeArgument } from "../src/telegram-mode-commands.js";
+import { createPrimaryModeHandlers, parseClockArgument, parseTrackArgument, parseVolumeArgument } from "../src/telegram-mode-commands.js";
 
 function response(message) {
   return { kind: "sent", requestId: "request-1", promise: Promise.resolve({ kind: "response", message }) };
@@ -32,6 +32,32 @@ const speakerAck = {
   volume: 100, muted: false, applied: true, last_playback: "Complete",
   underruns: 0, overflows: 0, buffer_bytes: 24_576,
 };
+
+test("/track parser accepts toggle, explicit state, and status", () => {
+  assert.deepEqual(parseTrackArgument(""), { kind: "toggle" });
+  assert.deepEqual(parseTrackArgument(" ON "), { kind: "on" });
+  assert.deepEqual(parseTrackArgument("off"), { kind: "off" });
+  assert.deepEqual(parseTrackArgument("status"), { kind: "status" });
+  assert.deepEqual(parseTrackArgument("maybe"), { kind: "invalid" });
+});
+
+test("/track replies only after correlated device acknowledgement", async () => {
+  const requests = [];
+  const harness = createHarness((type, responseType, fields) => {
+    requests.push({ type, responseType, fields });
+    return response({ type: "track_ack", state: "active", applied: true });
+  });
+  await harness.handlers.track({ match: "on" });
+  assert.deepEqual(requests[0], { type: "track_control", responseType: "track_ack", fields: { action: "on" } });
+  assert.equal(harness.replies[0].text, "Tracking ACTIVE.");
+});
+
+test("/track never claims an unconfirmed transition", async () => {
+  const harness = createHarness(() => response({ type: "track_ack", state: "off", applied: false }));
+  await harness.handlers.track({ match: "on" });
+  assert.equal(harness.replies[0].category, "device_error");
+  assert.equal(harness.replies[0].text, "Tracking change was not confirmed.");
+});
 
 test("/v sends manual_toggle and returns a terse silent start reply", async () => {
   const requests = [];

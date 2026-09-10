@@ -110,6 +110,13 @@ export function parseClockArgument(match) {
   return { kind: "invalid" };
 }
 
+export function parseTrackArgument(match) {
+  const input = String(match ?? "").trim().toLowerCase();
+  if (!input) return { kind: "toggle" };
+  if (["on", "off", "status"].includes(input)) return { kind: input };
+  return { kind: "invalid" };
+}
+
 export function createPrimaryModeHandlers({
   sendDeviceRequest,
   commandReply,
@@ -220,6 +227,24 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, "Clock unavailable.", result.kind, request.requestId, { newoSpeak: false });
   }
 
+  let trackQueue = Promise.resolve();
+  async function applyTrack(ctx) {
+    const parsed = parseTrackArgument(ctx.match);
+    if (parsed.kind === "invalid") return commandReply(ctx, "Usage: /track [on|off|status]", "usage", null, { newoSpeak: false });
+    const request = sendDeviceRequest("track_control", "track_ack", { action: parsed.kind }, commandTrace(ctx));
+    if (request.kind !== "sent") return commandReply(ctx, "Tracking offline.", "offline", null, { newoSpeak: false });
+    const result = await request.promise;
+    if (result.kind === "response" && result.message.applied === true) {
+      return commandReply(ctx, `Tracking ${result.message.state === "active" ? "ACTIVE" : "OFF"}.`, "response", request.requestId, { newoSpeak: false });
+    }
+    return commandReply(ctx, "Tracking change was not confirmed.", result.kind === "response" ? "device_error" : result.kind, request.requestId, { newoSpeak: false });
+  }
+  function track(ctx) {
+    const operation = trackQueue.then(() => applyTrack(ctx));
+    trackQueue = operation.catch(() => {});
+    return operation;
+  }
+
   async function volume(ctx) {
     const parsed = parseVolumeArgument(ctx.match);
     if (parsed.kind === "invalid") return commandReply(ctx, message("volume", ["Usage: /volume [0-100]"]), "usage", null, { newoSpeak: false });
@@ -235,5 +260,5 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, formatMuteStatus(status.device), status.device.applied === false ? "device_error" : "response", status.request.requestId, { newoSpeak: false });
   }
 
-  return { voice, voiceStatus, speaker, eco, clock, volume, mute };
+  return { voice, voiceStatus, speaker, eco, clock, track, volume, mute };
 }

@@ -111,4 +111,16 @@ constexpr uint8_t CLOUD_WS_MISSED_PONG_LIMIT = 2;
 constexpr bool VOICE_DEFAULT_ENABLED = false;
 constexpr uint32_t VOICE_ACTIVE_SESSION_TIMEOUT_MS = 30'000;
 
+// Development-only RF measurement settings. The fallback remains usable when
+// no TTL=1 NCOL collector announcement is present. Peer MAC is supplied by a
+// local build define and is never persisted by this firmware.
+constexpr char TRACK_COLLECTOR_FALLBACK[] = "192.168.1.116";
+constexpr uint16_t TRACK_COLLECTOR_PORT = 5005;
+constexpr uint16_t TRACK_RATE_HZ = 20;
+constexpr uint8_t TRACK_RING_DEPTH = 16;
+#ifndef NEWO_TRACK_PEER_MAC
+#define NEWO_TRACK_PEER_MAC ""
+#endif
+constexpr char TRACK_PEER_MAC[] = NEWO_TRACK_PEER_MAC;
+
 }  // namespace NewoConfig
