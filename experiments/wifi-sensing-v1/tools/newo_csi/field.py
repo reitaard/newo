@@ -50,15 +50,15 @@ def render_field(state: LiveState, recorder: SessionRecorder | None,
                              f"{item.signal_quality[0]:1} {score:>4}/{item.motion_state[:10]}")
         lines.append(f"PKT:{state.records} REJ:{state.rejected}")
     else:
-        lines.append("PATH            Hz  RSSI QUAL SCORE/STATE       LOSS")
+        lines.append("PATH            Hz  RSSI QUAL SCORE/STATE")
         for path in (1, 2, 3):
             item = snapshots.get(path)
             if item is None:
-                lines.append(f"{PATH_NAMES[path]:15} --    --  --   LOW_CONFIDENCE    --")
+                lines.append(f"{PATH_NAMES[path]:15} --    --  --   LOW_CONFIDENCE")
             else:
                 score = "--" if item.motion_score is None else f"{item.motion_score:.1f}"
                 lines.append(f"{item.path_name:15} {item.sample_rate_hz:4.1f} {str(item.rssi_dbm):>4} "
-                             f"{item.signal_quality:4} {score:>4}/{item.motion_state:14} {item.sequence_gaps}")
+                             f"{item.signal_quality:4} {score:>4}/{item.motion_state:14}")
         lines.append(f"packets={state.records} rejected={state.rejected}")
     for (node_id, _receiver), loss in state.pipeline.receiver_losses().items():
         label = "Newo" if node_id == 1 else ("Newo2" if node_id == 2 else f"N{node_id}")

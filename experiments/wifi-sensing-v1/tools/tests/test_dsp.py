@@ -22,16 +22,18 @@ from newo_csi.protocol import CsiRecord, crc32c, decode
 
 def frame(*, path=1, node=1, sequence=0, timestamp=0, channel=6,
           receiver=b"\x10\x11\x12\x13\x14\x15",
-          source=b"\x20\x21\x22\x23\x24\x25", values=(10, 20, 30, 40)) -> CsiRecord:
+          source=b"\x20\x21\x22\x23\x24\x25", values=(10, 20, 30, 40),
+          pairs=None) -> CsiRecord:
     iq = bytearray()
-    for value in values:
-        iq += struct.pack("bb", value // 2, value)
+    pairs = pairs or tuple((value // 2, value) for value in values)
+    for imag, real in pairs:
+        iq += struct.pack("bb", imag, real)
     length = 88 + len(iq)
     output = bytearray(length)
     struct.pack_into("<4sBBHII", output, 0, b"NCSI", 1, 1, 88, length, 0)
     struct.pack_into("<I6s6sIQBBBBbbBBHHHHHBB", output, 16, node, receiver, source,
                      sequence, timestamp, channel, 0, 0, 1, -55, -91, 0, 3,
-                     len(iq), len(iq), len(values), 4, path, 0, 1)
+                     len(iq), len(iq), len(pairs), 4, path, 0, 1)
     struct.pack_into("<IBBHBBHHH6sH", output, 64, 0, 0, 4, 0, 1, 0, 100, 0, 0,
                      receiver, 0)
     output[88:] = iq
@@ -134,8 +136,10 @@ class DspTests(unittest.TestCase):
         feed(pipeline, lambda i: 20 + (i % 4), count=12)
         pipeline.freeze_calibration_selection()
         selected = pipeline.snapshots()[1].selected_indices
+        scales = dict(pipeline.dominant(1).amplitude_scales)
         feed(pipeline, lambda i: 100 if i % 2 else 10, count=20)
         self.assertEqual(pipeline.snapshots()[1].selected_indices, selected)
+        self.assertEqual(pipeline.dominant(1).amplitude_scales, scales)
         document = pipeline.calibration_document("P", "R")
 
         same = CsiPipeline(top_k=2, window_seconds=4)
@@ -158,6 +162,37 @@ class DspTests(unittest.TestCase):
         legacy.load_calibration({"schema_version": 2, "placement": "P", "paths": {}}, "P")
         self.assertIn("legacy calibration incompatible", legacy.calibration_report()["reason"])
 
+    def test_phase_changes_are_diagnostic_only(self):
+        pipeline = CsiPipeline(top_k=2, window_seconds=2)
+        phase_pairs = ((0, 10), (6, 8), (8, 6), (10, 0))
+        for index in range(12):
+            pair = phase_pairs[index % len(phase_pairs)]
+            pipeline.add(frame(sequence=index, pairs=(pair, pair)), index * 100_000_000)
+        self.assertAlmostEqual(pipeline.snapshots()[1].window_power or 0.0, 0.0)
+        processor = pipeline.dominant(1)
+        self.assertGreater(processor.phase_stats[0].variance, 0.0)
+
+    def test_late_geometry_is_excluded_from_calibration(self):
+        pipeline = CsiPipeline(top_k=2, window_seconds=4)
+        pipeline.begin_calibration()
+        feed(pipeline, lambda i: 20 + i % 3, count=12, channel=6)
+        pipeline.freeze_calibration_selection()
+        feed(pipeline, lambda i: 20 + i % 2, count=12, channel=6)
+        feed(pipeline, lambda i: 30 + i % 2, count=12, channel=11)
+        document = pipeline.calibration_document("P", "R")
+        self.assertEqual(len(document["paths"]), 1)
+        self.assertIn("ch6/0", next(iter(document["paths"])))
+        self.assertNotIn("ch11/0", " ".join(document["paths"]))
+
+        scoring = CsiPipeline(top_k=2, window_seconds=4)
+        scoring.load_calibration(document, "P", "R")
+        feed(scoring, lambda _: 20, count=8, channel=6)
+        feed(scoring, lambda _: 30, count=8, channel=11)
+        report = scoring.calibration_report()
+        self.assertEqual(report["status"], "REJECTED")
+        self.assertEqual(report["reason"], "geometry mismatch")
+        self.assertTrue(any("ch11/0" in value for value in report["mismatched_geometries"]))
+
     def test_conservative_structural_fusion_matrix(self):
         pipeline = CsiPipeline()
 
@@ -179,11 +214,20 @@ class DspTests(unittest.TestCase):
                     self.assertEqual(pipeline.fused()[0], expected)
 
     def test_receiver_loss_ui_does_not_double_interleaved_paths(self):
-        state = LiveState(4, 2, "P", 1)
-        state.pipeline.add(frame(path=1, sequence=0), 100_000_000)
-        state.pipeline.add(frame(path=3, sequence=2), 200_000_000)
-        text = render_field(state, None, None, width=80)
-        self.assertEqual(text.count("RX Newo: gaps=1"), 1)
+        for width in (40, 60, 80):
+            with self.subTest(width=width):
+                state = LiveState(4, 2, "P", 1)
+                state.pipeline.add(frame(path=1, sequence=0), 100_000_000)
+                state.pipeline.add(frame(path=3, sequence=2), 200_000_000)
+                state.pipeline.add(frame(path=2, node=2, sequence=0,
+                                         receiver=b"\x30\x31\x32\x33\x34\x35"),
+                                   300_000_000)
+                text = render_field(state, None, None, width=width)
+                self.assertEqual(text.count("RX Newo: gaps=1 dup=0"), 1)
+                self.assertEqual(text.count("RX Newo2: gaps=0 dup=0"), 1)
+                path_lines = [line for line in text.splitlines()
+                              if "ROUTER_" in line or "NEWO2_NEWO" in line]
+                self.assertFalse(any("gaps=" in line or "LOSS" in line for line in path_lines))
 
     def test_terminal_input_non_tty_is_safe(self):
         terminal = TerminalInput()

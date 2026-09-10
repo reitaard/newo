@@ -264,6 +264,7 @@ class CsiPipeline:
         self.calibration_rejection: str | None = "calibration not loaded"
         self.calibration_stats: dict[str, Welford] | None = None
         self.calibration_stage: str | None = None
+        self.calibration_frozen_geometries: set[str] = set()
         self._last_sequence: dict[tuple[int, str], int] = {}
         self._sequence_gaps: Counter[tuple[int, str]] = Counter()
         self._duplicates: Counter[tuple[int, str]] = Counter()
@@ -299,7 +300,8 @@ class CsiPipeline:
                     self.calibration_rejection = "calibration path feature data invalid"
         self.geometry_counts[geometry] += 1
         processor.add(record, host_ns)
-        if self.calibration_stage == "baseline" and self.calibration_stats is not None:
+        if (self.calibration_stage == "baseline" and self.calibration_stats is not None
+                and geometry.identity in self.calibration_frozen_geometries):
             power = processor.power()
             if power is not None:
                 self.calibration_stats.setdefault(geometry.identity, Welford()).add(power)
@@ -337,6 +339,8 @@ class CsiPipeline:
         paths: dict[str, Any] = {}
         source = self.calibration_stats or {}
         for geometry, processor in self.processors.items():
+            if geometry.identity not in self.calibration_frozen_geometries:
+                continue
             stats = source.get(geometry.identity, Welford())
             if stats.count >= 3:
                 paths[geometry.identity] = {
@@ -360,6 +364,7 @@ class CsiPipeline:
     def begin_calibration(self) -> None:
         self.calibration_stats = {}
         self.calibration_stage = "selection"
+        self.calibration_frozen_geometries = set()
 
     def freeze_calibration_selection(self) -> None:
         if self.calibration_stage != "selection":
@@ -367,6 +372,7 @@ class CsiPipeline:
         for processor in self.processors.values():
             if processor.selected():
                 processor.freeze_selection()
+                self.calibration_frozen_geometries.add(processor.geometry.identity)
         self.calibration_stats = {}
         self.calibration_stage = "baseline"
 
@@ -446,7 +452,7 @@ class CsiPipeline:
         if self.calibration_rejection:
             return {**base, "status": "REJECTED", "reason": self.calibration_rejection,
                     "matched_paths": [], "mismatched_geometries": []}
-        current = [p for p in (self.dominant(i) for i in (1, 2, 3)) if p]
+        current = list(self.processors.values())
         if not current:
             return {**base, "status": "PENDING", "reason": "awaiting CSI geometry",
                     "matched_paths": [], "mismatched_geometries": []}

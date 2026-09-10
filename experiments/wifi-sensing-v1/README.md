@@ -201,6 +201,11 @@ append-only post-hoc operator annotations, and DSP inference remain separate.
 Trailing partial windows are retained for audit but excluded from aggregate
 percentiles and durations.
 
+The post-validation `/track` control and real-Newo integration contract is in
+[`TRACK_INTEGRATION_PLAN.md`](./TRACK_INTEGRATION_PLAN.md). It keeps measurement
+state separate from host recording and does not merge CSI into production
+firmware during Phase 5.
+
 ## Source lineage
 
 The measurement-plane design adapts a narrow set of implementation ideas reviewed in RuView, including CSI callback configuration, source-MAC filtering, AP channel detection, gateway self-ping, early rate limiting, fixed rings and loss counters, invalid-first-word sanitation, sequence/metadata capture, phase processing concepts, running statistics, and subcarrier selection. RuView is MIT licensed; see [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md). The Newo wire format is independent and is not RuView's wire format.
