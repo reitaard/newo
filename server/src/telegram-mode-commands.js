@@ -125,6 +125,8 @@ export function createPrimaryModeHandlers({
   getSpeakerEnabled,
   setSpeakerAccepting,
   persistSpeakerEnabled,
+  getTrackDesired = () => false,
+  persistTrackDesired = async () => false,
   speakerInfo,
   getAssistantInfo = () => ({}),
 }) {
@@ -231,16 +233,25 @@ export function createPrimaryModeHandlers({
   async function applyTrack(ctx) {
     const parsed = parseTrackArgument(ctx.match);
     if (parsed.kind === "invalid") return commandReply(ctx, "Usage: /track [on|off|status]", "usage", null, { newoSpeak: false });
-    const request = sendDeviceRequest("track_control", "track_ack", { action: parsed.kind }, commandTrace(ctx));
-    if (request.kind !== "sent") return commandReply(ctx, "Tracking offline.", "offline", null, { newoSpeak: false });
+    let action = parsed.kind;
+    if (action !== "status") {
+      const desired = action === "toggle" ? !getTrackDesired() : action === "on";
+      try { await persistTrackDesired(desired); }
+      catch { return commandReply(ctx, "Tracking desired state could not be saved.", "persistence_error", null, { newoSpeak: false }); }
+      action = desired ? "on" : "off";
+    }
+    const desiredLabel = getTrackDesired() ? "ON" : "OFF";
+    const request = sendDeviceRequest("track_control", "track_ack", { action }, commandTrace(ctx));
+    if (request.kind !== "sent") return commandReply(ctx, `Tracking desired ${desiredLabel}; actual device offline.`, "offline", null, { newoSpeak: false });
     const result = await request.promise;
     if (result.kind === "response" && result.message.applied === true) {
       const peerWarning = result.message.state === "off" && ["uncertain", "unavailable"].includes(result.message.peer_state)
         ? " Newo2 stop unconfirmed."
         : "";
-      return commandReply(ctx, `Tracking ${result.message.state === "active" ? "ACTIVE" : "OFF"}.${peerWarning}`, "response", request.requestId, { newoSpeak: false });
+      const actual = result.message.state === "active" ? "ACTIVE" : "OFF";
+      return commandReply(ctx, `Tracking desired ${desiredLabel}; actual ${actual}; peer ${result.message.peer_state ?? "unknown"}.${peerWarning}`, "response", request.requestId, { newoSpeak: false });
     }
-    return commandReply(ctx, "Tracking change was not confirmed.", result.kind === "response" ? "device_error" : result.kind, request.requestId, { newoSpeak: false });
+    return commandReply(ctx, `Tracking desired ${desiredLabel}; actual change not confirmed.`, result.kind === "response" ? "device_error" : result.kind, request.requestId, { newoSpeak: false });
   }
   function track(ctx) {
     const operation = trackQueue.then(() => applyTrack(ctx));

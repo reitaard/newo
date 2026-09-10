@@ -10,6 +10,7 @@ function response(message) {
 function createHarness(sendDeviceRequest, overrides = {}) {
   const replies = [];
   let speakerEnabled = overrides.speakerEnabled ?? true;
+  let trackDesired = overrides.trackDesired ?? false;
   const handlers = createPrimaryModeHandlers({
     sendDeviceRequest,
     commandReply: async (ctx, text, category, requestId, options) => {
@@ -21,6 +22,8 @@ function createHarness(sendDeviceRequest, overrides = {}) {
     getSpeakerEnabled: () => speakerEnabled,
     setSpeakerAccepting: (enabled) => { speakerEnabled = enabled; },
     persistSpeakerEnabled: async (enabled) => { speakerEnabled = enabled; return enabled; },
+    getTrackDesired: () => trackDesired,
+    persistTrackDesired: async (enabled) => { trackDesired = enabled; return enabled; },
     speakerInfo: { ttsEnabled: true, backend: "kokoro", format: "24 kHz PCM16", bufferBytes: 24_576 },
     getAssistantInfo: overrides.getAssistantInfo ?? (() => ({ status: "ready", model: "helix-qwen3-0.6b", qwen: "online", speakerEnabled, latest: { result: "n/a", llmMs: null, asrFinalMs: null, ttsQueuedMs: null, totalMs: null } })),
   });
@@ -49,21 +52,43 @@ test("/track replies only after correlated device acknowledgement", async () => 
   });
   await harness.handlers.track({ match: "on" });
   assert.deepEqual(requests[0], { type: "track_control", responseType: "track_ack", fields: { action: "on" } });
-  assert.equal(harness.replies[0].text, "Tracking ACTIVE.");
+  assert.equal(harness.replies[0].text, "Tracking desired ON; actual ACTIVE; peer unknown.");
 });
 
 test("/track never claims an unconfirmed transition", async () => {
   const harness = createHarness(() => response({ type: "track_ack", state: "off", applied: false }));
   await harness.handlers.track({ match: "on" });
   assert.equal(harness.replies[0].category, "device_error");
-  assert.equal(harness.replies[0].text, "Tracking change was not confirmed.");
+  assert.equal(harness.replies[0].text, "Tracking desired ON; actual change not confirmed.");
 });
 
 test("/track reports uncertain Newo2 stop without denying local TRACK_OFF", async () => {
   const harness = createHarness(() => response({ type: "track_ack", state: "off", applied: true, peer_state: "uncertain" }));
   await harness.handlers.track({ match: "off" });
   assert.equal(harness.replies[0].category, "response");
-  assert.equal(harness.replies[0].text, "Tracking OFF. Newo2 stop unconfirmed.");
+  assert.equal(harness.replies[0].text, "Tracking desired OFF; actual OFF; peer uncertain. Newo2 stop unconfirmed.");
+});
+
+test("/track desired state persists before an offline transition", async () => {
+  let desired = false;
+  const harness = createHarness(() => ({ kind: "offline" }), {
+    trackDesired: false,
+  });
+  harness.handlers = createPrimaryModeHandlers({
+    sendDeviceRequest: () => ({ kind: "offline" }),
+    commandReply: async (_ctx, text, category) => { harness.replies.push({ text, category }); },
+    commandTrace: () => null,
+    getDeviceSnapshot: () => ({ connected: false, status: {} }),
+    getSpeakerEnabled: () => true,
+    setSpeakerAccepting: () => {},
+    persistSpeakerEnabled: async () => true,
+    getTrackDesired: () => desired,
+    persistTrackDesired: async (enabled) => { desired = enabled; },
+    speakerInfo: {},
+  });
+  await harness.handlers.track({ match: "on" });
+  assert.equal(desired, true);
+  assert.equal(harness.replies[0].text, "Tracking desired ON; actual device offline.");
 });
 
 test("/v sends manual_toggle and returns a terse silent start reply", async () => {

@@ -17,6 +17,11 @@ requests. Newo boots `TRACK_OFF`, rejects stale same-session sequences, replays
 an exact duplicate result, and coordinates Newo2 over a CRC-protected ESP-NOW
 session/sequence control ACK. ON requires the peer ACK. OFF always releases
 local resources and reports the peer as stopped or uncertain separately.
+The VPS persists the desired tracking state. After a new authenticated device
+connection sends `hello`, it reconciles desired ON/OFF using a fresh cloud
+command epoch and sequence. Thus a safe local `TRACK_OFF` boot can recover an
+overnight desired-ON session without storing ON in ESP NVS. A failed recovery
+is logged and remains distinguishable from actual device/peer state.
 
 The combined receiver uses the validated NCSI serializer and path semantics:
 the associated AP BSSID is `ROUTER_NEWO` (path 1), the configured Newo2 station

@@ -131,6 +131,7 @@ let pendingReboot = null;
 let shuttingDown = false;
 const runtimeState = createRuntimeStateStore({ filePath: env.RUNTIME_STATE_FILE, logger: app.log });
 let automaticSpeakerEnabled = runtimeState.speakerEnabled;
+let desiredTrackEnabled = runtimeState.trackDesired;
 
 const ttsBackend = createTtsBackend(env, app.log);
 
@@ -717,6 +718,11 @@ const primaryModeHandlers = createPrimaryModeHandlers({
     speakerRuntime.setPersistentEnabled(enabled);
   },
   persistSpeakerEnabled: (enabled) => runtimeState.setSpeakerEnabled(enabled),
+  getTrackDesired: () => desiredTrackEnabled,
+  persistTrackDesired: async (enabled) => {
+    desiredTrackEnabled = await runtimeState.setTrackDesired(enabled);
+    return desiredTrackEnabled;
+  },
   speakerInfo: {
     ttsEnabled: env.TTS_ENABLED,
     backend: env.TTS_BACKEND,
@@ -827,7 +833,14 @@ wss.on("connection", (ws, request, deviceId) => {
     if (!parsed.success) { app.log.warn({ device_id: deviceId, issues: parsed.error.issues }, "Ignoring invalid device message"); return; }
     const message = parsed.data;
     if (message.type === "hello" && message.device !== deviceId) { app.log.warn({ authenticated_device: deviceId, claimed_device: message.device }, "Device hello identity mismatch"); ws.close(4003, "device identity mismatch"); return; }
-    if (message.type === "hello") state.hello = { device: message.device, firmware: message.firmware ?? null, autonomy_revision: message.autonomy_revision ?? null, chip: message.chip ?? null, received_at: state.lastSeen };
+    if (message.type === "hello") {
+      state.hello = { device: message.device, firmware: message.firmware ?? null, autonomy_revision: message.autonomy_revision ?? null, chip: message.chip ?? null, received_at: state.lastSeen };
+      const reconcile = sendDeviceRequest("track_control", "track_ack", { action: desiredTrackEnabled ? "on" : "off" });
+      if (reconcile.kind === "sent") void reconcile.promise.then((result) => {
+        const actual = result.kind === "response" ? result.message.state : "unknown";
+        app.log.info({ device_id: deviceId, desired_track: desiredTrackEnabled, actual_track: actual, result: result.kind }, "Track desired state reconciled");
+      });
+    }
     if (message.type === "status" || message.type === "pong") state.status = { ...(state.status ?? {}), ...message, received_at: state.lastSeen };
     resolvePendingResponse(deviceId, ws, message);
     if (message.type === "speaker_started") speakerRuntime.handlePlaybackStarted(deviceId, message);

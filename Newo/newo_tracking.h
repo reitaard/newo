@@ -21,11 +21,13 @@ class NewoTracking {
 
  private:
   bool start();
-  bool stop();
+  bool stop(bool coordinatePeer = true);
+  static void peerMonitorEntry(void* context);
+  void peerMonitorLoop();
   State state_ = State::OFF;
   char commandEpoch_[40] = {};
   uint32_t commandSequence_ = 0;
   bool lastApplied_ = false;
   const char* lastError_ = nullptr;
-  const char* peerStatus_ = "stopped";
+  const char* volatile peerStatus_ = "stopped";
 };
