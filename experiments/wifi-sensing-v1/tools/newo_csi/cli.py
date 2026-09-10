@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 import re
 import socket
+import sys
 import time
 import uuid
 
@@ -16,7 +17,7 @@ from .protocol import CsiRecord, PATH_NAMES, ProtocolError, decode, mac_text
 from .statistics import CaptureStats
 
 SCENARIOS = (
-    "EMPTY", "ENTER", "EXIT", "WALK_DOOR_CENTER", "WALK_CENTER_DOOR",
+    "EMPTY", "DIAGNOSTIC", "BACKGROUND", "ENTER", "EXIT", "WALK_DOOR_CENTER", "WALK_CENTER_DOOR",
     "WALK_LEFT_RIGHT", "WALK_RIGHT_LEFT", "STAND", "SIT", "LIE", "WAVE",
     "TURN", "FAST_WALK", "SLOW_WALK",
 )
@@ -71,8 +72,29 @@ def mapping_metadata(mapping: dict[int, tuple[bytes, bytes]] | None) -> dict[str
             for path, pair in mapping.items()}
 
 
+def collection_metadata(args: argparse.Namespace, session_id: str,
+                        mapping: dict[int, tuple[bytes, bytes]] | None,
+                        started_at: str, started_monotonic_ns: int,
+                        receive_buffer_bytes: int) -> dict[str, object]:
+    """Build canonical capture metadata without deriving operator labels."""
+    return {
+        "schema_version": 1, "session_id": session_id, "room_id": args.room_id,
+        "scenario_label": args.scenario, "person_label": args.person,
+        "zone_label": args.zone, "activity_label": args.activity,
+        "placement_label": args.placement,
+        "camera_frame_id": args.camera_frame_id, "notes": args.notes,
+        "path_mapping": mapping_metadata(mapping),
+        "capture_started_at": started_at,
+        "capture_started_monotonic_ns": started_monotonic_ns,
+        "udp_receive_buffer_bytes": receive_buffer_bytes,
+    }
+
+
 def collect(args: argparse.Namespace) -> int:
     mapping = path_mapping(args)
+    if args.placement is None:
+        print("WARNING: placement omitted; calibrated evaluation may not be possible",
+              file=sys.stderr)
     session_id = session_identifier(args.session_id, args.scenario)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, args.receive_buffer)
@@ -86,16 +108,9 @@ def collect(args: argparse.Namespace) -> int:
         raise
     started_at = utc_now()
     started_monotonic_ns = time.monotonic_ns()
-    metadata = {
-        "schema_version": 1, "session_id": session_id, "room_id": args.room_id,
-        "scenario_label": args.scenario, "person_label": args.person,
-        "zone_label": args.zone, "activity_label": args.activity,
-        "camera_frame_id": args.camera_frame_id, "notes": args.notes,
-        "path_mapping": mapping_metadata(mapping),
-        "capture_started_at": started_at,
-        "capture_started_monotonic_ns": started_monotonic_ns,
-        "udp_receive_buffer_bytes": sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF),
-    }
+    metadata = collection_metadata(
+        args, session_id, mapping, started_at, started_monotonic_ns,
+        sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF))
     write_json(session_dir / "session.json", metadata)
     events = (session_dir / "events.jsonl").open("x", encoding="utf-8")
     events.write(json.dumps({"event": "capture_started", "at": started_at,
@@ -236,6 +251,92 @@ def export(args: argparse.Namespace) -> int:
     return 0
 
 
+def live(args: argparse.Namespace) -> int:
+    from .live import run_live
+    return run_live(args)
+
+
+def field(args: argparse.Namespace) -> int:
+    from .field import run_field
+    return run_field(args)
+
+
+def _evaluation_calibration(path: str | None) -> dict[str, object] | None:
+    if not path:
+        return None
+    calibration_path = Path(path)
+    if not calibration_path.is_file():
+        raise SystemExit(f"calibration not found: {calibration_path}")
+    return json.loads(calibration_path.read_text(encoding="utf-8"))
+
+
+def evaluate_command(args: argparse.Namespace) -> int:
+    from .evaluate import evaluate_archive, human_report
+    calibration = _evaluation_calibration(args.calibration_file)
+    results = [evaluate_archive(value, args.window_seconds, calibration, Path(args.annotations_dir))
+               for value in args.datasets]
+    if args.json:
+        print(json.dumps({"schema_version": 1, "datasets": results}, indent=2, sort_keys=True))
+    else:
+        print("\n\n".join(human_report(result) for result in results))
+    return 0
+
+
+def compare_command(args: argparse.Namespace) -> int:
+    from .evaluate import evaluate_archive, human_comparison
+    calibration = _evaluation_calibration(args.calibration_file)
+    results = [evaluate_archive(value, args.window_seconds, calibration, Path(args.annotations_dir))
+               for value in args.datasets]
+    comparison = {"schema_version": 1, "window_seconds": args.window_seconds,
+                  "datasets": results,
+                  "comparison_boundary": "descriptive side-by-side evidence; labels are not inferred truth"}
+    if args.json:
+        print(json.dumps(comparison, indent=2, sort_keys=True))
+    else:
+        print(human_comparison(results))
+    return 0
+
+
+def annotate_command(args: argparse.Namespace) -> int:
+    from .annotations import append_annotation
+    try:
+        record = append_annotation(Path(args.session), args.label, args.note,
+                                   args.start, args.end, Path(args.annotations_dir))
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    print(json.dumps(record, indent=2, sort_keys=True))
+    return 0
+
+
+def catalog_command(args: argparse.Namespace) -> int:
+    from .catalog import build_catalog, human_catalog
+    calibration = _evaluation_calibration(args.calibration_file)
+    try:
+        document = build_catalog(Path(args.root), calibration, Path(args.annotations_dir))
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    print(json.dumps(document, indent=2, sort_keys=True) if args.json else human_catalog(document))
+    return 0
+
+
+def add_monitor_arguments(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--bind", default="0.0.0.0")
+    command.add_argument("--port", type=int, default=5005)
+    command.add_argument("--receive-buffer", type=int, default=4 * 1024 * 1024)
+    command.add_argument("--dataset-dir", default=str(DEFAULT_DATASET_DIR))
+    command.add_argument("--room-id", default="UNSPECIFIED")
+    command.add_argument("--scenario", choices=SCENARIOS, default="DIAGNOSTIC")
+    command.add_argument("--placement", default="UNSPECIFIED")
+    command.add_argument("--top-k", type=int, default=24)
+    command.add_argument("--window-seconds", type=float, default=2.0)
+    command.add_argument("--settle-seconds", type=float, default=10.0)
+    command.add_argument("--calibrate", type=float, metavar="SECONDS")
+    command.add_argument("--calibration-file", default=str(DEFAULT_DATASET_DIR.parent / "calibrations" / "baseline.json"))
+    command.add_argument("--replay", help="session/archive input instead of UDP")
+    command.add_argument("--speed", type=float, default=1.0,
+                         help="archive replay speed; 0 disables delays")
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="python -m newo_csi")
     commands = root.add_subparsers(dest="command", required=True)
@@ -250,6 +351,8 @@ def parser() -> argparse.ArgumentParser:
     capture.add_argument("--person")
     capture.add_argument("--zone")
     capture.add_argument("--activity")
+    capture.add_argument("--placement",
+                         help="canonical physical placement identity; never inferred")
     capture.add_argument("--camera-frame-id")
     capture.add_argument("--notes")
     capture.add_argument("--router-bssid")
@@ -278,6 +381,46 @@ def parser() -> argparse.ArgumentParser:
     derive.add_argument("--subcarriers", required=True,
                         help="comma-separated zero-based indices, or 'all'")
     derive.set_defaults(handler=export)
+
+    console = commands.add_parser("live", help="live/replay CSI DSP research console")
+    add_monitor_arguments(console)
+    console.set_defaults(handler=live)
+
+    phone = commands.add_parser("field", help="compact Termux-first field monitor")
+    add_monitor_arguments(phone)
+    phone.set_defaults(handler=field)
+
+    evaluate = commands.add_parser("evaluate", help="offline shared-DSP dataset evaluation")
+    evaluate.add_argument("datasets", nargs="+")
+    evaluate.add_argument("--window-seconds", type=float, default=1.0)
+    evaluate.add_argument("--calibration-file")
+    evaluate.add_argument("--annotations-dir", default=str(DEFAULT_DATASET_DIR.parent / "operator-annotations"))
+    evaluate.add_argument("--json", action="store_true")
+    evaluate.set_defaults(handler=evaluate_command)
+
+    compare = commands.add_parser("compare", help="side-by-side offline dataset evaluation")
+    compare.add_argument("datasets", nargs="+")
+    compare.add_argument("--window-seconds", type=float, default=1.0)
+    compare.add_argument("--calibration-file")
+    compare.add_argument("--annotations-dir", default=str(DEFAULT_DATASET_DIR.parent / "operator-annotations"))
+    compare.add_argument("--json", action="store_true")
+    compare.set_defaults(handler=compare_command)
+
+    annotate = commands.add_parser("annotate", help="append non-destructive operator ground truth")
+    annotate.add_argument("session")
+    annotate.add_argument("--label", required=True)
+    annotate.add_argument("--note")
+    annotate.add_argument("--start", type=float)
+    annotate.add_argument("--end", type=float)
+    annotate.add_argument("--annotations-dir", default=str(DEFAULT_DATASET_DIR.parent / "operator-annotations"))
+    annotate.set_defaults(handler=annotate_command)
+
+    catalog = commands.add_parser("catalog", help="read-only dataset inventory")
+    catalog.add_argument("root", nargs="?", default=str(DEFAULT_DATASET_DIR))
+    catalog.add_argument("--calibration-file")
+    catalog.add_argument("--annotations-dir", default=str(DEFAULT_DATASET_DIR.parent / "operator-annotations"))
+    catalog.add_argument("--json", action="store_true")
+    catalog.set_defaults(handler=catalog_command)
     return root
 
 
@@ -289,4 +432,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--receive-buffer must be positive")
     if getattr(args, "speed", 0) < 0:
         raise SystemExit("--speed must be non-negative")
+    if getattr(args, "top_k", 1) <= 0 or getattr(args, "window_seconds", 1) <= 0:
+        raise SystemExit("--top-k and --window-seconds must be positive")
+    if getattr(args, "settle_seconds", 0) < 0:
+        raise SystemExit("--settle-seconds must be non-negative")
+    if getattr(args, "calibrate", None) is not None and args.calibrate <= 0:
+        raise SystemExit("--calibrate must be positive")
     return args.handler(args)

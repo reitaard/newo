@@ -1,0 +1,362 @@
+"""Conservative, streaming and geometry-partitioned CSI feature extraction."""
+
+from __future__ import annotations
+
+from collections import Counter, deque
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import math
+from statistics import median
+from typing import Any
+
+from .protocol import CsiRecord, PATH_NAMES, mac_text
+
+
+@dataclass
+class Welford:
+    count: int = 0
+    mean: float = 0.0
+    m2: float = 0.0
+
+    def add(self, value: float) -> None:
+        self.count += 1
+        delta = value - self.mean
+        self.mean += delta / self.count
+        self.m2 += delta * (value - self.mean)
+
+    @property
+    def variance(self) -> float:
+        return self.m2 / (self.count - 1) if self.count > 1 else 0.0
+
+    @property
+    def stddev(self) -> float:
+        return math.sqrt(max(0.0, self.variance))
+
+
+@dataclass(frozen=True)
+class Geometry:
+    path_id: int
+    node_id: int
+    receiver_mac: str
+    source_mac: str
+    channel: int
+    secondary_channel: int
+    bandwidth: int
+    phy_mode: int
+    ltf_mask: int
+    payload_length: int
+    subcarriers: int
+
+    @classmethod
+    def from_record(cls, record: CsiRecord) -> "Geometry":
+        return cls(record.path_id, record.node_id, mac_text(record.receiver_mac),
+                   mac_text(record.source_mac), record.channel,
+                   record.secondary_channel, record.bandwidth, record.phy_mode,
+                   record.ltf_mask, record.csi_payload_length,
+                   record.subcarrier_item_count)
+
+    @property
+    def identity(self) -> str:
+        return (f"p{self.path_id}:n{self.node_id}:{self.receiver_mac}>{self.source_mac}:"
+                f"ch{self.channel}/{self.secondary_channel}:bw{self.bandwidth}:"
+                f"phy{self.phy_mode}:ltf{self.ltf_mask}:len{self.payload_length}")
+
+
+@dataclass
+class PathSnapshot:
+    path_id: int
+    path_name: str
+    geometry: str
+    samples: int
+    sample_rate_hz: float
+    rssi_dbm: int | None
+    signal_quality: str
+    selected_subcarriers: int
+    last_sequence: int | None
+    sequence_gaps: int
+    duplicates: int
+    motion_score: float | None
+    motion_state: str
+    window_power: float | None
+    calibrated: bool
+
+
+class GeometryProcessor:
+    def __init__(self, geometry: Geometry, top_k: int, window_seconds: float):
+        self.geometry = geometry
+        self.top_k = top_k
+        self.window_ns = int(window_seconds * 1e9)
+        n = geometry.subcarriers
+        self.amplitude_stats = [Welford() for _ in range(n)]
+        self.phase_stats = [Welford() for _ in range(n)]
+        self.previous_phase: list[float] | None = None
+        self.unwrapped_phase: list[float] | None = None
+        self.previous_amplitude: list[float] | None = None
+        self.previous_ns: int | None = None
+        self.features: deque[tuple[int, float]] = deque()
+        self.times: deque[int] = deque()
+        self.rssi: deque[tuple[int, int]] = deque()
+        self.noise: deque[tuple[int, int]] = deque()
+        self.samples = 0
+        self.last_sequence: int | None = None
+        self.sequence_gaps = 0
+        self.duplicates = 0
+        self.baseline: dict[str, float] | None = None
+
+    @staticmethod
+    def iq(record: CsiRecord) -> tuple[list[float], list[float]]:
+        amplitudes, phases = [], []
+        for offset in range(0, len(record.iq_bytes), 2):
+            imag = int.from_bytes(record.iq_bytes[offset:offset + 1], "little", signed=True)
+            real = int.from_bytes(record.iq_bytes[offset + 1:offset + 2], "little", signed=True)
+            amplitudes.append(math.hypot(real, imag))
+            phases.append(math.atan2(imag, real))
+        return amplitudes, phases
+
+    def selected(self) -> tuple[int, ...]:
+        usable = [i for i, stats in enumerate(self.amplitude_stats)
+                  if stats.count >= 2 and stats.mean > 1e-9]
+        usable.sort(key=lambda i: self.amplitude_stats[i].variance, reverse=True)
+        return tuple(usable[:self.top_k])
+
+    def add(self, record: CsiRecord, host_ns: int) -> None:
+        amplitudes, phases = self.iq(record)
+        if self.previous_phase is None:
+            unwrapped = phases[:]
+        else:
+            unwrapped = []
+            assert self.unwrapped_phase is not None
+            for current, previous, old_unwrapped in zip(phases, self.previous_phase,
+                                                         self.unwrapped_phase):
+                delta = (current - previous + math.pi) % (2 * math.pi) - math.pi
+                unwrapped.append(old_unwrapped + delta)
+
+        for index, value in enumerate(amplitudes):
+            self.amplitude_stats[index].add(value)
+            self.phase_stats[index].add(unwrapped[index])
+
+        indices = self.selected()
+        delta_seconds = None if self.previous_ns is None else (host_ns - self.previous_ns) / 1e9
+        if (self.previous_amplitude is not None and self.unwrapped_phase is not None and indices
+                and delta_seconds is not None and 0 < delta_seconds <= max(2.0, self.window_ns / 1e9)):
+            components = []
+            for index in indices:
+                scale = max(1.0, self.amplitude_stats[index].mean)
+                amp_delta = ((amplitudes[index] - self.previous_amplitude[index]) /
+                             scale / delta_seconds)
+                phase_delta = (unwrapped[index] - self.unwrapped_phase[index]) / delta_seconds
+                components.append(amp_delta * amp_delta + 0.05 * phase_delta * phase_delta)
+            self.features.append((host_ns, median(components)))
+
+        self.previous_amplitude = amplitudes
+        self.previous_phase = phases
+        self.unwrapped_phase = unwrapped
+        self.previous_ns = host_ns
+        self.samples += 1
+        self.last_sequence = record.sequence
+        self.times.append(host_ns)
+        self.rssi.append((host_ns, record.rssi_dbm))
+        self.noise.append((host_ns, record.noise_floor_dbm))
+        self.expire(host_ns)
+
+    def expire(self, host_ns: int) -> None:
+        cutoff = host_ns - self.window_ns
+        while self.features and self.features[0][0] < cutoff:
+            self.features.popleft()
+        while self.times and self.times[0] < cutoff:
+            self.times.popleft()
+        while self.rssi and self.rssi[0][0] < cutoff:
+            self.rssi.popleft()
+        while self.noise and self.noise[0][0] < cutoff:
+            self.noise.popleft()
+
+    def power(self) -> float | None:
+        return None if not self.features else sum(v for _, v in self.features) / len(self.features)
+
+    def rate(self) -> float:
+        if len(self.times) < 2:
+            return 0.0
+        span = (self.times[-1] - self.times[0]) / 1e9
+        return 0.0 if span <= 0 else (len(self.times) - 1) / span
+
+    def snapshot(self) -> PathSnapshot:
+        power = self.power()
+        score = None
+        state = "LOW_CONFIDENCE"
+        if self.baseline is not None and power is not None and len(self.features) >= 3:
+            scale = max(self.baseline["stddev"], self.baseline["mean"] * 0.10, 1e-9)
+            score = max(0.0, (power - self.baseline["mean"]) / (3.0 * scale))
+            state = "QUIET" if score < 1.0 else ("RF_CHANGE" if score < 3.0 else "MOTION_CANDIDATE")
+        rssi = None if not self.rssi else round(sum(v for _, v in self.rssi) / len(self.rssi))
+        noise = None if not self.noise else sum(v for _, v in self.noise) / len(self.noise)
+        snr = None if rssi is None or noise is None else rssi - noise
+        rate = self.rate()
+        quality = "LOW"
+        if (rssi is not None and rssi >= -75 and snr is not None and snr >= 15
+                and rate >= 5 and len(self.selected()) >= 4):
+            quality = "GOOD"
+        elif rssi is not None and rssi >= -85 and snr is not None and snr >= 8 and rate >= 1:
+            quality = "FAIR"
+        return PathSnapshot(self.geometry.path_id,
+                            PATH_NAMES.get(self.geometry.path_id, f"PATH_{self.geometry.path_id}"),
+                            self.geometry.identity, self.samples, rate, rssi, quality,
+                            len(self.selected()), self.last_sequence, self.sequence_gaps, self.duplicates,
+                            score, state, power, self.baseline is not None)
+
+
+class CsiPipeline:
+    """One processor per exact path/receiver/source/radio geometry."""
+
+    def __init__(self, top_k: int = 24, window_seconds: float = 2.0):
+        if top_k <= 0 or window_seconds <= 0:
+            raise ValueError("top_k and window_seconds must be positive")
+        self.top_k = top_k
+        self.window_seconds = window_seconds
+        self.processors: dict[Geometry, GeometryProcessor] = {}
+        self.geometry_counts: Counter[Geometry] = Counter()
+        self.calibration: dict[str, dict[str, float]] = {}
+        self.calibration_metadata: dict[str, Any] = {}
+        self.calibration_rejection: str | None = "calibration not loaded"
+        self.calibration_stats: dict[str, Welford] | None = None
+        self._last_sequence: dict[tuple[int, str], int] = {}
+        self._sequence_gaps: Counter[tuple[int, str]] = Counter()
+        self._duplicates: Counter[tuple[int, str]] = Counter()
+
+    def add(self, record: CsiRecord, host_ns: int) -> None:
+        geometry = Geometry.from_record(record)
+        stream = (record.node_id, geometry.receiver_mac)
+        previous = self._last_sequence.get(stream)
+        if record.sequence == 0 and record.csi_flags & (1 << 7):
+            previous = None
+        if previous is not None:
+            delta = (record.sequence - previous) & 0xFFFFFFFF
+            if delta == 0:
+                self._duplicates[stream] += 1
+            elif delta < 0x80000000:
+                self._sequence_gaps[stream] += max(0, delta - 1)
+        if previous is None or ((record.sequence - previous) & 0xFFFFFFFF) < 0x80000000:
+            self._last_sequence[stream] = record.sequence
+        processor = self.processors.get(geometry)
+        if processor is None:
+            processor = self.processors[geometry] = GeometryProcessor(
+                geometry, self.top_k, self.window_seconds)
+            processor.baseline = self.calibration.get(geometry.identity)
+        self.geometry_counts[geometry] += 1
+        processor.add(record, host_ns)
+        if self.calibration_stats is not None:
+            power = processor.power()
+            if power is not None:
+                self.calibration_stats.setdefault(geometry.identity, Welford()).add(power)
+
+    def dominant(self, path_id: int) -> GeometryProcessor | None:
+        choices = [p for g, p in self.processors.items() if g.path_id == path_id]
+        return max(choices, key=lambda p: self.geometry_counts[p.geometry], default=None)
+
+    def expire(self, host_ns: int) -> None:
+        """Advance window state without adding or changing any feature sample."""
+        for processor in self.processors.values():
+            processor.expire(host_ns)
+
+    def snapshots(self) -> dict[int, PathSnapshot]:
+        result = {}
+        for path in (1, 2, 3):
+            processor = self.dominant(path)
+            if processor is None:
+                continue
+            snapshot = processor.snapshot()
+            stream = (processor.geometry.node_id, processor.geometry.receiver_mac)
+            snapshot.sequence_gaps = self._sequence_gaps[stream]
+            snapshot.duplicates = self._duplicates[stream]
+            result[path] = snapshot
+        return result
+
+    def calibration_document(self, placement: str | None,
+                             room_id: str | None = None) -> dict[str, Any]:
+        paths: dict[str, Any] = {}
+        source = self.calibration_stats or {}
+        for geometry, processor in self.processors.items():
+            stats = source.get(geometry.identity, Welford())
+            if stats.count >= 3:
+                paths[geometry.identity] = {
+                    "path_id": geometry.path_id, "node_id": geometry.node_id,
+                    "receiver_mac": geometry.receiver_mac, "source_mac": geometry.source_mac,
+                    "geometry": geometry.identity, "samples": stats.count,
+                    "mean": stats.mean, "variance": stats.variance,
+                    "stddev": stats.stddev,
+                }
+        return {"schema_version": 2, "room_id": room_id,
+                "placement": placement, "paths": paths}
+
+    def begin_calibration(self) -> None:
+        self.calibration_stats = {}
+
+    def load_calibration(self, document: dict[str, Any], placement: str | None,
+                         room_id: str | None = None) -> None:
+        self.calibration = {}
+        self.calibration_metadata = {
+            "schema_version": document.get("schema_version"),
+            "created_at": document.get("created_at"),
+            "room_id": document.get("room_id"),
+            "placement": document.get("placement"),
+        }
+        if placement is None:
+            self.calibration_rejection = "placement missing"
+            return
+        if document.get("placement") != placement:
+            self.calibration_rejection = "placement mismatch"
+            return
+        calibration_room = document.get("room_id")
+        if calibration_room is not None and room_id is None:
+            self.calibration_rejection = "room missing"
+            return
+        if calibration_room is not None and calibration_room != room_id:
+            self.calibration_rejection = "room mismatch"
+            return
+        self.calibration = {key: value for key, value in document.get("paths", {}).items()}
+        self.calibration_rejection = None if self.calibration else "calibration contains no usable paths"
+        for geometry, processor in self.processors.items():
+            processor.baseline = self.calibration.get(geometry.identity)
+
+    def calibration_status(self) -> str:
+        return self.calibration_report()["status"]
+
+    def calibration_report(self, now: datetime | None = None) -> dict[str, Any]:
+        created = self.calibration_metadata.get("created_at")
+        age_seconds = None
+        if created:
+            try:
+                parsed = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+                age_seconds = max(0.0, ((now or datetime.now(timezone.utc)) - parsed).total_seconds())
+            except (TypeError, ValueError):
+                pass
+        base = {**self.calibration_metadata, "age_seconds": age_seconds}
+        if self.calibration_rejection:
+            return {**base, "status": "REJECTED", "reason": self.calibration_rejection,
+                    "matched_paths": [], "mismatched_geometries": []}
+        current = [p for p in (self.dominant(i) for i in (1, 2, 3)) if p]
+        if not current:
+            return {**base, "status": "PENDING", "reason": "awaiting CSI geometry",
+                    "matched_paths": [], "mismatched_geometries": []}
+        matched = [p.geometry.identity for p in current if p.geometry.identity in self.calibration]
+        mismatched = [p.geometry.identity for p in current if p.geometry.identity not in self.calibration]
+        if mismatched:
+            return {**base, "status": "REJECTED", "reason": "geometry mismatch",
+                    "matched_paths": matched, "mismatched_geometries": mismatched}
+        return {**base, "status": "MATCH", "reason": None,
+                "matched_paths": matched, "mismatched_geometries": []}
+
+    def fused(self, suspended: bool = False) -> tuple[str, float]:
+        if suspended:
+            return "REPOSITIONING", 0.0
+        snapshots = [s for s in self.snapshots().values()
+                     if s.calibrated and s.signal_quality != "LOW" and s.motion_score is not None]
+        if not snapshots:
+            return "LOW_CONFIDENCE", 0.0
+        candidates = sum(s.motion_state == "MOTION_CANDIDATE" for s in snapshots)
+        changes = sum(s.motion_state in ("RF_CHANGE", "MOTION_CANDIDATE") for s in snapshots)
+        confidence = min(1.0, len(snapshots) / 3.0) * (0.5 + 0.5 * max(candidates, changes) / len(snapshots))
+        if candidates >= 2:
+            return "MOTION_CANDIDATE", confidence
+        if changes >= 1:
+            return "RF_CHANGE", confidence
+        return "QUIET", confidence

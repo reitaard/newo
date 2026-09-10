@@ -133,17 +133,20 @@ The standalone experiment uses its own ESP-IDF build artifacts and partition tab
 
 Do not blindly use generated `@flash_args` on a production-configured board: it includes an experiment bootloader and experiment partition table. Verify the target's real partition map first. Never commit device backups, credentials, generated `sdkconfig`, raw captures, or binaries.
 
-## Roadmap
+## Authoritative phase roadmap
 
-1. **Protocol/design** — complete enough for hardware work.
-2. **Isolated receiver firmware** — physically validated.
-3. **Newo2 ESP-NOW third path** — physically validated at 20 Hz application schedule.
-4. **Host collector/replay** — physically validated on multi-minute captures.
-5. **Long background capture** — overnight two-person resting/background run.
-6. **Geometry-aware offline extraction** — next engineering focus.
-7. **Gesture feasibility** — still/walk/one-gesture first, then additional learned triggers.
-8. **Synchronization/calibration improvements** — add only where cross-node analysis requires them.
-9. **Production integration** — only after false-trigger behavior and resource cost are understood.
+1. **Phase 1 — CSI experiment contract/protocol (done):** architecture, NCSI contract, path identifiers, metadata, and safety boundaries.
+2. **Phase 2 — standalone Newo CSI receiver (done):** independently validate `ROUTER_NEWO`.
+3. **Phase 3 — Newo2 and controlled peer RF path (done):** validate `ROUTER_NEWO`, `ROUTER_NEWO2`, and `NEWO2_NEWO`.
+4. **Phase 4 — robust host collector and replayable datasets (done):** strict UDP decoding/CRC, exact raw archival, metadata, replay, diagnostics, and drop accounting. Phase 4.5 hardware validation/coarse analysis is complete experimental groundwork; its tools and results are not Phase 5.
+5. **Phase 5 — trustworthy DSP and field/research tooling (current):** geometry-separated conservative DSP, calibration, replay equivalence, synthetic tests, live research console, and Termux-first portable field monitor. Presence remains unsupported and physical threshold evidence is incomplete.
+6. **Phase 6 — cross-node time synchronization:** Newo-led ESP-NOW synchronization, common host timeline, and measured offset/drift/jitter independent of collector choice.
+7. **Phase 7 — Newo2 camera teacher:** consented, synchronized research ground truth and Wi-Fi/camera coexistence benchmarking, not a production dependency.
+8. **Phase 8 — research sensing models:** held-out evaluation of zone, direction, activity, posture, and count research without capability claims from trainability alone.
+9. **Phase 9 — identity/gait research:** rigorous cross-session/placement feasibility work only after earlier stages stabilize.
+10. **Phase 10 — respiration research:** lower-frequency research after motion and synchronization are trustworthy; no medical claim.
+11. **Phase 11 — link ablation/ESP3 decision:** measure each RF path's contribution before buying or adding nodes.
+12. **Phase 12 — production integration:** integrate only validated capabilities, including a mobile web/PWA or equivalent, commissioning/discovery, setup/placement, calibration, diagnostics, and history without research-only assumptions or unsupported claims.
 
 ## Privacy and safety
 
@@ -170,6 +173,31 @@ idf.py build
 Secret-bearing `sdkconfig` and generated build outputs are ignored and must stay local.
 
 See [`newo-rx/README.md`](./newo-rx/README.md) and [`newo2-node/README.md`](./newo2-node/README.md) for node-specific configuration.
+
+## Phase 5 host research tools
+
+Run `python -m newo_csi live` from `tools/` for the dependency-free ANSI
+research console. Live UDP and `live --replay <session>` feed the same
+streaming DSP pipeline. State is partitioned by path, node, receiver/source
+MACs, channel, bandwidth, PHY/LTF description, and CSI payload geometry.
+Calibration is separate JSON keyed by that exact identity; a placement or
+geometry change rejects it rather than silently reusing it. Reported states are
+only `QUIET`, `RF_CHANGE`, `MOTION_CANDIDATE`, `LOW_CONFIDENCE`, or
+`REPOSITIONING`, never person presence or localization.
+
+`python -m newo_csi field` is the portable Phase-5 validation view, not a new
+phase or separate sensing implementation. It shares the decoder, DSP,
+calibration, archive, metadata, and event model with `live`, and its protocol
+and data model are deliberately compatible with a future Phase-12 phone UI.
+Collector discovery is a host/design proposal in
+[`COLLECTOR_DISCOVERY.md`](./COLLECTOR_DISCOVERY.md); firmware integration is
+deferred.
+
+`evaluate`, `compare`, and `catalog` provide immutable reports and inventory
+over existing archives through the same pipeline. Original capture metadata,
+append-only post-hoc operator annotations, and DSP inference remain separate.
+Trailing partial windows are retained for audit but excluded from aggregate
+percentiles and durations.
 
 ## Source lineage
 

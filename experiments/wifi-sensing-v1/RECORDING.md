@@ -21,6 +21,7 @@ From `tools/`:
 ```sh
 python -m newo_csi collect \
   --room-id ROOM_A \
+  --placement DOOR_LEFT \
   --scenario LIE \
   --duration 120 \
   --person "one person" \
@@ -32,11 +33,18 @@ python -m newo_csi collect \
 
 The collector stores exact NCSI datagrams in `frames.ncsi` plus `session.json`, `events.jsonl`, and `summary.json`. `summary.json` is useful for capture health; movement/gesture analysis must use the raw time series rather than only packet counts or mean RSSI.
 
+`--placement` is a user-defined physical identity such as `DOOR_LEFT` or
+`CORNER_A`; it is stored verbatim and never inferred. Omitting it is allowed
+for backward compatibility, but the collector warns and placement-bound
+calibration then fails closed. Never move Newo2 during a labeled capture.
+
 ## Scenario labels
 
 | Scenario | Recording instruction |
 | --- | --- |
 | `EMPTY` | Truly no person in the room. Use only when this is actually achievable. |
+| `DIAGNOSTIC` | Unlabeled equipment/link check; do not use as human-motion training data. |
+| `BACKGROUND` | Long ambient capture with only explicit event markers and operator labels. |
 | `ENTER` | Begin outside, enter through the marked doorway, stop at the marked endpoint. |
 | `EXIT` | Begin at the marked indoor point and leave through the doorway. |
 | `WALK_DOOR_CENTER` | Walk from door marker to center marker. |
@@ -153,3 +161,12 @@ A peer-path CSI frame is not necessarily one application ESP-NOW probe. Use `pro
 ## Labels are ground truth, not predictions
 
 Scenario/person/activity labels describe what the operator intended or observed during collection. They are not model output. Preserve failed/noisy repetitions rather than deleting inconvenient data, and document deviations in `--notes`.
+
+## Controlled Phase-5 evaluation
+
+Keep clean baselines, people/activity trials, and known nuisance sources in
+separate truthfully labeled sessions. If an uncontrolled event occurs, append
+an explicit operator marker or post-hoc sidecar annotation; never rewrite the
+archive or silently keep a clean-label claim. Compare independent repetitions
+and held-out sessions, and revise thresholds only after controlled evidence
+exists across conditions and placements.

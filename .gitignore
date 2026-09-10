@@ -34,6 +34,7 @@ server/data/
 experiments/wifi-sensing-v1/**/datasets/
 experiments/wifi-sensing-v1/**/*.ncsi
 experiments/wifi-sensing-v1/**/*-export.csv
+experiments/wifi-sensing-v1/**/operator-annotations/
 
 # OS files
 .DS_Store

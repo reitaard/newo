@@ -14,7 +14,7 @@ from newo_csi.archive import ArchiveError, ArchiveWriter, iter_archive
 from newo_csi.protocol import (CsiRecord, DiagnosticRecord, ProtocolError,
                                StatusRecord, SyncRecord, crc32c, decode)
 from newo_csi.statistics import CaptureStats
-from newo_csi.cli import path_mapping, replay
+from newo_csi.cli import collection_metadata, parser, path_mapping, replay
 
 
 def csi_frame(*, node: int = 1, path: int = 1, sequence: int = 0,
@@ -142,6 +142,24 @@ class StatisticsTests(unittest.TestCase):
         latest = result["latest_device_diagnostics"][0]
         self.assertEqual(latest["probe_tx_success"], 18)
         self.assertEqual(latest["path_gate_drops"]["NEWO2_NEWO"], 103)
+
+
+class MetadataTests(unittest.TestCase):
+    def test_collect_placement_is_canonical_and_optional(self) -> None:
+        args = parser().parse_args([
+            "collect", "--room-id", "ROOM_A", "--scenario", "BACKGROUND",
+            "--placement", "DOOR_LEFT",
+        ])
+        metadata = collection_metadata(args, "session", None, "now", 10, 4096)
+        self.assertEqual(metadata["placement_label"], "DOOR_LEFT")
+        self.assertIsNone(metadata["path_mapping"])
+
+        omitted = parser().parse_args([
+            "collect", "--room-id", "ROOM_A", "--scenario", "BACKGROUND",
+        ])
+        metadata = collection_metadata(omitted, "old-style", None, "now", 10, 4096)
+        self.assertIn("placement_label", metadata)
+        self.assertIsNone(metadata["placement_label"])
 
 
 class ArchiveTests(unittest.TestCase):
