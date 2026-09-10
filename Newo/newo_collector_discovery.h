@@ -4,4 +4,6 @@
 struct NewoCollectorDestination { uint32_t address; uint16_t port; const char* source; };
 bool newoCollectorDiscoveryStart(const char* fallback, uint16_t port);
 void newoCollectorDiscoveryStop();
+bool newoCollectorSetOverride(const char* address, uint16_t port);
+void newoCollectorClearOverride();
 NewoCollectorDestination newoCollectorSnapshot();
