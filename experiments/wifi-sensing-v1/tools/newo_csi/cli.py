@@ -319,19 +319,32 @@ def catalog_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def report_command(args: argparse.Namespace) -> int:
+    from .evaluate import evaluate_archive
+    from .report import build_derived_report, write_report_artifacts
+    calibration = _evaluation_calibration(args.calibration_file)
+    evaluation = evaluate_archive(args.session, args.window_seconds, calibration,
+                                  Path(args.annotations_dir), args.top_k)
+    paths = write_report_artifacts(build_derived_report(evaluation), Path(args.output_dir))
+    print("\n".join(str(path) for path in paths))
+    return 0
+
+
 def add_monitor_arguments(command: argparse.ArgumentParser) -> None:
-    command.add_argument("--bind", default="0.0.0.0")
-    command.add_argument("--port", type=int, default=5005)
-    command.add_argument("--receive-buffer", type=int, default=4 * 1024 * 1024)
-    command.add_argument("--dataset-dir", default=str(DEFAULT_DATASET_DIR))
-    command.add_argument("--room-id", default="UNSPECIFIED")
-    command.add_argument("--scenario", choices=SCENARIOS, default="DIAGNOSTIC")
-    command.add_argument("--placement", default="UNSPECIFIED")
-    command.add_argument("--top-k", type=int, default=24)
-    command.add_argument("--window-seconds", type=float, default=2.0)
-    command.add_argument("--settle-seconds", type=float, default=10.0)
+    command.add_argument("--bind")
+    command.add_argument("--port", type=int)
+    command.add_argument("--receive-buffer", type=int)
+    command.add_argument("--dataset-dir")
+    command.add_argument("--room-id")
+    command.add_argument("--room", help="named room profile from the field config")
+    command.add_argument("--config", help="JSON field config; defaults to ~/.config/newo-csi/field.json")
+    command.add_argument("--scenario", choices=SCENARIOS)
+    command.add_argument("--placement")
+    command.add_argument("--top-k", type=int)
+    command.add_argument("--window-seconds", type=float)
+    command.add_argument("--settle-seconds", type=float)
     command.add_argument("--calibrate", type=float, metavar="SECONDS")
-    command.add_argument("--calibration-file", default=str(DEFAULT_DATASET_DIR.parent / "calibrations" / "baseline.json"))
+    command.add_argument("--calibration-file")
     command.add_argument("--replay", help="session/archive input instead of UDP")
     command.add_argument("--speed", type=float, default=1.0,
                          help="archive replay speed; 0 disables delays")
@@ -425,11 +438,26 @@ def parser() -> argparse.ArgumentParser:
     catalog.add_argument("--annotations-dir", default=str(DEFAULT_DATASET_DIR.parent / "operator-annotations"))
     catalog.add_argument("--json", action="store_true")
     catalog.set_defaults(handler=catalog_command)
+
+    report = commands.add_parser("report", help="write small derived JSON/CSV/Markdown artifacts")
+    report.add_argument("session")
+    report.add_argument("--output-dir", required=True)
+    report.add_argument("--calibration-file")
+    report.add_argument("--annotations-dir", default=str(DEFAULT_DATASET_DIR.parent / "operator-annotations"))
+    report.add_argument("--top-k", type=int, default=24)
+    report.add_argument("--window-seconds", type=float, default=2.0)
+    report.set_defaults(handler=report_command)
     return root
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    if args.command in ("live", "field"):
+        from .config import apply_field_config
+        try:
+            apply_field_config(args)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            raise SystemExit(f"invalid field config: {error}") from error
     if getattr(args, "duration", None) is not None and args.duration <= 0:
         raise SystemExit("--duration must be positive")
     if getattr(args, "receive_buffer", 1) <= 0:

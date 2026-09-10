@@ -30,6 +30,7 @@ def render_field(state: LiveState, recorder: SessionRecorder | None,
         recording = "REC OFF"
     lines = ["NEwo CSI FIELD",
              f"N:{online(1)} N2:{online(2)} UDP:{'OK' if now-state.last_udp_monotonic < 3 else '--'} {recording}",
+             f"COL:{state.collector_state}",
              f"P:{state.placement}",
              f"O:{state.occupancy} A:{state.activity}",
              f"ROOM:{room} {confidence:.2f}  PRES:UNSUPPORTED",

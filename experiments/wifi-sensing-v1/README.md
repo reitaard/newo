@@ -191,15 +191,60 @@ only `QUIET`, `RF_CHANGE`, `MOTION_CANDIDATE`, `LOW_CONFIDENCE`, or
 phase or separate sensing implementation. It shares the decoder, DSP,
 calibration, archive, metadata, and event model with `live`, and its protocol
 and data model are deliberately compatible with a future Phase-12 phone UI.
-Collector discovery is a host/design proposal in
-[`COLLECTOR_DISCOVERY.md`](./COLLECTOR_DISCOVERY.md); firmware integration is
-deferred.
+Collector discovery is specified in [`COLLECTOR_DISCOVERY.md`](./COLLECTOR_DISCOVERY.md)
+and implemented on the development sensing targets. CSI remains unicast UDP;
+the negligible NCOL announcement plane only selects the collector address.
+
+Fresh Termux setup and start:
+
+```sh
+pkg update
+pkg install python git
+git clone --branch wifi-sensing-track-integration-20260910 https://github.com/reitaard/newo.git
+cd newo/experiments/wifi-sensing-v1/tools
+python -m pip install -e .
+mkdir -p ~/.config/newo-csi
+python -m newo_csi field --room bedroom
+```
+
+An optional `~/.config/newo-csi/field.json` removes repeated arguments:
+
+```json
+{
+  "schema_version": 1,
+  "defaults": {"dataset_dir": "~/newo-csi-data/datasets", "port": 5005},
+  "rooms": {"bedroom": {"placement": "BED_SIDE", "scenario": "BACKGROUND"}}
+}
+```
+
+Command-line values override the named room, then config defaults. The field
+view automatically announces itself, restores the terminal on exit, and keeps
+the existing `R`, `S`, `E`, and `P` controls. A placement change enters
+`REPOSITIONING`, stops the current recording so antenna motion is excluded,
+and invalidates calibration.
 
 `evaluate`, `compare`, and `catalog` provide immutable reports and inventory
 over existing archives through the same pipeline. Original capture metadata,
 append-only post-hoc operator annotations, and DSP inference remain separate.
 Trailing partial windows are retained for audit but excluded from aggregate
 percentiles and durations.
+
+`python -m newo_csi report SESSION --output-dir reports` writes the stable
+`newo_csi_derived_report_v1` JSON contract plus small path CSV and Markdown
+artifacts. Raw `frames.ncsi` stays on collector/VPS storage. The report keeps
+capture metadata, annotations, transport health, calibration, geometry,
+path evidence, and ranked RF-change intervals explicit; its synchronization
+field is an honest Phase-6 placeholder and it makes no person/location claim.
+The intended boundary is `CSI capture -> immutable dataset -> derived report ->
+VPS history -> concise Telegram report`; Telegram never receives raw CSI.
+
+The intended movable-node lifecycle is:
+
+`NEW NODE / MOVED -> REPOSITIONING -> SETTLING -> CALIBRATING -> TRACK_READY`
+
+Moving any sensing node invalidates its geometry/calibration profile. A later
+known-profile match must be evidence-based; otherwise a new profile is created.
+This is self-settling RF sensor geometry, not room scanning or radar SLAM.
 
 The post-validation `/track` control and real-Newo integration contract is in
 [`TRACK_INTEGRATION_PLAN.md`](./TRACK_INTEGRATION_PLAN.md). It keeps measurement

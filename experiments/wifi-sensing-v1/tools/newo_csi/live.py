@@ -95,6 +95,7 @@ class LiveState:
         self.channels: set[int] = set()
         self.latest_status: dict[int, StatusRecord] = {}
         self.latest_diagnostic: dict[int, DiagnosticRecord] = {}
+        self.collector_state = "STARTING"
 
     @property
     def repositioning(self) -> bool:
@@ -245,12 +246,14 @@ def run_live(args: object, renderer: Callable[..., str] = render,
     source: Iterator[ArchivedRecord] | None = None
     if args.replay:
         source = replay_items(Path(args.replay), args.speed)
+        state.collector_state = "REPLAY"
     else:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, args.receive_buffer)
         sock.bind((args.bind, args.port))
         sock.settimeout(0.1)
         announcer = CollectorAnnouncer(args.port)
+        state.collector_state = f"ANNOUNCING:{args.port}"
 
     recorder: SessionRecorder | None = None
     last_render = 0.0

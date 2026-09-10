@@ -37,4 +37,3 @@ esp_err_t newoPeerRadioSend(const uint8_t* payload, size_t length) {
 }
 
 bool newoPeerRadioOwned() { return owned; }
-
