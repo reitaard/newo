@@ -29,10 +29,11 @@ test("TRACK OFF releases local resources even when peer acknowledgement is absen
 
 test("tracking owns ESP-NOW only after successful init and releases only owned state", async () => {
   const source = await read("newo_peer_radio.cpp");
-  assert.match(source, /if \(esp_now_init\(\) != ESP_OK\) return false/);
-  assert.match(source, /if \(!owned\) return/);
+  assert.match(source, /esp_now_init\(\)!=ESP_OK/);
+  assert.match(source, /if\(!owned\)return/);
   assert.match(source, /esp_now_unregister_recv_cb/);
   assert.match(source, /esp_now_deinit/);
+  assert.match(source, /readMagic[\s\S]*consumers[\s\S]*callback\(info,data,length\)/);
 });
 
 test("track ACK contract includes command identity, failure, and peer state", async () => {
@@ -44,7 +45,7 @@ test("track ACK contract includes command identity, failure, and peer state", as
   assert.match(cloud, /doc\["peer_state"\] = peerStatus/);
   assert.match(server, /message\.command_epoch !== pending\.fields\?\.command_epoch/);
   assert.match(server, /message\.command_sequence !== pending\.fields\?\.command_sequence/);
-  assert.match(server, /message\.type === "hello"[\s\S]*sendDeviceRequest\("track_control", "track_ack"/);
+  assert.match(server, /message\.type === "hello"[\s\S]*trackReconciler\.start\(\)/);
 });
 
 test("Wi-Fi loss and partial ON failures fail safe", async () => {

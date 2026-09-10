@@ -127,6 +127,7 @@ export function createPrimaryModeHandlers({
   persistSpeakerEnabled,
   getTrackDesired = () => false,
   persistTrackDesired = async () => false,
+  handleTrackCommandResult = () => {},
   speakerInfo,
   getAssistantInfo = () => ({}),
 }) {
@@ -242,8 +243,9 @@ export function createPrimaryModeHandlers({
     }
     const desiredLabel = getTrackDesired() ? "ON" : "OFF";
     const request = sendDeviceRequest("track_control", "track_ack", { action }, commandTrace(ctx));
-    if (request.kind !== "sent") return commandReply(ctx, `Tracking desired ${desiredLabel}; actual device offline.`, "offline", null, { newoSpeak: false });
+    if (request.kind !== "sent") { handleTrackCommandResult(request); return commandReply(ctx, `Tracking desired ${desiredLabel}; actual device offline.`, "offline", null, { newoSpeak: false }); }
     const result = await request.promise;
+    handleTrackCommandResult(result);
     if (result.kind === "response" && result.message.applied === true) {
       const peerWarning = result.message.state === "off" && ["uncertain", "unavailable"].includes(result.message.peer_state)
         ? " Newo2 stop unconfirmed."

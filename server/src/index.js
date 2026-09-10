@@ -12,6 +12,7 @@ import { createRuntimeStateStore } from "./runtime-state.js";
 import { createSpeakerRuntime, startTelegramAndSpeech } from "./tts.js";
 import { createTtsBackend } from "./tts-backend.js";
 import { createPrimaryModeHandlers } from "./telegram-mode-commands.js";
+import { createTrackReconciler } from "./track-reconciler.js";
 import { createVoiceRuntime, NullAsrBackend, WorkerAsrBackend } from "./voice.js";
 
 try {
@@ -282,6 +283,15 @@ function sendDeviceRequest(requestType, responseType, fields = {}, trace = null)
   return { kind: "sent", requestId, promise };
 }
 
+const trackReconciler = createTrackReconciler({
+  getDesired: () => desiredTrackEnabled,
+  logger: app.log,
+  request: async (action) => {
+    const request = sendDeviceRequest("track_control", "track_ack", { action });
+    return request.kind === "sent" ? request.promise : request;
+  },
+});
+
 function resolvePendingResponse(deviceId, ws, message) {
   if (!message.request_id) return false;
   const pending = pendingRequests.get(message.request_id);
@@ -362,7 +372,7 @@ function scheduleOfflineNotification(deviceId, state, ws) {
 app.get("/", async () => ({ service: "newo-cloud", status: "ok" }));
 app.get("/health", async () => {
   const device = getDeviceSnapshot();
-  return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), device: { connected: device.connected, id: device.id, connected_at: device.connected_at, last_seen: device.last_seen, firmware: device.hello?.firmware ?? null, autonomy_revision: device.hello?.autonomy_revision ?? null, chip: device.hello?.chip ?? null } };
+  return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), track_reconciliation: trackReconciler.status(), device: { connected: device.connected, id: device.id, connected_at: device.connected_at, last_seen: device.last_seen, firmware: device.hello?.firmware ?? null, autonomy_revision: device.hello?.autonomy_revision ?? null, chip: device.hello?.chip ?? null } };
 });
 
 const TELEGRAM_COMMANDS = [
@@ -721,8 +731,10 @@ const primaryModeHandlers = createPrimaryModeHandlers({
   getTrackDesired: () => desiredTrackEnabled,
   persistTrackDesired: async (enabled) => {
     desiredTrackEnabled = await runtimeState.setTrackDesired(enabled);
+    trackReconciler.desiredChanged(false);
     return desiredTrackEnabled;
   },
+  handleTrackCommandResult: (result) => trackReconciler.commandResult(result),
   speakerInfo: {
     ttsEnabled: env.TTS_ENABLED,
     backend: env.TTS_BACKEND,
@@ -835,11 +847,7 @@ wss.on("connection", (ws, request, deviceId) => {
     if (message.type === "hello" && message.device !== deviceId) { app.log.warn({ authenticated_device: deviceId, claimed_device: message.device }, "Device hello identity mismatch"); ws.close(4003, "device identity mismatch"); return; }
     if (message.type === "hello") {
       state.hello = { device: message.device, firmware: message.firmware ?? null, autonomy_revision: message.autonomy_revision ?? null, chip: message.chip ?? null, received_at: state.lastSeen };
-      const reconcile = sendDeviceRequest("track_control", "track_ack", { action: desiredTrackEnabled ? "on" : "off" });
-      if (reconcile.kind === "sent") void reconcile.promise.then((result) => {
-        const actual = result.kind === "response" ? result.message.state : "unknown";
-        app.log.info({ device_id: deviceId, desired_track: desiredTrackEnabled, actual_track: actual, result: result.kind }, "Track desired state reconciled");
-      });
+      trackReconciler.start();
     }
     if (message.type === "status" || message.type === "pong") state.status = { ...(state.status ?? {}), ...message, received_at: state.lastSeen };
     resolvePendingResponse(deviceId, ws, message);
@@ -851,7 +859,7 @@ wss.on("connection", (ws, request, deviceId) => {
     const current = devices.get(deviceId);
     failPendingRequestsForDevice(deviceId, ws, "disconnected");
     assistantTurnRuntime.abortDevice(deviceId);
-    if (current?.ws === ws) { current.lastSeen = new Date().toISOString(); scheduleOfflineNotification(deviceId, current, ws); }
+    if (current?.ws === ws) { current.lastSeen = new Date().toISOString(); trackReconciler.disconnected(); scheduleOfflineNotification(deviceId, current, ws); }
     app.log.info({ device_id: deviceId, code, reason: reason.toString() }, "Newo device disconnected");
   });
   ws.on("error", () => app.log.warn({ device_id: deviceId }, "Newo WebSocket error"));
