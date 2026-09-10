@@ -13,6 +13,7 @@ from typing import Callable, Iterator
 
 from .archive import ArchiveWriter, ArchivedRecord, iter_archive
 from .dsp import CsiPipeline
+from .discovery import CollectorAnnouncer
 from .metadata import capture_metadata
 from .protocol import CsiRecord, DiagnosticRecord, PATH_NAMES, ProtocolError, Record, StatusRecord, decode
 from .statistics import CaptureStats
@@ -240,6 +241,7 @@ def run_live(args: object, renderer: Callable[..., str] = render,
         selection_deadline = time.monotonic() + args.calibrate * 0.4
 
     sock: socket.socket | None = None
+    announcer: CollectorAnnouncer | None = None
     source: Iterator[ArchivedRecord] | None = None
     if args.replay:
         source = replay_items(Path(args.replay), args.speed)
@@ -248,6 +250,7 @@ def run_live(args: object, renderer: Callable[..., str] = render,
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, args.receive_buffer)
         sock.bind((args.bind, args.port))
         sock.settimeout(0.1)
+        announcer = CollectorAnnouncer(args.port)
 
     recorder: SessionRecorder | None = None
     last_render = 0.0
@@ -281,6 +284,8 @@ def run_live(args: object, renderer: Callable[..., str] = render,
                         recorder.append(raw, mono, wall, sender, record)
 
             now = time.monotonic()
+            if announcer is not None:
+                announcer.poll(now)
             if selection_deadline is not None and now >= selection_deadline:
                 state.pipeline.freeze_calibration_selection()
                 selection_deadline = None
@@ -337,5 +342,7 @@ def run_live(args: object, renderer: Callable[..., str] = render,
             recorder.close("console_exit")
         if sock is not None:
             sock.close()
+        if announcer is not None:
+            announcer.close()
         sys.stdout.write("\x1b[0m\n")
     return 0

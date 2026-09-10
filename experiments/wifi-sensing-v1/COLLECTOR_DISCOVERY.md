@@ -1,7 +1,8 @@
-# Collector discovery design (not deployed)
+# Collector discovery design (implemented, not flashed)
 
-Status: host/protocol design only. Neither experiment firmware target consumes
-announcements yet. Do not flash this design or treat it as active discovery.
+Status: implemented on the integration branch for both experiment targets and
+the real-Newo development build; locally source/build tested only. No device has
+been flashed, so this must not be treated as physically validated discovery.
 
 ## Decision
 
@@ -40,7 +41,7 @@ Wi-Fi association. Address selection precedence is: explicit temporary runtime
 override, newest valid announcement, configured fallback. The existing
 configured address remains a recovery path during development.
 
-A future node implementation should require two identical announcements before
+The node implementation requires two identical announcements before
 switching, renew only on a fresh lease, retain the current collector until its
 lease expires, and log each switch in diagnostics. It must not switch from the
 CSI callback. Selection belongs in the existing transport/control task and must

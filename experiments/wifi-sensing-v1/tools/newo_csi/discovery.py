@@ -1,14 +1,12 @@
-"""Small host announcement contract for future collector discovery.
-
-Firmware does not consume this yet.  The pure selection function documents and
-tests precedence without changing either ESP target.
-"""
+"""Small, receive-only-on-device NCOL collector announcement contract."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import ipaddress
 import struct
+import socket
+import time
 
 MAGIC = b"NCOL"
 VERSION = 1
@@ -59,3 +57,26 @@ def select_collector_address(explicit: tuple[str, int] | None,
     if configured is not None:
         return CollectorAddress(str(ipaddress.ip_address(configured[0])), configured[1], "configured")
     raise ValueError("no collector address available")
+
+
+class CollectorAnnouncer:
+    """Emit negligible TTL=1 multicast announcements from a live collector."""
+
+    def __init__(self, data_port: int, interval: float = 5.0,
+                 lease_seconds: int = 15, nonce: int | None = None):
+        self.payload = encode_announcement(data_port, lease_seconds,
+                                           int.from_bytes(__import__("os").urandom(4), "little") if nonce is None else nonce)
+        self.interval = interval
+        self.next_send = 0.0
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+
+    def poll(self, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        if now < self.next_send:
+            return
+        self.socket.sendto(self.payload, (MULTICAST_GROUP, ANNOUNCEMENT_PORT))
+        self.next_send = now + self.interval
+
+    def close(self) -> None:
+        self.socket.close()

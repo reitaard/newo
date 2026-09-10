@@ -33,6 +33,8 @@
 #include "ncsi_protocol.h"
 #include "probe_protocol.h"
 #include "rate_gate.h"
+#include "collector_discovery.h"
+#include "track_protocol.h"
 
 #ifndef CONFIG_ESP_WIFI_CSI_ENABLED
 #error "CONFIG_ESP_WIFI_CSI_ENABLED must be enabled for the Newo CSI receiver"
@@ -122,7 +124,6 @@ static uint8_t s_ap_secondary;
 static uint32_t s_gateway_address;
 static uint32_t s_boot_id;
 static int s_udp_socket = -1;
-static struct sockaddr_in s_collector_address;
 static esp_ping_handle_t s_ping_handle;
 
 static csi_slot_t s_ring[CONFIG_NEWO_QUEUE_DEPTH];
@@ -154,6 +155,8 @@ static volatile uint32_t s_probe_tx_skipped_unassociated;
 static volatile uint32_t s_probe_rx_valid;
 static volatile uint32_t s_probe_rx_invalid;
 static volatile bool s_probe_in_flight;
+static volatile bool s_track_active = true;
+static volatile uint32_t s_track_control_sequence;
 
 static portMUX_TYPE s_sample_lock = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE s_identity_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -205,6 +208,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ESP_ERROR_CHECK(esp_wifi_connect());
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         s_associated = false;
+        newo_collector_discovery_set_associated(false);
         s_identity_ready = false;
         s_self_ping_enabled = false;
         if (s_wifi_retry_count++ < WIFI_MAXIMUM_RETRY) {
@@ -215,6 +219,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         s_wifi_retry_count = 0;
         s_associated = true;
+        newo_collector_discovery_set_associated(true);
         counter_increment(&s_refresh_requested);
         xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
     }
@@ -472,21 +477,16 @@ static void initialise_udp(void)
         ESP_LOGE(TAG, "failed to create UDP socket: errno=%d", errno);
         abort();
     }
-    memset(&s_collector_address, 0, sizeof(s_collector_address));
-    s_collector_address.sin_family = AF_INET;
-    s_collector_address.sin_port = htons(CONFIG_NEWO_COLLECTOR_PORT);
-    if (inet_pton(AF_INET, CONFIG_NEWO_COLLECTOR_IPV4,
-                  &s_collector_address.sin_addr) != 1) {
-        ESP_LOGE(TAG, "invalid collector IPv4 address: %s", CONFIG_NEWO_COLLECTOR_IPV4);
-        abort();
-    }
+    newo_collector_discovery_start(CONFIG_NEWO_COLLECTOR_IPV4,
+                                   CONFIG_NEWO_COLLECTOR_PORT);
 }
 
 static bool udp_send_record(const uint8_t *record, size_t length)
 {
+    struct sockaddr_in collector;
+    newo_collector_snapshot(&collector, NULL);
     int sent = sendto(s_udp_socket, record, length, 0,
-                      (struct sockaddr *)&s_collector_address,
-                      sizeof(s_collector_address));
+                      (struct sockaddr *)&collector, sizeof(collector));
     return sent == (int)length;
 }
 
@@ -667,10 +667,31 @@ static void sender_task(void *arg)
     }
 }
 
-#if CONFIG_NEWO_ESPNOW_RECEIVE
 static void espnow_receive_callback(const esp_now_recv_info_t *info,
                                     const uint8_t *data, int length)
 {
+#if CONFIG_NEWO_ESPNOW_TRANSMIT
+    newo_track_control_t control;
+    if (info != NULL && source_is_peer(info->src_addr) &&
+        newo_track_control_decode(data, (size_t)length, &control) && !control.ack) {
+        uint32_t previous = counter_get(&s_track_control_sequence);
+        if (control.sequence < previous) return;
+        if (control.sequence > previous) {
+            s_track_active = control.active;
+            (void)esp_wifi_set_csi(control.active);
+            __atomic_store_n(&s_track_control_sequence, control.sequence, __ATOMIC_RELAXED);
+        } else {
+            control.active = s_track_active;
+        }
+        control.ack = true;
+        uint8_t response[NEWO_TRACK_CONTROL_SIZE];
+        size_t response_length = newo_track_control_encode(&control, response, sizeof(response));
+        if (response_length) (void)esp_now_send(s_peer_mac, response, response_length);
+        ESP_LOGI(TAG, "TRACK_%s sequence=%" PRIu32, control.active ? "ACTIVE" : "OFF", control.sequence);
+        return;
+    }
+#endif
+#if CONFIG_NEWO_ESPNOW_RECEIVE
     if (info == NULL || data == NULL || length != NEWO_PROBE_SIZE ||
         !source_is_peer(info->src_addr)) {
         counter_increment(&s_probe_rx_invalid);
@@ -682,8 +703,8 @@ static void espnow_receive_callback(const esp_now_recv_info_t *info,
     } else {
         counter_increment(&s_probe_rx_invalid);
     }
-}
 #endif
+}
 
 #if CONFIG_NEWO_ESPNOW_TRANSMIT
 static void espnow_send_callback(const wifi_tx_info_t *info,
@@ -702,6 +723,7 @@ static void probe_sender_task(void *arg)
     const TickType_t period = pdMS_TO_TICKS(1000u / CONFIG_NEWO_ESPNOW_PROBE_HZ);
     uint32_t sequence = 0;
     while (true) {
+        if (!s_track_active) { vTaskDelayUntil(&next, period); continue; }
         if (!s_associated) {
             counter_increment(&s_probe_tx_skipped_unassociated);
             vTaskDelayUntil(&next, period);
@@ -753,8 +775,8 @@ static void initialise_espnow(void)
     peer.encrypt = false;
     ESP_ERROR_CHECK(esp_now_add_peer(&peer));
 
-#if CONFIG_NEWO_ESPNOW_RECEIVE
     ESP_ERROR_CHECK(esp_now_register_recv_cb(espnow_receive_callback));
+#if CONFIG_NEWO_ESPNOW_RECEIVE
     ESP_LOGI(TAG, "ESP-NOW receive enabled on STA current-channel peer semantics");
 #elif CONFIG_NEWO_ESPNOW_TRANSMIT
     ESP_ERROR_CHECK(esp_now_register_send_cb(espnow_send_callback));
@@ -941,6 +963,12 @@ void app_main(void)
     initialise_espnow();
 
     start_csi();
+#if CONFIG_NEWO_ESPNOW_TRANSMIT
+    s_track_active = false;
+    ESP_ERROR_CHECK(esp_wifi_set_csi(false));
+    s_csi_enabled = false;
+    ESP_LOGI(TAG, "Newo2 boot default TRACK_OFF; awaiting leader control");
+#endif
 
     BaseType_t refresh_created = xTaskCreatePinnedToCore(
         association_refresh_task, "association_refresh", 4096, NULL, 5, NULL, 1);
