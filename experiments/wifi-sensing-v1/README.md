@@ -139,8 +139,8 @@ Do not blindly use generated `@flash_args` on a production-configured board: it 
 2. **Phase 2 — standalone Newo CSI receiver (done):** independently validate `ROUTER_NEWO`.
 3. **Phase 3 — Newo2 and controlled peer RF path (done):** validate `ROUTER_NEWO`, `ROUTER_NEWO2`, and `NEWO2_NEWO`.
 4. **Phase 4 — robust host collector and replayable datasets (done):** strict UDP decoding/CRC, exact raw archival, metadata, replay, diagnostics, and drop accounting. Phase 4.5 hardware validation/coarse analysis is complete experimental groundwork; its tools and results are not Phase 5.
-5. **Phase 5 — trustworthy DSP and field/research tooling (current):** geometry-separated conservative DSP, calibration, replay equivalence, synthetic tests, live research console, and Termux-first portable field monitor. Presence remains unsupported and physical threshold evidence is incomplete.
-6. **Phase 6 — cross-node time synchronization:** Newo-led ESP-NOW synchronization, common host timeline, and measured offset/drift/jitter independent of collector choice.
+5. **Phase 5 — trustworthy DSP and field/research tooling (software complete, hardware threshold validation pending):** geometry-separated conservative DSP, calibration, replay equivalence, synthetic tests, live research console, and Termux-first portable field monitor. Presence remains unsupported and physical threshold evidence is incomplete.
+6. **Phase 6 — cross-node time synchronization (software complete, hardware validation pending):** Newo-led ESP-NOW event-time synchronization, common derived host timeline, measured offset/drift/jitter independent of collector choice, and unattended desired-state recovery.
 7. **Phase 7 — Newo2 camera teacher:** consented, synchronized research ground truth and Wi-Fi/camera coexistence benchmarking, not a production dependency.
 8. **Phase 8 — research sensing models:** held-out evaluation of zone, direction, activity, posture, and count research without capability claims from trainability alone.
 9. **Phase 9 — identity/gait research:** rigorous cross-session/placement feasibility work only after earlier stages stabilize.
@@ -234,7 +234,9 @@ percentiles and durations.
 artifacts. Raw `frames.ncsi` stays on collector/VPS storage. The report keeps
 capture metadata, annotations, transport health, calibration, geometry,
 path evidence, and ranked RF-change intervals explicit; its synchronization
-field is an honest Phase-6 placeholder and it makes no person/location claim.
+field reports the actual Phase-6 model, including session epochs, quality,
+offset/drift/residual evidence and stale intervals. Legacy captures report
+synchronization unavailable, and the report makes no person/location claim.
 The intended boundary is `CSI capture -> immutable dataset -> derived report ->
 VPS history -> concise Telegram report`; Telegram never receives raw CSI.
 

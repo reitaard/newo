@@ -153,22 +153,39 @@ ESP-NOW counters diagnose controlled-probe transport only. They do not prove tha
 
 ## Synchronization record (`record_type = 3`)
 
-`SYNC` is separate from CSI so clock observations do not inflate every radio record. It has a 64-byte header and no payload.
+`SYNC` is separate from CSI so clock observations do not inflate every radio record. Phase 6 defines a 112-byte versioned header with no payload. Readers continue accepting the legacy 64-byte placeholder record, but it cannot establish Phase-6 cross-node alignment.
 
 | Offset | Size | Field | Meaning |
 | ---: | ---: | --- | --- |
 | 16 | 4 | `node_id` | Receiver node ID |
 | 20 | 6 | `receiver_mac` | Receiver station MAC |
-| 26 | 2 | `sync_flags` | Bit 0 host time valid, bit 1 round trip measured; remaining bits reserved |
+| 26 | 1 | `sync_version` | `1` for this contract |
+| 27 | 1 | `sync_state` | `0=UNSYNCED`, `1=SYNC_WARMING`, `2=SYNC_VALID`, `3=SYNC_DEGRADED`, `4=SYNC_STALE` |
 | 28 | 4 | `boot_id` | Same boot epoch used by `STATUS` |
 | 32 | 4 | `sync_sequence` | Node-local sync-record counter |
 | 36 | 8 | `local_timestamp_us` | Local monotonic time at the defined sync event |
-| 44 | 8 | `host_timestamp_us` | Host Unix epoch microseconds, or zero if unavailable |
-| 52 | 4 | `round_trip_us` | Measured request/reply round trip, or zero if unavailable |
-| 56 | 4 | `last_csi_sequence` | CSI high-water mark at the sync event |
-| 60 | 4 | `sync_source` | `0=unspecified`, `1=host request/reply`; other values reserved |
+| 44 | 8 | `leader_timestamp_us` | Leader monotonic send timestamp carried by that beacon |
+| 52 | 8 | `raw_offset_us` | Signed `leader_timestamp_us - local_timestamp_us`; includes one-way delivery latency |
+| 60 | 8 | `smoothed_offset_us` | Signed offset EMA, alpha 1/8 |
+| 68 | 4 | `drift_milli_ppm` | Signed drift in 0.001 ppm units; meaningful after eight accepted samples |
+| 72 | 4 | `accepted_samples` | Accepted samples in the current session pair |
+| 76 | 4 | `rejected_samples` | Rejected duplicate, stale-session, or invalid estimator inputs |
+| 80 | 4 | `last_sync_age_us` | Age when serialized, saturated at `UINT32_MAX` |
+| 84 | 4 | `leader_node_id` | Configured reference node, initially Newo=1 |
+| 88 | 4 | `leader_session_id` | Random leader boot/session epoch; never persisted |
+| 92 | 4 | `follower_session_id` | Random follower boot/session epoch; never persisted |
+| 96 | 4 | `beacon_sequence` | Latest accepted leader beacon sequence |
+| 100 | 4 | `jitter_us` | RMS raw-versus-smoothed residual; diagnostic, not an accuracy promise |
+| 104 | 4 | `transport_rx` | Candidate sync messages received from the configured peer |
+| 108 | 4 | `transport_drops` | Malformed sync messages rejected before estimation |
 
-Phase 1 defines this record but does not choose or implement a synchronization exchange. Future synchronization must document precisely which send/receive event each timestamp represents and estimate offset and drift; copying wall time into CSI frames is not synchronization.
+The separate ESP-NOW beacon is 36 bytes: `NSYN`, version 1, type 1, length,
+leader node ID, leader session, sequence, leader monotonic send timestamp,
+capability flags, and CRC-32C. Newo2 timestamps receipt with `esp_timer_get_time`.
+This is one-way event-time alignment; propagation/queue latency is inseparable
+from raw offset and no RF phase coherence is implied. Raw CSI timestamps are
+never rewritten. Host alignment is a derived affine model and returns no value
+outside VALID/DEGRADED states.
 
 ## Host session metadata
 

@@ -14,7 +14,8 @@ SYNC = 3
 DIAGNOSTIC = 4
 CSI_HEADER_SIZE = 88
 STATUS_SIZE = 80
-SYNC_SIZE = 64
+LEGACY_SYNC_SIZE = 64
+SYNC_SIZE = 112
 DIAGNOSTIC_SIZE = 104
 MAX_RECORD_SIZE = 4096
 PATH_NAMES = {0: "UNKNOWN", 1: "ROUTER_NEWO", 2: "ROUTER_NEWO2", 3: "NEWO2_NEWO"}
@@ -104,14 +105,30 @@ class StatusRecord(Common):
 class SyncRecord(Common):
     node_id: int
     receiver_mac: bytes
-    sync_flags: int
+    sync_version: int
+    sync_state: int
     boot_id: int
     sync_sequence: int
     local_timestamp_us: int
-    host_timestamp_us: int
-    round_trip_us: int
-    last_csi_sequence: int
-    sync_source: int
+    leader_timestamp_us: int
+    raw_offset_us: int
+    smoothed_offset_us: int
+    drift_milli_ppm: int
+    accepted_samples: int
+    rejected_samples: int
+    last_sync_age_us: int
+    leader_node_id: int
+    leader_session_id: int
+    follower_session_id: int
+    beacon_sequence: int
+    jitter_us: int
+    transport_rx: int
+    transport_drops: int
+
+    @property
+    def host_timestamp_us(self) -> int:
+        """Legacy compatibility alias; Phase 6 uses leader_timestamp_us."""
+        return self.leader_timestamp_us
 
 
 @dataclass(frozen=True)
@@ -203,9 +220,17 @@ def decode(data: bytes) -> Record:
         fields = struct.unpack_from("<I6sHIIQIIIIIIIIHH", data, 16)
         return StatusRecord(*common, *fields)
     if record_type == SYNC:
+        if header_length == LEGACY_SYNC_SIZE and record_length == LEGACY_SYNC_SIZE:
+            fields = struct.unpack_from("<I6sHIIQQIII", data, 16)
+            node, receiver, flags, boot, sequence, local, host, rtt, last_csi, source = fields
+            return SyncRecord(*common, node, receiver, 0, 0, boot, sequence, local, host,
+                              host - local, host - local, 0, 0, 0, rtt, 0, 0, boot,
+                              last_csi, 0, source, 0)
         if header_length != SYNC_SIZE or record_length != SYNC_SIZE:
             raise ProtocolError("invalid SYNC length")
-        fields = struct.unpack_from("<I6sHIIQQIII", data, 16)
+        fields = struct.unpack_from("<I6sBBIIQQqqi10I", data, 16)
+        if fields[2] != 1 or fields[3] > 4:
+            raise ProtocolError("unsupported SYNC contract or state")
         return SyncRecord(*common, *fields)
     if record_type == DIAGNOSTIC:
         if header_length != DIAGNOSTIC_SIZE or record_length != DIAGNOSTIC_SIZE:
@@ -213,3 +238,26 @@ def decode(data: bytes) -> Record:
         fields = struct.unpack_from("<I6sHIIQ15I", data, 16)
         return DiagnosticRecord(*common, *fields)
     return Common(*common)
+
+
+def encode_sync(record: SyncRecord) -> bytes:
+    """Serialize a Phase-6 SYNC record for deterministic tests/tools."""
+    if record.sync_version != 1 or record.sync_state not in range(5):
+        raise ProtocolError("unsupported SYNC contract or state")
+    output = bytearray(SYNC_SIZE)
+    struct.pack_into("<4sBBHII", output, 0, MAGIC, VERSION, SYNC,
+                     SYNC_SIZE, SYNC_SIZE, 0)
+    struct.pack_into(
+        "<I6sBBIIQQqqi10I", output, 16,
+        record.node_id, record.receiver_mac, record.sync_version,
+        record.sync_state, record.boot_id, record.sync_sequence,
+        record.local_timestamp_us, record.leader_timestamp_us,
+        record.raw_offset_us, record.smoothed_offset_us,
+        record.drift_milli_ppm, record.accepted_samples,
+        record.rejected_samples, record.last_sync_age_us,
+        record.leader_node_id, record.leader_session_id,
+        record.follower_session_id, record.beacon_sequence,
+        record.jitter_us, record.transport_rx, record.transport_drops,
+    )
+    struct.pack_into("<I", output, 12, crc32c(output))
+    return bytes(output)

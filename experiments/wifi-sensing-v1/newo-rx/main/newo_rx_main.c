@@ -36,6 +36,8 @@
 #include "collector_discovery.h"
 #include "track_protocol.h"
 #include "track_control_state.h"
+#include "sync_protocol.h"
+#include "sync_estimator.h"
 
 #ifndef CONFIG_ESP_WIFI_CSI_ENABLED
 #error "CONFIG_ESP_WIFI_CSI_ENABLED must be enabled for the Newo CSI receiver"
@@ -124,6 +126,7 @@ static uint8_t s_ap_primary;
 static uint8_t s_ap_secondary;
 static uint32_t s_gateway_address;
 static uint32_t s_boot_id;
+static uint32_t s_sync_session_id;
 static int s_udp_socket = -1;
 static esp_ping_handle_t s_ping_handle;
 
@@ -159,6 +162,10 @@ static volatile bool s_probe_in_flight;
 static volatile bool s_track_active = true;
 #if CONFIG_NEWO_ESPNOW_TRANSMIT
 static newo_track_control_state_t s_track_control_state;
+static newo_sync_estimator_t s_sync_estimator;
+static portMUX_TYPE s_sync_lock = portMUX_INITIALIZER_UNLOCKED;
+static volatile uint32_t s_sync_record_sequence;
+#define NEWO_SYNC_BEACON_PERIOD_US 500000u
 #endif
 
 static portMUX_TYPE s_sample_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -568,6 +575,35 @@ static void send_status_and_log(uint32_t *previous_callbacks, uint32_t *previous
                  diagnostic.diagnostic_sequence);
     }
 
+#if CONFIG_NEWO_ESPNOW_TRANSMIT
+    newo_sync_estimator_t sync;
+    portENTER_CRITICAL(&s_sync_lock);
+    sync = s_sync_estimator;
+    portEXIT_CRITICAL(&s_sync_lock);
+    uint64_t sync_now = (uint64_t)esp_timer_get_time();
+    ncsi_sync_record_t sync_record = {
+        .node_id = CONFIG_NEWO_NODE_ID, .sync_version = 1,
+        .sync_state = newo_sync_estimator_quality(&sync, sync_now, NEWO_SYNC_BEACON_PERIOD_US),
+        .boot_id = s_boot_id, .sync_sequence = counter_increment(&s_sync_record_sequence),
+        .local_timestamp_us = sync.last_local_us, .leader_timestamp_us = sync.last_leader_us,
+        .raw_offset_us = sync.raw_offset_us, .smoothed_offset_us = sync.smoothed_offset_us,
+        .drift_milli_ppm = sync.drift_milli_ppm, .accepted_samples = sync.accepted,
+        .rejected_samples = sync.rejected,
+        .last_sync_age_us = newo_sync_estimator_age(&sync, sync_now),
+        .leader_node_id = sync.leader_node_id, .leader_session_id = sync.leader_session_id,
+        .follower_session_id = sync.follower_session_id,
+        .beacon_sequence = sync.last_sequence, .jitter_us = newo_sync_estimator_jitter(&sync),
+        .transport_rx = sync.transport_rx, .transport_drops = sync.transport_drops,
+    };
+    memcpy(sync_record.receiver_mac, status.receiver_mac, 6);
+    uint8_t sync_wire[NCSI_SYNC_RECORD_SIZE];
+    size_t sync_length = ncsi_serialize_sync(&sync_record, sync_wire, sizeof(sync_wire));
+    if (!sync_length || !udp_send_record(sync_wire, sync_length)) {
+        ESP_LOGW(TAG, "sync UDP record not delivered sequence=%" PRIu32,
+                 sync_record.sync_sequence);
+    }
+#endif
+
     last_sample_t sample;
     portENTER_CRITICAL(&s_sample_lock);
     sample = s_last_sample;
@@ -674,6 +710,22 @@ static void espnow_receive_callback(const esp_now_recv_info_t *info,
                                     const uint8_t *data, int length)
 {
 #if CONFIG_NEWO_ESPNOW_TRANSMIT
+    if (info != NULL && data != NULL && s_peer_enabled &&
+        memcmp(info->src_addr, s_peer_mac, 6) == 0 && length >= 4 &&
+        memcmp(data, "NSYN", 4) == 0) {
+        newo_sync_beacon_t beacon;
+        uint64_t received_us = (uint64_t)esp_timer_get_time();
+        portENTER_CRITICAL(&s_sync_lock);
+        if (newo_sync_beacon_decode(data, (size_t)length, &beacon)) {
+            (void)newo_sync_estimator_accept(&s_sync_estimator, &beacon, received_us);
+        } else {
+            s_sync_estimator.transport_rx++;
+            s_sync_estimator.transport_drops++;
+            s_sync_estimator.rejected++;
+        }
+        portEXIT_CRITICAL(&s_sync_lock);
+        return;
+    }
     newo_track_control_t control;
     if (info != NULL && s_peer_enabled && memcmp(info->src_addr, s_peer_mac, 6) == 0 &&
         newo_track_control_decode(data, (size_t)length, &control) && !control.ack) {
@@ -960,6 +1012,9 @@ void app_main(void)
      * temporary CSI firmware leaves production Newo state untouched.
      */
     s_boot_id = esp_random();
+    s_sync_session_id = esp_random();
+    if (!s_sync_session_id) s_sync_session_id = 1;
+    newo_sync_estimator_init(&s_sync_estimator, s_sync_session_id);
 
     ESP_LOGI(TAG, "standalone measurement plane; no inference or production integration");
     initialise_wifi();

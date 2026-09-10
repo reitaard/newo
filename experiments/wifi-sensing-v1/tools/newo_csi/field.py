@@ -35,6 +35,12 @@ def render_field(state: LiveState, recorder: SessionRecorder | None,
              f"O:{state.occupancy} A:{state.activity}",
              f"ROOM:{room} {confidence:.2f}  PRES:UNSUPPORTED",
              f"CAL:{calibration['status']} {calibration['reason'] or ''}"]
+    sync = state.sync.summary()
+    drift = sync.get("drift_ppm")
+    lines.append(f"SYNC L:N F:{sync['state'].replace('SYNC_', '')} "
+                 f"off:{sync.get('final_offset_us', '--')}us "
+                 f"ppm:{'--' if drift is None else round(drift, 1)} "
+                 f"age:{sync.get('last_sync_age_us', '--')}us")
     if calibration_left is not None:
         lines.append(f"CAL {max(0.0, calibration_left):.0f}s")
     snapshots = state.pipeline.snapshots()

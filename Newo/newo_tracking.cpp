@@ -3,16 +3,21 @@
 #include <WiFiUdp.h>
 #include <esp_now.h>
 #include <esp_random.h>
+#include <esp_timer.h>
 #include <esp_wifi.h>
 #include "newo_collector_discovery.h"
 #include "newo_config.h"
 #include "newo_csi_measurement.h"
 #include "newo_peer_radio.h"
+extern "C" {
+#include "../experiments/wifi-sensing-v1/newo-rx/main/sync_protocol.h"
+}
 
 namespace {
 TaskHandle_t senderTask; volatile bool senderStop,senderExited; WiFiUDP udp;
 TaskHandle_t peerMonitorTask; volatile bool peerMonitorStop,peerMonitorExited;
 uint8_t peerMac[6]; SemaphoreHandle_t peerAck; uint32_t peerSession,peerSequence;
+uint32_t syncSession,syncSequence,syncSent,syncDrops;
 uint8_t activeApMac[6];
 volatile uint32_t awaitingSequence; volatile bool peerAckState,peerAckApplied;
 uint32_t transportSent,transportDrops;
@@ -20,13 +25,13 @@ bool parseMac(const char*t,uint8_t*m){unsigned v[6];char x;if(!t||sscanf(t,"%2x:
 void put32(uint8_t*p,uint32_t v){p[0]=v;p[1]=v>>8;p[2]=v>>16;p[3]=v>>24;}
 uint32_t get32(const uint8_t*p){return(uint32_t)p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16|(uint32_t)p[3]<<24;}
 void onPeer(const esp_now_recv_info_t*i,const uint8_t*d,int n){if(!i||memcmp(i->src_addr,peerMac,6)||n!=24||memcmp(d,"NTRK",4)||d[4]!=2||d[6]!=1||get32(d+8)!=peerSession||get32(d+12)!=awaitingSequence||get32(d+16)||get32(d+20)!=ncsi_crc32c(d,20))return;peerAckState=d[5];peerAckApplied=d[7];xSemaphoreGive(peerAck);}
-bool beginPeer(){if(!parseMac(NewoConfig::TRACK_PEER_MAC,peerMac))return false;if(!peerAck)peerAck=xSemaphoreCreateBinary();return peerAck&&newoPeerRadioAcquire(peerMac,onPeer);}
+bool beginPeer(){if(!parseMac(NewoConfig::TRACK_PEER_MAC,peerMac))return false;if(!peerAck)peerAck=xSemaphoreCreateBinary();if(!peerAck||!newoPeerRadioAcquire(peerMac))return false;if(!newoPeerRadioRegisterConsumer(newoPeerMagic('N','T','R','K'),onPeer)){newoPeerRadioRelease();return false;}NewoPeerIdentity identity={2,3,0,{0},NewoPeerRole::FOLLOWER};memcpy(identity.mac,peerMac,6);newoPeerRadioSetIdentity(identity);return true;}
 void endPeer(){newoPeerRadioRelease();}
 bool requestPeer(bool active){uint8_t b[24]={};memcpy(b,"NTRK",4);b[4]=2;b[5]=active;put32(b+8,peerSession);uint32_t seq=++peerSequence;put32(b+12,seq);put32(b+20,ncsi_crc32c(b,20));awaitingSequence=seq;while(xSemaphoreTake(peerAck,0)==pdTRUE){}for(int a=0;a<3;a++)if(newoPeerRadioSend(b,sizeof(b))==ESP_OK&&xSemaphoreTake(peerAck,pdMS_TO_TICKS(450))==pdTRUE&&peerAckApplied&&peerAckState==active)return true;return false;}
 void sender(void*){uint8_t wire[NCSI_MAX_RECORD_SIZE];NewoCsiSlot slot;while(!senderStop||!newoCsiMeasurementEmpty()){if(!newoCsiMeasurementPop(slot)){vTaskDelay(pdMS_TO_TICKS(2));continue;}size_t n=ncsi_serialize_csi(&slot.record,wire,sizeof(wire));auto d=newoCollectorSnapshot();IPAddress ip(d.address);bool ok=n&&udp.beginPacket(ip,d.port)==1&&udp.write(wire,n)==n&&udp.endPacket()==1;__atomic_fetch_add(ok?&transportSent:&transportDrops,1,__ATOMIC_RELAXED);}senderExited=true;senderTask=nullptr;vTaskDelete(nullptr);}
 }
 
-void NewoTracking::begin(){peerSession=esp_random();if(!peerSession)peerSession=1;state_=State::OFF;peerStatus_="stopped";Serial.println("[track] state=TRACK_OFF resources=released");}
+void NewoTracking::begin(){peerSession=esp_random();if(!peerSession)peerSession=1;syncSession=esp_random();if(!syncSession)syncSession=1;syncSequence=syncSent=syncDrops=0;state_=State::OFF;peerStatus_="stopped";Serial.printf("[track] state=TRACK_OFF resources=released sync_role=leader sync_session=%lu\n",syncSession);}
 bool NewoTracking::start(){
   const uint8_t*currentBssid=WiFi.status()==WL_CONNECTED?WiFi.BSSID():nullptr;if(state_==State::ACTIVE&&currentBssid&&memcmp(currentBssid,activeApMac,6)==0)return true;if(state_==State::ACTIVE)stop(false);if(WiFi.status()!=WL_CONNECTED){lastError_="wifi_unavailable";return false;}uint8_t receiver[6],ap[6];WiFi.macAddress(receiver);const uint8_t*bssid=WiFi.BSSID();if(!bssid||!parseMac(NewoConfig::TRACK_PEER_MAC,peerMac)){lastError_="identity_unavailable";return false;}memcpy(ap,bssid,6);memcpy(activeApMac,bssid,6);
   if(!beginPeer()){lastError_="espnow_unavailable";return false;}if(!requestPeer(true)){peerStatus_="unavailable";lastError_="newo2_start_unconfirmed";endPeer();return false;}peerStatus_="active";
@@ -44,7 +49,7 @@ bool NewoTracking::stop(bool coordinatePeer){
 }
 NewoTracking::Result NewoTracking::apply(const char*a,const char*epoch,uint32_t seq){if(!a||!epoch||!*epoch||!seq)return{false,false,"invalid_control",peerStatus_};if(strcmp(a,"on")&&strcmp(a,"off")&&strcmp(a,"toggle")&&strcmp(a,"status"))return{false,false,"invalid_action",peerStatus_};if(!strcmp(epoch,commandEpoch_)&&seq<commandSequence_)return{false,false,"stale_control",peerStatus_};if(!strcmp(epoch,commandEpoch_)&&seq==commandSequence_)return{lastApplied_,true,lastError_,peerStatus_};strlcpy(commandEpoch_,epoch,sizeof(commandEpoch_));commandSequence_=seq;bool target=!strcmp(a,"on")||(!strcmp(a,"toggle")&&state_==State::OFF);lastApplied_=!strcmp(a,"status")?true:(target?start():stop());return{lastApplied_,false,lastApplied_?lastError_:lastError_?lastError_:"transition_failed",peerStatus_};}
 NewoTracking::Metrics NewoTracking::metrics()const{auto c=newoCsiMeasurementCounters();auto d=newoCollectorSnapshot();return{c.callbacks,c.accepted,c.peerGateDrops,c.ringDrops,transportDrops,transportSent,c.ringHighWater,ESP.getFreeHeap(),ESP.getMinFreeHeap(),ESP.getFreePsram(),senderTask?uxTaskGetStackHighWaterMark(senderTask)*sizeof(StackType_t):0,d.source,newoPeerRadioOwned()?"owned":"released"};}
-void NewoTracking::loop(){static uint32_t last,previousCallbacks,previousAp,previousPeer;const uint8_t*bssid=WiFi.status()==WL_CONNECTED?WiFi.BSSID():nullptr;if(state_==State::ACTIVE&&(!bssid||memcmp(bssid,activeApMac,6)!=0)){Serial.println("[track] wifi_identity_changed releasing_local_resources");stop(false);return;}if(state_==State::ACTIVE&&millis()-last>=30000){uint32_t now=millis(),elapsed=last?now-last:30000;auto m=metrics();auto c=newoCsiMeasurementCounters();auto delta=[](uint32_t current,uint32_t previous){return current>=previous?current-previous:current;};float scale=1000.0f/elapsed;Serial.printf("[track] active callback_hz=%.1f ap_hz=%.1f peer_hz=%.1f ap=%lu peer=%lu unrelated=%lu peer_gate=%lu ring=%lu/%lu transport=%lu/%lu heap=%lu min=%lu psram=%lu stack=%lu collector=%s espnow=%s\n",delta(c.callbacks,previousCallbacks)*scale,delta(c.pathAccepted[0],previousAp)*scale,delta(c.pathAccepted[2],previousPeer)*scale,c.pathAccepted[0],c.pathAccepted[2],c.unrelated,c.peerGateDrops,m.ringHighWater,m.ringDrops,m.sent,m.transportDrops,m.freeHeap,m.minFreeHeap,m.freePsram,m.taskStackBytes,m.collectorSource,m.espNowState);last=now;previousCallbacks=c.callbacks;previousAp=c.pathAccepted[0];previousPeer=c.pathAccepted[2];}}
+void NewoTracking::loop(){static uint32_t last,previousCallbacks,previousAp,previousPeer;const uint8_t*bssid=WiFi.status()==WL_CONNECTED?WiFi.BSSID():nullptr;if(state_==State::ACTIVE&&(!bssid||memcmp(bssid,activeApMac,6)!=0)){Serial.println("[track] wifi_identity_changed releasing_local_resources");stop(false);return;}if(state_==State::ACTIVE&&millis()-last>=30000){uint32_t now=millis(),elapsed=last?now-last:30000;auto m=metrics();auto c=newoCsiMeasurementCounters();auto radio=newoPeerRadioMetrics();auto delta=[](uint32_t current,uint32_t previous){return current>=previous?current-previous:current;};float scale=1000.0f/elapsed;Serial.printf("[track] active callback_hz=%.1f ap_hz=%.1f peer_hz=%.1f ap=%lu peer=%lu unrelated=%lu peer_gate=%lu ring=%lu/%lu transport=%lu/%lu heap=%lu min=%lu psram=%lu stack=%lu collector=%s espnow=%s sync=leader:%lu tx:%lu drop:%lu radio_rx:%lu routed:%lu unmatched:%lu\n",delta(c.callbacks,previousCallbacks)*scale,delta(c.pathAccepted[0],previousAp)*scale,delta(c.pathAccepted[2],previousPeer)*scale,c.pathAccepted[0],c.pathAccepted[2],c.unrelated,c.peerGateDrops,m.ringHighWater,m.ringDrops,m.sent,m.transportDrops,m.freeHeap,m.minFreeHeap,m.freePsram,m.taskStackBytes,m.collectorSource,m.espNowState,syncSession,syncSent,syncDrops,radio.received,radio.routed,radio.unmatched);last=now;previousCallbacks=c.callbacks;previousAp=c.pathAccepted[0];previousPeer=c.pathAccepted[2];}}
 
 void NewoTracking::peerMonitorEntry(void* context){static_cast<NewoTracking*>(context)->peerMonitorLoop();}
-void NewoTracking::peerMonitorLoop(){while(!peerMonitorStop){for(int i=0;i<300&&!peerMonitorStop;i++)vTaskDelay(pdMS_TO_TICKS(100));if(peerMonitorStop)break;bool active=requestPeer(true);peerStatus_=active?"active":"unavailable";Serial.printf("[track] peer_refresh=%s\n",peerStatus_);}peerMonitorExited=true;peerMonitorTask=nullptr;vTaskDelete(nullptr);}
+void NewoTracking::peerMonitorLoop(){TickType_t next=xTaskGetTickCount();uint32_t refreshAt=millis()+30000;while(!peerMonitorStop){newo_sync_beacon_t beacon={1,syncSession,++syncSequence,(uint64_t)esp_timer_get_time(),3};uint8_t wire[NEWO_SYNC_BEACON_SIZE];size_t length=newo_sync_beacon_encode(&beacon,wire,sizeof(wire));if(length&&newoPeerRadioSend(wire,length)==ESP_OK)syncSent++;else syncDrops++;if((int32_t)(millis()-refreshAt)>=0){bool active=requestPeer(true);peerStatus_=active?"active":"unavailable";Serial.printf("[track] peer_refresh=%s sync_sequence=%lu\n",peerStatus_,syncSequence);refreshAt=millis()+30000;}vTaskDelayUntil(&next,pdMS_TO_TICKS(500));}peerMonitorExited=true;peerMonitorTask=nullptr;vTaskDelete(nullptr);}

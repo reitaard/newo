@@ -13,8 +13,9 @@ from typing import Any, Iterable
 from .archive import ArchivedRecord, iter_archive
 from .annotations import DEFAULT_ANNOTATIONS_DIR, load_annotations
 from .dsp import CsiPipeline, Geometry
-from .protocol import CsiRecord, PATH_NAMES, decode
+from .protocol import CsiRecord, PATH_NAMES, SyncRecord, decode
 from .statistics import CaptureStats
+from .sync import SyncAnalyzer
 
 STATES = ("QUIET", "RF_CHANGE", "MOTION_CANDIDATE", "LOW_CONFIDENCE", "REPOSITIONING")
 ACTIVE_STATES = ("RF_CHANGE", "MOTION_CANDIDATE")
@@ -131,6 +132,7 @@ def evaluate_records(items: Iterable[ArchivedRecord], window_seconds: float,
     if window_seconds <= 0:
         raise ValueError("window_seconds must be positive")
     pipeline = CsiPipeline(top_k=top_k, window_seconds=window_seconds)
+    sync = SyncAnalyzer()
     if calibration:
         pipeline.load_calibration(calibration, placement, room_id)
     capture = CaptureStats()
@@ -144,6 +146,9 @@ def evaluate_records(items: Iterable[ArchivedRecord], window_seconds: float,
     path_first: dict[int, int] = {}
     path_last: dict[int, int] = {}
     path_samples: Counter[int] = Counter()
+    path_aligned_samples: Counter[int] = Counter()
+    path_aligned_first: dict[int, float] = {}
+    path_aligned_last: dict[int, float] = {}
     geometry_counts_by_path: dict[int, Counter[str]] = defaultdict(Counter)
     previous_geometry: dict[int, str] = {}
     geometry_transitions: Counter[int] = Counter()
@@ -186,7 +191,8 @@ def evaluate_records(items: Iterable[ArchivedRecord], window_seconds: float,
                         "window_duration_seconds": round((end_ns - start_ns) / 1e9, 6),
                         "partial": not complete, "included_in_aggregate": complete,
                         "paths": paths, "fused_state": fused_state,
-                        "fusion_confidence": confidence})
+                        "fusion_confidence": confidence,
+                        "synchronization": sync.status(2)})
 
     for item in itertools.chain((first_item,), iterator):
         last_ns = item.host_monotonic_ns
@@ -197,11 +203,19 @@ def evaluate_records(items: Iterable[ArchivedRecord], window_seconds: float,
         record = decode(item.record)
         capture.add(record, item.host_monotonic_ns)
         window_has_records = True
+        if isinstance(record, SyncRecord):
+            sync.add(record, item.host_monotonic_ns)
+            continue
         if not isinstance(record, CsiRecord):
             continue
         path_first.setdefault(record.path_id, item.host_monotonic_ns)
         path_last[record.path_id] = item.host_monotonic_ns
         path_samples[record.path_id] += 1
+        alignment = sync.evidence(record)["aligned_newo_timestamp_us"]
+        if alignment is not None:
+            path_aligned_samples[record.path_id] += 1
+            path_aligned_first.setdefault(record.path_id, alignment)
+            path_aligned_last[record.path_id] = alignment
         identity = Geometry.from_record(record).identity
         geometry_counts_by_path[record.path_id][identity] += 1
         if identity != previous_geometry.get(record.path_id):
@@ -235,6 +249,12 @@ def evaluate_records(items: Iterable[ArchivedRecord], window_seconds: float,
             "usable_duration_seconds": round(duration, 6),
             "sample_count": sample_count,
             "effective_sample_rate_hz": 0.0 if duration <= 0 else round((sample_count - 1) / duration, 6),
+            "aligned_sample_count": path_aligned_samples[path_id],
+            "aligned_sample_fraction": (path_aligned_samples[path_id] / sample_count
+                                        if sample_count else 0.0),
+            "aligned_newo_time_range_us": ({"first": path_aligned_first[path_id],
+                                             "last": path_aligned_last[path_id]}
+                                            if path_id in path_aligned_first else None),
             "signal_quality_distribution": dict(sorted(quality.items())),
             "motion_score": {key: value for key, value in (
                 ("min", min(scores) if scores else None), ("median", percentile(scores, .5)),
@@ -274,6 +294,7 @@ def evaluate_records(items: Iterable[ArchivedRecord], window_seconds: float,
             "latest_device_drop_counters": summary["latest_device_drop_counters"],
         },
         "calibration": pipeline.calibration_report(),
+        "sync": sync.summary(round(max(0, last_ns - first_ns) / 1e9, 6)),
         "partial_window_count": sum(row["partial"] for row in windows),
         "interpretation_boundary": "RF path change/agreement only; no person, identity, location, or nuisance-class inference",
     }
@@ -291,6 +312,8 @@ def _empty_result(window_seconds: float) -> dict[str, Any]:
             "calibration": {"status": "UNAVAILABLE", "reason": "empty archive",
                             "metadata": {}, "age_seconds": None,
                             "matched_paths": [], "mismatched_geometries": []},
+            "sync": {"state": "UNAVAILABLE", "sample_count": 0,
+                     "interpretation": "no SYNC records; cross-node temporal fusion unavailable"},
             "partial_window_count": 0,
             "interpretation_boundary": "empty archive; no inference"}
 
@@ -306,6 +329,10 @@ def human_report(result: dict[str, Any]) -> str:
     calibration = inference.get("calibration", {})
     lines.append(f"calibration={calibration.get('status', 'UNAVAILABLE')} "
                  f"reason={calibration.get('reason', '-')} age_seconds={calibration.get('age_seconds')}")
+    sync = inference.get("sync", {})
+    lines.append(f"sync={sync.get('state', 'UNAVAILABLE')} samples={sync.get('sample_count', 0)} "
+                 f"offset_us={sync.get('final_offset_us')} drift_ppm={sync.get('drift_ppm')} "
+                 f"residual_us={sync.get('residual_us')}")
     for name, path in inference["paths"].items():
         score = path["motion_score"]
         lines.append(f"{name}: samples={path['sample_count']} rate={path['effective_sample_rate_hz']:.2f}Hz "

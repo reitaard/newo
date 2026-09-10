@@ -15,8 +15,9 @@ from .archive import ArchiveWriter, ArchivedRecord, iter_archive
 from .dsp import CsiPipeline
 from .discovery import CollectorAnnouncer
 from .metadata import capture_metadata
-from .protocol import CsiRecord, DiagnosticRecord, PATH_NAMES, ProtocolError, Record, StatusRecord, decode
+from .protocol import CsiRecord, DiagnosticRecord, PATH_NAMES, ProtocolError, Record, StatusRecord, SyncRecord, decode
 from .statistics import CaptureStats
+from .sync import SyncAnalyzer
 
 EVENT_TYPES = ("DOOR_OPEN", "DOOR_CLOSE", "ENTER", "EXIT", "WALK", "WAVE", "CUSTOM")
 
@@ -95,6 +96,7 @@ class LiveState:
         self.channels: set[int] = set()
         self.latest_status: dict[int, StatusRecord] = {}
         self.latest_diagnostic: dict[int, DiagnosticRecord] = {}
+        self.sync = SyncAnalyzer()
         self.collector_state = "STARTING"
 
     @property
@@ -123,6 +125,8 @@ class LiveState:
             self.latest_status[record.node_id] = record
         elif isinstance(record, DiagnosticRecord):
             self.latest_diagnostic[record.node_id] = record
+        elif isinstance(record, SyncRecord):
+            self.sync.add(record, host_ns)
 
 
 class TerminalInput:
@@ -189,12 +193,16 @@ def render(state: LiveState, recorder: SessionRecorder | None,
     udp = "OK" if now - state.last_udp_monotonic < 3 else "NO DATA"
     room_state, confidence = state.pipeline.fused(state.repositioning)
     calibration = state.pipeline.calibration_report()
-    lines = ["Newo CSI Phase 5 research console",
+    lines = ["Newo CSI Phase 6 research console",
              f"Newo: {online(1):7}  Newo2: {online(2):7}  UDP: {udp:7}  channel: {','.join(map(str, sorted(state.channels))) or '-'}",
              f"placement={state.placement} occupancy={state.occupancy} activity={state.activity}",
              f"room={room_state} confidence={confidence:.2f} presence=UNSUPPORTED calibration={calibration['status']}",
              f"calibration_reason={calibration['reason'] or '-'} age_s={calibration['age_seconds']}",
              f"recording={'ON ' + recorder.session_id if recorder else 'OFF'} records={state.records} rejected={state.rejected}"]
+    sync = state.sync.summary()
+    drift = sync.get("drift_ppm")
+    lines.append(f"sync Newo=LEADER Newo2={sync['state']} offset_us={sync.get('final_offset_us', '--')} "
+                 f"drift_ppm={'--' if drift is None else round(drift, 3)} age_us={sync.get('last_sync_age_us', '--')}")
     if calibration_left is not None:
         lines.append(f"CALIBRATING quiet/empty baseline: {max(0.0, calibration_left):.1f}s remaining")
     lines += ["", "PATH             Hz    RSSI  geometry                         sequence        score/state              quality  K"]

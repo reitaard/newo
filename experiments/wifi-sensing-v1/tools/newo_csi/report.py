@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 REPORT_CONTRACT = "newo_csi_derived_report_v1"
-ANALYSIS_VERSION = "phase5-v1"
+ANALYSIS_VERSION = "phase6-v1"
 VARIABLE_STATES = {"RF_CHANGE", "MOTION_CANDIDATE"}
 
 
@@ -27,13 +27,18 @@ def _ranked_events(inference: dict[str, Any]) -> list[dict[str, Any]]:
         if current is None:
             current = {"start_elapsed_seconds": start, "end_elapsed_seconds": window["elapsed_seconds"],
                        "paths": set(active_paths), "peak_path_count": len(active_paths),
-                       "peak_fusion_confidence": window.get("fusion_confidence", 0.0)}
+                       "peak_fusion_confidence": window.get("fusion_confidence", 0.0),
+                       "cross_node_sync_trustworthy": window.get("synchronization", {}).get(
+                           "cross_node_alignment_available", False)}
         else:
             current["end_elapsed_seconds"] = window["elapsed_seconds"]
             current["paths"].update(active_paths)
             current["peak_path_count"] = max(current["peak_path_count"], len(active_paths))
             current["peak_fusion_confidence"] = max(current["peak_fusion_confidence"],
                                                      window.get("fusion_confidence", 0.0))
+            current["cross_node_sync_trustworthy"] = (
+                current["cross_node_sync_trustworthy"] and
+                window.get("synchronization", {}).get("cross_node_alignment_available", False))
     if current:
         events.append(current)
     for event in events:
@@ -75,7 +80,10 @@ def build_derived_report(evaluation: dict[str, Any]) -> dict[str, Any]:
         "paths": paths,
         "transport": inference.get("transport", {}),
         "calibration": inference.get("calibration", {}),
-        "sync": {"state": "NOT_IMPLEMENTED", "phase": "Phase 6 placeholder"},
+        "sync": inference.get("sync", {
+            "state": "UNAVAILABLE", "sample_count": 0,
+            "interpretation": "no SYNC records; cross-node temporal fusion unavailable",
+        }),
         "interval_summary": inference.get("nuisance_patterns", {}),
         "ranked_rf_events": _ranked_events(inference),
         "operator_annotations": evaluation.get("operator_post_hoc_annotations", []),
@@ -101,6 +109,7 @@ def write_report_artifacts(report: dict[str, Any], output_dir: Path) -> list[Pat
     lines = [f"# Newo CSI report: {session_id}", "",
              f"Duration: {report['capture']['duration_seconds']} s",
              f"Calibration: {report['calibration'].get('status', 'UNAVAILABLE')}",
+             f"Synchronization: {report['sync'].get('state', 'UNAVAILABLE')}",
              f"Geometry stable: {report['profile']['geometry_stable']}", "", "## RF paths", ""]
     for name, path in report["paths"].items():
         lines.append(f"- {name}: {path['effective_sample_rate_hz']} Hz; samples={path['sample_count']}; geometry switches={path['geometry_switch_count']}")

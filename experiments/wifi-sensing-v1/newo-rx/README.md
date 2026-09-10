@@ -20,6 +20,8 @@ The target:
 - sends versioned NCSI CSI/STATUS/DIAGNOSTIC records to the host;
 - can generate controlled gateway traffic;
 - can receive versioned ESP-NOW probes from Newo2.
+- as Newo2, accepts versioned Newo leader sync beacons and emits bounded NCSI
+  SYNC evidence without rewriting CSI timestamps.
 
 ## Configuration
 
@@ -96,6 +98,11 @@ cc -std=c11 -Wall -Wextra -Werror \
 cc -std=c11 -Wall -Wextra -Werror \
   -I main host_tests/rate_gate_test.c main/rate_gate.c -o rate_gate_test
 ./rate_gate_test
+
+cc -std=c11 -Wall -Wextra -Werror -I main \
+  host_tests/sync_protocol_test.c main/sync_protocol.c main/sync_estimator.c \
+  main/ncsi_protocol.c -lm -o sync_protocol_test
+./sync_protocol_test
 ```
 
 ## Physical flashing boundary

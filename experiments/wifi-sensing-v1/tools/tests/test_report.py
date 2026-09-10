@@ -27,11 +27,12 @@ class DerivedReportTests(unittest.TestCase):
                              "paths": {"ROUTER_NEWO": {"state": "RF_CHANGE"}}}],
                 "transport": {"record_counts": {"csi": 20}},
                 "calibration": {"status": "VALID"}, "nuisance_patterns": {},
+                "sync": {"state": "SYNC_VALID", "sample_count": 9},
                 "interpretation_boundary": "RF change only; no person inference",
             },
         }
         report = build_derived_report(evaluation)
-        self.assertEqual(report["sync"]["state"], "NOT_IMPLEMENTED")
+        self.assertEqual(report["sync"]["state"], "SYNC_VALID")
         self.assertEqual(report["operator_annotations"], [{"label": "WALK"}])
         self.assertEqual(report["ranked_rf_events"][0]["paths"], ["ROUTER_NEWO"])
         self.assertIn("no person", report["interpretation_boundary"])

@@ -130,6 +130,25 @@ int main(void)
     assert(get_u32(wire + 100) == 25);
     verify_record_crc(wire, length);
 
+    ncsi_sync_record_t sync = {
+        .node_id = 2, .receiver_mac = {2, 2, 2, 2, 2, 2},
+        .sync_version = 1, .sync_state = 2, .boot_id = 10,
+        .sync_sequence = 11, .local_timestamp_us = 1000000,
+        .leader_timestamp_us = 1025000, .raw_offset_us = 25000,
+        .smoothed_offset_us = 24900, .drift_milli_ppm = -1250,
+        .accepted_samples = 12, .rejected_samples = 1,
+        .last_sync_age_us = 500000, .leader_node_id = 1,
+        .leader_session_id = 20, .follower_session_id = 21,
+        .beacon_sequence = 12, .jitter_us = 80,
+        .transport_rx = 13, .transport_drops = 2,
+    };
+    length = ncsi_serialize_sync(&sync, wire, sizeof(wire));
+    assert(length == NCSI_SYNC_RECORD_SIZE && wire[5] == NCSI_RECORD_SYNC);
+    assert(wire[26] == 1 && wire[27] == 2);
+    assert(get_u32(wire + 68) == (uint32_t)-1250);
+    assert(get_u32(wire + 88) == 20 && get_u32(wire + 108) == 2);
+    verify_record_crc(wire, length);
+
     puts("ncsi protocol tests passed");
     return 0;
 }

@@ -22,6 +22,8 @@ static void put_u64(uint8_t *dst, uint64_t value)
     put_u32(dst + 4, (uint32_t)(value >> 32));
 }
 
+static void put_i64(uint8_t *dst, int64_t value) { put_u64(dst, (uint64_t)value); }
+
 static void put_common_header(uint8_t *dst, uint8_t type, uint16_t header_length,
                               uint32_t record_length)
 {
@@ -188,4 +190,23 @@ size_t ncsi_serialize_diagnostic(const ncsi_diagnostic_record_t *r,
     put_u32(out + 100, r->association_epoch);
     finish_crc(out, NCSI_DIAGNOSTIC_RECORD_SIZE);
     return NCSI_DIAGNOSTIC_RECORD_SIZE;
+}
+
+size_t ncsi_serialize_sync(const ncsi_sync_record_t *r, uint8_t *out, size_t capacity)
+{
+    if (r == NULL || out == NULL || capacity < NCSI_SYNC_RECORD_SIZE || r->sync_version != 1) return 0;
+    memset(out, 0, NCSI_SYNC_RECORD_SIZE);
+    put_common_header(out, NCSI_RECORD_SYNC, NCSI_SYNC_RECORD_SIZE, NCSI_SYNC_RECORD_SIZE);
+    put_u32(out + 16, r->node_id); memcpy(out + 20, r->receiver_mac, 6);
+    out[26] = r->sync_version; out[27] = r->sync_state;
+    put_u32(out + 28, r->boot_id); put_u32(out + 32, r->sync_sequence);
+    put_u64(out + 36, r->local_timestamp_us); put_u64(out + 44, r->leader_timestamp_us);
+    put_i64(out + 52, r->raw_offset_us); put_i64(out + 60, r->smoothed_offset_us);
+    put_u32(out + 68, (uint32_t)r->drift_milli_ppm);
+    put_u32(out + 72, r->accepted_samples); put_u32(out + 76, r->rejected_samples);
+    put_u32(out + 80, r->last_sync_age_us); put_u32(out + 84, r->leader_node_id);
+    put_u32(out + 88, r->leader_session_id); put_u32(out + 92, r->follower_session_id);
+    put_u32(out + 96, r->beacon_sequence); put_u32(out + 100, r->jitter_us);
+    put_u32(out + 104, r->transport_rx); put_u32(out + 108, r->transport_drops);
+    finish_crc(out, NCSI_SYNC_RECORD_SIZE); return NCSI_SYNC_RECORD_SIZE;
 }

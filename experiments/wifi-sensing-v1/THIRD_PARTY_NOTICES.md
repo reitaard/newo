@@ -8,6 +8,11 @@ Reviewed revision: `d613a576ea848f96a9b15bac4e7f60b6be7c08e7`
 
 RuView measurement-plane concepts informed this experiment design, specifically ESP32-S3 CSI configuration and callbacks, invalid-first-word sanitation, source-MAC filtering, connected-AP channel detection, gateway self-ping for controlled OFDM traffic, callback rate limiting, sequence and RF metadata capture, fixed ring buffers and drop diagnostics, independent raw/DSP cadences, phase extraction/unwrapping, running statistics, and top-K subcarrier selection.
 
+Phase 6 also reviewed RuView's documented one-way leader beacons, offset EMA,
+freshness state, and separate synchronization telemetry. Newo implements an
+independent `NSYN`/NCSI contract and fixed-leader session model; no RuView wire
+format or synchronization source code was copied.
+
 No RuView wire format was copied. Phase 2's standalone receiver and Phase 3's
 shared Newo2 measurement plane adapt the narrow patterns listed above in
 `newo-rx/main/newo_rx_main.c`; that source carries an attribution header. The

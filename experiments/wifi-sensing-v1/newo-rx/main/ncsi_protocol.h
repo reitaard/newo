@@ -18,6 +18,7 @@
 #define NCSI_CSI_HEADER_SIZE 88u
 #define NCSI_STATUS_RECORD_SIZE 80u
 #define NCSI_DIAGNOSTIC_RECORD_SIZE 104u
+#define NCSI_SYNC_RECORD_SIZE 112u
 #define NCSI_MAX_CSI_BYTES 612u
 #define NCSI_MAX_RECORD_SIZE (NCSI_CSI_HEADER_SIZE + NCSI_MAX_CSI_BYTES)
 
@@ -117,6 +118,30 @@ typedef struct {
     uint32_t association_epoch;
 } ncsi_diagnostic_record_t;
 
+typedef struct {
+    uint32_t node_id;
+    uint8_t receiver_mac[6];
+    uint8_t sync_version;
+    uint8_t sync_state;
+    uint32_t boot_id;
+    uint32_t sync_sequence;
+    uint64_t local_timestamp_us;
+    uint64_t leader_timestamp_us;
+    int64_t raw_offset_us;
+    int64_t smoothed_offset_us;
+    int32_t drift_milli_ppm;
+    uint32_t accepted_samples;
+    uint32_t rejected_samples;
+    uint32_t last_sync_age_us;
+    uint32_t leader_node_id;
+    uint32_t leader_session_id;
+    uint32_t follower_session_id;
+    uint32_t beacon_sequence;
+    uint32_t jitter_us;
+    uint32_t transport_rx;
+    uint32_t transport_drops;
+} ncsi_sync_record_t;
+
 uint32_t ncsi_crc32c(const uint8_t *data, size_t length);
 uint8_t ncsi_sanitize_invalid_prefix(uint8_t *csi, uint16_t length,
                                      bool first_word_invalid);
@@ -124,3 +149,5 @@ size_t ncsi_serialize_csi(const ncsi_csi_record_t *record, uint8_t *output, size
 size_t ncsi_serialize_status(const ncsi_status_record_t *record, uint8_t *output, size_t capacity);
 size_t ncsi_serialize_diagnostic(const ncsi_diagnostic_record_t *record,
                                  uint8_t *output, size_t capacity);
+size_t ncsi_serialize_sync(const ncsi_sync_record_t *record, uint8_t *output,
+                           size_t capacity);
