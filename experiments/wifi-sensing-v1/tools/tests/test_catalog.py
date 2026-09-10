@@ -79,18 +79,21 @@ class CatalogTests(unittest.TestCase):
         pipeline.begin_calibration()
         for index in range(6):
             pipeline.add(frame(sequence=index, values=(20 + index,) * 4), index * 100_000_000)
+        pipeline.freeze_calibration_selection()
+        for index in range(6, 14):
+            pipeline.add(frame(sequence=index, values=(20 + index % 2,) * 4), index * 100_000_000)
         calibration = pipeline.calibration_document("DOOR_LEFT", "ROOM_A")
         geometry = {next(iter(calibration["paths"]))}
-        self.assertEqual(calibration_compatibility({}, geometry, calibration)["reason"],
+        self.assertEqual(calibration_compatibility({}, geometry, calibration, 4, 2)["reason"],
                          "placement missing")
         self.assertEqual(calibration_compatibility({"placement_label": "OTHER"}, geometry,
-                                                   calibration)["reason"], "placement mismatch")
+                                                   calibration, 4, 2)["reason"], "placement mismatch")
         self.assertEqual(calibration_compatibility({"placement_label": "DOOR_LEFT",
                                                     "room_id": "ROOM_A"}, geometry,
-                                                   calibration)["status"], "MATCH")
+                                                    calibration, 4, 2)["status"], "MATCH")
         self.assertEqual(calibration_compatibility({"placement_label": "DOOR_LEFT",
                                                     "room_id": "ROOM_A"}, {"other"},
-                                                   calibration)["reason"], "geometry mismatch")
+                                                    calibration, 4, 2)["reason"], "geometry mismatch")
 
 
 if __name__ == "__main__":

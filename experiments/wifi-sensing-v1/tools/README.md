@@ -64,13 +64,24 @@ sensing-node movement itself from entering a human-movement dataset.
 
 The DSP computes amplitude and wrapped phase from signed imaginary/real pairs,
 unwraps each subcarrier over time, maintains Welford mean/variance, ranks
-subcarriers by amplitude variance, applies configurable top-K selection,
-computes timestamp-scaled amplitude/phase derivatives and windowed power, and
-measures live cadence from host monotonic timestamps. RSSI contributes only to
-link quality, never directly to motion. Motion scores exist only when an exact
-path/geometry calibration is available. Since quiet calibration alone cannot
-validate stationary occupancy, presence remains unsupported rather than being
-reported as a fact.
+subcarriers during calibration warm-up, freezes the top-K indices and amplitude
+normalization, then computes timestamp-scaled amplitude derivatives and
+windowed power. Phase remains observable diagnostic evidence but has zero
+weight in the Phase-5 score pending common-phase/CFO sanitation and time
+synchronization validation. Espressif's phase-coherent architecture uses
+shared-clock hardware specifically to eliminate relative frequency offset;
+independent receivers do not provide that guarantee. See Espressif's
+[ESP-CSI solution architecture](https://docs.espressif.com/projects/esp-techpedia/en/latest/esp-friends/solution-introduction/esp-csi/esp-csi-solution.html).
+
+RSSI contributes only to link quality, never directly to motion. Motion scores
+exist only when exact path/geometry and feature-contract calibration is
+available. Calibration schema v3 records feature schema, top-K, window length,
+derivative/gap/normalization policy, frozen indices/scales, and baseline power
+statistics. `--calibrate N` uses the first 40% for selection and remaining 60%
+for baseline measurement. Older calibration documents remain readable but fail
+closed because their scoring dimensions are unknown. Since quiet calibration
+alone cannot validate stationary occupancy, presence remains unsupported
+rather than being reported as a fact.
 
 ## Termux field monitor
 
@@ -112,7 +123,7 @@ when calibrated scores are required:
 
 ```sh
 python -m newo_csi evaluate datasets/session-a datasets/session-b \
-  --window-seconds 1 --calibration-file calibrations/baseline.json --json
+  --window-seconds 1 --top-k 24 --calibration-file calibrations/baseline.json --json
 python -m newo_csi compare datasets/session-a datasets/session-b \
   --window-seconds 2
 ```
@@ -188,6 +199,16 @@ records separately expose intentional per-path rate gating, source filtering,
 ring-full drops, and CSI-only device UDP failures. Diagnostic records expose
 STATUS transport, association epochs, per-path gate drops, and ESP-NOW probe
 outcomes; diagnostic sequence gaps reveal diagnostic-record loss.
+
+Live and field views show `RX Newo` and `RX Newo2` gaps separately; receiver
+loss is never summed across path rows. Evaluator `csi_geometry_variants` and
+`csi_geometry_switch_count` describe CSI record/radio-format identities, not
+physical node movement. Physical movement exists only in `placement_label` and
+explicit `REPOSITIONING` events.
+
+Capture metadata schema v3 is shared by `collect`, live, and field recording.
+`occupancy_label` is canonical; `person_label` is retained as an identical
+compatibility alias. Existing archives are read without rewriting.
 
 For reproducible research captures, supply all three MAC options shown above.
 They validate the receiver/source tuple for `ROUTER_NEWO`, `ROUTER_NEWO2`, and

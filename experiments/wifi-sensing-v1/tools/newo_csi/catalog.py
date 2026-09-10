@@ -9,15 +9,27 @@ from typing import Any
 
 from .annotations import DEFAULT_ANNOTATIONS_DIR, load_annotations
 from .archive import iter_archive
-from .dsp import Geometry
+from .dsp import FEATURE_SCHEMA_VERSION, Geometry, feature_contract
 from .protocol import CsiRecord, PATH_NAMES, decode
 from .statistics import CaptureStats
 
 
 def calibration_compatibility(metadata: dict[str, Any], geometries: set[str],
-                              calibration: dict[str, Any] | None) -> dict[str, Any]:
+                              calibration: dict[str, Any] | None,
+                              top_k: int = 24, window_seconds: float = 2.0) -> dict[str, Any]:
     if calibration is None:
         return {"status": "NOT_PROVIDED", "reason": "calibration not supplied"}
+    if calibration.get("schema_version", 0) < 3 or "feature_contract" not in calibration:
+        return {"status": "REJECTED",
+                "reason": "legacy calibration incompatible: frozen feature contract missing"}
+    incoming = calibration["feature_contract"]
+    expected = feature_contract(top_k, window_seconds)
+    if incoming.get("feature_schema_version") != FEATURE_SCHEMA_VERSION:
+        return {"status": "REJECTED", "reason": "feature schema mismatch"}
+    for key in ("top_k", "window_seconds", "amplitude", "phase", "derivative",
+                "aggregation", "feature_name"):
+        if incoming.get(key) != expected.get(key):
+            return {"status": "REJECTED", "reason": f"dsp config mismatch: {key}"}
     placement = metadata.get("placement_label")
     if placement is None:
         return {"status": "REJECTED", "reason": "placement missing"}
@@ -39,7 +51,8 @@ def calibration_compatibility(metadata: dict[str, Any], geometries: set[str],
 
 
 def inspect_session(session: Path, calibration: dict[str, Any] | None,
-                    annotations_dir: Path = DEFAULT_ANNOTATIONS_DIR) -> dict[str, Any]:
+                    annotations_dir: Path = DEFAULT_ANNOTATIONS_DIR,
+                    top_k: int = 24, window_seconds: float = 2.0) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
     stats = CaptureStats()
     geometries: set[str] = set()
@@ -72,6 +85,7 @@ def inspect_session(session: Path, calibration: dict[str, Any] | None,
         "predates_placement_metadata": "placement_label" not in metadata,
         "original_scenario": metadata.get("scenario_label"),
         "original_person": metadata.get("person_label"),
+        "original_occupancy": metadata.get("occupancy_label", metadata.get("person_label")),
         "original_activity": metadata.get("activity_label"),
         "operator_post_hoc_annotations": load_annotations(session_id, annotations_dir),
         "frame_count": summary["record_counts"]["csi"],
@@ -80,13 +94,15 @@ def inspect_session(session: Path, calibration: dict[str, Any] | None,
                           if PATH_NAMES[path] not in present],
         "receiver_sequence_gaps": gaps, "device_transport_drops": device_drops,
         "transport_quality": "GOOD" if gaps == 0 and device_drops == 0 else "LOSS_OBSERVED",
-        "calibration": calibration_compatibility(metadata, geometries, calibration),
+        "calibration": calibration_compatibility(metadata, geometries, calibration,
+                                                   top_k, window_seconds),
         "raw_archive": {"status": "READABLE" if error is None else "ERROR", "error": error},
     }
 
 
 def build_catalog(root: Path, calibration: dict[str, Any] | None,
-                  annotations_dir: Path = DEFAULT_ANNOTATIONS_DIR) -> dict[str, Any]:
+                  annotations_dir: Path = DEFAULT_ANNOTATIONS_DIR,
+                  top_k: int = 24, window_seconds: float = 2.0) -> dict[str, Any]:
     sessions = []
     if root.is_dir() and (root / "session.json").is_file():
         candidates = [root]
@@ -96,7 +112,8 @@ def build_catalog(root: Path, calibration: dict[str, Any] | None,
         raise ValueError(f"catalog root not found: {root}")
     for session in candidates:
         if (session / "session.json").is_file() or (session / "frames.ncsi").is_file():
-            sessions.append(inspect_session(session, calibration, annotations_dir))
+            sessions.append(inspect_session(session, calibration, annotations_dir,
+                                            top_k, window_seconds))
     return {"schema_version": 1,
             "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "root": str(root), "sessions": sessions}

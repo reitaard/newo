@@ -63,7 +63,8 @@ class EvaluationArchiveTests(unittest.TestCase):
         result = evaluate_records(items, 1)
         path = result["paths"]["ROUTER_NEWO"]
         self.assertAlmostEqual(path["effective_sample_rate_hz"], 1.5)
-        self.assertEqual(path["geometry_transition_count"], 1)
+        self.assertEqual(path["csi_geometry_switch_count"], 1)
+        self.assertEqual(len(path["csi_geometry_variants"]), 2)
         gaps = result["transport"]["sequence_gap_estimate_by_receiver"]
         self.assertEqual(sum(gaps.values()), 2)
         self.assertGreaterEqual(len(result["windows"]), 2)
@@ -86,6 +87,15 @@ class EvaluationArchiveTests(unittest.TestCase):
                                   1, reposition_ranges=[(0, 2_000_000_000)])
         path = result["paths"]["ROUTER_NEWO"]
         self.assertEqual(path["state_fraction"]["REPOSITIONING"], 1.0)
+
+    def test_reposition_partial_overlap_marks_complete_window(self):
+        result = evaluate_records([archived(frame(sequence=0), 0),
+                                   archived(frame(sequence=1), 900_000_000),
+                                   archived(frame(sequence=2), 1_100_000_000)],
+                                  1, reposition_ranges=[(100_000_000, 200_000_000)])
+        self.assertEqual(result["windows"][0]["fused_state"], "REPOSITIONING")
+        self.assertEqual(result["windows"][0]["paths"]["ROUTER_NEWO"]["state"],
+                         "REPOSITIONING")
 
     def test_json_command_and_ground_truth_boundary(self):
         with tempfile.TemporaryDirectory() as directory:

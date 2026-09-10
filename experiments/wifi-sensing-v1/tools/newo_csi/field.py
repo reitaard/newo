@@ -48,8 +48,7 @@ def render_field(state: LiveState, recorder: SessionRecorder | None,
                 score = "--" if item.motion_score is None else f"{item.motion_score:.1f}"
                 lines.append(f"{short[path]:5} {item.sample_rate_hz:5.1f} {str(item.rssi_dbm):>4} "
                              f"{item.signal_quality[0]:1} {score:>4}/{item.motion_state[:10]}")
-        loss = sum(item.sequence_gaps for item in snapshots.values())
-        lines.append(f"PKT:{state.records} REJ:{state.rejected} LOSS:{loss}")
+        lines.append(f"PKT:{state.records} REJ:{state.rejected}")
     else:
         lines.append("PATH            Hz  RSSI QUAL SCORE/STATE       LOSS")
         for path in (1, 2, 3):
@@ -61,6 +60,9 @@ def render_field(state: LiveState, recorder: SessionRecorder | None,
                 lines.append(f"{item.path_name:15} {item.sample_rate_hz:4.1f} {str(item.rssi_dbm):>4} "
                              f"{item.signal_quality:4} {score:>4}/{item.motion_state:14} {item.sequence_gaps}")
         lines.append(f"packets={state.records} rejected={state.rejected}")
+    for (node_id, _receiver), loss in state.pipeline.receiver_losses().items():
+        label = "Newo" if node_id == 1 else ("Newo2" if node_id == 2 else f"N{node_id}")
+        lines.append(f"RX {label}: gaps={loss['gaps']} dup={loss['duplicates']}")
     if width < 50:
         lines += ["R rec  S stop", "E mark P place", "O occ A act Q quit"]
     else:

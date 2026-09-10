@@ -11,8 +11,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from newo_csi.dsp import CsiPipeline, Welford
-from newo_csi.live import LiveState, SessionRecorder
+from newo_csi.dsp import CsiPipeline, PathSnapshot, Welford
+from newo_csi.live import LiveState, SessionRecorder, TerminalInput
 from newo_csi.archive import ArchiveWriter, iter_archive
 from newo_csi.discovery import (CollectorAddress, decode_announcement,
                                 encode_announcement, select_collector_address)
@@ -110,6 +110,8 @@ class DspTests(unittest.TestCase):
     def test_calibration_is_exact_geometry_and_enables_scores(self):
         pipeline = CsiPipeline(top_k=4, window_seconds=10)
         pipeline.begin_calibration()
+        feed(pipeline, lambda i: 20 + (i % 3), count=10)
+        pipeline.freeze_calibration_selection()
         feed(pipeline, lambda i: 20 + (i % 2), count=30)
         document = pipeline.calibration_document("DOOR_LEFT")
         self.assertEqual(len(document["paths"]), 1)
@@ -118,13 +120,77 @@ class DspTests(unittest.TestCase):
         feed(fresh, lambda i: 20 if i < 5 else 70, count=12)
         self.assertTrue(fresh.snapshots()[1].calibrated)
         self.assertIsNotNone(fresh.snapshots()[1].motion_score)
-        stale = CsiPipeline()
+        stale = CsiPipeline(top_k=4, window_seconds=10)
         stale.load_calibration(document, "OTHER")
         self.assertEqual(stale.calibration_status(), "REJECTED")
         self.assertEqual(stale.calibration_report()["reason"], "placement mismatch")
-        missing = CsiPipeline()
+        missing = CsiPipeline(top_k=4, window_seconds=10)
         missing.load_calibration(document, None)
         self.assertEqual(missing.calibration_report()["reason"], "placement missing")
+
+    def test_calibration_contract_and_frozen_indices_fail_closed(self):
+        pipeline = CsiPipeline(top_k=2, window_seconds=4)
+        pipeline.begin_calibration()
+        feed(pipeline, lambda i: 20 + (i % 4), count=12)
+        pipeline.freeze_calibration_selection()
+        selected = pipeline.snapshots()[1].selected_indices
+        feed(pipeline, lambda i: 100 if i % 2 else 10, count=20)
+        self.assertEqual(pipeline.snapshots()[1].selected_indices, selected)
+        document = pipeline.calibration_document("P", "R")
+
+        same = CsiPipeline(top_k=2, window_seconds=4)
+        same.load_calibration(document, "P", "R")
+        feed(same, lambda i: 100 if i % 2 else 5, count=8)
+        self.assertEqual(same.snapshots()[1].selected_indices, selected)
+
+        top_k = CsiPipeline(top_k=3, window_seconds=4)
+        top_k.load_calibration(document, "P", "R")
+        self.assertEqual(top_k.calibration_report()["reason"], "dsp config mismatch: top_k")
+        window = CsiPipeline(top_k=2, window_seconds=5)
+        window.load_calibration(document, "P", "R")
+        self.assertEqual(window.calibration_report()["reason"], "dsp config mismatch: window_seconds")
+        changed = json.loads(json.dumps(document))
+        changed["feature_contract"]["feature_schema_version"] = 999
+        version = CsiPipeline(top_k=2, window_seconds=4)
+        version.load_calibration(changed, "P", "R")
+        self.assertEqual(version.calibration_report()["reason"], "feature schema mismatch")
+        legacy = CsiPipeline(top_k=2, window_seconds=4)
+        legacy.load_calibration({"schema_version": 2, "placement": "P", "paths": {}}, "P")
+        self.assertIn("legacy calibration incompatible", legacy.calibration_report()["reason"])
+
+    def test_conservative_structural_fusion_matrix(self):
+        pipeline = CsiPipeline()
+
+        def snap(path: int, state: str, quality: str = "GOOD") -> PathSnapshot:
+            return PathSnapshot(path, str(path), str(path), 10, 10, -50, quality, 4,
+                                1, 0, 0, 2.0, state, 1.0, True, (0, 1, 2, 3))
+
+        cases = [
+            ([snap(1, "RF_CHANGE"), snap(2, "QUIET"), snap(3, "QUIET")], "LOW_CONFIDENCE"),
+            ([snap(1, "RF_CHANGE"), snap(2, "RF_CHANGE"), snap(3, "QUIET")], "RF_CHANGE"),
+            ([snap(1, "RF_CHANGE"), snap(2, "RF_CHANGE"), snap(3, "RF_CHANGE")], "RF_CHANGE"),
+            ([snap(1, "MOTION_CANDIDATE"), snap(2, "MOTION_CANDIDATE")], "MOTION_CANDIDATE"),
+            ([snap(1, "MOTION_CANDIDATE"), snap(2, "QUIET")], "LOW_CONFIDENCE"),
+            ([snap(1, "RF_CHANGE", "LOW")], "LOW_CONFIDENCE"),
+        ]
+        for snapshots, expected in cases:
+            with self.subTest(expected=expected, states=[s.motion_state for s in snapshots]):
+                with patch.object(pipeline, "snapshots", return_value={s.path_id: s for s in snapshots}):
+                    self.assertEqual(pipeline.fused()[0], expected)
+
+    def test_receiver_loss_ui_does_not_double_interleaved_paths(self):
+        state = LiveState(4, 2, "P", 1)
+        state.pipeline.add(frame(path=1, sequence=0), 100_000_000)
+        state.pipeline.add(frame(path=3, sequence=2), 200_000_000)
+        text = render_field(state, None, None, width=80)
+        self.assertEqual(text.count("RX Newo: gaps=1"), 1)
+
+    def test_terminal_input_non_tty_is_safe(self):
+        terminal = TerminalInput()
+        with patch.object(sys.stdin, "isatty", return_value=False):
+            self.assertIs(terminal.__enter__(), terminal)
+            terminal.__exit__(None, None, None)
+        self.assertIsNone(terminal.fd)
 
     @patch("newo_csi.live.time.monotonic", return_value=100.0)
     def test_placement_enters_reposition_and_stales_calibration(self, _):

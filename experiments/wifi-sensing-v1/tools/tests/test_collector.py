@@ -151,7 +151,9 @@ class MetadataTests(unittest.TestCase):
             "--placement", "DOOR_LEFT",
         ])
         metadata = collection_metadata(args, "session", None, "now", 10, 4096)
+        self.assertEqual(metadata["metadata_contract"], "newo_csi_capture_v3")
         self.assertEqual(metadata["placement_label"], "DOOR_LEFT")
+        self.assertEqual(metadata["occupancy_label"], metadata["person_label"])
         self.assertIsNone(metadata["path_mapping"])
 
         omitted = parser().parse_args([

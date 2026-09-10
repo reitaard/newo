@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 import select
 import socket
@@ -12,6 +13,7 @@ from typing import Callable, Iterator
 
 from .archive import ArchiveWriter, ArchivedRecord, iter_archive
 from .dsp import CsiPipeline
+from .metadata import capture_metadata
 from .protocol import CsiRecord, DiagnosticRecord, PATH_NAMES, ProtocolError, Record, StatusRecord, decode
 from .statistics import CaptureStats
 
@@ -36,14 +38,11 @@ class SessionRecorder:
         self.session_id = session_identifier(None, scenario)
         self.directory = dataset_dir / self.session_id
         self.directory.mkdir(parents=True, exist_ok=False)
-        self.metadata = {
-            "schema_version": 2, "session_id": self.session_id,
-            "room_id": room_id, "scenario_label": scenario,
-            "placement_label": placement, "occupancy_label": occupancy,
-            "activity_label": activity, "capture_started_at": utc_now(),
-            "capture_started_monotonic_ns": time.monotonic_ns(),
-            "interpretation": "research labels; no person detection or localization claim",
-        }
+        self.metadata = capture_metadata(
+            session_id=self.session_id, room_id=room_id, scenario=scenario,
+            placement=placement, occupancy=occupancy, activity=activity,
+            started_at=utc_now(), started_monotonic_ns=time.monotonic_ns())
+        self.metadata["interpretation"] = "research labels; no person detection or localization claim"
         self.started_monotonic = time.monotonic()
         atomic_json(self.directory / "session.json", self.metadata)
         self.events = (self.directory / "events.jsonl").open("x", encoding="utf-8")
@@ -71,6 +70,7 @@ class SessionRecorder:
         self.archive.close()
         self.events.close()
         self.metadata["capture_ended_at"] = utc_now()
+        self.metadata["capture_ended_monotonic_ns"] = time.monotonic_ns()
         self.metadata["record_count"] = self.count
         atomic_json(self.directory / "session.json", self.metadata)
         summary = self.stats.as_dict()
@@ -123,18 +123,60 @@ class LiveState:
             self.latest_diagnostic[record.node_id] = record
 
 
-def key_available() -> str | None:
-    if sys.platform == "win32":
-        import msvcrt
-        return msvcrt.getwch() if msvcrt.kbhit() else None
-    readable, _, _ = select.select([sys.stdin], [], [], 0)
-    return sys.stdin.read(1) if readable else None
+class TerminalInput:
+    """Nonblocking single-key input with guaranteed POSIX terminal restoration."""
+
+    def __init__(self) -> None:
+        self.fd: int | None = None
+        self.saved: object | None = None
+
+    def __enter__(self) -> "TerminalInput":
+        if sys.platform != "win32" and sys.stdin.isatty():
+            import termios
+            import tty
+            self.fd = sys.stdin.fileno()
+            self.saved = termios.tcgetattr(self.fd)
+            try:
+                tty.setcbreak(self.fd)
+            except BaseException:
+                self.restore()
+                raise
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.restore()
+
+    def restore(self) -> None:
+        if self.fd is not None and self.saved is not None:
+            import termios
+            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+            self.fd = None
+            self.saved = None
+
+    def read_key(self) -> str | None:
+        if sys.platform == "win32":
+            import msvcrt
+            return msvcrt.getwch() if msvcrt.kbhit() else None
+        readable, _, _ = select.select([sys.stdin], [], [], 0)
+        return sys.stdin.read(1) if readable else None
+
+    @contextmanager
+    def cooked(self):
+        was_active = self.fd is not None
+        self.restore()
+        try:
+            yield
+        finally:
+            if was_active:
+                self.__enter__()
 
 
-def prompt(label: str, default: str = "") -> str:
-    sys.stdout.write(f"\x1b[0m\x1b[2J\x1b[H{label} [{default}]: ")
-    sys.stdout.flush()
-    value = input().strip()
+def prompt(label: str, default: str = "", terminal: TerminalInput | None = None) -> str:
+    context = terminal.cooked() if terminal else nullcontext()
+    with context:
+        sys.stdout.write(f"\x1b[0m\x1b[2J\x1b[H{label} [{default}]: ")
+        sys.stdout.flush()
+        value = input().strip()
     return value or default
 
 
@@ -153,7 +195,7 @@ def render(state: LiveState, recorder: SessionRecorder | None,
              f"recording={'ON ' + recorder.session_id if recorder else 'OFF'} records={state.records} rejected={state.rejected}"]
     if calibration_left is not None:
         lines.append(f"CALIBRATING quiet/empty baseline: {max(0.0, calibration_left):.1f}s remaining")
-    lines += ["", "PATH             Hz    RSSI  geometry                         sequence/loss   score/state              quality  K"]
+    lines += ["", "PATH             Hz    RSSI  geometry                         sequence        score/state              quality  K"]
     snapshots = state.pipeline.snapshots()
     for path_id in (1, 2, 3):
         value = snapshots.get(path_id)
@@ -163,7 +205,10 @@ def render(state: LiveState, recorder: SessionRecorder | None,
         geometry = value.geometry.split(":")[-1]
         score = "--" if value.motion_score is None else f"{value.motion_score:.2f}"
         lines.append(f"{value.path_name:16} {value.sample_rate_hz:5.1f}  {str(value.rssi_dbm):>4}  {geometry[:30]:30} "
-                     f"{str(value.last_sequence):>8}/{value.sequence_gaps:<6} {score:>5}/{value.motion_state:16} {value.signal_quality:7} {value.selected_subcarriers:2}")
+                     f"{str(value.last_sequence):>8}       {score:>5}/{value.motion_state:16} {value.signal_quality:7} {value.selected_subcarriers:2}")
+    for (node_id, receiver), loss in state.pipeline.receiver_losses().items():
+        label = "Newo" if node_id == 1 else ("Newo2" if node_id == 2 else f"node{node_id}")
+        lines.append(f"RX {label} {receiver}: gaps={loss['gaps']} duplicates={loss['duplicates']}")
     lines += ["", "R record  S stop  E event  P placement  O occupancy  A activity  Q quit",
               "Labels are operator annotations. RF_CHANGE/MOTION_CANDIDATE are not person detection or localization."]
     return "\x1b[2J\x1b[H" + "\n".join(lines)
@@ -188,9 +233,11 @@ def run_live(args: object, renderer: Callable[..., str] = render,
         state.pipeline.load_calibration(json.loads(calibration_path.read_text(encoding="utf-8")),
                                         state.placement, args.room_id)
     calibration_deadline = None
+    selection_deadline = None
     if args.calibrate:
         state.pipeline.begin_calibration()
         calibration_deadline = time.monotonic() + args.calibrate
+        selection_deadline = time.monotonic() + args.calibrate * 0.4
 
     sock: socket.socket | None = None
     source: Iterator[ArchivedRecord] | None = None
@@ -204,6 +251,8 @@ def run_live(args: object, renderer: Callable[..., str] = render,
 
     recorder: SessionRecorder | None = None
     last_render = 0.0
+    terminal = TerminalInput()
+    terminal.__enter__()
     try:
         running = True
         while running:
@@ -232,6 +281,9 @@ def run_live(args: object, renderer: Callable[..., str] = render,
                         recorder.append(raw, mono, wall, sender, record)
 
             now = time.monotonic()
+            if selection_deadline is not None and now >= selection_deadline:
+                state.pipeline.freeze_calibration_selection()
+                selection_deadline = None
             if calibration_deadline is not None and now >= calibration_deadline:
                 document = state.pipeline.calibration_document(state.placement, args.room_id)
                 document["created_at"] = utc_now()
@@ -244,7 +296,7 @@ def run_live(args: object, renderer: Callable[..., str] = render,
                 sys.stdout.flush()
                 last_render = now
 
-            key = key_available()
+            key = terminal.read_key()
             if not key:
                 continue
             key = key.upper()
@@ -257,10 +309,10 @@ def run_live(args: object, renderer: Callable[..., str] = render,
                 recorder.close()
                 recorder = None
             elif key == "E" and recorder is not None:
-                event = prompt("Event " + "/".join(EVENT_TYPES), "CUSTOM").upper()
+                event = prompt("Event " + "/".join(EVENT_TYPES), "CUSTOM", terminal).upper()
                 if event not in EVENT_TYPES:
                     event = "CUSTOM"
-                note = prompt("Event note", "") if event == "CUSTOM" else ""
+                note = prompt("Event note", "", terminal) if event == "CUSTOM" else ""
                 recorder.event("marker", marker=event, note=note, placement=state.placement,
                                occupancy=state.occupancy, activity=state.activity)
             elif key == "P":
@@ -268,18 +320,19 @@ def run_live(args: object, renderer: Callable[..., str] = render,
                     recorder.event("repositioning_started", old_placement=state.placement)
                     recorder.close("placement_change_excludes_antenna_motion")
                     recorder = None
-                state.change_placement(prompt("Newo2 placement", state.placement))
+                state.change_placement(prompt("Newo2 placement", state.placement, terminal))
             elif key == "O":
-                state.occupancy = prompt("Occupancy label", state.occupancy)
+                state.occupancy = prompt("Occupancy label", state.occupancy, terminal)
                 if recorder:
                     recorder.event("occupancy_changed", value=state.occupancy)
             elif key == "A":
-                state.activity = prompt("Activity label", state.activity)
+                state.activity = prompt("Activity label", state.activity, terminal)
                 if recorder:
                     recorder.event("activity_changed", value=state.activity)
     except KeyboardInterrupt:
         pass
     finally:
+        terminal.restore()
         if recorder is not None:
             recorder.close("console_exit")
         if sock is not None:

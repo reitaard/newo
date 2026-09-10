@@ -180,8 +180,10 @@ Run `python -m newo_csi live` from `tools/` for the dependency-free ANSI
 research console. Live UDP and `live --replay <session>` feed the same
 streaming DSP pipeline. State is partitioned by path, node, receiver/source
 MACs, channel, bandwidth, PHY/LTF description, and CSI payload geometry.
-Calibration is separate JSON keyed by that exact identity; a placement or
-geometry change rejects it rather than silently reusing it. Reported states are
+Calibration is separate JSON keyed by that exact identity; a placement,
+geometry, or feature-contract change rejects it rather than silently reusing
+it. Phase-5 scoring is amplitude-derived; phase remains diagnostic research
+evidence pending sanitation and synchronization. Reported states are
 only `QUIET`, `RF_CHANGE`, `MOTION_CANDIDATE`, `LOW_CONFIDENCE`, or
 `REPOSITIONING`, never person presence or localization.
 

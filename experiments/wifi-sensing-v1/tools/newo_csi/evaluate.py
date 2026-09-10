@@ -92,7 +92,8 @@ def _load_labels(session: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
 
 def evaluate_archive(session_value: str | Path, window_seconds: float,
                      calibration: dict[str, Any] | None = None,
-                     annotations_dir: Path = DEFAULT_ANNOTATIONS_DIR) -> dict[str, Any]:
+                     annotations_dir: Path = DEFAULT_ANNOTATIONS_DIR,
+                     top_k: int = 24) -> dict[str, Any]:
     session = Path(session_value)
     archive_path = session / "frames.ncsi" if session.is_dir() else session
     metadata, events = _load_labels(session) if session.is_dir() else ({}, [])
@@ -108,7 +109,7 @@ def evaluate_archive(session_value: str | Path, window_seconds: float,
         reposition_ranges.append((started, (1 << 63) - 1))
     inference = evaluate_records(iter_archive(archive_path), window_seconds, calibration,
                               metadata.get("placement_label"), metadata.get("room_id"),
-                              reposition_ranges)
+                              reposition_ranges, top_k)
     session_id = metadata.get("session_id", session.name)
     annotations = load_annotations(session_id, annotations_dir) if session.is_dir() else []
     return {
@@ -125,10 +126,11 @@ def evaluate_records(items: Iterable[ArchivedRecord], window_seconds: float,
                      calibration: dict[str, Any] | None = None,
                      placement: str | None = None,
                      room_id: str | None = None,
-                     reposition_ranges: list[tuple[int, int]] | None = None) -> dict[str, Any]:
+                     reposition_ranges: list[tuple[int, int]] | None = None,
+                     top_k: int = 24) -> dict[str, Any]:
     if window_seconds <= 0:
         raise ValueError("window_seconds must be positive")
-    pipeline = CsiPipeline(window_seconds=window_seconds)
+    pipeline = CsiPipeline(top_k=top_k, window_seconds=window_seconds)
     if calibration:
         pipeline.load_calibration(calibration, placement, room_id)
     capture = CaptureStats()
@@ -142,7 +144,7 @@ def evaluate_records(items: Iterable[ArchivedRecord], window_seconds: float,
     path_first: dict[int, int] = {}
     path_last: dict[int, int] = {}
     path_samples: Counter[int] = Counter()
-    geometries: dict[int, list[str]] = defaultdict(list)
+    geometry_counts_by_path: dict[int, Counter[str]] = defaultdict(Counter)
     previous_geometry: dict[int, str] = {}
     geometry_transitions: Counter[int] = Counter()
     windows: list[dict[str, Any]] = []
@@ -153,6 +155,7 @@ def evaluate_records(items: Iterable[ArchivedRecord], window_seconds: float,
     window_has_records = False
 
     def emit(end_ns: int, complete: bool) -> None:
+        start_ns = first_ns + len(windows) * window_ns
         pipeline.expire(end_ns)
         snapshots = pipeline.snapshots()
         paths = {}
@@ -171,7 +174,7 @@ def evaluate_records(items: Iterable[ArchivedRecord], window_seconds: float,
                     "selected_subcarriers": snapshot.selected_subcarriers,
                 }
         fused_state, confidence = pipeline.fused(False)
-        if any(start <= end_ns <= end for start, end in reposition_ranges):
+        if any(start <= end_ns and end >= start_ns for start, end in reposition_ranges):
             for value in paths.values():
                 value["score"] = None
                 value["state"] = "REPOSITIONING"
@@ -180,7 +183,7 @@ def evaluate_records(items: Iterable[ArchivedRecord], window_seconds: float,
         wall_ns = first_wall + (end_ns - first_ns)
         windows.append({"index": len(windows), "elapsed_seconds": round(elapsed, 6),
                         "timestamp": datetime.fromtimestamp(wall_ns / 1e9, timezone.utc).isoformat(),
-                        "window_duration_seconds": round((end_ns - (first_ns + len(windows) * window_ns)) / 1e9, 6),
+                        "window_duration_seconds": round((end_ns - start_ns) / 1e9, 6),
                         "partial": not complete, "included_in_aggregate": complete,
                         "paths": paths, "fused_state": fused_state,
                         "fusion_confidence": confidence})
@@ -200,12 +203,11 @@ def evaluate_records(items: Iterable[ArchivedRecord], window_seconds: float,
         path_last[record.path_id] = item.host_monotonic_ns
         path_samples[record.path_id] += 1
         identity = Geometry.from_record(record).identity
+        geometry_counts_by_path[record.path_id][identity] += 1
         if identity != previous_geometry.get(record.path_id):
             if record.path_id in previous_geometry:
                 geometry_transitions[record.path_id] += 1
             previous_geometry[record.path_id] = identity
-            if identity not in geometries[record.path_id]:
-                geometries[record.path_id].append(identity)
         pipeline.add(record, item.host_monotonic_ns)
     partial_start = first_ns + len(windows) * window_ns
     if window_has_records:
@@ -224,6 +226,11 @@ def evaluate_records(items: Iterable[ArchivedRecord], window_seconds: float,
         if path_id in path_first:
             duration = max(0.0, (path_last[path_id] - path_first[path_id]) / 1e9)
         sample_count = path_samples[path_id]
+        variants = geometry_counts_by_path[path_id]
+        variant_total = sum(variants.values())
+        variant_rows = [{"identity": identity, "count": count,
+                         "proportion": count / variant_total if variant_total else 0.0}
+                        for identity, count in variants.most_common()]
         path_results[name] = {
             "usable_duration_seconds": round(duration, 6),
             "sample_count": sample_count,
@@ -236,8 +243,9 @@ def evaluate_records(items: Iterable[ArchivedRecord], window_seconds: float,
             "state_fraction": {state: (states[state] / valid if valid else 0.0) for state in STATES},
             "longest_rf_change_seconds": longest_run(aggregate_windows, name, "RF_CHANGE", window_seconds),
             "longest_motion_candidate_seconds": longest_run(aggregate_windows, name, "MOTION_CANDIDATE", window_seconds),
-            "geometry_transition_count": geometry_transitions[path_id],
-            "geometries": geometries[path_id],
+            "csi_geometry_switch_count": geometry_transitions[path_id],
+            "csi_geometry_variants": variant_rows,
+            "dominant_csi_geometry": variant_rows[0] if variant_rows else None,
         }
     summary = capture.as_dict()
     aggregate_windows = [row for row in windows if row["included_in_aggregate"]]
@@ -302,7 +310,7 @@ def human_report(result: dict[str, Any]) -> str:
         score = path["motion_score"]
         lines.append(f"{name}: samples={path['sample_count']} rate={path['effective_sample_rate_hz']:.2f}Hz "
                      f"quality={path['signal_quality_distribution']} score_med/p95/max="
-                     f"{score['median']}/{score['p95']}/{score['max']} geometry_changes={path['geometry_transition_count']}")
+                     f"{score['median']}/{score['p95']}/{score['max']} csi_geometry_switches={path['csi_geometry_switch_count']}")
         lines.append(f"  states={path['state_fraction']} longest_change={path['longest_rf_change_seconds']:.1f}s "
                      f"longest_candidate={path['longest_motion_candidate_seconds']:.1f}s")
     lines.append(f"agreement={inference['nuisance_patterns']}")
@@ -311,7 +319,7 @@ def human_report(result: dict[str, Any]) -> str:
 
 
 def human_comparison(results: list[dict[str, Any]]) -> str:
-    lines = ["DATASET | PATH | Hz | p95 | candidate% | seq gaps | geometry changes"]
+    lines = ["DATASET | PATH | Hz | p95 | candidate% | RX gaps | CSI geometry switches"]
     for result in results:
         inference = result["dsp_inference"]
         dataset = Path(result.get("dataset", "-")).name
@@ -320,6 +328,6 @@ def human_comparison(results: list[dict[str, Any]]) -> str:
             candidate = 100 * path["state_fraction"]["MOTION_CANDIDATE"]
             lines.append(f"{dataset} | {name} | {path['effective_sample_rate_hz']:.2f} | "
                          f"{path['motion_score']['p95']} | {candidate:.1f} | {gaps} | "
-                         f"{path['geometry_transition_count']}")
+                         f"{path['csi_geometry_switch_count']}")
     lines.append("Labels and differences are descriptive evidence, not proof of detected people or causes.")
     return "\n".join(lines)

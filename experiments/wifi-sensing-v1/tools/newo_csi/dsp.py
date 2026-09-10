@@ -11,6 +11,25 @@ from typing import Any
 
 from .protocol import CsiRecord, PATH_NAMES, mac_text
 
+FEATURE_SCHEMA_VERSION = 2
+FEATURE_CONTRACT_NAME = "amplitude_derivative_power_v2"
+
+
+def feature_contract(top_k: int, window_seconds: float) -> dict[str, Any]:
+    return {
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "feature_name": FEATURE_CONTRACT_NAME,
+        "top_k": top_k,
+        "window_seconds": window_seconds,
+        "amplitude": {"transform": "magnitude", "normalization": "frozen_warmup_mean"},
+        "phase": {"computed": True, "score_weight": 0.0,
+                  "status": "diagnostic_only_pending_phase_sanitization_and_sync"},
+        "derivative": {"time_scaled": True, "gap_policy": "skip_nonpositive_or_over_max_gap",
+                       "max_gap_seconds": max(2.0, window_seconds)},
+        "aggregation": {"subcarriers": "median_squared_derivative",
+                        "time_window": "mean_power"},
+    }
+
 
 @dataclass
 class Welford:
@@ -79,6 +98,7 @@ class PathSnapshot:
     motion_state: str
     window_power: float | None
     calibrated: bool
+    selected_indices: tuple[int, ...] = ()
 
 
 class GeometryProcessor:
@@ -102,6 +122,8 @@ class GeometryProcessor:
         self.sequence_gaps = 0
         self.duplicates = 0
         self.baseline: dict[str, float] | None = None
+        self.frozen_indices: tuple[int, ...] | None = None
+        self.amplitude_scales: dict[int, float] = {}
 
     @staticmethod
     def iq(record: CsiRecord) -> tuple[list[float], list[float]]:
@@ -114,10 +136,30 @@ class GeometryProcessor:
         return amplitudes, phases
 
     def selected(self) -> tuple[int, ...]:
+        if self.frozen_indices is not None:
+            return self.frozen_indices
         usable = [i for i, stats in enumerate(self.amplitude_stats)
                   if stats.count >= 2 and stats.mean > 1e-9]
         usable.sort(key=lambda i: self.amplitude_stats[i].variance, reverse=True)
         return tuple(usable[:self.top_k])
+
+    def freeze_selection(self, indices: tuple[int, ...] | None = None,
+                         scales: dict[int, float] | None = None) -> None:
+        chosen = self.selected() if indices is None else indices
+        if not chosen or any(index < 0 or index >= self.geometry.subcarriers for index in chosen):
+            raise ValueError("calibration selected subcarriers are invalid for geometry")
+        self.frozen_indices = tuple(chosen)
+        self.amplitude_scales = scales or {
+            index: max(1.0, self.amplitude_stats[index].mean) for index in chosen
+        }
+        if set(self.amplitude_scales) != set(self.frozen_indices):
+            raise ValueError("calibration normalization does not match selected subcarriers")
+        self.features.clear()
+        # Do not let the warm-up/baseline boundary create a derivative sample.
+        self.previous_amplitude = None
+        self.previous_phase = None
+        self.unwrapped_phase = None
+        self.previous_ns = None
 
     def add(self, record: CsiRecord, host_ns: int) -> None:
         amplitudes, phases = self.iq(record)
@@ -141,11 +183,13 @@ class GeometryProcessor:
                 and delta_seconds is not None and 0 < delta_seconds <= max(2.0, self.window_ns / 1e9)):
             components = []
             for index in indices:
-                scale = max(1.0, self.amplitude_stats[index].mean)
+                scale = self.amplitude_scales.get(
+                    index, max(1.0, self.amplitude_stats[index].mean))
                 amp_delta = ((amplitudes[index] - self.previous_amplitude[index]) /
                              scale / delta_seconds)
-                phase_delta = (unwrapped[index] - self.unwrapped_phase[index]) / delta_seconds
-                components.append(amp_delta * amp_delta + 0.05 * phase_delta * phase_delta)
+                # Phase remains observable above, but is deliberately excluded from the
+                # Phase-5 score until common-phase/CFO sanitization and sync are validated.
+                components.append(amp_delta * amp_delta)
             self.features.append((host_ns, median(components)))
 
         self.previous_amplitude = amplitudes
@@ -201,7 +245,8 @@ class GeometryProcessor:
                             PATH_NAMES.get(self.geometry.path_id, f"PATH_{self.geometry.path_id}"),
                             self.geometry.identity, self.samples, rate, rssi, quality,
                             len(self.selected()), self.last_sequence, self.sequence_gaps, self.duplicates,
-                            score, state, power, self.baseline is not None)
+                            score, state, power, self.baseline is not None,
+                            self.selected())
 
 
 class CsiPipeline:
@@ -218,6 +263,7 @@ class CsiPipeline:
         self.calibration_metadata: dict[str, Any] = {}
         self.calibration_rejection: str | None = "calibration not loaded"
         self.calibration_stats: dict[str, Welford] | None = None
+        self.calibration_stage: str | None = None
         self._last_sequence: dict[tuple[int, str], int] = {}
         self._sequence_gaps: Counter[tuple[int, str]] = Counter()
         self._duplicates: Counter[tuple[int, str]] = Counter()
@@ -241,12 +287,28 @@ class CsiPipeline:
             processor = self.processors[geometry] = GeometryProcessor(
                 geometry, self.top_k, self.window_seconds)
             processor.baseline = self.calibration.get(geometry.identity)
+            if processor.baseline is not None:
+                try:
+                    processor.freeze_selection(
+                        tuple(processor.baseline["selected_subcarriers"]),
+                        {int(key): value for key, value in
+                         processor.baseline["amplitude_scales"].items()})
+                except (KeyError, TypeError, ValueError):
+                    processor.baseline = None
+                    self.calibration = {}
+                    self.calibration_rejection = "calibration path feature data invalid"
         self.geometry_counts[geometry] += 1
         processor.add(record, host_ns)
-        if self.calibration_stats is not None:
+        if self.calibration_stage == "baseline" and self.calibration_stats is not None:
             power = processor.power()
             if power is not None:
                 self.calibration_stats.setdefault(geometry.identity, Welford()).add(power)
+
+    def receiver_losses(self) -> dict[tuple[int, str], dict[str, int]]:
+        streams = set(self._last_sequence) | set(self._sequence_gaps) | set(self._duplicates)
+        return {stream: {"gaps": self._sequence_gaps[stream],
+                         "duplicates": self._duplicates[stream]}
+                for stream in sorted(streams)}
 
     def dominant(self, path_id: int) -> GeometryProcessor | None:
         choices = [p for g, p in self.processors.items() if g.path_id == path_id]
@@ -283,12 +345,30 @@ class CsiPipeline:
                     "geometry": geometry.identity, "samples": stats.count,
                     "mean": stats.mean, "variance": stats.variance,
                     "stddev": stats.stddev,
+                    "selected_subcarriers": list(processor.selected()),
+                    "amplitude_scales": {str(index): processor.amplitude_scales[index]
+                                         for index in processor.selected()},
                 }
-        return {"schema_version": 2, "room_id": room_id,
-                "placement": placement, "paths": paths}
+        return {"schema_version": 3, "room_id": room_id,
+                "placement": placement, "feature_contract": feature_contract(
+                    self.top_k, self.window_seconds),
+                "calibration_policy": {"selection_fraction": 0.4,
+                                       "selection_stage": "amplitude variance ranking",
+                                       "baseline_stage": "frozen selection power statistics"},
+                "paths": paths}
 
     def begin_calibration(self) -> None:
         self.calibration_stats = {}
+        self.calibration_stage = "selection"
+
+    def freeze_calibration_selection(self) -> None:
+        if self.calibration_stage != "selection":
+            raise ValueError("calibration selection stage is not active")
+        for processor in self.processors.values():
+            if processor.selected():
+                processor.freeze_selection()
+        self.calibration_stats = {}
+        self.calibration_stage = "baseline"
 
     def load_calibration(self, document: dict[str, Any], placement: str | None,
                          room_id: str | None = None) -> None:
@@ -298,7 +378,21 @@ class CsiPipeline:
             "created_at": document.get("created_at"),
             "room_id": document.get("room_id"),
             "placement": document.get("placement"),
+            "feature_contract": document.get("feature_contract"),
         }
+        if document.get("schema_version", 0) < 3 or "feature_contract" not in document:
+            self.calibration_rejection = "legacy calibration incompatible: frozen feature contract missing"
+            return
+        incoming = document["feature_contract"]
+        expected = feature_contract(self.top_k, self.window_seconds)
+        if incoming.get("feature_schema_version") != FEATURE_SCHEMA_VERSION:
+            self.calibration_rejection = "feature schema mismatch"
+            return
+        for key in ("top_k", "window_seconds", "amplitude", "phase", "derivative",
+                    "aggregation", "feature_name"):
+            if incoming.get(key) != expected.get(key):
+                self.calibration_rejection = f"dsp config mismatch: {key}"
+                return
         if placement is None:
             self.calibration_rejection = "placement missing"
             return
@@ -312,10 +406,29 @@ class CsiPipeline:
         if calibration_room is not None and calibration_room != room_id:
             self.calibration_rejection = "room mismatch"
             return
-        self.calibration = {key: value for key, value in document.get("paths", {}).items()}
+        paths = document.get("paths", {})
+        if not isinstance(paths, dict):
+            self.calibration_rejection = "calibration paths invalid"
+            return
+        if any("selected_subcarriers" not in value or "amplitude_scales" not in value
+               for value in paths.values() if isinstance(value, dict)) or any(
+                   not isinstance(value, dict) for value in paths.values()):
+            self.calibration_rejection = "legacy calibration incompatible: frozen subcarriers missing"
+            return
+        self.calibration = {key: value for key, value in paths.items()}
         self.calibration_rejection = None if self.calibration else "calibration contains no usable paths"
         for geometry, processor in self.processors.items():
             processor.baseline = self.calibration.get(geometry.identity)
+            if processor.baseline is not None:
+                try:
+                    processor.freeze_selection(
+                        tuple(processor.baseline["selected_subcarriers"]),
+                        {int(key): value for key, value in
+                         processor.baseline["amplitude_scales"].items()})
+                except (KeyError, TypeError, ValueError):
+                    processor.baseline = None
+                    self.calibration = {}
+                    self.calibration_rejection = "calibration path feature data invalid"
 
     def calibration_status(self) -> str:
         return self.calibration_report()["status"]
@@ -357,6 +470,8 @@ class CsiPipeline:
         confidence = min(1.0, len(snapshots) / 3.0) * (0.5 + 0.5 * max(candidates, changes) / len(snapshots))
         if candidates >= 2:
             return "MOTION_CANDIDATE", confidence
-        if changes >= 1:
+        if changes >= 2:
             return "RF_CHANGE", confidence
+        if changes == 1:
+            return "LOW_CONFIDENCE", confidence * 0.5
         return "QUIET", confidence

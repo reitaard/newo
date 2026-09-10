@@ -14,6 +14,7 @@ import uuid
 
 from .archive import ArchiveWriter, iter_archive
 from .protocol import CsiRecord, PATH_NAMES, ProtocolError, decode, mac_text
+from .metadata import capture_metadata
 from .statistics import CaptureStats
 
 SCENARIOS = (
@@ -77,17 +78,13 @@ def collection_metadata(args: argparse.Namespace, session_id: str,
                         started_at: str, started_monotonic_ns: int,
                         receive_buffer_bytes: int) -> dict[str, object]:
     """Build canonical capture metadata without deriving operator labels."""
-    return {
-        "schema_version": 1, "session_id": session_id, "room_id": args.room_id,
-        "scenario_label": args.scenario, "person_label": args.person,
-        "zone_label": args.zone, "activity_label": args.activity,
-        "placement_label": args.placement,
-        "camera_frame_id": args.camera_frame_id, "notes": args.notes,
-        "path_mapping": mapping_metadata(mapping),
-        "capture_started_at": started_at,
-        "capture_started_monotonic_ns": started_monotonic_ns,
-        "udp_receive_buffer_bytes": receive_buffer_bytes,
-    }
+    return capture_metadata(
+        session_id=session_id, room_id=args.room_id, scenario=args.scenario,
+        placement=args.placement, occupancy=args.person, activity=args.activity,
+        zone=args.zone, camera_frame_id=args.camera_frame_id, notes=args.notes,
+        path_mapping=mapping_metadata(mapping), started_at=started_at,
+        started_monotonic_ns=started_monotonic_ns,
+        receive_buffer_bytes=receive_buffer_bytes)
 
 
 def collect(args: argparse.Namespace) -> int:
@@ -273,7 +270,8 @@ def _evaluation_calibration(path: str | None) -> dict[str, object] | None:
 def evaluate_command(args: argparse.Namespace) -> int:
     from .evaluate import evaluate_archive, human_report
     calibration = _evaluation_calibration(args.calibration_file)
-    results = [evaluate_archive(value, args.window_seconds, calibration, Path(args.annotations_dir))
+    results = [evaluate_archive(value, args.window_seconds, calibration,
+                                Path(args.annotations_dir), getattr(args, "top_k", 24))
                for value in args.datasets]
     if args.json:
         print(json.dumps({"schema_version": 1, "datasets": results}, indent=2, sort_keys=True))
@@ -285,7 +283,8 @@ def evaluate_command(args: argparse.Namespace) -> int:
 def compare_command(args: argparse.Namespace) -> int:
     from .evaluate import evaluate_archive, human_comparison
     calibration = _evaluation_calibration(args.calibration_file)
-    results = [evaluate_archive(value, args.window_seconds, calibration, Path(args.annotations_dir))
+    results = [evaluate_archive(value, args.window_seconds, calibration,
+                                Path(args.annotations_dir), getattr(args, "top_k", 24))
                for value in args.datasets]
     comparison = {"schema_version": 1, "window_seconds": args.window_seconds,
                   "datasets": results,
@@ -312,7 +311,8 @@ def catalog_command(args: argparse.Namespace) -> int:
     from .catalog import build_catalog, human_catalog
     calibration = _evaluation_calibration(args.calibration_file)
     try:
-        document = build_catalog(Path(args.root), calibration, Path(args.annotations_dir))
+        document = build_catalog(Path(args.root), calibration, Path(args.annotations_dir),
+                                 args.top_k, args.window_seconds)
     except ValueError as error:
         raise SystemExit(str(error)) from error
     print(json.dumps(document, indent=2, sort_keys=True) if args.json else human_catalog(document))
@@ -393,6 +393,7 @@ def parser() -> argparse.ArgumentParser:
     evaluate = commands.add_parser("evaluate", help="offline shared-DSP dataset evaluation")
     evaluate.add_argument("datasets", nargs="+")
     evaluate.add_argument("--window-seconds", type=float, default=1.0)
+    evaluate.add_argument("--top-k", type=int, default=24)
     evaluate.add_argument("--calibration-file")
     evaluate.add_argument("--annotations-dir", default=str(DEFAULT_DATASET_DIR.parent / "operator-annotations"))
     evaluate.add_argument("--json", action="store_true")
@@ -401,6 +402,7 @@ def parser() -> argparse.ArgumentParser:
     compare = commands.add_parser("compare", help="side-by-side offline dataset evaluation")
     compare.add_argument("datasets", nargs="+")
     compare.add_argument("--window-seconds", type=float, default=1.0)
+    compare.add_argument("--top-k", type=int, default=24)
     compare.add_argument("--calibration-file")
     compare.add_argument("--annotations-dir", default=str(DEFAULT_DATASET_DIR.parent / "operator-annotations"))
     compare.add_argument("--json", action="store_true")
@@ -418,6 +420,8 @@ def parser() -> argparse.ArgumentParser:
     catalog = commands.add_parser("catalog", help="read-only dataset inventory")
     catalog.add_argument("root", nargs="?", default=str(DEFAULT_DATASET_DIR))
     catalog.add_argument("--calibration-file")
+    catalog.add_argument("--top-k", type=int, default=24)
+    catalog.add_argument("--window-seconds", type=float, default=2.0)
     catalog.add_argument("--annotations-dir", default=str(DEFAULT_DATASET_DIR.parent / "operator-annotations"))
     catalog.add_argument("--json", action="store_true")
     catalog.set_defaults(handler=catalog_command)
