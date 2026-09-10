@@ -35,6 +35,7 @@
 #include "rate_gate.h"
 #include "collector_discovery.h"
 #include "track_protocol.h"
+#include "track_control_state.h"
 
 #ifndef CONFIG_ESP_WIFI_CSI_ENABLED
 #error "CONFIG_ESP_WIFI_CSI_ENABLED must be enabled for the Newo CSI receiver"
@@ -156,7 +157,9 @@ static volatile uint32_t s_probe_rx_valid;
 static volatile uint32_t s_probe_rx_invalid;
 static volatile bool s_probe_in_flight;
 static volatile bool s_track_active = true;
-static volatile uint32_t s_track_control_sequence;
+#if CONFIG_NEWO_ESPNOW_TRANSMIT
+static newo_track_control_state_t s_track_control_state;
+#endif
 
 static portMUX_TYPE s_sample_lock = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE s_identity_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -672,18 +675,26 @@ static void espnow_receive_callback(const esp_now_recv_info_t *info,
 {
 #if CONFIG_NEWO_ESPNOW_TRANSMIT
     newo_track_control_t control;
-    if (info != NULL && source_is_peer(info->src_addr) &&
+    if (info != NULL && s_peer_enabled && memcmp(info->src_addr, s_peer_mac, 6) == 0 &&
         newo_track_control_decode(data, (size_t)length, &control) && !control.ack) {
-        uint32_t previous = counter_get(&s_track_control_sequence);
-        if (control.sequence < previous) return;
-        if (control.sequence > previous) {
-            s_track_active = control.active;
-            (void)esp_wifi_set_csi(control.active);
-            __atomic_store_n(&s_track_control_sequence, control.sequence, __ATOMIC_RELAXED);
+        const newo_track_control_state_t previous_state = s_track_control_state;
+        newo_track_apply_result_t result = newo_track_control_apply(&s_track_control_state, &control);
+        if (result == NEWO_TRACK_STALE || result == NEWO_TRACK_RETIRED_SESSION) return;
+        bool applied = true;
+        if (result == NEWO_TRACK_APPLIED) {
+            if (esp_wifi_set_csi(control.active) == ESP_OK) {
+                s_track_active = s_track_control_state.active;
+                s_csi_enabled = control.active;
+            } else {
+                s_track_control_state = previous_state;
+                control.active = s_track_active;
+                applied = false;
+            }
         } else {
             control.active = s_track_active;
         }
         control.ack = true;
+        control.applied = applied;
         uint8_t response[NEWO_TRACK_CONTROL_SIZE];
         size_t response_length = newo_track_control_encode(&control, response, sizeof(response));
         if (response_length) (void)esp_now_send(s_peer_mac, response, response_length);

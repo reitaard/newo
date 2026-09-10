@@ -2,7 +2,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <netinet/in.h>
+#include "lwip/sockets.h"
 
 typedef enum {
     NEWO_COLLECTOR_CONFIGURED = 0,

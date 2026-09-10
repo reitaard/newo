@@ -208,7 +208,7 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("display_ack"), request_id: z.string().optional(), mode: z.string().max(16) }).passthrough(),
   z.object({ type: z.literal("clock_ack"), request_id: z.string(), enabled: z.boolean(), applied: z.boolean() }).passthrough(),
-  z.object({ type: z.literal("track_ack"), request_id: z.string(), state: z.enum(["off", "active"]), applied: z.boolean(), duplicate: z.boolean().optional(), collector_source: z.enum(["configured", "discovered", "override"]).optional(), error: z.string().optional() }).passthrough(),
+  z.object({ type: z.literal("track_ack"), request_id: z.string(), command_epoch: z.string(), command_sequence: z.number().int().positive(), state: z.enum(["off", "active"]), applied: z.boolean(), duplicate: z.boolean().optional(), peer_state: z.enum(["active", "stopped", "uncertain", "unavailable", "unknown"]).optional(), collector_source: z.enum(["configured", "discovered", "override"]).optional(), error: z.string().optional() }).passthrough(),
   z.object({ type: z.literal("speaker_ack"), request_id: z.string(), enabled: z.boolean(), connection: z.enum(["Ready", "Connecting", "Disconnected"]), volume: z.number().int().min(0).max(100), muted: z.boolean(), applied: z.boolean(), last_playback: z.enum(["None", "Playing", "Complete", "Failed"]), underruns: z.number().int().nonnegative(), overflows: z.number().int().nonnegative(), buffer_bytes: z.number().int().positive() }).passthrough(),
   z.object({ type: z.literal("speaker_started"), playback_id: z.string().uuid(), first_pcm_to_play_ms: z.number().int().nonnegative() }).passthrough(),
   z.object({ type: z.literal("speaker_complete"), playback_id: z.string().uuid(), bytes: z.number().int().nonnegative() }).passthrough(),
@@ -265,15 +265,15 @@ function sendDeviceRequest(requestType, responseType, fields = {}, trace = null)
   const startedAt = Date.now();
   let timer;
   let resolveRequest;
+  const correlated = requestType === "track_control"
+    ? { command_epoch: device.commandEpoch, command_sequence: ++device.trackCommandSequence }
+    : {};
   const promise = new Promise((resolve) => { resolveRequest = resolve; });
   timer = setTimeout(() => settlePendingRequest(requestId, { kind: "timeout" }), DEVICE_REQUEST_TIMEOUT_MS);
   timer.unref();
-  pendingRequests.set(requestId, { deviceId: env.NEWO_DEVICE_ID, ws: device.ws, requestType, responseType, startedAt, timer, resolve: resolveRequest, trace });
+  pendingRequests.set(requestId, { deviceId: env.NEWO_DEVICE_ID, ws: device.ws, requestType, responseType, fields: requestType === "track_control" ? correlated : null, startedAt, timer, resolve: resolveRequest, trace });
   app.log.info({ request_id: requestId, request_type: requestType, expected_response_type: responseType, telegram_update_id: trace?.updateId ?? null, created_at: new Date(startedAt).toISOString() }, "Newo request created");
   try {
-    const correlated = requestType === "track_control"
-      ? { command_epoch: device.commandEpoch, command_sequence: ++device.trackCommandSequence }
-      : {};
     device.ws.send(JSON.stringify({ type: requestType, request_id: requestId, ...fields, ...correlated }), (error) => { if (error) settlePendingRequest(requestId, { kind: "send_error" }); });
   } catch {
     settlePendingRequest(requestId, { kind: "send_error" });
@@ -285,6 +285,7 @@ function resolvePendingResponse(deviceId, ws, message) {
   if (!message.request_id) return false;
   const pending = pendingRequests.get(message.request_id);
   if (!pending || pending.deviceId !== deviceId || pending.ws !== ws || pending.responseType !== message.type) return false;
+  if (message.type === "track_ack" && (message.command_epoch !== pending.fields?.command_epoch || message.command_sequence !== pending.fields?.command_sequence)) return false;
   return settlePendingRequest(message.request_id, { kind: "response", message, elapsedMs: Math.max(0, Date.now() - pending.startedAt) });
 }
 

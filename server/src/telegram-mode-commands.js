@@ -235,7 +235,10 @@ export function createPrimaryModeHandlers({
     if (request.kind !== "sent") return commandReply(ctx, "Tracking offline.", "offline", null, { newoSpeak: false });
     const result = await request.promise;
     if (result.kind === "response" && result.message.applied === true) {
-      return commandReply(ctx, `Tracking ${result.message.state === "active" ? "ACTIVE" : "OFF"}.`, "response", request.requestId, { newoSpeak: false });
+      const peerWarning = result.message.state === "off" && ["uncertain", "unavailable"].includes(result.message.peer_state)
+        ? " Newo2 stop unconfirmed."
+        : "";
+      return commandReply(ctx, `Tracking ${result.message.state === "active" ? "ACTIVE" : "OFF"}.${peerWarning}`, "response", request.requestId, { newoSpeak: false });
     }
     return commandReply(ctx, "Tracking change was not confirmed.", result.kind === "response" ? "device_error" : result.kind, request.requestId, { newoSpeak: false });
   }

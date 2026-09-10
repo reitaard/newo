@@ -59,6 +59,13 @@ test("/track never claims an unconfirmed transition", async () => {
   assert.equal(harness.replies[0].text, "Tracking change was not confirmed.");
 });
 
+test("/track reports uncertain Newo2 stop without denying local TRACK_OFF", async () => {
+  const harness = createHarness(() => response({ type: "track_ack", state: "off", applied: true, peer_state: "uncertain" }));
+  await harness.handlers.track({ match: "off" });
+  assert.equal(harness.replies[0].category, "response");
+  assert.equal(harness.replies[0].text, "Tracking OFF. Newo2 stop unconfirmed.");
+});
+
 test("/v sends manual_toggle and returns a terse silent start reply", async () => {
   const requests = [];
   const harness = createHarness((type, responseType, fields) => {

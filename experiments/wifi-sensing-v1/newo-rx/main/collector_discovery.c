@@ -168,8 +168,8 @@ static void discovery_task(void *unused)
         newo_collector_source_t source;
         newo_collector_snapshot(&selected, &source);
         if (source != s_last_reported) {
-            ESP_LOGI(TAG, "collector source=%s address=" IPSTR ":%u",
-                     newo_collector_source_name(source), IP2STR(&selected.sin_addr),
+            ESP_LOGI(TAG, "collector source=%s address=%s:%u",
+                     newo_collector_source_name(source), inet_ntoa(selected.sin_addr),
                      (unsigned)ntohs(selected.sin_port));
             s_last_reported = source;
         }

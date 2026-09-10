@@ -41,7 +41,8 @@ class NewoCloud {
   void sendVoiceAck(const char* requestId, NewoVoiceState state, bool voiceConnected,
                     uint32_t wakes, uint32_t sessions, uint32_t failures, uint32_t timeouts,
                     bool applied = true);
-  void sendTrackAck(const char* requestId, bool active, bool applied, bool duplicate,
+  void sendTrackAck(const char* requestId, const char* commandEpoch, uint32_t commandSequence,
+                    bool active, bool applied, bool duplicate, const char* peerStatus,
                     const char* collectorSource, const char* error = nullptr);
   void updateVoiceTelemetry(NewoVoiceState state, bool connected, uint32_t wakes,
                             uint32_t sessions, uint32_t failures, uint32_t timeouts);
@@ -88,6 +89,7 @@ class NewoCloud {
   static constexpr uint8_t kTrackRequestQueueDepth = 4;
   TrackRequest trackRequests_[kTrackRequestQueueDepth] = {};
   uint8_t trackRequestHead_ = 0, trackRequestTail_ = 0, trackRequestCount_ = 0;
+  bool trackActive_ = false;
   NewoVoiceState voiceState_ = NewoVoiceState::OFF;
   bool voiceConnected_ = false;
   uint32_t voiceWakes_ = 0, voiceSessions_ = 0, voiceFailures_ = 0, voiceTimeouts_ = 0;

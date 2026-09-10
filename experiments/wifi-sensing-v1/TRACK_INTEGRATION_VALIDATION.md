@@ -13,9 +13,17 @@ Termux collector supersedes it after two matching NCOL announcements and the
 node returns to fallback after lease expiry.
 
 `/track`, `/track on`, `/track off`, and `/track status` use correlated cloud
-requests. Newo boots `TRACK_OFF`, rejects stale sequences, replays an exact
-duplicate result, coordinates Newo2 over a CRC-protected ESP-NOW control/ACK,
-and publishes success only after the requested local and peer boundary.
+requests. Newo boots `TRACK_OFF`, rejects stale same-session sequences, replays
+an exact duplicate result, and coordinates Newo2 over a CRC-protected ESP-NOW
+session/sequence control ACK. ON requires the peer ACK. OFF always releases
+local resources and reports the peer as stopped or uncertain separately.
+
+The combined receiver uses the validated NCSI serializer and path semantics:
+the associated AP BSSID is `ROUTER_NEWO` (path 1), the configured Newo2 station
+MAC is `NEWO2_NEWO` (path 3), and unrelated sources are rejected. Router frames
+are intentionally ungated as in the hardware-validation receiver; only peer
+frames use the configured per-path cadence gate. Signed I/Q bytes, RX metadata,
+destination/source MACs, and first-word-invalid sanitization flags are retained.
 
 ## First physical validation (not performed)
 

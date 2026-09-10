@@ -3,6 +3,7 @@ idf_component_register(
          "../../newo-rx/main/ncsi_protocol.c"
          "../../newo-rx/main/probe_protocol.c"
          "../../newo-rx/main/track_protocol.c"
+         "../../newo-rx/main/track_control_state.c"
          "../../newo-rx/main/rate_gate.c"
          "../../newo-rx/main/collector_discovery.c"
     INCLUDE_DIRS "../../newo-rx/main"

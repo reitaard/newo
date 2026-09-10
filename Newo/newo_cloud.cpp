@@ -187,15 +187,18 @@ void NewoCloud::sendVoiceAck(const char* requestId, NewoVoiceState state, bool v
   String body; serializeJson(doc, body); webSocket_.sendTXT(body);
 }
 
-void NewoCloud::sendTrackAck(const char* requestId, bool active, bool applied, bool duplicate,
+void NewoCloud::sendTrackAck(const char* requestId, const char* commandEpoch, uint32_t commandSequence,
+                             bool active, bool applied, bool duplicate, const char* peerStatus,
                              const char* collectorSource, const char* error) {
   if (!connected_ || !requestId || !requestId[0]) return;
   JsonDocument doc;
   doc["type"] = "track_ack"; doc["request_id"] = requestId;
   doc["state"] = active ? "active" : "off"; doc["applied"] = applied;
-  doc["duplicate"] = duplicate; doc["collector_source"] = collectorSource;
+  doc["command_epoch"] = commandEpoch; doc["command_sequence"] = commandSequence;
+  doc["duplicate"] = duplicate; doc["peer_state"] = peerStatus; doc["collector_source"] = collectorSource;
   if (error && error[0]) doc["error"] = error;
   String body; serializeJson(doc, body); webSocket_.sendTXT(body);
+  trackActive_ = active;
 }
 
 void NewoCloud::recordStack(const char* point) {
@@ -322,10 +325,14 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     if (!requestId[0] || !epoch[0] || sequence == 0 || strlen(action) >= sizeof(TrackRequest::action) ||
         (strcmp(action,"on") && strcmp(action,"off") && strcmp(action,"toggle") && strcmp(action,"status"))) {
       NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "TRACK_INVALID_REQUEST");
+      if (requestId[0]) sendTrackAck(requestId, epoch, sequence, trackActive_, false, false,
+                                     "unknown", "configured", "invalid_request");
       return;
     }
     if (trackRequestCount_ == kTrackRequestQueueDepth) {
       NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "TRACK_CONTROL_QUEUE_FULL");
+      sendTrackAck(requestId, epoch, sequence, trackActive_, false, false,
+                   "unknown", "configured", "queue_full");
       return;
     }
     TrackRequest request = {};

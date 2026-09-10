@@ -140,8 +140,9 @@ void loop() {
     const NewoTracking::Result result = newoTracking.apply(trackRequest.action, trackRequest.commandEpoch,
                                                             trackRequest.commandSequence);
     const NewoTracking::Metrics metrics = newoTracking.metrics();
-    newoCloud.sendTrackAck(trackRequest.requestId, newoTracking.state() == NewoTracking::State::ACTIVE,
-                           result.applied, result.duplicate, metrics.collectorSource, result.error);
+    newoCloud.sendTrackAck(trackRequest.requestId, trackRequest.commandEpoch, trackRequest.commandSequence,
+                           newoTracking.state() == NewoTracking::State::ACTIVE, result.applied,
+                           result.duplicate, result.peerStatus, metrics.collectorSource, result.error);
   }
   while (newoCloud.consumeSpeakerControlRequest(speakerControlRequest)) {
     bool applied = true;
