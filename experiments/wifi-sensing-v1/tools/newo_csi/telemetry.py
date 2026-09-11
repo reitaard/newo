@@ -140,7 +140,10 @@ class TelemetryPublisher:
             if value is None:
                 return
             body = json.dumps(value, separators=(",", ":")).encode("utf-8")
-            headers = {"Content-Type": "application/json"}
+            # A named client also avoids generic urllib bot filtering at the
+            # public reverse-proxy edge while remaining ordinary HTTP.
+            headers = {"Content-Type": "application/json",
+                       "User-Agent": "NewoCSI-Collector/1.0"}
             if self.token:
                 headers["Authorization"] = f"Bearer {self.token}"
             try:
