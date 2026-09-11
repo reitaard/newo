@@ -159,7 +159,8 @@ static volatile uint32_t s_probe_tx_skipped_unassociated;
 static volatile uint32_t s_probe_rx_valid;
 static volatile uint32_t s_probe_rx_invalid;
 static volatile bool s_probe_in_flight;
-static volatile bool s_track_active = true;
+static volatile bool s_track_active;
+static TaskHandle_t s_sender_task;
 #if CONFIG_NEWO_ESPNOW_TRANSMIT
 static newo_track_control_state_t s_track_control_state;
 static newo_sync_estimator_t s_sync_estimator;
@@ -181,6 +182,16 @@ static inline uint32_t counter_get(volatile uint32_t *counter)
 static inline uint32_t counter_increment(volatile uint32_t *counter)
 {
     return __atomic_fetch_add(counter, 1, __ATOMIC_RELAXED);
+}
+
+static inline bool track_active(void)
+{
+    return __atomic_load_n(&s_track_active, __ATOMIC_ACQUIRE);
+}
+
+static inline void set_track_active(bool active)
+{
+    __atomic_store_n(&s_track_active, active, __ATOMIC_RELEASE);
 }
 
 static void format_mac(const uint8_t mac[6], char output[18])
@@ -370,6 +381,8 @@ static uint16_t encode_rx_flags(const wifi_pkt_rx_ctrl_t *rx)
 static void csi_callback(void *ctx, wifi_csi_info_t *info)
 {
     (void)ctx;
+    /* TRACK_OFF must not accumulate callbacks or enqueue stale measurements. */
+    if (!track_active()) return;
     counter_increment(&s_callbacks_total);
     if (info == NULL || info->buf == NULL || info->len == 0 ||
         info->len > NCSI_MAX_CSI_BYTES || (info->len & 1u) != 0) {
@@ -649,6 +662,14 @@ static void sender_task(void *arg)
     uint32_t previous_accepted = 0;
 
     while (true) {
+        if (!track_active()) {
+            /* No measurement/status UDP while OFF. A control transition wakes us. */
+            (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            next_status_us = esp_timer_get_time() + 1000000LL;
+            previous_callbacks = counter_get(&s_callbacks_total);
+            previous_accepted = counter_get(&s_accepted_total);
+            continue;
+        }
         uint32_t read = __atomic_load_n(&s_ring_read, __ATOMIC_RELAXED);
         uint32_t write = __atomic_load_n(&s_ring_write, __ATOMIC_ACQUIRE);
         if (read != write) {
@@ -695,7 +716,8 @@ static void sender_task(void *arg)
                              (read + 1u) % CONFIG_NEWO_QUEUE_DEPTH,
                              __ATOMIC_RELEASE);
         } else {
-            vTaskDelay(pdMS_TO_TICKS(2));
+            /* pdMS_TO_TICKS(2) is zero at CONFIG_FREERTOS_HZ=100. */
+            vTaskDelay(1);
         }
 
         int64_t now_us = esp_timer_get_time();
@@ -704,6 +726,56 @@ static void sender_task(void *arg)
             next_status_us += ((now_us - next_status_us) / 1000000LL + 1) * 1000000LL;
         }
     }
+}
+
+static void stop_gateway_ping(void);
+static void start_gateway_ping(const esp_ip4_addr_t *gateway_address);
+
+static void discard_pending_measurements(void)
+{
+    uint32_t write = __atomic_load_n(&s_ring_write, __ATOMIC_ACQUIRE);
+    __atomic_store_n(&s_ring_read, write, __ATOMIC_RELEASE);
+}
+
+static esp_err_t apply_measurement_state(bool active)
+{
+    if (active == track_active()) return ESP_OK;
+
+    if (active) {
+        esp_err_t error = esp_wifi_set_ps(WIFI_PS_NONE);
+        if (error != ESP_OK) return error;
+        error = esp_wifi_set_promiscuous(true);
+        if (error != ESP_OK) {
+            (void)esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+            return error;
+        }
+        error = esp_wifi_set_csi(true);
+        if (error != ESP_OK) {
+            (void)esp_wifi_set_promiscuous(false);
+            (void)esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+            return error;
+        }
+        s_csi_enabled = true;
+        set_track_active(true);
+        esp_ip4_addr_t gateway = {.addr = s_gateway_address};
+        start_gateway_ping(&gateway);
+    } else {
+        /* Close the callback gate before disabling the driver resource. */
+        set_track_active(false);
+        esp_err_t error = esp_wifi_set_csi(false);
+        if (error != ESP_OK) {
+            set_track_active(true);
+            return error;
+        }
+        s_csi_enabled = false;
+        stop_gateway_ping();
+        discard_pending_measurements();
+        (void)esp_wifi_set_promiscuous(false);
+        (void)esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    }
+
+    if (s_sender_task != NULL) xTaskNotifyGive(s_sender_task);
+    return ESP_OK;
 }
 
 static void espnow_receive_callback(const esp_now_recv_info_t *info,
@@ -734,16 +806,13 @@ static void espnow_receive_callback(const esp_now_recv_info_t *info,
         if (result == NEWO_TRACK_STALE || result == NEWO_TRACK_RETIRED_SESSION) return;
         bool applied = true;
         if (result == NEWO_TRACK_APPLIED) {
-            if (esp_wifi_set_csi(control.active) == ESP_OK) {
-                s_track_active = s_track_control_state.active;
-                s_csi_enabled = control.active;
-            } else {
+            if (apply_measurement_state(control.active) != ESP_OK) {
                 s_track_control_state = previous_state;
-                control.active = s_track_active;
+                control.active = track_active();
                 applied = false;
             }
         } else {
-            control.active = s_track_active;
+            control.active = track_active();
         }
         control.ack = true;
         control.applied = applied;
@@ -786,7 +855,12 @@ static void probe_sender_task(void *arg)
     const TickType_t period = pdMS_TO_TICKS(1000u / CONFIG_NEWO_ESPNOW_PROBE_HZ);
     uint32_t sequence = 0;
     while (true) {
-        if (!s_track_active) { vTaskDelayUntil(&next, period); continue; }
+        if (!track_active()) {
+            /* Reset cadence so a long OFF interval cannot burst queued probes. */
+            vTaskDelay(pdMS_TO_TICKS(100));
+            next = xTaskGetTickCount();
+            continue;
+        }
         if (!s_associated) {
             counter_increment(&s_probe_tx_skipped_unassociated);
             vTaskDelayUntil(&next, period);
@@ -944,7 +1018,7 @@ static bool refresh_association_state(void)
     memset(&s_rate_gate, 0, sizeof(s_rate_gate));
     portEXIT_CRITICAL(&s_gate_lock);
 
-    start_gateway_ping(&ip_info.gw);
+    if (track_active()) start_gateway_ping(&ip_info.gw);
     uint32_t epoch = counter_increment(&s_association_epoch) + 1u;
     s_identity_ready = true;
 
@@ -971,6 +1045,7 @@ static bool refresh_association_state(void)
 static void association_refresh_task(void *arg)
 {
     (void)arg;
+    int64_t next_off_health_us = esp_timer_get_time() + 5000000LL;
     while (true) {
         uint32_t requested = counter_get(&s_refresh_requested);
         if (!s_associated) {
@@ -979,14 +1054,24 @@ static void association_refresh_task(void *arg)
                    refresh_association_state()) {
             __atomic_store_n(&s_refresh_handled, requested, __ATOMIC_RELAXED);
         }
+        int64_t now_us = esp_timer_get_time();
+        if (!track_active() && now_us >= next_off_health_us) {
+            ESP_LOGI(TAG,
+                     "TRACK_OFF health csi=%s ping=%s callbacks=%" PRIu32
+                     " accepted=%" PRIu32 " probe_tx=%" PRIu32
+                     " udp=%" PRIu32 "/%" PRIu32,
+                     s_csi_enabled ? "on" : "off", s_self_ping_enabled ? "on" : "off",
+                     counter_get(&s_callbacks_total), counter_get(&s_accepted_total),
+                     counter_get(&s_probe_tx_attempted), counter_get(&s_transport_ok),
+                     counter_get(&s_transport_drops));
+            next_off_health_us = now_us + 5000000LL;
+        }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
-static void start_csi(void)
+static void configure_csi(void)
 {
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-    ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
     wifi_csi_config_t config = {
         .lltf_en = true,
         .htltf_en = true,
@@ -998,9 +1083,9 @@ static void start_csi(void)
     };
     ESP_ERROR_CHECK(esp_wifi_set_csi_config(&config));
     ESP_ERROR_CHECK(esp_wifi_set_csi_rx_cb(csi_callback, NULL));
-    ESP_ERROR_CHECK(esp_wifi_set_csi(true));
-    s_csi_enabled = true;
-    ESP_LOGI(TAG, "CSI enabled: LLTF+HT-LTF+STBC-HT-LTF2 raw=%dHz max=50Hz",
+    ESP_ERROR_CHECK(esp_wifi_set_csi(false));
+    s_csi_enabled = false;
+    ESP_LOGI(TAG, "CSI configured: LLTF+HT-LTF+STBC-HT-LTF2 raw=%dHz max=50Hz",
              CONFIG_NEWO_CSI_RATE_HZ);
 }
 
@@ -1015,6 +1100,7 @@ void app_main(void)
     s_sync_session_id = esp_random();
     if (!s_sync_session_id) s_sync_session_id = 1;
     newo_sync_estimator_init(&s_sync_estimator, s_sync_session_id);
+    set_track_active(false);
 
     ESP_LOGI(TAG, "standalone measurement plane; no inference or production integration");
     initialise_wifi();
@@ -1026,14 +1112,13 @@ void app_main(void)
     }
     __atomic_store_n(&s_refresh_handled, counter_get(&s_refresh_requested),
                      __ATOMIC_RELAXED);
+    configure_csi();
     initialise_espnow();
-
-    start_csi();
 #if CONFIG_NEWO_ESPNOW_TRANSMIT
-    s_track_active = false;
-    ESP_ERROR_CHECK(esp_wifi_set_csi(false));
-    s_csi_enabled = false;
-    ESP_LOGI(TAG, "Newo2 boot default TRACK_OFF; awaiting leader control");
+    ESP_LOGI(TAG, "Newo2 boot default TRACK_OFF resources=control_only"
+                  " csi=off ping=off probe=off sender=blocked; awaiting leader control");
+#else
+    ESP_ERROR_CHECK(apply_measurement_state(true));
 #endif
 
     BaseType_t refresh_created = xTaskCreatePinnedToCore(
@@ -1044,7 +1129,7 @@ void app_main(void)
     }
 
     BaseType_t created = xTaskCreatePinnedToCore(sender_task, "ncsi_sender", 6144,
-                                                 NULL, 5, NULL, 1);
+                                                 NULL, 5, &s_sender_task, 1);
     if (created != pdPASS) {
         ESP_LOGE(TAG, "failed to create UDP sender task");
         abort();
