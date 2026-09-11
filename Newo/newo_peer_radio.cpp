@@ -1,5 +1,6 @@
 #include "newo_peer_radio.h"
 #include <cstring>
+#include <freertos/FreeRTOS.h>
 
 namespace {
 constexpr size_t kConsumerCount = 4;
