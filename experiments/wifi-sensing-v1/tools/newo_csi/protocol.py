@@ -222,7 +222,7 @@ def decode(data: bytes) -> Record:
     if record_type == SYNC:
         if header_length == LEGACY_SYNC_SIZE and record_length == LEGACY_SYNC_SIZE:
             fields = struct.unpack_from("<I6sHIIQQIII", data, 16)
-            node, receiver, flags, boot, sequence, local, host, rtt, last_csi, source = fields
+            node, receiver, _flags, boot, sequence, local, host, rtt, last_csi, source = fields
             return SyncRecord(*common, node, receiver, 0, 0, boot, sequence, local, host,
                               host - local, host - local, 0, 0, 0, rtt, 0, 0, boot,
                               last_csi, 0, source, 0)

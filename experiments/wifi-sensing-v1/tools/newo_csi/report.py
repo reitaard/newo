@@ -28,7 +28,7 @@ def _ranked_events(inference: dict[str, Any]) -> list[dict[str, Any]]:
             current = {"start_elapsed_seconds": start, "end_elapsed_seconds": window["elapsed_seconds"],
                        "paths": set(active_paths), "peak_path_count": len(active_paths),
                        "peak_fusion_confidence": window.get("fusion_confidence", 0.0),
-                       "cross_node_sync_trustworthy": window.get("synchronization", {}).get(
+                       "cross_node_alignment_available": window.get("synchronization", {}).get(
                            "cross_node_alignment_available", False)}
         else:
             current["end_elapsed_seconds"] = window["elapsed_seconds"]
@@ -36,8 +36,8 @@ def _ranked_events(inference: dict[str, Any]) -> list[dict[str, Any]]:
             current["peak_path_count"] = max(current["peak_path_count"], len(active_paths))
             current["peak_fusion_confidence"] = max(current["peak_fusion_confidence"],
                                                      window.get("fusion_confidence", 0.0))
-            current["cross_node_sync_trustworthy"] = (
-                current["cross_node_sync_trustworthy"] and
+            current["cross_node_alignment_available"] = (
+                current["cross_node_alignment_available"] and
                 window.get("synchronization", {}).get("cross_node_alignment_available", False))
     if current:
         events.append(current)

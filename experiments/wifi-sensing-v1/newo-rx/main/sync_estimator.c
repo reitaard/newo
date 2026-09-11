@@ -78,7 +78,9 @@ bool newo_sync_estimator_align(const newo_sync_estimator_t *s, uint64_t local_us
                                uint64_t now_us, uint32_t period, int64_t *leader_us) {
     newo_sync_state_t quality = newo_sync_estimator_quality(s, now_us, period);
     if (!leader_us || (quality != NEWO_SYNC_VALID && quality != NEWO_SYNC_DEGRADED)) return false;
-    int64_t delta = (int64_t)(local_us - s->last_local_us);
+    int64_t delta = local_us >= s->last_local_us
+        ? (int64_t)(local_us - s->last_local_us)
+        : -(int64_t)(s->last_local_us - local_us);
     *leader_us = (int64_t)s->last_leader_us + delta +
                  delta * s->drift_milli_ppm / 1000000000LL;
     return true;
