@@ -12,7 +12,7 @@ function permanentEditFailure(error) {
 }
 
 export function createTrackLiveManager({ editMessage, render, getState, logger,
-  setTimer = setTimeout, clearTimer = clearTimeout, warmupMs = 1_000, steadyMs = 2_000 }) {
+  setTimer = setTimeout, clearTimer = clearTimeout, warmupMs = 2_500, steadyMs = 5_000 }) {
   const panels = new Map();
 
   function cancel(panel) { if (panel.timer !== null) clearTimer(panel.timer); panel.timer = null; panel.stopped = true; }
@@ -26,7 +26,9 @@ export function createTrackLiveManager({ editMessage, render, getState, logger,
     const state = getState();
     const stateStopsPanel = state.firmware?.desired === false ||
       (state.firmware?.actual === "off" && state.firmware?.lastResult === "confirmed");
-    const spinner = SPINNERS[panel.frame++ % SPINNERS.length];
+    const warming = state.firmware?.desired === true && state.firmware?.actual !== "active";
+    const spinner = warming ? SPINNERS[panel.frame++ % SPINNERS.length]
+      : state.firmware?.actual === "active" ? "●" : "○";
     const rendered = render({ ...state, spinner, now: new Date() });
     if (rendered !== panel.lastText) {
       try {

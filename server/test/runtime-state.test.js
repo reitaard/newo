@@ -15,12 +15,16 @@ test("automatic speaker state persists across server restart", async () => {
     assert.equal(first.trackDesired, false);
     await first.setTrackDesired(true);
     await first.setSpeakerEnabled(false);
-    assert.deepEqual(JSON.parse(await readFile(filePath, "utf8")), { speakerEnabled: false, trackDesired: true });
+    assert.deepEqual(JSON.parse(await readFile(filePath, "utf8")), { speakerEnabled: false, trackDesired: true, telegramUpdateIds: [] });
     const restarted = createRuntimeStateStore({ filePath });
     assert.equal(restarted.speakerEnabled, false);
     assert.equal(restarted.trackDesired, true);
     assert.deepEqual(await Promise.all([restarted.toggleSpeakerEnabled(), restarted.toggleSpeakerEnabled()]), [true, false]);
     assert.equal(JSON.parse(await readFile(filePath, "utf8")).speakerEnabled, false);
+    assert.equal(await restarted.acceptTelegramUpdate(123), true);
+    assert.equal(await restarted.acceptTelegramUpdate(123), false);
+    const afterUpdate = createRuntimeStateStore({ filePath });
+    assert.equal(await afterUpdate.acceptTelegramUpdate(123), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

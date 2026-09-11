@@ -9,7 +9,7 @@ function harness(edit = async () => {}) {
     render: ({ firmware, spinner }) => `${spinner}:${firmware.actual}`,
     getState: () => state,
     setTimer: (callback, delay) => { const timer = { callback, delay, cancelled: false }; timers.push(timer); return timer; },
-    clearTimer: (timer) => { timer.cancelled = true; }, warmupMs: 1000, steadyMs: 2000,
+    clearTimer: (timer) => { timer.cancelled = true; }, warmupMs: 1000, steadyMs: 5000,
   });
   const run = async () => { const timer = timers.find((item) => !item.cancelled && !item.ran); timer.ran = true; timer.callback(); await new Promise(setImmediate); };
   return { manager, timers, edits, run, setState: (value) => { state = value; } };
@@ -20,14 +20,22 @@ test("one panel per chat replaces the prior updater", () => {
   assert.equal(first.cancelled, true); assert.equal(h.manager.size(), 1);
 });
 
-test("warmup uses 1s and ACTIVE fresh telemetry uses 2s", async () => {
+test("warmup uses 1s and ACTIVE fresh telemetry uses a conservative edit budget", async () => {
   const h = harness(); h.manager.start(1, 10); assert.equal(h.timers[0].delay, 1000); await h.run();
   h.setState({ firmware: { desired: true, actual: "active" }, telemetry: { stale: false } });
-  await h.run(); assert.equal(h.timers.at(-1).delay, 2000);
+  await h.run(); assert.equal(h.timers.at(-1).delay, 5000);
 });
 
 test("identical render is not edited twice", async () => {
   const h = harness(); h.manager.start(1, 10, "◐:unknown"); await h.run();
+  assert.equal(h.edits.length, 0);
+});
+
+test("steady ACTIVE rendering does not rotate a spinner and force duplicate edits", async () => {
+  const h = harness();
+  h.setState({ firmware: { desired: true, actual: "active" }, telemetry: { stale: false } });
+  h.manager.start(1, 10, "●:active");
+  await h.run();
   assert.equal(h.edits.length, 0);
 });
 

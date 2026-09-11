@@ -2,7 +2,7 @@ import { timingSafeEqual, randomUUID } from "node:crypto";
 import { loadEnvFile } from "node:process";
 
 import Fastify from "fastify";
-import { Bot, webhookCallback } from "grammy";
+import { Bot } from "grammy";
 import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 
@@ -15,6 +15,7 @@ import { createPrimaryModeHandlers } from "./telegram-mode-commands.js";
 import { createTrackReconciler } from "./track-reconciler.js";
 import { createTrackTelemetryCache, renderTrackPanel } from "./track-telemetry.js";
 import { createTrackLiveManager } from "./track-live.js";
+import { createTelegramUpdateAcceptor } from "./telegram-webhook.js";
 import { createVoiceRuntime, NullAsrBackend, WorkerAsrBackend } from "./voice.js";
 
 try {
@@ -836,7 +837,19 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command("mute", primaryModeHandlers.mute);
   bot.command(["speak", "sp"], handleSpeakCommand);
   void bot.api.setMyCommands(TELEGRAM_COMMANDS).catch(() => app.log.warn("Failed to register the Telegram command menu"));
-  app.post("/telegram/webhook", webhookCallback(bot, "fastify", { secretToken: env.TELEGRAM_WEBHOOK_SECRET, onTimeout: "return", timeoutMilliseconds: 9_000 }));
+  const telegramUpdates = createTelegramUpdateAcceptor({
+    handleUpdate: (update) => bot.handleUpdate(update),
+    acceptUpdateId: (updateId) => runtimeState.acceptTelegramUpdate(updateId),
+    logger: app.log,
+  });
+  app.post("/telegram/webhook", async (request, reply) => {
+    if (!safeEqual(request.headers["x-telegram-bot-api-secret-token"], env.TELEGRAM_WEBHOOK_SECRET)) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+    const result = await telegramUpdates.accept(request.body);
+    if (result.invalid) return reply.code(400).send({ error: "invalid update" });
+    return reply.code(200).send({ ok: true, duplicate: result.duplicate });
+  });
 }
 
 app.server.on("upgrade", (request, socket, head) => {
