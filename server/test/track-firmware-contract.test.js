@@ -19,8 +19,12 @@ test("combined CSI classifies AP and peer independently and preserves NCSI metad
 test("TRACK OFF releases local resources even when peer acknowledgement is absent", async () => {
   const source = await read("newo_tracking.cpp");
   const stop = source.slice(source.indexOf("bool NewoTracking::stop(bool"), source.indexOf("NewoTracking::Result"));
+  const release = source.slice(source.indexOf("void releaseMeasurementRadio()"), source.indexOf("bool acquireMeasurementRadio()"));
   assert.match(stop, /bool peerStopped=coordinatePeer&&requestPeer\(false\)/);
-  assert.match(stop, /esp_wifi_set_csi\(false\)/);
+  assert.match(stop, /releaseMeasurementRadio\(\)/);
+  assert.match(release, /esp_wifi_set_csi\(false\)/);
+  assert.match(release, /esp_wifi_set_promiscuous\(false\)/);
+  assert.match(release, /esp_wifi_set_ps\(WIFI_PS_MIN_MODEM\)/);
   assert.match(stop, /newoCollectorDiscoveryStop\(\)/);
   assert.match(stop, /endPeer\(\)/);
   assert.match(stop, /state_=State::OFF/);

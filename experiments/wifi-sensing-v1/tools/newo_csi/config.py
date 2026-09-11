@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import os
 from typing import Any
 
 DEFAULT_FIELD_CONFIG = Path.home() / ".config" / "newo-csi" / "field.json"
@@ -12,6 +13,8 @@ FIELD_DEFAULTS: dict[str, Any] = {
     "dataset_dir": str(Path.home() / "newo-csi-data" / "datasets"),
     "scenario": "BACKGROUND", "placement": "UNSPECIFIED", "top_k": 24,
     "window_seconds": 2.0, "settle_seconds": 10.0,
+    "telemetry_url": os.environ.get("NEWO_TRACK_TELEMETRY_URL"),
+    "telemetry_token": os.environ.get("NEWO_TRACK_TELEMETRY_TOKEN"),
 }
 
 

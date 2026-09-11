@@ -89,6 +89,7 @@ class LiveState:
         self.activity = "UNLABELED"
         self.settle_seconds = settle_seconds
         self.reposition_until = 0.0
+        self.reposition_started = 0.0
         self.records = 0
         self.rejected = 0
         self.last_udp_monotonic = 0.0
@@ -103,9 +104,17 @@ class LiveState:
     def repositioning(self) -> bool:
         return time.monotonic() < self.reposition_until
 
+    @property
+    def geometry_state(self) -> str:
+        now = time.monotonic()
+        if now < self.reposition_until:
+            return "REPOSITIONING" if now - self.reposition_started < 1.0 else "SETTLING"
+        return "READY" if self.pipeline.snapshots() else "UNKNOWN"
+
     def change_placement(self, value: str) -> None:
         self.placement = value.strip() or "UNSPECIFIED"
-        self.reposition_until = time.monotonic() + self.settle_seconds
+        self.reposition_started = time.monotonic()
+        self.reposition_until = self.reposition_started + self.settle_seconds
         self.pipeline.calibration = {}
         self.pipeline.calibration_rejection = "placement changed; recalibration required"
         for processor in self.pipeline.processors.values():
@@ -237,7 +246,9 @@ def replay_items(path: Path, speed: float) -> Iterator[ArchivedRecord]:
 
 def run_live(args: object, renderer: Callable[..., str] = render,
              field_mode: bool = False) -> int:
+    from .telemetry import TelemetryPublisher, build_track_snapshot
     state = LiveState(args.top_k, args.window_seconds, args.placement, args.settle_seconds)
+    publisher = TelemetryPublisher(args.telemetry_url, args.telemetry_token)
     calibration_path = Path(args.calibration_file)
     if calibration_path.is_file() and not args.calibrate:
         state.pipeline.load_calibration(json.loads(calibration_path.read_text(encoding="utf-8")),
@@ -265,6 +276,7 @@ def run_live(args: object, renderer: Callable[..., str] = render,
 
     recorder: SessionRecorder | None = None
     last_render = 0.0
+    last_telemetry = -1e9
     terminal = TerminalInput()
     terminal.__enter__()
     try:
@@ -311,6 +323,12 @@ def run_live(args: object, renderer: Callable[..., str] = render,
                 sys.stdout.write(renderer(state, recorder, None if calibration_deadline is None else calibration_deadline - now))
                 sys.stdout.flush()
                 last_render = now
+            if now - last_telemetry >= args.telemetry_interval:
+                publisher.submit(build_track_snapshot(
+                    state, recorder, room_id=args.room_id,
+                    collector="PHONE" if field_mode else "DESKTOP",
+                    now_monotonic=now))
+                last_telemetry = now
 
             key = terminal.read_key()
             if not key:
@@ -355,5 +373,6 @@ def run_live(args: object, renderer: Callable[..., str] = render,
             sock.close()
         if announcer is not None:
             announcer.close()
+        publisher.close()
         sys.stdout.write("\x1b[0m\n")
     return 0

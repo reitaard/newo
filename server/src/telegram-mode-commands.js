@@ -113,7 +113,7 @@ export function parseClockArgument(match) {
 export function parseTrackArgument(match) {
   const input = String(match ?? "").trim().toLowerCase();
   if (!input) return { kind: "toggle" };
-  if (["on", "off", "status"].includes(input)) return { kind: input };
+  if (["on", "off", "status", "debug"].includes(input)) return { kind: input };
   return { kind: "invalid" };
 }
 
@@ -128,6 +128,10 @@ export function createPrimaryModeHandlers({
   getTrackDesired = () => false,
   persistTrackDesired = async () => false,
   handleTrackCommandResult = () => {},
+  renderTrackSnapshot = () => "Tracking telemetry unavailable.",
+  startTrackLive = () => {},
+  stopTrackLive = async () => false,
+  hasTrackLive = () => false,
   speakerInfo,
   getAssistantInfo = () => ({}),
 }) {
@@ -231,32 +235,88 @@ export function createPrimaryModeHandlers({
   }
 
   let trackQueue = Promise.resolve();
-  async function applyTrack(ctx) {
-    const parsed = parseTrackArgument(ctx.match);
-    if (parsed.kind === "invalid") return commandReply(ctx, "Usage: /track [on|off|status]", "usage", null, { newoSpeak: false });
-    let action = parsed.kind;
-    if (action !== "status") {
-      const desired = action === "toggle" ? !getTrackDesired() : action === "on";
-      try { await persistTrackDesired(desired); }
-      catch { return commandReply(ctx, "Tracking desired state could not be saved.", "persistence_error", null, { newoSpeak: false }); }
-      action = desired ? "on" : "off";
+  async function trackSnapshot(ctx, debug = false) {
+    const request = sendDeviceRequest("track_control", "track_ack", { action: "status" }, commandTrace(ctx));
+    if (request.kind !== "sent") {
+      handleTrackCommandResult(request);
+      return commandReply(ctx, renderTrackSnapshot({ debug, deviceResult: request }), "offline", null, { newoSpeak: false });
     }
-    const desiredLabel = getTrackDesired() ? "ON" : "OFF";
-    const request = sendDeviceRequest("track_control", "track_ack", { action }, commandTrace(ctx));
-    if (request.kind !== "sent") { handleTrackCommandResult(request); return commandReply(ctx, `Tracking desired ${desiredLabel}; actual device offline.`, "offline", null, { newoSpeak: false }); }
     const result = await request.promise;
     handleTrackCommandResult(result);
+    return commandReply(ctx, renderTrackSnapshot({ debug, deviceResult: result }),
+                        result.kind === "response" ? "response" : result.kind,
+                        request.requestId, { newoSpeak: false });
+  }
+
+  async function applyTrack(ctx) {
+    const parsed = parseTrackArgument(ctx.match);
+    if (parsed.kind === "invalid") return commandReply(ctx, "Usage: /track [on|off|status|debug]", "usage", null, { newoSpeak: false });
+    if (parsed.kind === "status" || parsed.kind === "debug") return trackSnapshot(ctx, parsed.kind === "debug");
+    let action = parsed.kind;
+    const desired = action === "toggle" ? !getTrackDesired() : action === "on";
+    try { await persistTrackDesired(desired); }
+    catch { return commandReply(ctx, "Tracking desired state could not be saved.", "persistence_error", null, { newoSpeak: false }); }
+    action = desired ? "on" : "off";
+    const request = sendDeviceRequest("track_control", "track_ack", { action }, commandTrace(ctx));
+    let panelMessage = null;
+    if (desired) {
+      const initial = renderTrackSnapshot({ transient: true, deviceResult: request });
+      panelMessage = await commandReply(ctx, initial, "starting", request.requestId ?? null, { newoSpeak: false });
+      startTrackLive(ctx.chat?.id ?? 0, panelMessage?.message_id, initial);
+    }
+    if (request.kind !== "sent") {
+      handleTrackCommandResult(request);
+      if (!desired) return commandReply(ctx, "Tracking desired OFF; actual device offline.", "offline", null, { newoSpeak: false });
+      return panelMessage;
+    }
+    const result = await request.promise;
+    handleTrackCommandResult(result);
+    if (!desired) {
+      const stopped = await stopTrackLive(ctx.chat?.id ?? 0, { final: true });
+      if (stopped) return null;
+    }
     if (result.kind === "response" && result.message.applied === true) {
       const peerWarning = result.message.state === "off" && ["uncertain", "unavailable"].includes(result.message.peer_state)
         ? " Newo2 stop unconfirmed."
         : "";
       const actual = result.message.state === "active" ? "ACTIVE" : "OFF";
-      return commandReply(ctx, `Tracking desired ${desiredLabel}; actual ${actual}; peer ${result.message.peer_state ?? "unknown"}.${peerWarning}`, "response", request.requestId, { newoSpeak: false });
+      if (desired) return panelMessage;
+      return commandReply(ctx, `Tracking desired OFF; actual ${actual}; peer ${result.message.peer_state ?? "unknown"}.${peerWarning}`, "response", request.requestId, { newoSpeak: false });
     }
-    return commandReply(ctx, `Tracking desired ${desiredLabel}; actual change not confirmed.`, result.kind === "response" ? "device_error" : result.kind, request.requestId, { newoSpeak: false });
+    if (desired) return panelMessage;
+    return commandReply(ctx, "Tracking desired OFF; actual change not confirmed.", result.kind === "response" ? "device_error" : result.kind, request.requestId, { newoSpeak: false });
   }
   function track(ctx) {
     const operation = trackQueue.then(() => applyTrack(ctx));
+    trackQueue = operation.catch(() => {});
+    return operation;
+  }
+
+  async function applyTrackBackground(ctx) {
+    if (String(ctx.match ?? "").trim()) return commandReply(ctx, "Usage: /track_bg", "usage", null, { newoSpeak: false });
+    if (getTrackDesired() && hasTrackLive(ctx.chat?.id ?? 0)) {
+      await stopTrackLive(ctx.chat?.id ?? 0, { final: true });
+      return commandReply(ctx, "Tracking in background…", "response", null, { newoSpeak: false });
+    }
+    const desired = !getTrackDesired();
+    try { await persistTrackDesired(desired); }
+    catch { return commandReply(ctx, "Tracking desired state could not be saved.", "persistence_error", null, { newoSpeak: false }); }
+    const request = sendDeviceRequest("track_control", "track_ack", { action: desired ? "on" : "off" }, commandTrace(ctx));
+    if (request.kind !== "sent") {
+      handleTrackCommandResult(request);
+      return commandReply(ctx, desired ? "Tracking desired ON in background; device offline." : "Tracking desired OFF; device offline.", "offline", null, { newoSpeak: false });
+    }
+    const result = await request.promise;
+    handleTrackCommandResult(result);
+    const confirmed = result.kind === "response" && result.message.applied === true &&
+      result.message.state === (desired ? "active" : "off");
+    if (!confirmed) return commandReply(ctx, `Tracking desired ${desired ? "ON" : "OFF"}; actual change not confirmed.`,
+                                        result.kind === "response" ? "device_error" : result.kind,
+                                        request.requestId, { newoSpeak: false });
+    return commandReply(ctx, desired ? "Tracking in background…" : "Tracking turned off.", "response", request.requestId, { newoSpeak: false });
+  }
+  function trackBackground(ctx) {
+    const operation = trackQueue.then(() => applyTrackBackground(ctx));
     trackQueue = operation.catch(() => {});
     return operation;
   }
@@ -276,5 +336,5 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, formatMuteStatus(status.device), status.device.applied === false ? "device_error" : "response", status.request.requestId, { newoSpeak: false });
   }
 
-  return { voice, voiceStatus, speaker, eco, clock, track, volume, mute };
+  return { voice, voiceStatus, speaker, eco, clock, track, trackBackground, volume, mute };
 }

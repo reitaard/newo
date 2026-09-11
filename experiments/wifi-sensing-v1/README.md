@@ -200,12 +200,27 @@ Fresh Termux setup and start:
 ```sh
 pkg update
 pkg install python git
-git clone --branch wifi-sensing-track-integration-20260910 https://github.com/reitaard/newo.git
+git clone --branch wifi-sensing-phase6-sync-20260910 https://github.com/reitaard/newo.git
 cd newo/experiments/wifi-sensing-v1/tools
 python -m pip install -e .
 mkdir -p ~/.config/newo-csi
 python -m newo_csi field --room bedroom
 ```
+
+To feed the optional VPS Telegram panel, configure the collector process (not
+the ESPs) with the server endpoint and its dedicated bearer token:
+
+```sh
+export NEWO_TRACK_TELEMETRY_URL=https://newo.example/track/telemetry/v1
+export NEWO_TRACK_TELEMETRY_TOKEN='replace-with-vps-secret'
+python -m newo_csi field --room bedroom
+```
+
+The collector sends one bounded `newo_track_telemetry_v1` derived snapshot at
+most every two seconds through a single-latest-slot background worker. Network
+failure never blocks UDP collection or archive writing. No NCSI datagram, CSI
+I/Q payload, credential, or inferred person/location result is sent. Live and
+replay use the same snapshot builder.
 
 An optional `~/.config/newo-csi/field.json` removes repeated arguments:
 

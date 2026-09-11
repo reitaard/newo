@@ -13,6 +13,8 @@ import { createSpeakerRuntime, startTelegramAndSpeech } from "./tts.js";
 import { createTtsBackend } from "./tts-backend.js";
 import { createPrimaryModeHandlers } from "./telegram-mode-commands.js";
 import { createTrackReconciler } from "./track-reconciler.js";
+import { createTrackTelemetryCache, renderTrackPanel } from "./track-telemetry.js";
+import { createTrackLiveManager } from "./track-live.js";
 import { createVoiceRuntime, NullAsrBackend, WorkerAsrBackend } from "./voice.js";
 
 try {
@@ -81,6 +83,8 @@ const EnvSchema = z.object({
   POCKET_STREAM_NO_PROGRESS_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(30_000).default(10_000)),
   POCKET_STREAM_ABSOLUTE_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(10_000).max(75_000).default(70_000)),
   RUNTIME_STATE_FILE: z.preprocess(emptyToUndefined, z.string().default("data/runtime-state.json")),
+  TRACK_TELEMETRY_TOKEN: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
+  TRACK_TELEMETRY_STALE_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(2_000).max(60_000).default(6_000)),
 });
 
 const env = EnvSchema.parse(process.env);
@@ -291,6 +295,25 @@ const trackReconciler = createTrackReconciler({
     return request.kind === "sent" ? request.promise : request;
   },
 });
+const trackTelemetry = createTrackTelemetryCache({ staleMs: env.TRACK_TELEMETRY_STALE_MS });
+
+function trackView({ debug = false, transient = false, deviceResult = null } = {}) {
+  const status = trackReconciler.status();
+  const response = deviceResult?.kind === "response" ? deviceResult.message : null;
+  const actual = response?.state ?? (transient && status.desired && status.actual !== "active" ? "starting" : status.actual);
+  return renderTrackPanel({ firmware: { ...status, actual, connected: Boolean(getConnectedDeviceState()) },
+                            telemetry: trackTelemetry.snapshot(), debug });
+}
+
+const trackLive = createTrackLiveManager({
+  editMessage: (chatId, messageId, body, options) => bot.api.editMessageText(chatId, messageId, body, options),
+  render: ({ spinner, now }) => renderTrackPanel({
+    firmware: { ...trackReconciler.status(), connected: Boolean(getConnectedDeviceState()) },
+    telemetry: trackTelemetry.snapshot(), spinner, now,
+  }),
+  getState: () => ({ firmware: trackReconciler.status(), telemetry: trackTelemetry.snapshot() }),
+  logger: app.log,
+});
 
 function resolvePendingResponse(deviceId, ws, message) {
   if (!message.request_id) return false;
@@ -374,9 +397,20 @@ app.get("/health", async () => {
   const device = getDeviceSnapshot();
   return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), track_reconciliation: trackReconciler.status(), device: { connected: device.connected, id: device.id, connected_at: device.connected_at, last_seen: device.last_seen, firmware: device.hello?.firmware ?? null, autonomy_revision: device.hello?.autonomy_revision ?? null, chip: device.hello?.chip ?? null } };
 });
+app.post("/track/telemetry/v1", async (request, reply) => {
+  if (!env.TRACK_TELEMETRY_TOKEN) return reply.code(503).send({ error: "track telemetry disabled" });
+  const authorization = request.headers.authorization;
+  const token = typeof authorization === "string" && authorization.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length) : undefined;
+  if (!safeEqual(token, env.TRACK_TELEMETRY_TOKEN)) return reply.code(401).send({ error: "unauthorized" });
+  try { trackTelemetry.update(request.body); }
+  catch (error) { return reply.code(400).send({ error: error.message }); }
+  return reply.code(204).send();
+});
 
 const TELEGRAM_COMMANDS = [
   { command: "track", description: "RF tracking resources" },
+  { command: "track_bg", description: "RF tracking without live panel" },
   { command: "status", description: "Device status" },
   { command: "health", description: "System health" },
   { command: "face", description: "Choose a display face" },
@@ -735,6 +769,10 @@ const primaryModeHandlers = createPrimaryModeHandlers({
     return desiredTrackEnabled;
   },
   handleTrackCommandResult: (result) => trackReconciler.commandResult(result),
+  renderTrackSnapshot: trackView,
+  startTrackLive: (chatId, messageId, initialText) => trackLive.start(chatId, messageId, initialText),
+  stopTrackLive: (chatId, options) => trackLive.stop(chatId, options),
+  hasTrackLive: (chatId) => trackLive.has(chatId),
   speakerInfo: {
     ttsEnabled: env.TTS_ENABLED,
     backend: env.TTS_BACKEND,
@@ -790,6 +828,7 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command("eco", primaryModeHandlers.eco);
   bot.command("clock", primaryModeHandlers.clock);
   bot.command("track", primaryModeHandlers.track);
+  bot.command("track_bg", primaryModeHandlers.trackBackground);
   bot.command(["voice", "v"], primaryModeHandlers.voice);
   bot.command("vs", primaryModeHandlers.voiceStatus);
   bot.command("speaker", primaryModeHandlers.speaker);
@@ -900,6 +939,7 @@ async function shutdown(signal) {
   for (const [requestId] of pendingRequests) settlePendingRequest(requestId, { kind: "shutdown" });
   for (const state of devices.values()) cancelOfflineTimer(state);
   assistantTurnRuntime.close();
+  trackLive.stopAll();
   speakerRuntime.close();
   await Promise.all([...[...devices.values()].map((state) => state.ws), ...voiceWss.clients, ...speakerWss.clients].filter((ws) => ws.readyState !== WebSocket.CLOSED).map(closeDeviceSocket));
   await Promise.all([wss, voiceWss, speakerWss].map((server) => new Promise((resolve) => { try { server.close(() => resolve()); } catch { resolve(); } })));

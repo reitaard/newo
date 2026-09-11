@@ -348,6 +348,12 @@ def add_monitor_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--replay", help="session/archive input instead of UDP")
     command.add_argument("--speed", type=float, default=1.0,
                          help="archive replay speed; 0 disables delays")
+    command.add_argument("--telemetry-url",
+                         help="optional VPS newo_track_telemetry_v1 endpoint")
+    command.add_argument("--telemetry-token",
+                         help="bearer token for --telemetry-url")
+    command.add_argument("--telemetry-interval", type=float, default=2.0,
+                         help="summary publish interval in seconds (minimum 1)")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -468,6 +474,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--top-k and --window-seconds must be positive")
     if getattr(args, "settle_seconds", 0) < 0:
         raise SystemExit("--settle-seconds must be non-negative")
+    if getattr(args, "telemetry_interval", 1) < 1:
+        raise SystemExit("--telemetry-interval must be at least 1 second")
     if getattr(args, "calibrate", None) is not None and args.calibrate <= 0:
         raise SystemExit("--calibrate must be positive")
     return args.handler(args)

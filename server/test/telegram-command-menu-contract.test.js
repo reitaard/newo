@@ -28,7 +28,7 @@ test("Telegram menu exposes core controls, semantic faces, and composed reaction
     "effect_none", "effect_question", "effect_exclamation", "effect_surprise", "effect_ellipsis", "effect_sweat", "effect_zzz",
     "caption_none", "caption_huh", "caption_woah", "caption_hmm", "caption_hey", "caption_wtf", "caption_tsk",
     "reaction", "reaction_none", "reaction_huh", "reaction_woah", "reaction_hmm", "reaction_hey", "reaction_wtf", "reaction_tsk",
-    "eco", "clock", "voice", "speaker", "ping",
+    "eco", "clock", "track", "track_bg", "voice", "speaker", "ping",
   ]) {
     assert.ok(commands.some(({ command }) => command === required), `missing Telegram menu command: ${required}`);
   }

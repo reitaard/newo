@@ -9,13 +9,14 @@ function response(message) {
 
 function createHarness(sendDeviceRequest, overrides = {}) {
   const replies = [];
+  const live = [];
   let speakerEnabled = overrides.speakerEnabled ?? true;
   let trackDesired = overrides.trackDesired ?? false;
   const handlers = createPrimaryModeHandlers({
     sendDeviceRequest,
     commandReply: async (ctx, text, category, requestId, options) => {
       replies.push({ text, category, requestId, options });
-      return text;
+      return { message_id: replies.length, text };
     },
     commandTrace: () => null,
     getDeviceSnapshot: overrides.getDeviceSnapshot ?? (() => ({ connected: true, status: {} })),
@@ -24,10 +25,14 @@ function createHarness(sendDeviceRequest, overrides = {}) {
     persistSpeakerEnabled: async (enabled) => { speakerEnabled = enabled; return enabled; },
     getTrackDesired: () => trackDesired,
     persistTrackDesired: async (enabled) => { trackDesired = enabled; return enabled; },
+    renderTrackSnapshot: ({ debug, transient } = {}) => debug ? "DEBUG PANEL" : transient ? "STARTING PANEL" : "STATUS PANEL",
+    startTrackLive: (chatId, messageId, initial) => live.push({ action: "start", chatId, messageId, initial }),
+    stopTrackLive: async (chatId) => { live.push({ action: "stop", chatId }); return overrides.hasTrackLive ?? false; },
+    hasTrackLive: () => overrides.hasTrackLive ?? false,
     speakerInfo: { ttsEnabled: true, backend: "kokoro", format: "24 kHz PCM16", bufferBytes: 24_576 },
     getAssistantInfo: overrides.getAssistantInfo ?? (() => ({ status: "ready", model: "helix-qwen3-0.6b", qwen: "online", speakerEnabled, latest: { result: "n/a", llmMs: null, asrFinalMs: null, ttsQueuedMs: null, totalMs: null } })),
   });
-  return { handlers, replies, get speakerEnabled() { return speakerEnabled; } };
+  return { handlers, replies, live, get speakerEnabled() { return speakerEnabled; } };
 }
 
 const speakerAck = {
@@ -36,35 +41,38 @@ const speakerAck = {
   underruns: 0, overflows: 0, buffer_bytes: 24_576,
 };
 
-test("/track parser accepts toggle, explicit state, and status", () => {
+test("/track parser accepts toggle, explicit state, status, and debug", () => {
   assert.deepEqual(parseTrackArgument(""), { kind: "toggle" });
   assert.deepEqual(parseTrackArgument(" ON "), { kind: "on" });
   assert.deepEqual(parseTrackArgument("off"), { kind: "off" });
   assert.deepEqual(parseTrackArgument("status"), { kind: "status" });
+  assert.deepEqual(parseTrackArgument("debug"), { kind: "debug" });
   assert.deepEqual(parseTrackArgument("maybe"), { kind: "invalid" });
 });
 
-test("/track replies only after correlated device acknowledgement", async () => {
+test("OFF to /track emits one immediate panel and starts one updater", async () => {
   const requests = [];
   const harness = createHarness((type, responseType, fields) => {
     requests.push({ type, responseType, fields });
     return response({ type: "track_ack", state: "active", applied: true });
   });
-  await harness.handlers.track({ match: "on" });
+  await harness.handlers.track({ match: "on", chat: { id: 42 } });
   assert.deepEqual(requests[0], { type: "track_control", responseType: "track_ack", fields: { action: "on" } });
-  assert.equal(harness.replies[0].text, "Tracking desired ON; actual ACTIVE; peer unknown.");
+  assert.equal(harness.replies.length, 1);
+  assert.equal(harness.replies[0].text, "STARTING PANEL");
+  assert.deepEqual(harness.live, [{ action: "start", chatId: 42, messageId: 1, initial: "STARTING PANEL" }]);
 });
 
-test("/track never claims an unconfirmed transition", async () => {
+test("/track live warmup never claims an unconfirmed transition", async () => {
   const harness = createHarness(() => response({ type: "track_ack", state: "off", applied: false }));
-  await harness.handlers.track({ match: "on" });
-  assert.equal(harness.replies[0].category, "device_error");
-  assert.equal(harness.replies[0].text, "Tracking desired ON; actual change not confirmed.");
+  await harness.handlers.track({ match: "on", chat: { id: 42 } });
+  assert.equal(harness.replies.length, 1);
+  assert.equal(harness.replies[0].text, "STARTING PANEL");
 });
 
 test("/track reports uncertain Newo2 stop without denying local TRACK_OFF", async () => {
   const harness = createHarness(() => response({ type: "track_ack", state: "off", applied: true, peer_state: "uncertain" }));
-  await harness.handlers.track({ match: "off" });
+  await harness.handlers.track({ match: "off", chat: { id: 42 } });
   assert.equal(harness.replies[0].category, "response");
   assert.equal(harness.replies[0].text, "Tracking desired OFF; actual OFF; peer uncertain. Newo2 stop unconfirmed.");
 });
@@ -86,9 +94,46 @@ test("/track desired state persists before an offline transition", async () => {
     persistTrackDesired: async (enabled) => { desired = enabled; },
     speakerInfo: {},
   });
-  await harness.handlers.track({ match: "on" });
+  await harness.handlers.track({ match: "on", chat: { id: 42 } });
   assert.equal(desired, true);
-  assert.equal(harness.replies[0].text, "Tracking desired ON; actual device offline.");
+  assert.equal(harness.replies[0].text, "Tracking telemetry unavailable.");
+});
+
+test("/track status and debug are one-shot and do not mutate desired state", async () => {
+  let persisted = 0;
+  const harness = createHarness(() => response({ type: "track_ack", state: "active", applied: true }));
+  harness.handlers = createPrimaryModeHandlers({
+    sendDeviceRequest: () => response({ type: "track_ack", state: "active", applied: true }),
+    commandReply: async (_ctx, text) => { harness.replies.push({ text }); return { message_id: 9 }; },
+    commandTrace: () => null, getDeviceSnapshot: () => ({}), getSpeakerEnabled: () => true,
+    setSpeakerAccepting: () => {}, persistSpeakerEnabled: async () => true,
+    getTrackDesired: () => true, persistTrackDesired: async () => { persisted += 1; },
+    renderTrackSnapshot: ({ debug }) => debug ? "DEBUG PANEL" : "STATUS PANEL", speakerInfo: {},
+  });
+  await harness.handlers.track({ match: "status", chat: { id: 1 } });
+  await harness.handlers.track({ match: "debug", chat: { id: 1 } });
+  assert.equal(persisted, 0);
+  assert.deepEqual(harness.replies.map((item) => item.text), ["STATUS PANEL", "DEBUG PANEL"]);
+});
+
+test("/track_bg switches LIVE to background without restarting firmware", async () => {
+  let requests = 0;
+  const harness = createHarness(() => { requests += 1; return response({ state: "active", applied: true }); },
+                                { trackDesired: true, hasTrackLive: true });
+  await harness.handlers.trackBackground({ match: "", chat: { id: 8 } });
+  assert.equal(requests, 0);
+  assert.deepEqual(harness.live, [{ action: "stop", chatId: 8 }]);
+  assert.equal(harness.replies[0].text, "Tracking in background…");
+});
+
+test("/track_bg toggles background OFF with the shared firmware session", async () => {
+  const requests = [];
+  const harness = createHarness((_type, _responseType, fields) => {
+    requests.push(fields); return response({ state: "off", applied: true });
+  }, { trackDesired: true });
+  await harness.handlers.trackBackground({ match: "", chat: { id: 8 } });
+  assert.deepEqual(requests, [{ action: "off" }]);
+  assert.equal(harness.replies[0].text, "Tracking turned off.");
 });
 
 test("/v sends manual_toggle and returns a terse silent start reply", async () => {
