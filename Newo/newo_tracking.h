@@ -22,6 +22,9 @@ class NewoTracking {
  private:
   bool start();
   bool stop(bool coordinatePeer = true);
+  void pollLocalControl();
+  void expireLocalControl();
+  Result applyLocal(const char* state, const char* session, uint32_t sequence, uint32_t leaseMs);
   static void peerMonitorEntry(void* context);
   void peerMonitorLoop();
   State state_ = State::OFF;
@@ -30,4 +33,11 @@ class NewoTracking {
   bool lastApplied_ = false;
   const char* lastError_ = nullptr;
   const char* volatile peerStatus_ = "stopped";
+  char localSession_[65] = {};
+  char releasedLocalSession_[65] = {};
+  uint32_t localCommandSequence_ = 0;
+  uint32_t releasedLocalSequence_ = 0;
+  uint32_t localLeaseUntilMs_ = 0;
+  bool localLastApplied_ = false;
+  const char* localLastError_ = nullptr;
 };

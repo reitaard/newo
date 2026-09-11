@@ -1,0 +1,17 @@
+{
+  "schema": "retrack_config_v1",
+  "default_room": "bedroom",
+  "defaults": {
+    "data_dir": "~/retrack-data",
+    "data_port": 5005,
+    "control_port": 5010,
+    "publisher_enabled": false,
+    "rotate_bytes": 67108864
+  },
+  "rooms": {
+    "bedroom": {
+      "placement": "BED_SIDE",
+      "leader_host": null
+    }
+  }
+}

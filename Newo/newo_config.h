@@ -116,6 +116,7 @@ constexpr uint32_t VOICE_ACTIVE_SESSION_TIMEOUT_MS = 30'000;
 // local build define and is never persisted by this firmware.
 constexpr char TRACK_COLLECTOR_FALLBACK[] = "192.168.1.116";
 constexpr uint16_t TRACK_COLLECTOR_PORT = 5005;
+constexpr uint16_t RETRACK_CONTROL_PORT = 5010;
 constexpr uint16_t TRACK_RATE_HZ = 20;
 constexpr uint8_t TRACK_RING_DEPTH = 16;
 #ifndef NEWO_TRACK_PEER_MAC

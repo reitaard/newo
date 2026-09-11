@@ -6,6 +6,8 @@ requires-python = ">=3.10"
 
 [project.scripts]
 newo-csi = "newo_csi.cli:main"
+retrack = "retrack.cli:main"
+retrackd = "retrack.cli:daemon_main"
 
 [build-system]
 requires = ["setuptools>=68"]
