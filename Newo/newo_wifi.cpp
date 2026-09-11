@@ -144,7 +144,6 @@ bool NewoWiFi::connectToSavedNetwork(const NewoWifiCredential& network, uint32_t
   char detail[96];
   snprintf(detail, sizeof(detail), "ssid=%s", network.ssid.c_str());
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::WIFI, "WIFI_CONNECTING", detail);
-  WiFi.disconnect(false, false);
 
   if (network.password.length() == 0) {
     WiFi.begin(network.ssid.c_str());
@@ -168,6 +167,11 @@ bool NewoWiFi::connectToSavedNetwork(const NewoWifiCredential& network, uint32_t
   char failedDetail[96];
   snprintf(failedDetail, sizeof(failedDetail), "ssid=%s reason=%s", network.ssid.c_str(), wifiStatusName(WiFi.status()));
   NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::WIFI, "WIFI_CONNECT_FAILED", failedDetail);
+  // disconnect() completes asynchronously in Arduino-ESP32. Issuing it just
+  // before begin() lets its delayed ASSOC_LEAVE cancel the new connection.
+  // Only cancel a timed-out attempt; the outer retry delay/scan gives the
+  // driver time to settle before another begin().
+  WiFi.disconnect(false, false);
   return false;
 }
 
