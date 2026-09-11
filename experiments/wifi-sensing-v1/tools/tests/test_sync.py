@@ -60,6 +60,15 @@ class SyncTests(unittest.TestCase):
         self.assertIsNone(analyzer.align(fake_csi))
         self.assertFalse(analyzer.status()["cross_node_alignment_available"])
 
+    def test_stale_interval_and_state_fractions_use_capture_time(self):
+        analyzer = SyncAnalyzer()
+        analyzer.add(sync_record(1, state=2), 2_000_000_000)
+        analyzer.add(sync_record(2, state=4), 5_000_000_000)
+        summary = analyzer.summary(9.0, 1_000_000_000, 10_000_000_000)
+        self.assertEqual(summary["longest_stale_interval_seconds"], 5.0)
+        self.assertAlmostEqual(sum(summary["state_fraction"].values()), 1.0)
+        self.assertAlmostEqual(summary["state_fraction"]["UNSYNCED"], 1 / 9)
+
     def test_legacy_sync_placeholder_does_not_enable_alignment(self):
         legacy = replace(sync_record(1), sync_version=0)
         analyzer = SyncAnalyzer()

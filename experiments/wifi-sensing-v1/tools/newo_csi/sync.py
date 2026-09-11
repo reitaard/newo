@@ -90,7 +90,9 @@ class SyncAnalyzer:
                 "follower_session_id": record.follower_session_id,
                 "last_sync_age_us": record.last_sync_age_us}
 
-    def summary(self, duration_seconds: float = 0.0) -> dict[str, Any]:
+    def summary(self, duration_seconds: float = 0.0,
+                capture_start_ns: int | None = None,
+                capture_end_ns: int | None = None) -> dict[str, Any]:
         if not self.records:
             return {"state": "UNAVAILABLE", "sample_count": 0, "rejected_samples": self.rejected,
                     "interpretation": "no SYNC records; cross-node temporal fusion unavailable"}
@@ -100,11 +102,17 @@ class SyncAnalyzer:
         states = Counter(SYNC_STATES.get(r.sync_state, "UNKNOWN") for _, r in self.records)
         total = len(self.records)
         latest = self.records[-1][1]
+        epochs = sorted({(r.leader_session_id, r.follower_session_id)
+                         for _, r in self.records})
         state_seconds: Counter[str] = Counter()
+        if capture_start_ns is not None:
+            state_seconds["UNSYNCED"] += max(
+                0.0, (self.records[0][0] - capture_start_ns) / 1e9)
         longest_stale = 0.0
         stale_run = 0.0
         for index, (host_ns, record) in enumerate(self.records):
-            next_ns = self.records[index + 1][0] if index + 1 < total else host_ns
+            next_ns = (self.records[index + 1][0] if index + 1 < total
+                       else (capture_end_ns if capture_end_ns is not None else host_ns))
             span = max(0.0, (next_ns - host_ns) / 1e9)
             name = SYNC_STATES.get(record.sync_state, "UNKNOWN")
             state_seconds[name] += span
@@ -114,9 +122,10 @@ class SyncAnalyzer:
             else:
                 stale_run = 0.0
         covered = sum(state_seconds.values())
-        fractions = ({name: seconds / covered for name, seconds in sorted(state_seconds.items())}
+        known_states = tuple(SYNC_STATES.values())
+        fractions = ({name: state_seconds[name] / covered for name in known_states}
                      if covered > 0 else
-                     {name: count / total for name, count in sorted(states.items())})
+                     {name: states[name] / total for name in known_states})
         return {"state": SYNC_STATES.get(latest.sync_state, "UNKNOWN"),
                 "sample_count": total, "accepted_samples": latest.accepted_samples,
                 "rejected_samples": latest.rejected_samples + self.rejected,
@@ -131,4 +140,8 @@ class SyncAnalyzer:
                 "longest_stale_interval_seconds": longest_stale,
                 "leader_session_id": latest.leader_session_id,
                 "follower_session_id": latest.follower_session_id,
+                "session_epoch_count": len(epochs),
+                "session_epochs": [{"leader_session_id": leader,
+                                    "follower_session_id": follower}
+                                   for leader, follower in epochs],
                 "interpretation": "one-way event-time alignment only; not RF phase coherence"}
