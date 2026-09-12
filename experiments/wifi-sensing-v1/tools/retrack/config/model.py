@@ -21,6 +21,12 @@ class ReTrackConfig:
     rotate_bytes: int = 64 * 1024 * 1024
     publisher_enabled: bool = False
     publisher_url: str | None = None
+    calibration_file: Path | None = None
+    api_bind: str = "127.0.0.1"
+    api_host: str = "127.0.0.1"
+    api_port: int = 8765
+    controller_lease_ms: int = 30_000
+    snapshot_interval: float = 0.25
 
 
 def load_config(path: Path | None = None, *, room: str | None = None) -> ReTrackConfig:
@@ -36,6 +42,12 @@ def load_config(path: Path | None = None, *, room: str | None = None) -> ReTrack
     defaults = document.get("defaults", {}) if isinstance(document.get("defaults", {}), dict) else {}
     value = lambda name, fallback: profile.get(name, defaults.get(name, fallback))
     data_dir = Path(str(value("data_dir", Path.home() / "retrack-data"))).expanduser()
+    calibration_value = value("calibration_file", None)
+    calibration_file = None
+    if calibration_value:
+        calibration_file = Path(str(calibration_value)).expanduser()
+        if not calibration_file.is_absolute() and path is not None:
+            calibration_file = path.parent / calibration_file
     return ReTrackConfig(
         data_dir=data_dir, registry_file=Path(str(value("registry_file", base / "nodes.json"))).expanduser(),
         room=selected_room, placement=str(value("placement", "UNSPECIFIED")), bind=str(value("bind", "0.0.0.0")),
@@ -44,4 +56,9 @@ def load_config(path: Path | None = None, *, room: str | None = None) -> ReTrack
         window_seconds=float(value("window_seconds", 2.0)), settle_seconds=float(value("settle_seconds", 10.0)),
         rotate_bytes=int(value("rotate_bytes", 64 * 1024 * 1024)),
         publisher_enabled=bool(value("publisher_enabled", False)), publisher_url=value("publisher_url", None),
+        calibration_file=calibration_file,
+        api_bind=str(value("api_bind", "127.0.0.1")), api_host=str(value("api_host", "127.0.0.1")),
+        api_port=int(value("api_port", 8765)),
+        controller_lease_ms=int(value("controller_lease_ms", 30_000)),
+        snapshot_interval=float(value("snapshot_interval", 0.25)),
     )

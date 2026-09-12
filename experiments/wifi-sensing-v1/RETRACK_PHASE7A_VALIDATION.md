@@ -56,3 +56,75 @@ services. The run instantiated no publisher, reported Publisher DISABLED, and
 the collection/control/storage/replay code paths contain only local UDP and
 local filesystem operations. Newo's independent cloud connection remained
 online but did not participate in any validation step.
+
+## Authoritative daemon finishing validation
+
+The finishing run used independent `retrackd` plus JSON-lines clients on the
+laptop. Session `20260912T144605Z-4942456b` recorded for 220.906 seconds and
+finalized COMPLETE with 17,861 exact NCAP-v2 envelopes in one 11,309,512-byte
+chunk. Its SHA-256 was
+`b0e4df74e20e23fbf0debf11ea312450c99cdd3c9df1f9a2e2e0dfa03e25e862`.
+An explicit `PHASE7A_HEADLESS_RECONNECT` event was appended before clean stop.
+
+Two simultaneous laptop clients received the same session ID and frame count.
+A viewer mutation was rejected with `not_controller`. After the controller and
+both viewers disconnected, the daemon retained the same ACTIVE recording and
+the frame count advanced from 1,657 to 1,983 during a five-second zero-UI
+interval, then to more than 16,000 before reconnection. Client detach did not
+stop Track, close the writer, or mark the manifest incomplete. A reconnected
+controller added the event, stopped recording, and explicitly set Track OFF.
+A fresh device STATUS reported firmware 0.6, expected Newo MAC, actual OFF, and
+owner NONE.
+
+Newo and Newo2 were both present, all three RF paths survived capture and
+replay, and synchronization was SYNC_VALID. Replay reconstructed 9,353
+ROUTER_NEWO, 5,345 ROUTER_NEWO2, and 2,506 NEWO2_NEWO CSI geometry records;
+non-CSI telemetry accounts for the remaining envelopes. No datagram was
+rejected. The shared replay pipeline retained one sync epoch and reported 580
+accepted and zero rejected sync samples.
+
+The loaded schema-v3 calibration initially matched the dominant geometries,
+but live traffic later included uncalibrated NEWO2_NEWO lengths 256 and 128 and
+a ROUTER_NEWO2 length 128 geometry. The calibration therefore became REJECTED,
+geometry became CALIBRATION_REQUIRED, and the corrected runtime suppressed all
+path scores/states to LOW_CONFIDENCE. The calibration and Phase-5 thresholds
+were not changed. This is a hardware evidence blocker for calibrated claims,
+not a reason to silently accept a different geometry.
+
+The API was deliberately exposed on `0.0.0.0:8765` for the bounded test. No
+Termux client attached during the observation window, so laptop plus Termux
+simultaneous viewing remains physically unproven. The two-client and detach
+semantics are covered both by the laptop run and deterministic loopback tests.
+
+Cloud cleanup used the deployed atomic runtime-state store to set only desired
+Track OFF, then restarted the existing `newo-cloud` PM2 service so its in-memory
+state reloaded. PM2 returned online, Newo reconnected and sent hello, and the
+reconciler confirmed desired false / actual off on its first attempt. No VPS
+source file was overwritten during that cleanup. A separate webhook command
+failure exposed a missing grammY initialization gate; `server/src/index.js`
+was subsequently corrected and selectively deployed after syntax and focused
+tests.
+
+## Long-duration legacy regression archive
+
+The immutable legacy session
+`20260911T200634Z-background-f8875633` remains BACKGROUND / UNLABELED. Its
+`session.json` SHA-256 is
+`a0ded0bd2b00fe5529f58968aa51b3752de7a13bfb8e148ae24e74f0ca8f15cc` and
+its 675,493,352-byte `frames.ncsi` was not modified, moved, or converted.
+
+The operator's complete streaming Phase-5 decode scanned all 1,074,125 archive
+records (1,024,789 CSI) and retained all three dominant geometry partitions:
+ROUTER_NEWO length 612, ROUTER_NEWO2 length 612, and NEWO2_NEWO length 384.
+Those results are descriptive within-session RF ranks only; they do not infer
+sleep, occupancy, a person, or a specific activity.
+
+ReTrack now recognizes the legacy `session.json` plus `frames.ncsi` layout and
+reads it in place through the same record ingestion boundary. The functional
+legacy replay test proves all three paths and raw immutability. An exhaustive
+second million-record ReTrack DSP pass was not duplicated after the operator's
+full raw decode because it is expensive and would add no new archive-integrity
+evidence. Most importantly, the archive placement is the explicit string
+`tonight`, while the available calibration is tied to `TONIGHT_FIXED`.
+ReTrack preserves capture metadata and rejects that placement mismatch; it does
+not invent an alias to make calibrated RF states appear valid.

@@ -25,6 +25,7 @@ class ChunkedSessionWriter:
 
     def __init__(self, root: Path, *, room: str, nodes: list[dict[str, object]],
                  topology: list[dict[str, object]], placement: str = "UNSPECIFIED",
+                 calibration: dict[str, object] | None = None,
                  rotate_bytes: int = 64 * 1024 * 1024, session_id: str | None = None,
                  monotonic_ns=time.monotonic_ns):
         if rotate_bytes < 1024:
@@ -45,13 +46,19 @@ class ChunkedSessionWriter:
             "schema": "retrack_session_v1", "session_id": self.session_id, "state": "ACTIVE",
             "room": room, "placement": placement, "started_at": utc_now(),
             "monotonic_origin_ns": self._origin_ns, "nodes": nodes, "topology": topology,
-            "sync_epochs": [], "calibration_version": None, "recording": True,
+            "sync_epochs": [], "calibration": calibration,
+            "calibration_version": None if calibration is None else calibration.get("calibration_id"),
+            "recording": True,
             "chunks": [], "record_count": 0, "annotations": "events.jsonl",
             "raw_authority": "immutable NCSI datagrams in NCAP v2 envelopes",
         }
         self._open_chunk()
         self._save()
         self.event("recording_started")
+
+    @property
+    def origin_ns(self) -> int:
+        return self._origin_ns
 
     def _save(self) -> None:
         self.manifest["record_count"] = self._count
@@ -106,7 +113,14 @@ class ChunkedSessionWriter:
 
 
 def iter_session_records(session: Path) -> Iterator[ArchivedRecord]:
-    manifest = json.loads((session / "manifest.json").read_text(encoding="utf-8"))
+    manifest_path = session / "manifest.json"
+    if not manifest_path.is_file():
+        legacy = session / "frames.ncsi"
+        if legacy.is_file():
+            yield from iter_archive(legacy)
+            return
+        raise FileNotFoundError(f"no ReTrack manifest or legacy frames.ncsi in {session}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     for chunk in manifest.get("chunks", []):
         try:
             yield from iter_archive(session / chunk["name"])
@@ -124,3 +138,22 @@ def recover_session(session: Path) -> dict[str, object]:
                          "recovered_at": utc_now()})
         atomic_json(path, manifest)
     return manifest
+
+
+def recover_active_sessions(root: Path) -> list[Path]:
+    """Recover abandoned ACTIVE manifests after the daemon owns the data port."""
+    recovered: list[Path] = []
+    if not root.is_dir():
+        return recovered
+    for session in sorted(item for item in root.iterdir() if item.is_dir()):
+        manifest_path = session / "manifest.json"
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if manifest.get("state") == "ACTIVE":
+            recover_session(session)
+            recovered.append(session)
+    return recovered

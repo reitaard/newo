@@ -7,12 +7,20 @@ terminal rendering and remain the authoritative evidence.
 
 ## Architecture
 
-`retrack.collector.ReTrackCore` owns dynamic node, topology, geometry, sync,
-DSP, and recording state. `NetworkRuntime` owns only the local UDP sockets,
-NCOL announcement, lease renewal, and ingestion loop. The terminal UI reads
-snapshots from that headless core. `retrack replay` feeds archived envelopes
-back into the same `ReTrackCore.ingest()` and therefore uses the same Phase-5
-DSP and Phase-6 synchronization implementation as live collection.
+`retrackd` is the sole authoritative runtime. `ReTrackCore` owns dynamic node,
+topology, geometry, sync, DSP, and recording state. `NetworkRuntime` owns the
+one CSI UDP socket, NCOL announcement, ESP lease renewal, and ingestion loop.
+The versioned local client server publishes derived snapshots only; it never
+copies raw CSI to viewers. Closing every UI leaves tracking and recording
+running under `retrackd`.
+
+`retrack run` is only a client. Multiple laptop/Termux viewers may attach to
+the same daemon and therefore see the same session ID, counters, nodes, paths,
+sync, calibration, and recording state. `retrack replay` feeds either ReTrack
+chunks or a legacy Phase-6 `frames.ncsi` archive back into the same
+`ReTrackCore.ingest()` and therefore uses the same Phase-5 DSP and Phase-6
+synchronization implementation as live collection. Legacy sources are read
+in place and are never converted or rewritten.
 
 The package boundaries are `nodes`, `discovery`, `control`, `collector`,
 `sessions`, `storage`, `sync`, `dsp`, `replay`, `topology`, `config`, `ui`, and
@@ -60,6 +68,36 @@ not authentication. Do not expose UDP 5010 across a routed or untrusted LAN.
 Authenticated pairing is deferred; the implementation does not pretend the
 current LAN boundary is stronger than it is.
 
+## Daemon client protocol
+
+The daemon client API is newline-delimited JSON over TCP, versioned as
+`retrack_client_v1`. It binds `127.0.0.1:8765` by default. Set `api_bind` to a
+LAN address or `0.0.0.0` only when another trusted LAN device must view it.
+This interface is not authenticated; exposing it grants local-LAN users the
+ability to request its documented controller takeover rule.
+
+Any number of read-only viewers may subscribe to derived `SNAPSHOT` messages.
+One client may hold a 5-120 second controller lease. A deliberate
+`ACQUIRE_CONTROL` with `takeover:true` replaces the current controller; normal
+acquisition fails with `controller_busy`. Disconnect does not stop tracking,
+recording, or release the lease early. A reconnect using the same client ID can
+renew it, or another client can wait for expiry or explicitly take it.
+
+Mutations are explicit `TRACK_SET`, `RECORD_SET`, `EVENT`, and
+`PLACEMENT_SET`. They require the current lease ID and a bounded `request_id`.
+The daemon caches responses, so retransmission of the same client/request pair
+does not execute a side effect twice. Individual clients never renew the ESP
+lease; only `retrackd` owns UDP 5010 and its renewal lifecycle.
+
+## Existing calibration loading
+
+`calibration_file` points to the existing `newo_csi` schema; ReTrack does not
+define another calibration or change thresholds. The exact room, placement,
+DSP feature contract, frozen subcarrier indices, and observed CSI geometry
+must match. The UI reports `CAL VALID`, `MISSING`, `REJECTED`, `PENDING`, or
+`REQUIRED`. Placement changes immediately invalidate the loaded calibration.
+`C` remains reserved and does not build a calibration in Phase 7A.
+
 ## Install and run
 
 Termux:
@@ -68,7 +106,9 @@ Termux:
 pkg install python git
 cd /path/to/newo/experiments/wifi-sensing-v1/tools
 python -m pip install -e .
-retrack --room bedroom run
+retrackd --config retrack.example.json
+# In a second terminal:
+retrack --config retrack.example.json run --controller --client-id laptop
 ```
 
 Normal Linux uses the same final three commands in a Python 3.10+ virtual
@@ -77,18 +117,28 @@ pass `--config PATH` for named rooms and persistent storage choices. Defaults
 write under `~/retrack-data`, use `~/.config/retrack/nodes.json`, and keep all
 VPS publishing disabled.
 
+For a phone viewer, deliberately expose `api_bind` on the trusted LAN, then:
+
+```sh
+retrack --config retrack.example.json run --api-host LAPTOP_LAN_IP --client-id phone
+```
+
+The phone is a viewer unless `--controller` is explicitly supplied. `Q`
+detaches that client only. Use `--take-control` only for an intentional
+controller handoff.
+
 Other commands:
 
 ```sh
 retrack --room bedroom catalog
-retrack --room bedroom replay ~/retrack-data/sessions/SESSION_ID
-retrack --room bedroom daemon --track-on --record --label baseline
+retrack --room bedroom --placement TONIGHT_FIXED \
+  --calibration-file ../calibrations/bedroom-tonight.json replay SESSION_DIR
+retrackd --room bedroom --placement TONIGHT_FIXED \
+  --calibration-file ../calibrations/bedroom-tonight.json
 ```
 
 ## Phase 7A limitations
 
-- The initial `retrackd` boundary is headless but has no IPC client yet; a TUI
-  launched directly still shares its process with the runtime.
 - `C` reserves the calibration action and the geometry model supports
   `REPOSITIONING -> SETTLING -> CALIBRATION_REQUIRED -> BUILDING -> READY`, but
   Phase 7B calibration/model work is not started here.
@@ -97,5 +147,7 @@ retrack --room bedroom daemon --track-on --record --label baseline
   four-node RF scheduling, and authenticated pairing are deferred.
 - `export` is an explicit namespace only. No automatic WAN upload occurs while
   tracking or recording.
+- The daemon client API and UDP 5010 rely on a trusted LAN. Authenticated
+  pairing and encrypted remote access are deferred.
 - RF states remain conservative research evidence. ReTrack does not claim
   identity, localization, pose, occupancy, or a detected person.

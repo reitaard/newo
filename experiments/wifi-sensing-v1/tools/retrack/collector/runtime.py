@@ -14,10 +14,16 @@ class NetworkRuntime:
         self.core = core
         self.control = control
         self.socket = socket_factory(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, receive_buffer)
-        self.socket.bind((bind, data_port))
-        self.socket.settimeout(0.05)
-        self.announcer = CollectorAnnouncer(data_port)
+        try:
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, receive_buffer)
+            self.socket.bind((bind, data_port))
+            self.socket.settimeout(0.05)
+            self.announcer = CollectorAnnouncer(data_port)
+        except Exception:
+            self.socket.close()
+            raise
         self._last_renew = 0.0
         self.closed = False
 

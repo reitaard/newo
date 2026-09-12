@@ -5,12 +5,17 @@
     "data_dir": "~/retrack-data",
     "data_port": 5005,
     "control_port": 5010,
+    "api_bind": "127.0.0.1",
+    "api_host": "127.0.0.1",
+    "api_port": 8765,
+    "controller_lease_ms": 30000,
     "publisher_enabled": false,
     "rotate_bytes": 67108864
   },
   "rooms": {
     "bedroom": {
-      "placement": "BED_SIDE",
+      "placement": "TONIGHT_FIXED",
+      "calibration_file": "../calibrations/bedroom-tonight.json",
       "leader_host": null
     }
   }

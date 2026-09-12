@@ -836,6 +836,9 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command("volume", primaryModeHandlers.volume);
   bot.command("mute", primaryModeHandlers.mute);
   bot.command(["speak", "sp"], handleSpeakCommand);
+  // Webhook delivery calls handleUpdate directly, so unlike bot.start() it
+  // does not perform grammY's initialization step for us.
+  await bot.init();
   void bot.api.setMyCommands(TELEGRAM_COMMANDS).catch(() => app.log.warn("Failed to register the Telegram command menu"));
   const telegramUpdates = createTelegramUpdateAcceptor({
     handleUpdate: (update) => bot.handleUpdate(update),

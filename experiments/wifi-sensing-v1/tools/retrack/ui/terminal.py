@@ -11,17 +11,22 @@ def _clip(value: str, width: int) -> str:
     return value if len(value) <= width else value[:max(0, width - 1)] + "…"
 
 
-def render(snapshot: dict[str, object], *, width: int | None = None) -> str:
+def render(snapshot: dict[str, object], *, width: int | None = None,
+           client_id: str | None = None) -> str:
     width = max(24, width or shutil.get_terminal_size((40, 24)).columns)
     nodes = snapshot.get("nodes", [])
     slots = list(nodes[:4]) + [None] * max(0, 4 - len(nodes))
     sync = snapshot.get("sync", {})
     geometry = snapshot.get("geometry", {})
     paths = snapshot.get("paths", {})
+    calibration = snapshot.get("calibration", {})
+    client_api = snapshot.get("client_api", {})
     state = sync.get("state", "SYNC_UNSYNCED").replace("SYNC_", "")
     lines = [f"RETRACK  {snapshot.get('room', 'UNSPECIFIED')}",
              f"TRACK {snapshot.get('track')}  REC {'ON' if snapshot.get('recording') else 'OFF'}  SYNC {state}",
-             f"Session {snapshot.get('session_id') or '--'}  Frames {snapshot.get('records', 0)}"]
+             f"Session {snapshot.get('session_id') or '--'}  {snapshot.get('recording_elapsed_seconds', 0):.0f}s",
+             f"CONTROL {'THIS CLIENT' if client_id and client_api.get('controller_id') == client_id else 'VIEWER'}  "
+             f"Frames {snapshot.get('records', 0)}"]
     for index, node in enumerate(slots, 1):
         if node is None:
             lines.append(f"N{index} Empty")
@@ -36,27 +41,28 @@ def render(snapshot: dict[str, object], *, width: int | None = None) -> str:
         lines.append("RF paths waiting for TRACK ON / local data")
     drift = sync.get("drift_ppm")
     lines.extend(["", f"Geometry {geometry.get('placement')}  {geometry.get('state')}",
+                  f"CAL {calibration.get('status', 'MISSING')}  {calibration.get('reason') or ''}",
                   f"Sync offset {sync.get('final_offset_us', '--')}us  drift {'--' if drift is None else f'{drift:.1f}ppm'}",
                   f"Publisher {snapshot.get('publisher')}  WAN not required",
-                  "T track  R record  E event  P placement  C calibration  Q quit"])
+                  "T track  R record  E event  P placement  C calibration  Q detach"])
     return "\x1b[2J\x1b[H" + "\n".join(_clip(line, width) for line in lines)
 
 
-def run_tui(runtime) -> int:
+def run_tui(client) -> int:
     terminal = TerminalInput()
     terminal.__enter__()
     last_render = 0.0
+    last_error = ""
     try:
-        try:
-            runtime.discover_leader()
-        except TimeoutError:
-            pass
         running = True
         while running:
-            runtime.poll()
+            client.maintain()
             now = time.monotonic()
             if now - last_render >= 0.25:
-                sys.stdout.write(render(runtime.core.snapshot()))
+                body = render(client.snapshot(), client_id=client.client_id)
+                if last_error:
+                    body += "\n" + _clip(f"ERROR {last_error}", shutil.get_terminal_size((40, 24)).columns)
+                sys.stdout.write(body)
                 sys.stdout.flush()
                 last_render = now
             key = terminal.read_key()
@@ -66,17 +72,21 @@ def run_tui(runtime) -> int:
             if key == "Q":
                 running = False
             elif key == "T":
-                runtime.set_track(runtime.core.track_actual != "ON")
+                snapshot = client.snapshot()
+                result = client.mutate("TRACK_SET", state="OFF" if snapshot.get("track") == "ON" else "ON")
+                last_error = "" if result.get("ok") else str(result.get("error"))
             elif key == "R":
-                if runtime.core.recording:
-                    runtime.core.stop_recording()
-                else:
-                    runtime.core.start_recording()
-            elif key == "E" and runtime.core.recording:
-                runtime.core.add_event(prompt("Ground-truth event", "CUSTOM", terminal),
-                                       prompt("Note", "", terminal))
+                snapshot = client.snapshot()
+                result = client.mutate("RECORD_SET", state="OFF" if snapshot.get("recording") else "ON")
+                last_error = "" if result.get("ok") else str(result.get("error"))
+            elif key == "E" and client.snapshot().get("recording"):
+                result = client.mutate("EVENT", label=prompt("Ground-truth event", "CUSTOM", terminal),
+                                       note=prompt("Note", "", terminal))
+                last_error = "" if result.get("ok") else str(result.get("error"))
             elif key == "P":
-                runtime.core.change_placement(prompt("Placement", runtime.core.geometry.placement, terminal))
+                current = client.snapshot().get("geometry", {}).get("placement", "UNSPECIFIED")
+                result = client.mutate("PLACEMENT_SET", placement=prompt("Placement", current, terminal))
+                last_error = "" if result.get("ok") else str(result.get("error"))
             elif key == "C":
                 # Phase 7A carries the geometry state but deliberately does not start Phase 7B model work.
                 pass
@@ -84,8 +94,6 @@ def run_tui(runtime) -> int:
         pass
     finally:
         terminal.restore()
-        if runtime.core.recording:
-            runtime.core.stop_recording("INCOMPLETE/RECOVERED")
-        runtime.close()
+        client.close()
         sys.stdout.write("\x1b[0m\n")
     return 0

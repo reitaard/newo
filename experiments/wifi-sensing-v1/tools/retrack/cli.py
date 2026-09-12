@@ -5,9 +5,11 @@ import json
 from pathlib import Path
 import sys
 
+from retrack.api import ReTrackClient
 from retrack.collector import NetworkRuntime, ReTrackCore
 from retrack.config import load_config
 from retrack.control import LocalTrackClient
+from retrack.daemon import ReTrackDaemon
 from retrack.nodes import NodeRegistry
 from retrack.replay import replay_session
 from retrack.sessions import catalog_sessions
@@ -21,27 +23,43 @@ def _core(args):
         config.data_dir = Path(args.data_dir).expanduser()
     if getattr(args, "leader", None):
         config.leader_host = None if args.leader == "auto" else args.leader
+    if getattr(args, "placement", None):
+        config.placement = args.placement
+    if getattr(args, "calibration_file", None):
+        config.calibration_file = Path(args.calibration_file).expanduser()
     registry = NodeRegistry(config.registry_file)
     core = ReTrackCore(data_dir=config.data_dir, registry=registry, room=config.room,
                        placement=config.placement, top_k=config.top_k,
                        window_seconds=config.window_seconds, settle_seconds=config.settle_seconds,
-                       rotate_bytes=config.rotate_bytes, publisher=None)
+                       rotate_bytes=config.rotate_bytes, calibration_file=config.calibration_file,
+                       publisher=None)
     return config, core
 
 
 def run_command(args) -> int:
-    config, core = _core(args)
-    control = LocalTrackClient(config.leader_host, port=config.control_port)
-    runtime = NetworkRuntime(core, control, bind=config.bind, data_port=config.data_port)
-    return run_tui(runtime)
+    config = load_config(Path(args.config).expanduser() if args.config else None, room=args.room)
+    host = getattr(args, "api_host", None) or config.api_host
+    port = getattr(args, "api_port", None) or config.api_port
+    client = ReTrackClient(host, port, client_id=getattr(args, "client_id", None))
+    if getattr(args, "controller", False):
+        result = client.acquire_control(takeover=getattr(args, "take_control", False))
+        if not result.get("ok"):
+            client.close()
+            raise RuntimeError(f"controller lease rejected: {result.get('error')}")
+    client.wait_snapshot()
+    return run_tui(client)
 
 
 def daemon_command(args) -> int:
     config, core = _core(args)
     control = LocalTrackClient(config.leader_host, port=config.control_port)
     runtime = NetworkRuntime(core, control, bind=config.bind, data_port=config.data_port)
+    daemon = ReTrackDaemon(runtime, api_bind=args.api_bind or config.api_bind,
+                           api_port=args.api_port or config.api_port,
+                           controller_lease_ms=config.controller_lease_ms,
+                           snapshot_interval=config.snapshot_interval)
     try:
-        runtime.discover_leader()
+        daemon.start()
         if args.track_on:
             ack = runtime.set_track(True)
             if not ack.accepted or ack.actual != "ON":
@@ -49,18 +67,11 @@ def daemon_command(args) -> int:
         if args.record:
             core.start_recording(args.label)
         while True:
-            runtime.poll()
+            daemon.step()
     except KeyboardInterrupt:
         return 0
     finally:
-        if core.recording:
-            core.stop_recording()
-        if args.track_on and core.track_actual == "ON":
-            try:
-                runtime.set_track(False)
-            except TimeoutError:
-                pass
-        runtime.close()
+        daemon.close()
 
 
 def replay_command(args) -> int:
@@ -95,12 +106,20 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--config", help="retrack_config_v1 JSON")
     root.add_argument("--room", default=None, help="named room profile")
     root.add_argument("--data-dir")
+    root.add_argument("--placement")
+    root.add_argument("--calibration-file")
     commands = root.add_subparsers(dest="command")
-    live = commands.add_parser("run", help="start the local runtime and terminal UI")
-    live.add_argument("--leader", default=None, help="leader IPv4 address or auto")
+    live = commands.add_parser("run", help="attach a terminal client to retrackd")
+    live.add_argument("--api-host", default=None, help="retrackd IPv4 address")
+    live.add_argument("--api-port", type=int, default=None)
+    live.add_argument("--client-id", default=None)
+    live.add_argument("--controller", action="store_true", help="acquire the controller lease")
+    live.add_argument("--take-control", action="store_true", help="deliberately replace its controller")
     live.set_defaults(handler=run_command)
-    daemon = commands.add_parser("daemon", help="headless local runtime (initial no-IPC boundary)")
+    daemon = commands.add_parser("daemon", help="authoritative headless local runtime")
     daemon.add_argument("--leader", default=None, help="leader IPv4 address or auto")
+    daemon.add_argument("--api-bind", default=None, help="127.0.0.1 by default; expose deliberately")
+    daemon.add_argument("--api-port", type=int, default=None)
     daemon.add_argument("--track-on", action="store_true")
     daemon.add_argument("--record", action="store_true")
     daemon.add_argument("--label")
@@ -130,7 +149,8 @@ def daemon_main(argv: list[str] | None = None) -> int:
     remainder: list[str] = []
     index = 0
     while index < len(values):
-        if values[index] in ("--config", "--room", "--data-dir") and index + 1 < len(values):
+        if values[index] in ("--config", "--room", "--data-dir", "--placement",
+                              "--calibration-file") and index + 1 < len(values):
             globals_.extend(values[index:index + 2])
             index += 2
         else:
