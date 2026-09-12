@@ -147,6 +147,46 @@ test("Pocket backend reports service failure and cancellation closes its HTTP st
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
 
+test("Pocket retries one failed stream only before emitting audio", async () => {
+  let requests = 0;
+  const raw = Buffer.alloc(4); raw.writeFloatLE(0.25, 0);
+  const server = createServer((_request, response) => {
+    requests += 1;
+    response.writeHead(200, { "content-type": "application/octet-stream", "x-audio-sample-rate": "24000", "x-audio-channels": "1", "x-audio-format": "pcm_f32le" });
+    response.end(requests === 1 ? undefined : raw);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const backend = new PocketTtsBackend({ baseUrl: `http://127.0.0.1:${server.address().port}`, preAudioRetryDelayMs: 1 });
+  try {
+    const source = await backend.stream("retry", { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
+    const chunks = [];
+    for await (const chunk of source.audio) chunks.push(chunk);
+    assert.equal(requests, 2);
+    assert.equal(source.metrics.preAudioRetries, 1);
+    assert.equal(Buffer.concat(chunks).length, 2);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+
+test("Pocket never retries after emitting any PCM", async () => {
+  let requests = 0;
+  const raw = Buffer.alloc(4); raw.writeFloatLE(0.25, 0);
+  const server = createServer((_request, response) => {
+    requests += 1;
+    response.writeHead(200, { "content-type": "application/octet-stream", "x-audio-sample-rate": "24000", "x-audio-channels": "1", "x-audio-format": "pcm_f32le" });
+    response.write(raw);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const backend = new PocketTtsBackend({ baseUrl: `http://127.0.0.1:${server.address().port}`, streamNoProgressMs: 20, preAudioRetryDelayMs: 1 });
+  try {
+    const source = await backend.stream("partial", { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
+    const iterator = source.audio[Symbol.asyncIterator]();
+    assert.equal((await iterator.next()).done, false);
+    await assert.rejects(iterator.next(), /pocket_stream_timeout|aborted/);
+    assert.equal(requests, 1);
+    assert.equal(source.metrics.preAudioRetries, 0);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+
 test("Telegram HTML becomes bounded natural speech", () => {
   assert.equal(
     telegramHtmlToSpeech('<b><i>ping:</i></b>\n<blockquote>Status: <b>Online</b>\nLatency: <b>42</b> <i>ms</i></blockquote>'),
