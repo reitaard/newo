@@ -7,6 +7,18 @@ import uuid
 from .protocol import CONTROL_PORT, ControlAck, ControlCommand
 
 
+def local_broadcast_targets() -> tuple[str, ...]:
+    targets = {"255.255.255.255"}
+    try:
+        for entry in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            octets = entry[4][0].split(".")
+            if len(octets) == 4 and octets[0] not in ("0", "127"):
+                targets.add(".".join((*octets[:3], "255")))
+    except OSError:
+        pass
+    return tuple(sorted(targets))
+
+
 class LocalTrackClient:
     def __init__(self, host: str | None = None, *, port: int = CONTROL_PORT,
                  session_id: str | None = None, lease_ms: int = 15_000,
@@ -24,14 +36,15 @@ class LocalTrackClient:
         return ControlCommand(self.session_id, self.command_id, command, state, self.lease_ms)
 
     def transact(self, command: ControlCommand, *, attempts: int = 3) -> ControlAck:
-        destination = self.host or "255.255.255.255"
+        destinations = (self.host,) if self.host else local_broadcast_targets()
         payload = command.encode()
         sock = self._socket_factory(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             sock.settimeout(self.timeout)
             for _ in range(max(1, attempts)):
-                sock.sendto(payload, (destination, self.port))
+                for destination in destinations:
+                    sock.sendto(payload, (destination, self.port))
                 deadline = time.monotonic() + self.timeout
                 while time.monotonic() < deadline:
                     try:
@@ -43,10 +56,9 @@ class LocalTrackClient:
                     except (ValueError, UnicodeError):
                         continue
                     if ack.session_id == command.session_id and ack.command_id == command.command_id:
-                        if self.host is None:
-                            self.host = source[0]
+                        self.host = source[0]
                         return ack
-            raise TimeoutError(f"no ReTrack control ACK from {destination}:{self.port}")
+            raise TimeoutError(f"no ReTrack control ACK on local LAN port {self.port}")
         finally:
             sock.close()
 

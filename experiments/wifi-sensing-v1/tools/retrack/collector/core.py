@@ -38,6 +38,7 @@ class ReTrackCore:
         self.node_seen_ns: dict[int, int] = {}
         self.track_actual = "OFF"
         self.track_owner = "NONE"
+        self.replay_session_id: str | None = None
 
     @property
     def recording(self) -> bool:
@@ -145,7 +146,7 @@ class ReTrackCore:
             "schema": "retrack_runtime_snapshot_v1", "room": self.room,
             "track": self.track_actual, "owner": self.track_owner,
             "recording": self.recording, "records": self.records, "rejected": self.rejected,
-            "session_id": self.recorder.session_id if self.recorder else None,
+            "session_id": self.recorder.session_id if self.recorder else self.replay_session_id,
             "geometry": {"placement": self.geometry.placement, "state": self.geometry.state.value,
                          "calibration_id": self.geometry.calibration_id},
             "nodes": [asdict(node) for node in self.registry.nodes],

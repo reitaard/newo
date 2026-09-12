@@ -11,6 +11,7 @@ from newo_csi.protocol import crc32c
 from retrack.collector import ReTrackCore
 from retrack.config import load_config
 from retrack.control import ControlCommand, LocalOwnership
+from retrack.control.client import local_broadcast_targets
 from retrack.nodes import NodeRegistry
 from retrack.replay import replay_session
 from retrack.sessions import GeometryState
@@ -51,6 +52,9 @@ class RegistryTests(unittest.TestCase):
 
 
 class ControlTests(unittest.TestCase):
+    def test_auto_discovery_has_limited_broadcast_fallback(self):
+        self.assertIn("255.255.255.255", local_broadcast_targets())
+
     def test_explicit_wire_contract_round_trip(self):
         command = ControlCommand("session-a", 7, "TRACK_SET", "ON", 15_000)
         self.assertEqual(ControlCommand.decode(command.encode()), command)
@@ -144,6 +148,7 @@ class CoreTests(unittest.TestCase):
             replay = self.make_core(directory)
             actual = replay_session(replay, session, 0)["paths"]
             self.assertEqual(actual, expected)
+            self.assertEqual(replay.snapshot()["session_id"], session.name)
 
     def test_disconnect_reconnect_partial_topology_and_placement_invalidation(self):
         with tempfile.TemporaryDirectory() as directory:

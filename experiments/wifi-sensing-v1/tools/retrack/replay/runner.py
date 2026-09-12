@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import time
 
 from retrack.storage import iter_session_records
 
 
 def replay_session(core, session: Path, speed: float = 0.0) -> dict[str, object]:
+    manifest = json.loads((session / "manifest.json").read_text(encoding="utf-8"))
+    core.replay_session_id = manifest.get("session_id")
     previous_ns: int | None = None
     for item in iter_session_records(session):
         if previous_ns is not None and speed > 0:
