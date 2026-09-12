@@ -18,6 +18,7 @@ class ReTrackConfig:
     top_k: int = 24
     window_seconds: float = 2.0
     settle_seconds: float = 10.0
+    calibration_seconds: float = 30.0
     rotate_bytes: int = 64 * 1024 * 1024
     publisher_enabled: bool = False
     publisher_url: str | None = None
@@ -54,6 +55,7 @@ def load_config(path: Path | None = None, *, room: str | None = None) -> ReTrack
         data_port=int(value("data_port", 5005)), control_port=int(value("control_port", 5010)),
         leader_host=value("leader_host", None), top_k=int(value("top_k", 24)),
         window_seconds=float(value("window_seconds", 2.0)), settle_seconds=float(value("settle_seconds", 10.0)),
+        calibration_seconds=float(value("calibration_seconds", 30.0)),
         rotate_bytes=int(value("rotate_bytes", 64 * 1024 * 1024)),
         publisher_enabled=bool(value("publisher_enabled", False)), publisher_url=value("publisher_url", None),
         calibration_file=calibration_file,

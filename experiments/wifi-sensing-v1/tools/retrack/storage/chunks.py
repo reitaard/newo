@@ -100,6 +100,12 @@ class ChunkedSessionWriter:
         self._events.write(json.dumps(row, sort_keys=True) + "\n")
         self._events.flush()
 
+    def set_calibration(self, calibration: dict[str, object]) -> None:
+        """Atomically associate newly validated calibration without touching raw chunks."""
+        self.manifest["calibration"] = calibration
+        self.manifest["calibration_version"] = calibration.get("calibration_id")
+        self._save()
+
     def close(self, state: str = "COMPLETE") -> None:
         if self._archive is None:
             return

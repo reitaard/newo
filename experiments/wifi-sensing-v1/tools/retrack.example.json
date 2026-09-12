@@ -9,6 +9,7 @@
     "api_host": "127.0.0.1",
     "api_port": 8765,
     "controller_lease_ms": 30000,
+    "calibration_seconds": 30,
     "publisher_enabled": false,
     "rotate_bytes": 67108864
   },

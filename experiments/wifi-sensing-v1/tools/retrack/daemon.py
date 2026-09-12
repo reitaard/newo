@@ -31,6 +31,7 @@ class ReTrackDaemon:
         self.api = ReTrackApiServer(self.broker, bind=api_bind, port=api_port,
                                     snapshot_interval=snapshot_interval)
         self.closed = False
+        self._lifecycle_lock = threading.RLock()
         self.recovered_sessions: list[str] = []
 
     def submit(self, message: dict[str, object]) -> dict[str, object]:
@@ -76,6 +77,20 @@ class ReTrackDaemon:
             placement = placement.strip()[:128]
             if placement != self.core.geometry.placement:
                 self.core.change_placement(placement)
+        elif kind == "CALIBRATION_START":
+            duration = message.get("duration_seconds")
+            if duration is not None and not isinstance(duration, (int, float)):
+                raise ValueError("duration_seconds must be numeric")
+            self.core.start_calibration(duration_seconds=duration)
+        elif kind == "CALIBRATION_CANCEL":
+            self.core.cancel_calibration()
+        elif kind == "TEACHER_EVENT":
+            observation = message.get("observation")
+            if not isinstance(observation, str):
+                raise ValueError("TEACHER_EVENT requires an observation")
+            note = message.get("note")
+            self.core.add_teacher_observation(observation.strip().upper(),
+                                              str(note)[:512] if note else None)
         else:
             raise ValueError("unsupported daemon action")
         return {
@@ -84,6 +99,7 @@ class ReTrackDaemon:
             "recording": self.core.recording,
             "session_id": self.core.recorder.session_id if self.core.recorder else None,
             "placement": self.core.geometry.placement,
+            "calibration": self.core.calibration_snapshot(),
         }
 
     def _drain_actions(self) -> None:
@@ -113,10 +129,13 @@ class ReTrackDaemon:
         self.api.start()
 
     def step(self) -> None:
-        self._drain_actions()
-        self.runtime.poll()
-        self._drain_actions()
-        self.broker.update_snapshot(self.core.snapshot())
+        with self._lifecycle_lock:
+            if self.closed:
+                return
+            self._drain_actions()
+            self.runtime.poll()
+            self._drain_actions()
+            self.broker.update_snapshot(self.core.snapshot())
 
     def run(self) -> None:
         self.start()
@@ -129,15 +148,16 @@ class ReTrackDaemon:
             self.close()
 
     def close(self) -> None:
-        if self.closed:
-            return
-        self.closed = True
-        self.api.close()
-        if self.core.recording:
-            self.core.stop_recording()
-        if self.core.track_actual == "ON":
-            try:
-                self.runtime.set_track(False)
-            except TimeoutError:
-                pass
-        self.runtime.close()
+        with self._lifecycle_lock:
+            if self.closed:
+                return
+            self.closed = True
+            self.api.close()
+            if self.core.recording:
+                self.core.stop_recording()
+            if self.core.track_actual == "ON":
+                try:
+                    self.runtime.set_track(False)
+                except TimeoutError:
+                    pass
+            self.runtime.close()

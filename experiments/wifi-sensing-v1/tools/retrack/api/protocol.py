@@ -5,7 +5,8 @@ import json
 
 PROTOCOL = "retrack_client_v1"
 MAX_LINE_BYTES = 16 * 1024
-MUTATIONS = {"TRACK_SET", "RECORD_SET", "EVENT", "PLACEMENT_SET"}
+MUTATIONS = {"TRACK_SET", "RECORD_SET", "EVENT", "PLACEMENT_SET",
+             "CALIBRATION_START", "CALIBRATION_CANCEL", "TEACHER_EVENT"}
 
 
 def encode_message(message: dict[str, object]) -> bytes:

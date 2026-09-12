@@ -141,7 +141,7 @@ Do not blindly use generated `@flash_args` on a production-configured board: it 
 4. **Phase 4 — robust host collector and replayable datasets (done):** strict UDP decoding/CRC, exact raw archival, metadata, replay, diagnostics, and drop accounting. Phase 4.5 hardware validation/coarse analysis is complete experimental groundwork; its tools and results are not Phase 5.
 5. **Phase 5 — trustworthy DSP and field/research tooling (software complete, hardware threshold validation pending):** geometry-separated conservative DSP, calibration, replay equivalence, synthetic tests, live research console, and Termux-first portable field monitor. Presence remains unsupported and physical threshold evidence is incomplete.
 6. **Phase 6 — cross-node time synchronization (software complete, hardware validation pending):** Newo-led ESP-NOW event-time synchronization, common derived host timeline, measured offset/drift/jitter independent of collector choice, and unattended desired-state recovery.
-7. **Phase 7 — ReTrack:** Phase 7A establishes an authoritative `retrackd`, a versioned multi-client Linux/Termux derived-state API, explicit leased LAN control, durable chunked sessions, existing Phase-5 calibration loading, dynamic node/topology identity, shared live/replay DSP, and a compact four-slot client UI. Phase 7B calibration/model generation is later. Camera teacher experiments remain consented research only and are not a production dependency.
+7. **Phase 7 — ReTrack:** Phase 7A establishes an authoritative `retrackd`, a versioned multi-client Linux/Termux derived-state API, explicit leased LAN control, durable chunked sessions, existing Phase-5 calibration loading, dynamic node/topology identity, shared live/replay DSP, and a compact four-slot client UI. Phase 7B adds daemon-owned guided generation of the unchanged Phase-5 schema-v3 calibration, exact per-geometry applicability, and an optional timestamped camera-teacher annotation contract. Camera teacher experiments remain consented research only and are not a production dependency.
 8. **Phase 8 — research sensing models:** held-out evaluation of zone, direction, activity, posture, and count research without capability claims from trainability alone.
 9. **Phase 9 — identity/gait research:** rigorous cross-session/placement feasibility work only after earlier stages stabilize.
 10. **Phase 10 — respiration research:** lower-frequency research after motion and synchronization are trustworthy; no medical claim.
@@ -262,6 +262,42 @@ The intended movable-node lifecycle is:
 Moving any sensing node invalidates its geometry/calibration profile. A later
 known-profile match must be evidence-based; otherwise a new profile is created.
 This is self-settling RF sensor geometry, not room scanning or radar SLAM.
+
+### ReTrack guided calibration and optional teacher evidence
+
+`P` records `node_moved` while recording, invalidates interpretation, and moves
+the daemon through `REPOSITIONING`, `SETTLING`, and `CALIBRATION_REQUIRED`.
+Placement strings are exact: `tonight` and `TONIGHT_FIXED` are intentionally
+different profiles. A controller's `C` action starts a deliberate quiet-room
+calibration under `retrackd`; 40% of the configured duration builds the existing
+amplitude-variance selection and 60% builds the frozen baseline. Disconnecting
+the client does not cancel calibration. Pressing `C` again explicitly cancels it.
+
+Completed files retain calibration schema 3 and feature schema 2 and are written
+to `DATA_DIR/calibrations/ROOM--PLACEMENT.json` through a temporary file,
+contract validation, and atomic rename. The result is then loaded through the
+ordinary loader. A crash or cancellation cannot mark a temporary file READY.
+
+Calibration applicability is per exact geometry. `VALID` means all observed
+geometries match. `PARTIAL` means the calibration contract is valid but one or
+more observed geometries are unmatched; those geometries remain visible and
+unscored while exact-calibrated dominant paths continue conservatively. Global
+`REJECTED` is reserved for malformed files, room/placement/feature-contract
+mismatch, or invalid frozen feature data. Fusion uses only exact-calibrated
+paths with non-low signal quality and valid scores; thresholds are unchanged.
+
+The `TEACHER_EVENT` client contract can append consented, low-rate
+`teacher_observation` ground truth (`NO_PERSON_VISIBLE`, `PERSON_VISIBLE`,
+`PERSON_STILL`, `PERSON_MOVING`, `ENTER_FRAME`, or `EXIT_FRAME`) to an active
+session. It is explicitly separate from RF inference and does not alter fusion.
+The current Newo2 sensing firmware remains radio-only: it does not initialize
+the OV3660, and camera+CSI coexistence has not yet been physically validated.
+No camera firmware change is made merely to claim teacher support.
+
+The client API has no authentication. Keep `api_bind` at `127.0.0.1` normally;
+binding it to a trusted LAN address is a deliberate, temporary field-test action.
+Viewer clients receive derived snapshots only and cannot mutate state without
+the single controller lease.
 
 The post-validation `/track` control and real-Newo integration contract is in
 [`TRACK_INTEGRATION_PLAN.md`](./TRACK_INTEGRATION_PLAN.md). It keeps measurement

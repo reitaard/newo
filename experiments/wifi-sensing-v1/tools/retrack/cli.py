@@ -31,6 +31,7 @@ def _core(args):
     core = ReTrackCore(data_dir=config.data_dir, registry=registry, room=config.room,
                        placement=config.placement, top_k=config.top_k,
                        window_seconds=config.window_seconds, settle_seconds=config.settle_seconds,
+                       calibration_seconds=config.calibration_seconds,
                        rotate_bytes=config.rotate_bytes, calibration_file=config.calibration_file,
                        publisher=None)
     return config, core

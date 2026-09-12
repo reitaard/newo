@@ -234,7 +234,7 @@ class CalibrationLoadingTests(unittest.TestCase):
             self.assertEqual(mismatch.snapshot()["calibration"]["status"], "REJECTED")
             self.assertEqual(mismatch.snapshot()["calibration"]["reason"], "placement mismatch")
 
-    def test_geometry_rejection_suppresses_all_interpretation(self):
+    def test_secondary_geometry_is_partial_without_suppressing_calibrated_dominant(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             calibration = root / "calibration.json"
@@ -250,12 +250,12 @@ class CalibrationLoadingTests(unittest.TestCase):
             core.ingest(csi_frame(161, iq_length=66), 3_220_000_000,
                         3_220_000_000, ("192.168.1.58", 5005))
             snapshot = core.snapshot(3_220_000_001)
-            self.assertEqual(snapshot["calibration"]["status"], "REJECTED")
-            self.assertEqual(snapshot["geometry"]["state"],
-                             GeometryState.CALIBRATION_REQUIRED.value)
-            for path in snapshot["paths"].values():
-                self.assertIsNone(path["score"])
-                self.assertEqual(path["state"], "LOW_CONFIDENCE")
+            self.assertEqual(snapshot["calibration"]["status"], "PARTIAL")
+            self.assertEqual(snapshot["geometry"]["state"], GeometryState.READY.value)
+            self.assertIsNotNone(snapshot["paths"]["ROUTER_NEWO"]["score"])
+            self.assertEqual(snapshot["paths"]["ROUTER_NEWO"]["calibration"], "EXACT")
+            extras = snapshot["geometry_partitions"]["ROUTER_NEWO"]
+            self.assertEqual(len(extras), 2)
 
     def test_placement_invalidates_loaded_calibration_and_replay_shares_pipeline(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -309,6 +309,91 @@ class CalibrationLoadingTests(unittest.TestCase):
             self.assertEqual(snapshot["calibration"]["status"], "REJECTED")
             self.assertEqual(snapshot["calibration"]["reason"], "placement mismatch")
             self.assertEqual((session / "frames.ncsi").read_bytes(), before)
+
+    def test_guided_calibration_persists_atomically_and_reloads_normally(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            core = ReTrackCore(data_dir=root, registry=NodeRegistry(), room="bedroom",
+                               placement="BED_SIDE", top_k=4, calibration_seconds=5)
+            core.track_actual = "ON"
+            core.start_calibration(now_ns=0)
+            self.assertEqual(core.snapshot(1)["calibration_progress"]["stage"],
+                             "BUILDING_SELECTION")
+            for sequence in range(1, 22):
+                now = sequence * 100_000_000
+                core.ingest(csi_frame(sequence), now, now, ("192.168.1.58", 5005))
+            core.snapshot(2_100_000_000)
+            self.assertEqual(core.geometry.state, GeometryState.BUILDING_BASELINE)
+            for sequence in range(22, 56):
+                now = sequence * 100_000_000
+                core.ingest(csi_frame(sequence), now, now, ("192.168.1.58", 5005))
+            snapshot = core.snapshot(5_500_000_000)
+            target = root / "calibrations" / "bedroom--BED_SIDE.json"
+            self.assertTrue(target.is_file())
+            self.assertFalse(target.with_suffix(".json.tmp").exists())
+            document = json.loads(target.read_text(encoding="utf-8"))
+            self.assertEqual(document["schema_version"], 3)
+            self.assertEqual(document["feature_contract"]["feature_schema_version"], 2)
+            self.assertTrue(document["calibration_id"])
+            self.assertEqual(snapshot["calibration"]["status"], "VALID")
+            self.assertEqual(snapshot["geometry"]["state"], "READY")
+
+    def test_guided_calibration_requires_active_measurement_plane(self):
+        with tempfile.TemporaryDirectory() as directory:
+            core = ReTrackCore(data_dir=Path(directory), registry=NodeRegistry(),
+                               room="bedroom", placement="BED_SIDE")
+            with self.assertRaisesRegex(RuntimeError, "Track must be ON"):
+                core.start_calibration(now_ns=0)
+            self.assertEqual(core.geometry.state, GeometryState.CALIBRATION_REQUIRED)
+            self.assertFalse(core.calibration_progress(0)["active"])
+
+    def test_interrupted_calibration_never_becomes_ready_and_survives_viewer_detach(self):
+        with tempfile.TemporaryDirectory() as directory:
+            harness = DaemonHarness(directory)
+            host, port = harness.address
+            controller = ReTrackClient(host, port, client_id="cal-controller")
+            viewer = ReTrackClient(host, port, client_id="cal-viewer")
+            try:
+                self.assertTrue(controller.acquire_control()["ok"])
+                self.assertTrue(controller.mutate("TRACK_SET", state="ON")["ok"])
+                result = controller.mutate("CALIBRATION_START", duration_seconds=5)
+                self.assertTrue(result["ok"])
+                active = ClientBoundaryTests.wait_until(viewer, lambda item: item.get(
+                    "calibration_progress", {}).get("active") is True)
+                self.assertEqual(active["calibration_progress"]["stage"], "BUILDING_SELECTION")
+                controller.close()
+                time.sleep(0.03)
+                self.assertIsNotNone(harness.daemon.core.pipeline.calibration_stage)
+                self.assertFalse(any((Path(directory) / "calibrations").glob("*.json")))
+                reconnected = ReTrackClient(host, port, client_id="cal-controller")
+                try:
+                    self.assertTrue(reconnected.acquire_control(takeover=True)["ok"])
+                    self.assertTrue(reconnected.mutate("CALIBRATION_CANCEL")["ok"])
+                    cancelled = ClientBoundaryTests.wait_until(viewer, lambda item: not item.get(
+                        "calibration_progress", {}).get("active"))
+                    self.assertEqual(cancelled["geometry"]["state"], "CALIBRATION_REQUIRED")
+                finally:
+                    reconnected.close()
+            finally:
+                viewer.close()
+                harness.close()
+
+    def test_teacher_annotation_is_optional_and_separate_from_rf_inference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            core = ReTrackCore(data_dir=root, registry=NodeRegistry(), room="bedroom")
+            self.assertEqual(core.snapshot()["teacher"]["status"], "ABSENT")
+            writer = core.start_recording()
+            core.add_teacher_observation("PERSON_MOVING", "consented low-rate teacher",
+                                         monotonic_ns=writer.origin_ns + 123)
+            before_fusion = core.snapshot()["fusion"]
+            session = core.stop_recording()
+            event = [json.loads(line) for line in (session / "events.jsonl").read_text().splitlines()
+                     if 'teacher_observation' in line][0]
+            self.assertEqual(event["evidence_type"], "GROUND_TRUTH")
+            self.assertFalse(event["rf_inference_overwritten"])
+            self.assertEqual(event["elapsed_ns"], 123)
+            self.assertEqual(core.snapshot()["fusion"], before_fusion)
 
 
 class PortOwnershipTests(unittest.TestCase):

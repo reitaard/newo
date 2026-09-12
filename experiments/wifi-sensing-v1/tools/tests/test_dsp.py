@@ -153,6 +153,9 @@ class DspTests(unittest.TestCase):
         window = CsiPipeline(top_k=2, window_seconds=5)
         window.load_calibration(document, "P", "R")
         self.assertEqual(window.calibration_report()["reason"], "dsp config mismatch: window_seconds")
+        room = CsiPipeline(top_k=2, window_seconds=4)
+        room.load_calibration(document, "P", "OTHER")
+        self.assertEqual(room.calibration_report()["reason"], "room mismatch")
         changed = json.loads(json.dumps(document))
         changed["feature_contract"]["feature_schema_version"] = 999
         version = CsiPipeline(top_k=2, window_seconds=4)
@@ -189,9 +192,49 @@ class DspTests(unittest.TestCase):
         feed(scoring, lambda _: 20, count=8, channel=6)
         feed(scoring, lambda _: 30, count=8, channel=11)
         report = scoring.calibration_report()
-        self.assertEqual(report["status"], "REJECTED")
-        self.assertEqual(report["reason"], "geometry mismatch")
+        self.assertEqual(report["status"], "PARTIAL")
+        self.assertEqual(report["reason"], "unmatched observed geometries")
         self.assertTrue(any("ch11/0" in value for value in report["mismatched_geometries"]))
+        self.assertTrue(scoring.dominant(1).snapshot().calibrated)
+
+    def test_invalid_frozen_feature_data_is_global_rejection(self):
+        pipeline = CsiPipeline(top_k=2, window_seconds=4)
+        pipeline.begin_calibration()
+        feed(pipeline, lambda i: 20 + i % 3, count=12)
+        pipeline.freeze_calibration_selection()
+        feed(pipeline, lambda i: 20 + i % 2, count=12)
+        document = pipeline.calibration_document("P", "R")
+        identity = next(iter(document["paths"]))
+        document["paths"][identity]["amplitude_scales"] = {"999": 1.0}
+        fresh = CsiPipeline(top_k=2, window_seconds=4)
+        fresh.load_calibration(document, "P", "R")
+        self.assertEqual(fresh.calibration_report()["status"], "REJECTED")
+        self.assertEqual(fresh.calibration_report()["reason"],
+                         "calibration path feature data invalid")
+
+    def test_uncalibrated_dominant_only_removes_that_path_score(self):
+        calibration = CsiPipeline(top_k=2, window_seconds=4)
+        calibration.begin_calibration()
+        feed(calibration, lambda i: 20 + i % 3, path=1, count=12)
+        feed(calibration, lambda i: 30 + i % 3, path=2, count=12)
+        calibration.freeze_calibration_selection()
+        feed(calibration, lambda i: 20 + i % 2, path=1, count=20)
+        feed(calibration, lambda i: 30 + i % 2, path=2, count=20)
+        document = calibration.calibration_document("P", "R")
+
+        scoring = CsiPipeline(top_k=2, window_seconds=4)
+        scoring.load_calibration(document, "P", "R")
+        feed(scoring, lambda i: 20 + i % 2, path=1, count=6, channel=6)
+        feed(scoring, lambda i: 60 + i % 2, path=1, count=12, channel=11)
+        feed(scoring, lambda i: 30 + i % 2, path=2, count=12, channel=6)
+        snapshots = scoring.snapshots()
+        self.assertFalse(snapshots[1].calibrated)
+        self.assertIsNone(snapshots[1].motion_score)
+        self.assertTrue(snapshots[2].calibrated)
+        self.assertIsNotNone(snapshots[2].motion_score)
+        report = scoring.calibration_report()
+        self.assertEqual(report["status"], "PARTIAL")
+        self.assertEqual(report["unmatched_dominant_paths"], [1])
 
     def test_conservative_structural_fusion_matrix(self):
         pipeline = CsiPipeline()

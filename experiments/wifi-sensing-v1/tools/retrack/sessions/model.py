@@ -9,7 +9,8 @@ class GeometryState(str, Enum):
     REPOSITIONING = "REPOSITIONING"
     SETTLING = "SETTLING"
     CALIBRATION_REQUIRED = "CALIBRATION_REQUIRED"
-    BUILDING = "BUILDING"
+    BUILDING_SELECTION = "BUILDING_SELECTION"
+    BUILDING_BASELINE = "BUILDING_BASELINE"
 
 
 @dataclass
@@ -36,9 +37,20 @@ class GeometryProfile:
         return self.state
 
     def begin_calibration(self) -> None:
-        if self.state not in (GeometryState.CALIBRATION_REQUIRED, GeometryState.BUILDING):
+        if self.state not in (GeometryState.CALIBRATION_REQUIRED,
+                              GeometryState.BUILDING_SELECTION,
+                              GeometryState.BUILDING_BASELINE):
             raise ValueError("geometry must settle before calibration")
-        self.state = GeometryState.BUILDING
+        self.state = GeometryState.BUILDING_SELECTION
+
+    def baseline_calibration(self) -> None:
+        if self.state != GeometryState.BUILDING_SELECTION:
+            raise ValueError("calibration selection is not active")
+        self.state = GeometryState.BUILDING_BASELINE
+
+    def require_calibration(self) -> None:
+        self.calibration_id = None
+        self.state = GeometryState.CALIBRATION_REQUIRED
 
     def ready(self, calibration_id: str) -> None:
         if not calibration_id:

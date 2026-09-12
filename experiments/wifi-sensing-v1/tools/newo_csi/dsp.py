@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import hashlib
+import json
 import math
 from statistics import median
 from typing import Any
@@ -314,7 +316,10 @@ class CsiPipeline:
 
     def dominant(self, path_id: int) -> GeometryProcessor | None:
         choices = [p for g, p in self.processors.items() if g.path_id == path_id]
-        return max(choices, key=lambda p: self.geometry_counts[p.geometry], default=None)
+        # Runtime dominance follows the active analysis window; cumulative counts
+        # remain the deterministic tie-break and long-run audit evidence.
+        return max(choices, key=lambda p: (len(p.times), self.geometry_counts[p.geometry]),
+                   default=None)
 
     def expire(self, host_ns: int) -> None:
         """Advance window state without adding or changing any feature sample."""
@@ -353,15 +358,30 @@ class CsiPipeline:
                     "amplitude_scales": {str(index): processor.amplitude_scales[index]
                                          for index in processor.selected()},
                 }
-        return {"schema_version": 3, "room_id": room_id,
+        document = {"schema_version": 3, "room_id": room_id,
                 "placement": placement, "feature_contract": feature_contract(
                     self.top_k, self.window_seconds),
+                "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "calibration_policy": {"selection_fraction": 0.4,
                                        "selection_stage": "amplitude variance ranking",
                                        "baseline_stage": "frozen selection power statistics"},
                 "paths": paths}
+        identity_payload = json.dumps(document, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        document["calibration_id"] = hashlib.sha256(identity_payload).hexdigest()[:16]
+        return document
 
     def begin_calibration(self) -> None:
+        for processor in self.processors.values():
+            processor.amplitude_stats = [Welford() for _ in range(processor.geometry.subcarriers)]
+            processor.phase_stats = [Welford() for _ in range(processor.geometry.subcarriers)]
+            processor.baseline = None
+            processor.frozen_indices = None
+            processor.amplitude_scales = {}
+            processor.features.clear()
+            processor.previous_amplitude = None
+            processor.previous_phase = None
+            processor.unwrapped_phase = None
+            processor.previous_ns = None
         self.calibration_stats = {}
         self.calibration_stage = "selection"
         self.calibration_frozen_geometries = set()
@@ -379,6 +399,10 @@ class CsiPipeline:
     def load_calibration(self, document: dict[str, Any], placement: str | None,
                          room_id: str | None = None) -> None:
         self.calibration = {}
+        for processor in self.processors.values():
+            processor.baseline = None
+            processor.frozen_indices = None
+            processor.amplitude_scales = {}
         self.calibration_metadata = {
             "schema_version": document.get("schema_version"),
             "created_at": document.get("created_at"),
@@ -421,6 +445,28 @@ class CsiPipeline:
                    not isinstance(value, dict) for value in paths.values()):
             self.calibration_rejection = "legacy calibration incompatible: frozen subcarriers missing"
             return
+        try:
+            for identity, value in paths.items():
+                if value.get("geometry", identity) != identity:
+                    raise ValueError("geometry identity mismatch")
+                selected = value["selected_subcarriers"]
+                scales = value["amplitude_scales"]
+                if (not isinstance(selected, list) or not selected
+                        or any(not isinstance(index, int) or index < 0 for index in selected)
+                        or len(set(selected)) != len(selected) or not isinstance(scales, dict)
+                        or {str(index) for index in selected} != set(scales)):
+                    raise ValueError("selected subcarriers or scales invalid")
+                numeric = (value.get("mean"), value.get("variance"), value.get("stddev"))
+                if any(not isinstance(item, (int, float)) or not math.isfinite(item) or item < 0
+                       for item in numeric):
+                    raise ValueError("baseline statistics invalid")
+                if any(not isinstance(scales[str(index)], (int, float))
+                       or not math.isfinite(scales[str(index)]) or scales[str(index)] <= 0
+                       for index in selected):
+                    raise ValueError("amplitude scales invalid")
+        except (KeyError, TypeError, ValueError):
+            self.calibration_rejection = "calibration path feature data invalid"
+            return
         self.calibration = {key: value for key, value in paths.items()}
         self.calibration_rejection = None if self.calibration else "calibration contains no usable paths"
         for geometry, processor in self.processors.items():
@@ -458,11 +504,17 @@ class CsiPipeline:
                     "matched_paths": [], "mismatched_geometries": []}
         matched = [p.geometry.identity for p in current if p.geometry.identity in self.calibration]
         mismatched = [p.geometry.identity for p in current if p.geometry.identity not in self.calibration]
+        dominant = {path: self.dominant(path) for path in (1, 2, 3)}
+        unmatched_dominant_paths = [path for path, processor in dominant.items()
+                                    if processor is not None
+                                    and processor.geometry.identity not in self.calibration]
         if mismatched:
-            return {**base, "status": "REJECTED", "reason": "geometry mismatch",
-                    "matched_paths": matched, "mismatched_geometries": mismatched}
+            return {**base, "status": "PARTIAL", "reason": "unmatched observed geometries",
+                    "matched_paths": matched, "mismatched_geometries": mismatched,
+                    "unmatched_dominant_paths": unmatched_dominant_paths}
         return {**base, "status": "MATCH", "reason": None,
-                "matched_paths": matched, "mismatched_geometries": []}
+                "matched_paths": matched, "mismatched_geometries": [],
+                "unmatched_dominant_paths": []}
 
     def fused(self, suspended: bool = False) -> tuple[str, float]:
         if suspended:

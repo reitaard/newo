@@ -20,6 +20,7 @@ def render(snapshot: dict[str, object], *, width: int | None = None,
     geometry = snapshot.get("geometry", {})
     paths = snapshot.get("paths", {})
     calibration = snapshot.get("calibration", {})
+    calibration_progress = snapshot.get("calibration_progress", {})
     client_api = snapshot.get("client_api", {})
     state = sync.get("state", "SYNC_UNSYNCED").replace("SYNC_", "")
     lines = [f"RETRACK  {snapshot.get('room', 'UNSPECIFIED')}",
@@ -40,8 +41,14 @@ def render(snapshot: dict[str, object], *, width: int | None = None,
     if not paths:
         lines.append("RF paths waiting for TRACK ON / local data")
     drift = sync.get("drift_ppm")
+    remaining = calibration_progress.get("remaining_seconds")
+    cal_line = (f"CAL {calibration_progress.get('stage')}  {remaining:.0f}s"
+                if calibration_progress.get("active") and isinstance(remaining, (int, float))
+                else f"CAL {calibration.get('status', 'MISSING')}  {calibration.get('reason') or ''}")
+    unmatched = calibration.get("mismatched_geometries", [])
     lines.extend(["", f"Geometry {geometry.get('placement')}  {geometry.get('state')}",
-                  f"CAL {calibration.get('status', 'MISSING')}  {calibration.get('reason') or ''}",
+                  cal_line,
+                  f"CAL exact {len(calibration.get('matched_paths', []))} unmatched {len(unmatched)}",
                   f"Sync offset {sync.get('final_offset_us', '--')}us  drift {'--' if drift is None else f'{drift:.1f}ppm'}",
                   f"Publisher {snapshot.get('publisher')}  WAN not required",
                   "T track  R record  E event  P placement  C calibration  Q detach"])
@@ -88,8 +95,9 @@ def run_tui(client) -> int:
                 result = client.mutate("PLACEMENT_SET", placement=prompt("Placement", current, terminal))
                 last_error = "" if result.get("ok") else str(result.get("error"))
             elif key == "C":
-                # Phase 7A carries the geometry state but deliberately does not start Phase 7B model work.
-                pass
+                active = client.snapshot().get("calibration_progress", {}).get("active")
+                result = client.mutate("CALIBRATION_CANCEL" if active else "CALIBRATION_START")
+                last_error = "" if result.get("ok") else str(result.get("error"))
     except KeyboardInterrupt:
         pass
     finally:
