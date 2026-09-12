@@ -104,6 +104,8 @@ class NewoSpeaker {
   NewoSpeakerOutput i2s_;
   WebSocketsClient webSocket_;
   StreamBufferHandle_t buffer_ = nullptr;
+  StaticStreamBuffer_t bufferControl_ = {};
+  uint8_t* bufferStorage_ = nullptr;
   TaskHandle_t task_ = nullptr;
   TaskHandle_t decoderTask_ = nullptr;
   struct OpusPacketRef { uint8_t slot; uint16_t length; uint16_t sequence; uint16_t validPcmBytes; };

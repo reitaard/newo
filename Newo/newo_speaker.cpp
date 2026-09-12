@@ -4,6 +4,7 @@
 #include <cstring>
 #include <driver/i2s_common.h>
 #include <esp_heap_caps.h>
+#include <freertos/idf_additions.h>
 
 #include "newo_config.h"
 #include "newo_log.h"
@@ -75,8 +76,20 @@ void NewoSpeaker::logMemory(const char* stage, const MemorySnapshot& snapshot,
 
 bool NewoSpeaker::allocateBuffer() {
   if (buffer_) return true;
-  buffer_ = xStreamBufferCreate(NewoConfig::SPEAKER_BUFFER_BYTES, 1);
+  // A static stream buffer keeps its caller-owned control structure separate
+  // from its data storage. FreeRTOS leaves one byte unused, so allocate/pass
+  // one extra byte to preserve the existing 24,576-byte logical capacity.
+  constexpr size_t storageBytes = NewoConfig::SPEAKER_BUFFER_BYTES + 1;
+  bufferStorage_ = static_cast<uint8_t*>(heap_caps_malloc(
+      storageBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (bufferStorage_) {
+    buffer_ = xStreamBufferCreateStatic(storageBytes, 1, bufferStorage_, &bufferControl_);
+  }
   if (buffer_) return true;
+  if (bufferStorage_) {
+    heap_caps_free(bufferStorage_);
+    bufferStorage_ = nullptr;
+  }
   NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::AUDIO, "SPEAKER_BUFFER_FAILED");
   return false;
 }
@@ -153,6 +166,10 @@ void NewoSpeaker::releaseResources() {
   if (buffer_) {
     vStreamBufferDelete(buffer_);
     buffer_ = nullptr;
+  }
+  if (bufferStorage_) {
+    heap_caps_free(bufferStorage_);
+    bufferStorage_ = nullptr;
   }
   releaseRequested_ = false;
   if (!memoryCycleActive_) return;
@@ -287,7 +304,13 @@ bool NewoSpeaker::startPlayback(const Request& request) {
   opusCallbackTotalUs_ = 0;
   opusCallbackWorstUs_ = 0;
   minimumDecoderStackBytes_ = UINT32_MAX;
-  if (request.codec == Codec::OPUS && xTaskCreatePinnedToCore(decoderTaskEntry, "newo-opus", NewoConfig::SPEAKER_OPUS_DECODER_STACK_BYTES, this, 1, &decoderTask_, 1) != pdPASS) {
+  // Keep the decoder stack out of scarce internal RAM. TLS temporarily consumes
+  // roughly 70 KiB there, while the ESP-IDF configuration explicitly permits
+  // external task stacks. The TCB remains internal and Opus packet/PCM behavior
+  // is unchanged.
+  if (request.codec == Codec::OPUS && xTaskCreatePinnedToCoreWithCaps(
+      decoderTaskEntry, "newo-opus", NewoConfig::SPEAKER_OPUS_DECODER_STACK_BYTES,
+      this, 1, &decoderTask_, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     decoderTask_ = nullptr; audio_.setPlaybackActive(false); releaseOpusQueue();
     publishStartupFailure(request, "opus_decoder_task_create_failed");
     return false;
@@ -298,7 +321,9 @@ bool NewoSpeaker::startPlayback(const Request& request) {
   playbackStartedEventReady_ = false;
   playbackStartedDirectSent_ = false;
   playbackStarted_ = false;
-  if (xTaskCreatePinnedToCore(taskEntry, "newo-speaker", 8192, this, 2, &task_, 1) != pdPASS) {
+  if (xTaskCreatePinnedToCoreWithCaps(
+      taskEntry, "newo-speaker", 8192, this, 2, &task_, 1,
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     task_ = nullptr;
     audio_.setPlaybackActive(false);
     playbackStateApplied_ = false;
@@ -353,7 +378,7 @@ void NewoSpeaker::opusDecoderTask() {
   releaseOpusDecoder();
   decoderFinished_ = true;
   decoderTask_ = nullptr;
-  vTaskDelete(nullptr);
+  vTaskDeleteWithCaps(nullptr);
 }
 
 bool IRAM_ATTR NewoSpeaker::onI2sSent(i2s_chan_handle_t handle, i2s_event_data_t* event, void* userData) {
@@ -585,6 +610,16 @@ void NewoSpeaker::playbackTask() {
   minimumTaskStackBytes_ = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
   i2s_.setPins(NewoConfig::SPEAKER_I2S_BCLK_PIN, NewoConfig::SPEAKER_I2S_WS_PIN,
                NewoConfig::SPEAKER_I2S_DOUT_PIN);
+  char i2sMemory[160];
+  snprintf(i2sMemory, sizeof(i2sMemory),
+           "internal=%lu internal_largest=%lu dma=%lu dma_largest=%lu psram=%lu",
+           static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+           static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+           static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_DMA)),
+           static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)),
+           static_cast<unsigned long>(ESP.getFreePsram()));
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO,
+               "SPEAKER_I2S_MEMORY", i2sMemory);
   if (!i2s_.begin(I2S_MODE_STD, NewoConfig::SPEAKER_SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT,
                   I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH)) {
     fail("i2s_failed");
@@ -707,7 +742,7 @@ void NewoSpeaker::playbackTask() {
   strlcpy(result_.error, result_.success ? "" : (failureReason_ ? failureReason_ : "unknown"), sizeof(result_.error));
   playbackStarted_ = false;
   taskFinished_ = true;
-  vTaskDelete(nullptr);
+  vTaskDeleteWithCaps(nullptr);
 }
 
 void NewoSpeaker::loop(bool cloudReady) {
