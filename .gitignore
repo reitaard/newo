@@ -29,6 +29,7 @@ __pycache__/
 server/models/
 server/voice-captures/
 server/data/
+Newo/.esp-sr-model-pack/
 
 # Privacy-sensitive Wi-Fi sensing datasets and derived inspection exports
 experiments/wifi-sensing-v1/**/datasets/

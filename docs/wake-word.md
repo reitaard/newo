@@ -25,23 +25,15 @@ Use `Newo/prepare_hiwalle_srmodels.ps1` after compiling and before uploading. It
 
 The order is strict: **compile once, replace that build directory's `srmodels.bin`, then upload that same directory without recompiling**. Never use `compile --upload` after model preparation: Arduino's post-build hook can replace the custom model with its stock `srmodels.bin`.
 
-The copy-paste Windows Git Bash commands are kept as separate dependency, build, model-preparation, upload-only, and monitor phases below. Run the one-time dependency phase from an ESP-IDF environment in which `idf.py` is available. The upload phase targets COM7 only and the workflow has no Nano trigger.
+The pinned ESP-SR 2.4.6 model pack is stored locally at `Newo/.esp-sr-model-pack/esp-sr-2.4.6/esp-sr` and ignored by Git. It can be restored by downloading the 2.4.6 archive from the official ESP Component Registry and extracting its `esp-sr` directory at that exact location. No ESP-IDF Python environment is needed once that directory exists. The upload phase targets COM7 only and the workflow has no Nano trigger.
 
 ```bash
-# A. One time, only when C:/src/newo-sr-pack/model_pack/managed_components/espressif__esp-sr is absent
-mkdir -p /c/src/newo-sr-pack
-cd /c/src/newo-sr-pack
-idf.py create-project model_pack
-cd model_pack
-idf.py add-dependency "espressif/esp-sr==2.4.6"
-idf.py reconfigure
-
 # B. Compile to the chosen output directory; do not add --upload
 cd /c/Users/re_Lax/Desktop/re/newo
 "/c/Program Files/Arduino CLI/arduino-cli.exe" compile --fqbn "esp32:esp32:esp32s3:UploadSpeed=921600,USBMode=hwcdc,CDCOnBoot=default,MSCOnBoot=default,DFUOnBoot=default,UploadMode=default,CPUFreq=240,FlashMode=qio,FlashSize=16M,PartitionScheme=esp_sr_16,DebugLevel=none,PSRAM=opi,LoopCore=1,EventsCore=1,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default" --output-dir "Newo/build/esp32.esp32.esp32s3" "Newo"
 
 # C. Replace and verify this exact output directory's srmodels.bin
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$PWD/Newo/prepare_hiwalle_srmodels.ps1")" -EspSrPath "C:\\src\\newo-sr-pack\\model_pack\\managed_components\\espressif__esp-sr" -OutputDirectory "$(cygpath -w "$PWD/Newo/build/esp32.esp32.esp32s3")"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$PWD/Newo/prepare_hiwalle_srmodels.ps1")" -OutputDirectory "$(cygpath -w "$PWD/Newo/build/esp32.esp32.esp32s3")"
 
 # D. Upload the already-prepared output directory to COM7; this does not compile
 "/c/Program Files/Arduino CLI/arduino-cli.exe" upload --port COM7 --fqbn "esp32:esp32:esp32s3:UploadSpeed=921600,USBMode=hwcdc,CDCOnBoot=default,MSCOnBoot=default,DFUOnBoot=default,UploadMode=default,CPUFreq=240,FlashMode=qio,FlashSize=16M,PartitionScheme=esp_sr_16,DebugLevel=none,PSRAM=opi,LoopCore=1,EventsCore=1,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default" --input-dir "Newo/build/esp32.esp32.esp32s3"

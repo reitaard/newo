@@ -1,5 +1,5 @@
 param(
-  [Parameter(Mandatory = $true)][string]$EspSrPath,
+  [string]$EspSrPath = "$PSScriptRoot\.esp-sr-model-pack\esp-sr-2.4.6\esp-sr",
   [string]$ArduinoPackages = "$env:LOCALAPPDATA\Arduino15\packages\esp32",
   [string]$ArduinoVersion = "3.3.10",
   [string]$OutputDirectory = "$PSScriptRoot\build\esp32.esp32.esp32s3",
