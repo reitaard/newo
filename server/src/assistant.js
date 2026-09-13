@@ -349,7 +349,6 @@ export function createAssistantRuntime({
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.min(profile.timeoutMs, 1_000));
-    timer.unref();
     try {
       const headers = profile.apiKey ? { authorization: `Bearer ${profile.apiKey}` } : undefined;
       const response = await requestImpl(endpointFor(profile, true), { headers, signal: controller.signal });
@@ -413,7 +412,6 @@ export function createAssistantRuntime({
     const controller = new AbortController();
     const startedAt = performance.now();
     const timer = setTimeout(() => controller.abort(assistantError("assistant_timeout")), profile.timeoutMs);
-    timer.unref();
     active.set(deviceId, controller);
 
     try {

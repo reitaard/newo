@@ -180,7 +180,6 @@ async function readWithTimeout(reader, timeoutMs, controller) {
           controller.abort(error);
           reject(error);
         }, timeoutMs);
-        timer.unref();
       }),
     ]);
   } finally {
@@ -273,8 +272,6 @@ export class KokoroTtsBackend {
     };
     const absoluteTimer = setTimeout(() => controller.abort(timeoutError("kokoro_stream_timeout")), this.streamAbsoluteMs);
     const requestTimer = setTimeout(() => controller.abort(timeoutError("kokoro_request_timeout")), this.requestTimeoutMs);
-    absoluteTimer.unref();
-    requestTimer.unref();
     let response;
     try {
       response = await fetch(`${this.baseUrl}/v1/audio/realtime`, {
@@ -626,7 +623,6 @@ export function createSpeakerRuntime({
         job.playbackStartWaiter = null;
         reject(timeoutError("speaker_start_timeout"));
       }, timeoutMs);
-      waiter.timer.unref();
       job.playbackStartWaiter = waiter;
     });
   }
@@ -668,7 +664,6 @@ export function createSpeakerRuntime({
     return new Promise((resolve, reject) => {
       const waiter = { resolve, reject, timer: null };
       waiter.timer = setTimeout(() => { connectionWaiters.delete(waiter); reject(new Error("speaker connection timeout")); }, timeoutMs);
-      waiter.timer.unref();
       connectionWaiters.add(waiter);
     });
   }
@@ -684,7 +679,6 @@ export function createSpeakerRuntime({
     let timer = null;
     const timeout = new Promise((resolve) => {
       timer = setTimeout(resolve, codecNegotiationTimeoutMs);
-      timer.unref?.();
     });
 
     await Promise.race([current.codecsReady, timeout]);
@@ -721,7 +715,6 @@ export function createSpeakerRuntime({
     return new Promise((resolve, reject) => {
       const waiter = { resolve, reject, timer: null, version };
       waiter.timer = setTimeout(() => { job.flowWaiters.delete(waiter); reject(timeoutError("flow_timeout")); }, flowTimeoutMs);
-      waiter.timer.unref();
       job.flowWaiters.add(waiter);
       if (job.flowVersion !== version) { clearTimeout(waiter.timer); job.flowWaiters.delete(waiter); resolve(); }
     });
@@ -872,7 +865,6 @@ export function createSpeakerRuntime({
   function beginJob(job) {
     jobs.set(job.id, job);
     job.resultTimer = setTimeout(() => settle(job, { kind: "timeout", error: "speaker_stream_timeout" }), resultTimeoutMs);
-    job.resultTimer.unref();
   }
   async function streamRealtime(job, current, source) {
     const iterator = source.audio[Symbol.asyncIterator]();
@@ -944,7 +936,6 @@ export function createSpeakerRuntime({
       return new Promise((resolve, reject) => {
         const waiter = { timer: null, reject };
         waiter.timer = setTimeout(() => { job.pacerWaiters.delete(waiter); resolve(); }, delay);
-        waiter.timer.unref();
         job.pacerWaiters.add(waiter);
       });
     };
