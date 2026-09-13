@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const source = async (path) => readFile(new URL(path, import.meta.url), "utf8");
+const source = async (path) => (await readFile(new URL(path, import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 
 test("Autonomy V2 keeps episode ownership while gaze and blink mechanics stay independent", async () => {
   const [header, display, blinkSource, gazeHeader, gazeSource] = await Promise.all([

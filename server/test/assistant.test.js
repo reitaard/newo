@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import { ASSISTANT_SYSTEM_PROMPT, createAssistantRuntime } from "../src/assistant.js";
+import { ASSISTANT_HISTORY_MAX_CHARS_PER_MESSAGE, ASSISTANT_SYSTEM_PROMPT, createAssistantRuntime } from "../src/assistant.js";
 import { createAssistantTurnRuntime } from "../src/assistant-turn.js";
 
 const turn = { deviceId: "newo-01", streamId: "stream-1", text: "hello Newo" };
@@ -14,26 +14,267 @@ function jsonResponse(payload, status = 200) {
 test("assistant sends one bounded OpenAI-compatible quick-chat request", async () => {
   let request;
   const runtime = createAssistantRuntime({
-    enabled: true, baseUrl: "http://127.0.0.1:8181", model: "helix-qwen3-0.6b", logger: quietLogger,
-    fetchImpl: async (_url, options) => { request = JSON.parse(options.body); return jsonResponse({ choices: [{ message: { content: "Hello. I am Newo." } }] }); },
+    enabled: true,
+    baseUrl: "http://127.0.0.1:8181",
+    model: "helix-qwen3-0.6b",
+    logger: quietLogger,
+    fetchImpl: async (_url, options) => {
+      request = JSON.parse(options.body);
+      return jsonResponse({ choices: [{ message: { content: "Hello. I am Neo." } }] });
+    },
   });
+
   const result = await runtime.respond(turn);
+
   assert.equal(result.kind, "response");
-  assert.equal(result.text, "Hello. I am Newo.");
+  assert.equal(result.text, "Hello. I am Neo.");
   assert.equal(request.model, "helix-qwen3-0.6b");
-  assert.equal(request.messages.at(-1).content, turn.text);
-  assert.equal(request.reasoning_effort, "none");
+  assert.equal(request.messages.length, 2);
+  assert.equal(request.messages[0].role, "system");
+  assert.equal(request.messages[0].content, ASSISTANT_SYSTEM_PROMPT);
+  assert.equal(request.messages[1].role, "user");
+  assert.equal(request.messages[1].content, turn.text);
+  assert.equal(request.temperature, 0.7);
+  assert.equal(request.top_p, 0.8);
+  assert.equal(request.top_k, 20);
+  assert.equal(request.min_p, 0);
+  assert.equal(request.max_tokens, 72);
+  assert.equal(Object.hasOwn(request, "reasoning_effort"), false);
+  assert.equal(result.timings.history_used, 0);
+});
+
+test("assistant retains only three bounded exchanges per device and clears them with the session", async () => {
+  const requests = [];
+  let reply = 0;
+
+  const runtime = createAssistantRuntime({
+    enabled: true,
+    baseUrl: "http://local",
+    model: "model",
+    logger: quietLogger,
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      reply += 1;
+      return jsonResponse({
+        choices: [{ message: { content: `answer ${reply} ${"x".repeat(300)}` } }],
+      });
+    },
+  });
+
+  for (let index = 1; index <= 5; index += 1) {
+    await runtime.respond({
+      deviceId: "device-a",
+      streamId: `a-${index}`,
+      text: `question ${index} ${"y".repeat(300)}`,
+    });
+  }
+
+  assert.equal(requests[4].messages.length, 2);
+
+  const followup = await runtime.respond({
+    deviceId: "device-a",
+    streamId: "followup",
+    text: "tell me more",
+  });
+
+  assert.equal(followup.timings.history_available, 3);
+  assert.equal(followup.timings.history_used, 1);
+
+  const request = requests[5];
+  assert.deepEqual(
+    request.messages.map((message) => message.role),
+    ["system", "user", "assistant", "user"],
+  );
+  assert.match(request.messages[1].content, /^question 5 /);
+  assert.match(request.messages[2].content, /^answer 5 /);
+  assert.ok(request.messages[1].content.length <= ASSISTANT_HISTORY_MAX_CHARS_PER_MESSAGE);
+  assert.ok(request.messages[2].content.length <= ASSISTANT_HISTORY_MAX_CHARS_PER_MESSAGE);
+
+  const other = await runtime.respond({
+    deviceId: "device-b",
+    streamId: "b-1",
+    text: "tell me more",
+  });
+
+  assert.equal(other.timings.history_available, 0);
+  assert.equal(other.timings.history_used, 0);
+
+  runtime.abortDevice("device-a");
+
+  const cleared = await runtime.respond({
+    deviceId: "device-a",
+    streamId: "a-new",
+    text: "tell me more",
+  });
+
+  assert.equal(cleared.timings.history_available, 0);
+  assert.equal(cleared.timings.history_used, 0);
+});
+
+test("assistant includes compact known runtime state and backend usage telemetry", async () => {
+  let request;
+  const logs = [];
+
+  const runtime = createAssistantRuntime({
+    enabled: true,
+    baseUrl: "http://local",
+    model: "model",
+    runtimeContext: () => ({
+      speakerEnabled: true,
+      speakerVolume: 72,
+      speakerMuted: false,
+      cloudStatus: "connected",
+    }),
+    logger: { info(fields) { logs.push(fields); }, warn() {} },
+    fetchImpl: async (_url, options) => {
+      request = JSON.parse(options.body);
+      return jsonResponse({
+        choices: [{ message: { content: "The speaker volume is 72 percent." } }],
+        usage: { prompt_tokens: 123, completion_tokens: 4 },
+      });
+    },
+  });
+
+  const result = await runtime.respond({
+    ...turn,
+    text: "What is your speaker volume and cloud status?",
+  });
+
+  assert.match(request.messages[0].content,
+    /Current runtime state: speaker=enabled, volume=72%, mute=off, cloud=connected/);
+  assert.equal(result.timings.input_tokens, 123);
+  assert.equal(result.timings.output_tokens, 4);
+  assert.equal(result.timings.history_used, 0);
+  assert.equal(logs.at(-1).runtime_context, true);
+});
+
+test("assistant supplies current server time in the configured IANA timezone per turn", async () => {
+  const requests = [];
+  const clockValues = [
+    new Date("2026-09-12T21:35:12.000Z"),
+    new Date("2026-09-12T21:35:13.000Z"),
+  ];
+
+  const runtime = createAssistantRuntime({
+    enabled: true,
+    baseUrl: "http://local",
+    model: "model",
+    timeZone: "Asia/Phnom_Penh",
+    now: () => clockValues.shift(),
+    logger: quietLogger,
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      return jsonResponse({
+        choices: [{ message: { content: "It is four thirty-five AM." } }],
+      });
+    },
+  });
+
+  await runtime.respond({ ...turn, streamId: "time-1", text: "What time is it?" });
+  await runtime.respond({ ...turn, streamId: "time-2", text: "What time is it now?" });
+
+  assert.match(requests[0].messages[0].content,
+    /Sunday, September 13, 2026 at 4:35:12 AM/);
+  assert.match(requests[0].messages[0].content,
+    /Asia\/Phnom_Penh \(UTC\+07:00\)/);
+  assert.match(requests[1].messages[0].content, /4:35:13 AM/);
+});
+
+test("assistant respects another requested timezone and rejects invalid IANA zones", async () => {
+  let request;
+
+  const runtime = createAssistantRuntime({
+    enabled: true,
+    baseUrl: "http://local",
+    model: "model",
+    timeZone: "America/New_York",
+    now: () => new Date("2026-01-15T17:08:09.000Z"),
+    logger: quietLogger,
+    fetchImpl: async (_url, options) => {
+      request = JSON.parse(options.body);
+      return jsonResponse({ choices: [{ message: { content: "It is noon." } }] });
+    },
+  });
+
+  await runtime.respond({ ...turn, text: "What time is it?" });
+
+  assert.match(request.messages[0].content,
+    /Thursday, January 15, 2026 at 12:08:09 PM/);
+  assert.match(request.messages[0].content,
+    /America\/New_York \(UTC-05:00\)/);
+
+  assert.throws(
+    () => createAssistantRuntime({ timeZone: "Not/A_Timezone" }),
+    /invalid assistant IANA time zone/,
+  );
 });
 
 test("assistant identifies Newo as pronounced Neo", async () => {
   let request;
+
   const runtime = createAssistantRuntime({
-    enabled: true, baseUrl: "http://local", model: "model", logger: quietLogger,
-    fetchImpl: async (_url, options) => { request = JSON.parse(options.body); return jsonResponse({ choices: [{ message: { content: "My name is Neo." } }] }); },
+    enabled: true,
+    baseUrl: "http://local",
+    model: "model",
+    logger: quietLogger,
+    fetchImpl: async (_url, options) => {
+      request = JSON.parse(options.body);
+      return jsonResponse({ choices: [{ message: { content: "My name is Neo." } }] });
+    },
   });
-  assert.equal((await runtime.respond({ ...turn, text: "What is your name?" })).text, "My name is Neo.");
+
+  const result = await runtime.respond({ ...turn, text: "What is your name?" });
+
+  assert.equal(result.text, "My name is Neo.");
   assert.match(ASSISTANT_SYSTEM_PROMPT, /Newo, pronounced Neo/);
-  assert.match(request.messages[0].content, /refer to your name naturally as Neo/);
+  assert.match(ASSISTANT_SYSTEM_PROMPT, /I, me, and my mean the user/);
+  assert.equal(request.messages[0].content, ASSISTANT_SYSTEM_PROMPT);
+});
+
+test("conversation meta questions use deterministic perspective-safe memory", async () => {
+  let fetchCalls = 0;
+
+  const runtime = createAssistantRuntime({
+    enabled: true,
+    baseUrl: "http://local",
+    model: "model",
+    logger: quietLogger,
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return jsonResponse({
+        choices: [{
+          message: {
+            content: fetchCalls === 1
+              ? "Japan is an island country in East Asia."
+              : "Vietnam is a country in Southeast Asia.",
+          },
+        }],
+      });
+    },
+  });
+
+  await runtime.respond({
+    deviceId: "newo-01",
+    streamId: "facts-1",
+    text: "Tell me about Japan",
+  });
+
+  await runtime.respond({
+    deviceId: "newo-01",
+    streamId: "facts-2",
+    text: "What about Vietnam",
+  });
+
+  const result = await runtime.respond({
+    deviceId: "newo-01",
+    streamId: "memory-1",
+    text: "What did I just ask you?",
+  });
+
+  assert.equal(fetchCalls, 2);
+  assert.equal(result.text, "You just asked: What about Vietnam");
+  assert.equal(result.timings.llm_request_ms, 0);
+  assert.equal(result.timings.route, "memory_user");
 });
 
 test("assistant readiness probes the configured model without generating chat", async () => {
@@ -51,7 +292,7 @@ test("assistant readiness probes the configured model without generating chat", 
 
 test("production hotwords only bias the spoken name Neo", async () => {
   const hotwords = await readFile(new URL("../config/newo-hotwords.txt", import.meta.url), "utf8");
-  assert.equal(hotwords, "NEO\n");
+  assert.equal(hotwords.replace(/\r\n/g, "\n"), "NEO\n");
   assert.doesNotMatch(hotwords, /\bNEWO\b|\bHELLO\b|\bCHECK\b|ONE TWO THREE/);
 });
 

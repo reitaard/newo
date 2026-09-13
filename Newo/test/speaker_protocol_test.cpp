@@ -18,6 +18,12 @@ int main() {
   assert(!newoValidSpeakerChunk(2048, limit - 1024, limit, false));
   assert(!newoValidSpeakerChunk(2048, 0, limit, true));
 
+  assert(!newoSpeakerReceiptReportDue(false, 100, 80, 4096, 2048, 20));
+  assert(!newoSpeakerReceiptReportDue(true, 99, 80, 1024, 2048, 20));
+  assert(newoSpeakerReceiptReportDue(true, 100, 80, 1024, 2048, 20));
+  assert(newoSpeakerReceiptReportDue(true, 81, 80, 2048, 2048, 20));
+  assert(newoSpeakerReceiptReportDue(true, 4, UINT32_MAX - 10, 1024, 2048, 14));
+
   assert(newoValidateSpeakerEnd(true, true, 4096, 4096, 0, limit) == NewoSpeakerEndValidation::OK);
   assert(newoValidateSpeakerEnd(true, false, 4096, 4096, 4096, 4096) == NewoSpeakerEndValidation::OK);
   assert(newoValidateSpeakerEnd(false, true, 4096, 4096, 0, limit) == NewoSpeakerEndValidation::WRONG_PLAYBACK_ID);

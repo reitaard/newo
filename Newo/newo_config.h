@@ -4,7 +4,7 @@
 
 namespace NewoConfig {
 
-constexpr char FIRMWARE_VERSION[] = "0.6";
+constexpr char FIRMWARE_VERSION[] = "0.5.9-dev";
 constexpr uint8_t AUTONOMY_REVISION = 2;
 constexpr char PROVISIONING_DEVICE_NAME[] = "newo@wifi";
 
@@ -73,6 +73,7 @@ static_assert(SPEAKER_OPUS_FRAME_PCM_BYTES == 1'920, "speaker Opus frame bytes c
 // physically meaningful while wire bandwidth drops sharply with Opus.
 constexpr size_t SPEAKER_RECEIVE_REPORT_BYTES = 2'048;
 constexpr size_t SPEAKER_CONSUME_REPORT_BYTES = 1'024;
+constexpr uint32_t SPEAKER_RECEIPT_REPORT_MAX_LATENCY_MS = 20;
 constexpr size_t SPEAKER_LOW_WATER_BYTES = 10'240;
 constexpr uint32_t SPEAKER_LOW_WATER_REPORT_INTERVAL_MS = 40;
 // The Arduino-ESP32 I2S TX path uses six 240-frame DMA descriptors. Waiting for one

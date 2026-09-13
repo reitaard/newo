@@ -58,9 +58,10 @@ const EnvSchema = z.object({
   ASSISTANT_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   ASSISTANT_MODEL: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   ASSISTANT_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
+  ASSISTANT_TIME_ZONE: z.preprocess(emptyToUndefined, z.string().default("Asia/Phnom_Penh")),
   ASSISTANT_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(30_000).default(15_000)),
-  ASSISTANT_MAX_OUTPUT_TOKENS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(8).max(128).default(48)),
-  ASSISTANT_MAX_REPLY_CHARS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(40).max(500).default(240)),
+  ASSISTANT_MAX_OUTPUT_TOKENS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(8).max(128).default(72)),
+  ASSISTANT_MAX_REPLY_CHARS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(40).max(500).default(300)),
   TTS_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
   SPEAKER_CODEC: z.preprocess(emptyToUndefined, z.enum(["opus", "pcm"]).default("opus")),
   TTS_BACKEND: z.preprocess(emptyToUndefined, z.enum(["pocket", "kokoro", "espeak"]).default("pocket")),
@@ -158,9 +159,20 @@ const assistantRuntime = createAssistantRuntime({
   baseUrl: env.ASSISTANT_BASE_URL,
   model: env.ASSISTANT_MODEL,
   apiKey: env.ASSISTANT_API_KEY,
+  timeZone: env.ASSISTANT_TIME_ZONE,
   timeoutMs: env.ASSISTANT_TIMEOUT_MS,
   maxOutputTokens: env.ASSISTANT_MAX_OUTPUT_TOKENS,
   maxReplyChars: env.ASSISTANT_MAX_REPLY_CHARS,
+  runtimeContext: ({ deviceId }) => {
+    const device = devices.get(deviceId);
+    const connected = device?.ws?.readyState === WebSocket.OPEN;
+    return {
+      speakerEnabled: device?.speaker?.enabled ?? automaticSpeakerEnabled,
+      speakerVolume: device?.speaker?.volume,
+      speakerMuted: device?.speaker?.muted,
+      cloudStatus: connected ? "connected" : "disconnected",
+    };
+  },
   logger: app.log,
 });
 const assistantTurnRuntime = createAssistantTurnRuntime({
@@ -803,7 +815,7 @@ wss.on("connection", (ws, request, deviceId) => {
   const offlineDuration = reconnectingAfterNotifiedOffline ? Math.max(0, Date.now() - previous.offlineSince) : 0;
   cancelOfflineTimer(previous);
   if (previous?.ws.readyState === WebSocket.OPEN) { failPendingRequestsForDevice(deviceId, previous.ws, "disconnected"); previous.ws.close(4001, "replaced by new connection"); }
-  const state = { ws, connectedAt: new Date().toISOString(), lastSeen: new Date().toISOString(), hello: previous?.hello ?? null, status: previous?.status ?? null, hasBeenConnected: previous?.hasBeenConnected ?? true, offlineSince: null, offlineNotified: false, offlineTimer: null, isAlive: true };
+  const state = { ws, connectedAt: new Date().toISOString(), lastSeen: new Date().toISOString(), hello: previous?.hello ?? null, status: previous?.status ?? null, speaker: previous?.speaker ?? null, hasBeenConnected: previous?.hasBeenConnected ?? true, offlineSince: null, offlineNotified: false, offlineTimer: null, isAlive: true };
   devices.set(deviceId, state);
   const completedIntentionalReboot = completePendingReboot(deviceId);
   if (reconnectingAfterNotifiedOffline && !completedIntentionalReboot) sendConnectivityNotification(commandMessage("connectivity", [quote([`Status: ${bold("Back online")}`, `Offline for: ${boldItalic(formatDuration(offlineDuration))}`]) ]));
@@ -822,6 +834,7 @@ wss.on("connection", (ws, request, deviceId) => {
     if (message.type === "hello" && message.device !== deviceId) { app.log.warn({ authenticated_device: deviceId, claimed_device: message.device }, "Device hello identity mismatch"); ws.close(4003, "device identity mismatch"); return; }
     if (message.type === "hello") state.hello = { device: message.device, firmware: message.firmware ?? null, autonomy_revision: message.autonomy_revision ?? null, chip: message.chip ?? null, received_at: state.lastSeen };
     if (message.type === "status" || message.type === "pong") state.status = { ...(state.status ?? {}), ...message, received_at: state.lastSeen };
+    if (message.type === "speaker_ack") state.speaker = { enabled: message.enabled, connection: message.connection, volume: message.volume, muted: message.muted };
     resolvePendingResponse(deviceId, ws, message);
     if (message.type === "speaker_started") speakerRuntime.handlePlaybackStarted(deviceId, message);
     if (message.type === "speaker_complete" || message.type === "speaker_error") speakerRuntime.handleResult(deviceId, message);

@@ -34,3 +34,15 @@ test("speaker playback task uses a PSRAM stack and logs DMA memory before I2S", 
   assert.match(speaker, /void NewoSpeaker::playbackTask\(\)[\s\S]*?vTaskDeleteWithCaps\(nullptr\);/);
   assert.doesNotMatch(speaker, /xTaskCreatePinnedToCore\(taskEntry/);
 });
+
+test("speaker receipt accounting follows successful PCM admission and has a bounded report deadline", async () => {
+  const [speaker, header] = await Promise.all([
+    readFile(speakerPath, "utf8"),
+    readFile(speakerHeaderPath, "utf8"),
+  ]);
+
+  assert.match(speaker, /xStreamBufferSend\(buffer_, payload, length, 0\)[\s\S]*?receivedBytes_ \+= length;[\s\S]*?receiptReportPending_ = true;/);
+  assert.doesNotMatch(speaker, /receivedBytes_ \+= length;[\s\S]{0,300}xStreamBufferSend\(buffer_, payload, length, 0\)/);
+  assert.match(speaker, /newoSpeakerReceiptReportDue\([\s\S]*?SPEAKER_RECEIPT_REPORT_MAX_LATENCY_MS/);
+  assert.match(header, /bool receiptReportPending_ = false;/);
+});

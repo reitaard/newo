@@ -17,6 +17,13 @@ inline bool newoValidSpeakerChunk(size_t length, uint32_t receivedBytes, uint32_
          length <= limitBytes - receivedBytes;
 }
 
+inline bool newoSpeakerReceiptReportDue(bool pending, uint32_t nowMs, uint32_t pendingSinceMs,
+                                        uint32_t admittedSinceReport, uint32_t reportBytes,
+                                        uint32_t maxLatencyMs) {
+  return pending && (admittedSinceReport >= reportBytes ||
+                     static_cast<uint32_t>(nowMs - pendingSinceMs) >= maxLatencyMs);
+}
+
 // Host-testable lifecycle accounting mirrored by the bounded ESP Opus queue.
 // It deliberately tracks admission (wire callback) separately from decoded PCM.
 struct NewoOpusQueueLifecycle {

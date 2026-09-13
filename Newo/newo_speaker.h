@@ -146,6 +146,9 @@ class NewoSpeaker {
   uint32_t lastFlowSentReceivedBytes_ = 0;
   uint32_t lastFlowSentConsumedBytes_ = 0;
   uint32_t lastFlowReportMs_ = 0;
+  uint32_t receiptPendingSinceMs_ = 0;
+  uint32_t maximumReceiptReportDelayMs_ = 0;
+  bool receiptReportPending_ = false;
   uint32_t flowReportCount_ = 0;
   uint32_t receivedFlowReportCount_ = 0;
   uint32_t i2sDrainMs_ = 0;

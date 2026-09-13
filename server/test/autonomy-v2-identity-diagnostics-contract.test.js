@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const source = async (path) => readFile(new URL(path, import.meta.url), "utf8");
+const source = async (path) => (await readFile(new URL(path, import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 
 test("Autonomy V2 keeps state, behavior, presentation, pose, motion, blink, and rendering separated", async () => {
   const [config, display, header, stateHeader, stateSource, presentationHeader, presentationSource,
@@ -25,7 +25,7 @@ test("Autonomy V2 keeps state, behavior, presentation, pose, motion, blink, and 
   const renderer = display.match(/void NewoDisplay::drawFaceFrame\(uint32_t now\) \{([\s\S]*?)\n\}\n\nvoid NewoDisplay::blitMonoCanvasFast/);
   assert.ok(renderer, "drawFaceFrame body should be discoverable for renderer-boundary checks");
 
-  assert.match(config, /FIRMWARE_VERSION\[\] = "0\.5\.3-dev"/);
+  assert.match(config, /FIRMWARE_VERSION\[\] = "0\.5\.9-dev"/);
   assert.match(config, /AUTONOMY_REVISION = 2/);
   assert.match(ino, /Firmware: %s/);
   assert.match(ino, /Autonomy: V%u/);

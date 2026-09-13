@@ -277,6 +277,9 @@ bool NewoSpeaker::startPlayback(const Request& request) {
   lastFlowSentReceivedBytes_ = 0;
   lastFlowSentConsumedBytes_ = 0;
   lastFlowReportMs_ = millis();
+  receiptPendingSinceMs_ = 0;
+  maximumReceiptReportDelayMs_ = 0;
+  receiptReportPending_ = false;
   flowReportCount_ = 0;
   receivedFlowReportCount_ = 0;
   i2sDrainMs_ = 0;
@@ -547,7 +550,14 @@ void NewoSpeaker::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
       fail("buffer_overflow");
       return;
     }
+    // A byte becomes receipted only after the complete PCM frame is admitted.
+    // Publication is deferred out of the WebSocket callback and coalesced for
+    // at most the bounded receipt-report interval.
     receivedBytes_ += length;
+    if (!receiptReportPending_) {
+      receiptPendingSinceMs_ = millis();
+      receiptReportPending_ = true;
+    }
     return;
   }
   if (type == WStype_TEXT && length) { handleText(payload, length); return; }
@@ -584,6 +594,7 @@ void NewoSpeaker::sendFlowReport(bool force) {
   if (!connected_ || !playing() || !buffer_) return;
   const uint32_t received = receivedBytes_;
   const uint32_t consumed = consumedBytes_;
+  const uint32_t nowMs = millis();
   const bool receiveProgress = received > lastFlowSentReceivedBytes_;
   const bool consumeProgress = consumed > lastFlowSentConsumedBytes_;
   if (!force && !receiveProgress && !consumeProgress) return;
@@ -596,13 +607,21 @@ void NewoSpeaker::sendFlowReport(bool force) {
   doc["consumed_bytes"] = consumed;
   doc["buffered_bytes"] = static_cast<uint32_t>(xStreamBufferBytesAvailable(buffer_));
   doc["capacity_bytes"] = static_cast<uint32_t>(NewoConfig::SPEAKER_BUFFER_BYTES);
+  doc["report_interval_ms"] = static_cast<uint32_t>(nowMs - lastFlowReportMs_);
+  doc["receipt_report_delay_ms"] = receiveProgress && receiptReportPending_
+      ? static_cast<uint32_t>(nowMs - receiptPendingSinceMs_) : 0;
   String body;
   serializeJson(doc, body);
   webSocket_.sendTXT(body);
   if (receiveProgress) ++receivedFlowReportCount_;
+  if (receiveProgress) {
+    const uint32_t delayMs = static_cast<uint32_t>(nowMs - receiptPendingSinceMs_);
+    if (delayMs > maximumReceiptReportDelayMs_) maximumReceiptReportDelayMs_ = delayMs;
+    receiptReportPending_ = false;
+  }
   lastFlowSentReceivedBytes_ = received;
   lastFlowSentConsumedBytes_ = consumed;
-  lastFlowReportMs_ = millis();
+  lastFlowReportMs_ = nowMs;
   ++flowReportCount_;
 }
 
@@ -769,7 +788,10 @@ void NewoSpeaker::loop(bool cloudReady) {
     const uint32_t received = receivedBytes_;
     const uint32_t consumed = consumedBytes_;
     const uint32_t buffered = static_cast<uint32_t>(xStreamBufferBytesAvailable(buffer_));
-    const bool receiveProgress = received - lastFlowSentReceivedBytes_ >= NewoConfig::SPEAKER_RECEIVE_REPORT_BYTES;
+    const bool receiveProgress = newoSpeakerReceiptReportDue(
+        receiptReportPending_, millis(), receiptPendingSinceMs_,
+        received - lastFlowSentReceivedBytes_, NewoConfig::SPEAKER_RECEIVE_REPORT_BYTES,
+        NewoConfig::SPEAKER_RECEIPT_REPORT_MAX_LATENCY_MS);
     const bool consumeProgress = consumed - lastFlowSentConsumedBytes_ >= NewoConfig::SPEAKER_CONSUME_REPORT_BYTES;
     const bool lowWaterHeartbeat = playbackStarted_ && buffered < NewoConfig::SPEAKER_LOW_WATER_BYTES &&
         millis() - lastFlowReportMs_ >= NewoConfig::SPEAKER_LOW_WATER_REPORT_INTERVAL_MS;
@@ -803,13 +825,14 @@ void NewoSpeaker::loop(bool cloudReady) {
              static_cast<unsigned long>(minimumTaskStackBytes_));
     NewoLog::log(underrunCount_ == 0 ? NewoLog::Level::INFO : NewoLog::Level::WARN,
                  NewoLog::Subsystem::AUDIO, "SPEAKER_DIAGNOSTICS", diagnostics);
-    char bufferDiagnostics[128];
-    snprintf(bufferDiagnostics, sizeof(bufferDiagnostics), "overflows=%lu max_buffer=%lu capacity=%u chunk=%u flow_reports=%lu rx_reports=%lu",
+    char bufferDiagnostics[176];
+    snprintf(bufferDiagnostics, sizeof(bufferDiagnostics), "overflows=%lu max_buffer=%lu capacity=%u chunk=%u flow_reports=%lu rx_reports=%lu max_rx_report_delay_ms=%lu",
              static_cast<unsigned long>(overflowCount_), static_cast<unsigned long>(maximumBufferedBytes_),
              static_cast<unsigned>(NewoConfig::SPEAKER_BUFFER_BYTES),
-             static_cast<unsigned>(NewoConfig::SPEAKER_CHUNK_BYTES),
-             static_cast<unsigned long>(flowReportCount_),
-             static_cast<unsigned long>(receivedFlowReportCount_));
+              static_cast<unsigned>(NewoConfig::SPEAKER_CHUNK_BYTES),
+              static_cast<unsigned long>(flowReportCount_),
+              static_cast<unsigned long>(receivedFlowReportCount_),
+              static_cast<unsigned long>(maximumReceiptReportDelayMs_));
     NewoLog::log(overflowCount_ == 0 ? NewoLog::Level::INFO : NewoLog::Level::ERROR,
                  NewoLog::Subsystem::AUDIO, "SPEAKER_BUFFER", bufferDiagnostics);
     if (request_.codec == Codec::OPUS) {

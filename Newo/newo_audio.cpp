@@ -142,7 +142,6 @@ bool NewoAudio::beginStreaming(bool rearmAfterStream) {
   if (!configureI2s()) { ++failures_; return false; }
   rearmAfterStream_ = rearmAfterStream;
   if (!rearmAfterStream_) enabled_ = false;
-  display_.setListeningActive(true);
   state_ = NewoVoiceState::STREAMING;
   transitionPending_ = true;
   streamFinished_ = false;
@@ -324,6 +323,7 @@ void NewoAudio::handleVoiceEvent(WStype_t type, uint8_t* payload, size_t length)
 }
 
 void NewoAudio::loop() {
+  display_.setListeningActive(state_ == NewoVoiceState::STREAMING && voiceConnected_);
   if (state_ == NewoVoiceState::ARMED && wakePending_) {
     wakePending_ = false;
     if (beginStreaming(true)) ++wakeCount_;

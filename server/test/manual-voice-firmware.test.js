@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const firmware = (file) => readFile(new URL(`../../Newo/${file}`, import.meta.url), "utf8");
+const firmware = async (file) => (await readFile(new URL(`../../Newo/${file}`, import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 
 test("manual voice control has one direct OFF-to-STREAMING path without a wake count", async () => {
   const [audio, cloud, sketch] = await Promise.all([

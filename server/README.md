@@ -46,7 +46,7 @@ A finalized Sherpa transcript can make one bounded assistant request and, when i
 
 The written identity is **Newo**, while the spoken assistant name is **Neo**. The assistant system prompt preserves that distinction. `server/config/newo-hotwords.txt` contains `NEO` only as Sherpa contextual bias after wake; it does not configure the ESP32 WakeNet trigger. See `../docs/wake-word.md` for the WakeNet model research and Neo integration plan.
 
-The existing Qwen3 llama.cpp service is OpenAI-chat compatible and must remain private. Configure only its private URL and model alias, for example `ASSISTANT_ENABLED=true`, `ASSISTANT_BASE_URL=http://127.0.0.1:8181`, and `ASSISTANT_MODEL=helix-qwen3-0.6b`. `ASSISTANT_TIMEOUT_MS`, `ASSISTANT_MAX_OUTPUT_TOKENS`, and `ASSISTANT_MAX_REPLY_CHARS` bound request time and spoken output. No API key is needed for the local service unless its deployment adds one.
+The existing Qwen3 llama.cpp service is OpenAI-chat compatible and must remain private. Configure only its private URL and model alias, for example `ASSISTANT_ENABLED=true`, `ASSISTANT_BASE_URL=http://127.0.0.1:8181`, and `ASSISTANT_MODEL=helix-qwen3-0.6b`. `ASSISTANT_TIME_ZONE` selects the authoritative IANA timezone supplied with each request and defaults to `Asia/Phnom_Penh`. `ASSISTANT_TIMEOUT_MS`, `ASSISTANT_MAX_OUTPUT_TOKENS`, and `ASSISTANT_MAX_REPLY_CHARS` bound request time and spoken output. No API key is needed for the local service unless its deployment adds one.
 
 ### Speaker TTS
 
