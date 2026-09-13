@@ -3,6 +3,7 @@ import http from "node:http";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { ASSISTANT_HISTORY_MAX_CHARS_PER_MESSAGE, ASSISTANT_SYSTEM_PROMPT, createAssistantRuntime } from "../src/assistant.js";
+import { createAssistantProfiles, LFM_PROFILE_ID, LFM_SYSTEM_PROMPT, QWEN_PROFILE_ID } from "../src/assistant-profiles.js";
 import { createAssistantTurnRuntime } from "../src/assistant-turn.js";
 
 const turn = { deviceId: "newo-01", streamId: "stream-1", text: "hello Newo" };
@@ -61,6 +62,95 @@ test("assistant sends one bounded OpenAI-compatible quick-chat request", async (
   assert.equal(runtime.getTelemetry().provider, "openai_chat");
 });
 
+function testProfiles() {
+  const profiles = createAssistantProfiles();
+  return {
+    ...profiles,
+    [LFM_PROFILE_ID]: { ...profiles[LFM_PROFILE_ID], baseUrl: "http://lfm.test" },
+    [QWEN_PROFILE_ID]: { ...profiles[QWEN_PROFILE_ID], baseUrl: "http://qwen.test" },
+  };
+}
+
+test("profile fallback retries once with the whole Qwen profile and reports the actual producer", async () => {
+  const requests = [];
+  const runtime = createAssistantRuntime({ enabled: true, profiles: testProfiles(), preferredProfile: "lfm", logger: quietLogger,
+    fetchImpl: async (url, options) => {
+      requests.push({ url, body: options.body && JSON.parse(options.body) });
+      if (url === "http://lfm.test/api/generate") throw new Error("offline");
+      return jsonResponse({ choices: [{ message: { content: "Qwen fallback reply." } }] });
+    } });
+  const result = await runtime.respond(turn);
+  assert.equal(result.kind, "response");
+  assert.deepEqual(requests.map((item) => item.url), ["http://lfm.test/api/generate", "http://qwen.test/v1/chat/completions"]);
+  assert.equal(requests[1].body.messages[0].content, ASSISTANT_SYSTEM_PROMPT);
+  assert.equal(Object.hasOwn(requests[1].body, "prompt"), false);
+  assert.equal(result.timings.preferred_profile, LFM_PROFILE_ID);
+  assert.equal(result.timings.effective_profile, QWEN_PROFILE_ID);
+  assert.equal(result.timings.provider, "openai_chat");
+  assert.equal(runtime.getTelemetry().fallback_active, true);
+});
+
+test("successful and empty preferred responses do not fallback", async () => {
+  let calls = 0;
+  const runtime = createAssistantRuntime({ enabled: true, profiles: testProfiles(), preferredProfile: "lfm", logger: quietLogger,
+    fetchImpl: async (_url, options) => { calls += 1; return ndjsonResponse([new TextEncoder().encode('{"response":"Hello."}\n')], options.signal); } });
+  assert.equal((await runtime.respond(turn)).kind, "response");
+  assert.equal(calls, 1);
+  const emptyRuntime = createAssistantRuntime({ enabled: true, profiles: testProfiles(), preferredProfile: "lfm", logger: quietLogger,
+    fetchImpl: async (_url, options) => { calls += 1; return ndjsonResponse([new TextEncoder().encode('{"response":"<think>hidden"}\n')], options.signal); } });
+  assert.equal((await emptyRuntime.respond({ ...turn, deviceId: "empty" })).kind, "empty");
+  assert.equal(calls, 2);
+});
+
+test("fallback is non-recursive when both providers are unavailable", async () => {
+  let calls = 0;
+  const runtime = createAssistantRuntime({ enabled: true, profiles: testProfiles(), preferredProfile: "lfm", logger: quietLogger,
+    fetchImpl: async () => { calls += 1; throw new Error("offline"); } });
+  assert.equal((await runtime.respond(turn)).kind, "error");
+  assert.equal(calls, 2);
+});
+
+test("profile timeout falls back, while explicit cancellation never does", async () => {
+  const profiles = testProfiles();
+  profiles[LFM_PROFILE_ID] = { ...profiles[LFM_PROFILE_ID], timeoutMs: 10 };
+  let fallbackCalls = 0;
+  const timeoutRuntime = createAssistantRuntime({ enabled: true, profiles, preferredProfile: "lfm", logger: quietLogger,
+    fetchImpl: async (url, options) => {
+      if (url.includes("lfm.test")) return ndjsonResponse([100], options.signal);
+      fallbackCalls += 1;
+      return jsonResponse({ choices: [{ message: { content: "Recovered after timeout." } }] });
+    } });
+  const timeoutResult = await timeoutRuntime.respond(turn);
+  assert.equal(timeoutResult.text, "Recovered after timeout.");
+  assert.equal(fallbackCalls, 1);
+  assert.equal(timeoutResult.timings.fallback_reason, "assistant_timeout");
+
+  const cancelledRuntime = createAssistantRuntime({ enabled: true, profiles, preferredProfile: "lfm", logger: quietLogger,
+    fetchImpl: async (_url, options) => ndjsonResponse([100], options.signal) });
+  const pending = cancelledRuntime.respond({ ...turn, deviceId: "cancel-profile" });
+  cancelledRuntime.abortDevice("cancel-profile");
+  assert.deepEqual(await pending, { kind: "error", error: "assistant_cancelled" });
+});
+
+test("fallback recovers to the preferred profile after cooldown health succeeds", async () => {
+  let lfmGenerateCalls = 0;
+  const runtime = createAssistantRuntime({ enabled: true, profiles: testProfiles(), preferredProfile: "lfm",
+    fallbackCooldownMs: 0, logger: quietLogger, fetchImpl: async (url, options = {}) => {
+      if (url === "http://lfm.test/api/tags") return jsonResponse({ models: [{ name: "newo-main:latest" }] });
+      if (url === "http://lfm.test/api/generate") {
+        lfmGenerateCalls += 1;
+        if (lfmGenerateCalls === 1) throw new Error("offline");
+        return ndjsonResponse([new TextEncoder().encode('{"response":"LFM recovered."}\n')], options.signal);
+      }
+      return jsonResponse({ choices: [{ message: { content: "fallback" } }] });
+    } });
+  await runtime.respond(turn);
+  const recovered = await runtime.respond({ ...turn, streamId: "stream-2", text: "another question" });
+  assert.equal(recovered.text, "LFM recovered.");
+  assert.equal(runtime.getTelemetry().effective_profile, LFM_PROFILE_ID);
+  assert.equal(runtime.getTelemetry().fallback_active, false);
+});
+
 test("ollama_raw sends the exact no-think request and parses arbitrary NDJSON and UTF-8 splits", async () => {
   let request;
   let requestUrl;
@@ -83,7 +173,7 @@ test("ollama_raw sends the exact no-think request and parses arbitrary NDJSON an
   assert.equal(typeof result.timings.llm_first_token_ms, "number");
   assert.deepEqual(request, {
     model: "newo-main",
-    prompt: `<|startoftext|><|im_start|>system\n${ASSISTANT_SYSTEM_PROMPT}\n\nNO-THINK MODE IS ACTIVE.\nDo not produce chain-of-thought, hidden analysis, plans, drafts, or self-talk.\nIf thinking begins, close it immediately.\nPut only the useful response after </think>.\n<|im_end|>\n<|im_start|>user\n${turn.text}\n<|im_end|>\n<|im_start|>assistant\n<think>\nNo unnecessary reasoning. Close thinking and answer immediately.\n</think>\n`,
+    prompt: `<|startoftext|><|im_start|>system\n${LFM_SYSTEM_PROMPT}\n\nNO-THINK MODE IS ACTIVE.\nDo not produce chain-of-thought, hidden analysis, plans, drafts, or self-talk.\nIf thinking begins, close it immediately.\nPut only the useful response after </think>.\n<|im_end|>\n<|im_start|>user\n${turn.text}\n<|im_end|>\n<|im_start|>assistant\n<think>\nNo unnecessary reasoning. Close thinking and answer immediately.\n</think>\n`,
     raw: true, stream: true, keep_alive: -1,
     options: { num_predict: 48, temperature: 0.2, top_k: 80, repeat_penalty: 1.05, stop: ["<|im_end|>", "<|im_start|>"] },
   });

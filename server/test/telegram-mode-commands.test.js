@@ -23,6 +23,7 @@ function createHarness(sendDeviceRequest, overrides = {}) {
     persistSpeakerEnabled: async (enabled) => { speakerEnabled = enabled; return enabled; },
     speakerInfo: { ttsEnabled: true, backend: "kokoro", format: "24 kHz PCM16", bufferBytes: 24_576 },
     getAssistantInfo: overrides.getAssistantInfo ?? (() => ({ status: "ready", provider: "openai_chat", model: "helix-qwen3-0.6b", online: "online", speakerEnabled, latest: { result: "n/a", llmMs: null, asrFinalMs: null, ttsQueuedMs: null, totalMs: null } })),
+    setAssistantProfile: overrides.setAssistantProfile,
   });
   return { handlers, replies, get speakerEnabled() { return speakerEnabled; } };
 }
@@ -102,6 +103,37 @@ test("/vs represents a disabled assistant with clean never values", async () => 
   assert.match(harness.replies[0].text, /LLM: <b>n\/a<\/b>/);
   assert.match(harness.replies[0].text, /Last turn: <b>n\/a<\/b>/);
   assert.match(harness.replies[0].text, /Speaker: <b>OFF<\/b>/);
+});
+
+test("/profile reports preferred and effective profile compactly", async () => {
+  const harness = createHarness(() => ({ kind: "offline" }), {
+    getAssistantInfo: () => ({ preferred_profile: "lfm2.5:8b", effective_profile: "qwen3:0.6b",
+      provider: "openai_chat", model: "helix-qwen3-0.6b", online: "online",
+      fallback_active: true, fallback_reason: "assistant_timeout" }),
+  });
+  await harness.handlers.profile({ match: "" });
+  assert.match(harness.replies[0].text, /Preferred: <b>lfm2\.5:8b<\/b>/);
+  assert.match(harness.replies[0].text, /Effective: <b>qwen3:0\.6b<\/b>/);
+  assert.match(harness.replies[0].text, /Fallback: <b>ON \(assistant_timeout\)<\/b>/);
+  assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
+});
+
+test("/profile aliases and clickable underscore commands switch immediately", async () => {
+  const selected = [];
+  const setAssistantProfile = async (value) => {
+    selected.push(value);
+    return { preferred_profile: value === "qwen" ? "qwen3:0.6b" : "lfm2.5:8b",
+      effective_profile: value === "qwen" ? "qwen3:0.6b" : "lfm2.5:8b",
+      provider: value === "qwen" ? "openai_chat" : "ollama_raw",
+      model: value === "qwen" ? "helix-qwen3-0.6b" : "newo-main", online: "online", fallback_active: false };
+  };
+  const harness = createHarness(() => ({ kind: "offline" }), { setAssistantProfile });
+  await harness.handlers.profile({ match: "lfm" });
+  await harness.handlers.profile({ match: "qwen" });
+  await harness.handlers.profile({ match: "" }, "lfm");
+  await harness.handlers.profile({ match: "" }, "qwen");
+  assert.deepEqual(selected, ["lfm", "qwen", "lfm", "qwen"]);
+  assert.ok(harness.replies.every((reply) => reply.options.newoSpeak === false));
 });
 
 test("/speaker toggles OFF with terse non-spoken confirmation", async () => {

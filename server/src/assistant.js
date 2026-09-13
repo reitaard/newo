@@ -1,10 +1,15 @@
-export const ASSISTANT_SYSTEM_PROMPT = [
-  "You are Newo, pronounced Neo, a friendly voice assistant.",
-  "Answer the user's latest message directly in natural spoken English.",
-  "For general knowledge, give two or three useful factual sentences; for simple questions, one sentence is enough.",
-  "In the user's message, I, me, and my mean the user, while you and your mean Neo. In your reply, I, me, and my mean Neo, while you and your mean the user.",
-  "If unclear, ask one short clarification. Do not use markdown.",
-].join(" ");
+import http from "node:http";
+import https from "node:https";
+
+import {
+  createAssistantProfiles,
+  LFM_PROFILE_ID,
+  QWEN_PROFILE_ID,
+  QWEN_SYSTEM_PROMPT,
+  resolveAssistantProfile,
+} from "./assistant-profiles.js";
+
+export const ASSISTANT_SYSTEM_PROMPT = QWEN_SYSTEM_PROMPT;
 
 export const DEFAULT_ASSISTANT_TIME_ZONE = "Asia/Phnom_Penh";
 export const ASSISTANT_HISTORY_MAX_EXCHANGES = 3;
@@ -264,21 +269,67 @@ function runtimeContextMessage(context) {
 export function createAssistantRuntime({
   enabled = false, provider = "openai_chat", baseUrl, model, apiKey, timeoutMs = 15_000, maxOutputTokens = 72,
   maxReplyChars = 300, timeZone = DEFAULT_ASSISTANT_TIME_ZONE, now = () => new Date(),
-  runtimeContext = null, fetchImpl, logger = null,
+  runtimeContext = null, fetchImpl, logger = null, profiles = null, preferredProfile = null,
+  fallbackCooldownMs = 30_000,
 } = {}) {
   assistantTimeContext(new Date(0), timeZone);
   const active = new Map();
   let closing = false;
-  let providerState = enabled ? "unknown" : "disabled";
-  const ollamaTransport = !fetchImpl && provider === "ollama_raw" ? createOllamaTransport() : null;
-  const requestImpl = fetchImpl ?? ollamaTransport?.request ?? fetch;
   const history = new Map();
-  const base = baseUrl ? String(baseUrl).replace(/\/+$/, "") : null;
-  const endpoint = base ? `${base}${provider === "ollama_raw" ? "/api/generate" : "/v1/chat/completions"}` : null;
-  const modelsEndpoint = base ? `${base}${provider === "ollama_raw" ? "/api/tags" : "/v1/models"}` : null;
+  const profileMode = profiles != null || preferredProfile != null;
+  let configuredProfiles = profiles ?? createAssistantProfiles({ qwenApiKey: apiKey });
+  const requestedId = resolveAssistantProfile(preferredProfile, configuredProfiles) ??
+    (provider === "ollama_raw" ? LFM_PROFILE_ID : QWEN_PROFILE_ID);
+
+  // Keep the original constructor contract for focused provider tests and older callers.
+  if (!profileMode) {
+    const original = configuredProfiles[requestedId];
+    configuredProfiles = {
+      ...configuredProfiles,
+      [requestedId]: {
+        ...original,
+        baseUrl: baseUrl ? String(baseUrl).replace(/\/+$/, "") : original.baseUrl,
+        model: model ?? original.model,
+        apiKey: apiKey ?? original.apiKey,
+        timeoutMs,
+        maxOutputTokens,
+        maxReplyChars,
+        fallbackProfile: null,
+      },
+    };
+  }
+
+  let preferredId = requestedId;
+  let effectiveId = requestedId;
+  let fallbackReason = null;
+  let lastFallbackAt = 0;
+  const health = new Map(Object.keys(configuredProfiles).map((id) => [id, enabled ? "unknown" : "disabled"]));
+  const ollamaTransport = !fetchImpl ? createOllamaTransport() : null;
+  const requestImpl = fetchImpl ?? ollamaTransport?.request ?? fetch;
+
+  const profileById = (id) => configuredProfiles[id] ?? null;
+  const endpointFor = (profile, healthCheck = false) => {
+    const suffix = healthCheck ? profile.health.endpoint : profile.endpoint;
+    return profile.baseUrl ? `${String(profile.baseUrl).replace(/\/+$/, "")}${suffix}` : null;
+  };
 
   function getTelemetry() {
-    return { enabled, provider, model: model ?? null, online: providerState, qwen: providerState, active: active.size > 0 };
+    const profile = profileById(effectiveId);
+    const profileHealth = Object.fromEntries(health);
+    const online = enabled ? health.get(effectiveId) ?? "unknown" : "disabled";
+    return {
+      enabled,
+      preferred_profile: preferredId,
+      effective_profile: effectiveId,
+      fallback_active: preferredId !== effectiveId,
+      fallback_reason: fallbackReason,
+      provider: profile?.provider ?? null,
+      model: profile?.model ?? null,
+      online,
+      qwen: online,
+      profile_health: profileHealth,
+      active: active.size > 0,
+    };
   }
 
   function storeExchange(deviceId, user, assistant) {
@@ -290,33 +341,166 @@ export function createAssistantRuntime({
     history.set(deviceId, next);
   }
 
-  async function refreshHealth() {
-    if (!enabled) return getTelemetry();
-    if (!modelsEndpoint || !model) {
-      providerState = "offline";
-      return getTelemetry();
+  async function refreshProfileHealth(id) {
+    const profile = profileById(id);
+    if (!enabled || !profile?.enabled || !endpointFor(profile, true) || !profile.model) {
+      health.set(id, enabled ? "offline" : "disabled");
+      return health.get(id);
     }
-
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), Math.min(timeoutMs, 1_000));
+    const timer = setTimeout(() => controller.abort(), Math.min(profile.timeoutMs, 1_000));
     timer.unref();
-
     try {
-      const headers = apiKey ? { authorization: `Bearer ${apiKey}` } : undefined;
-      const response = await requestImpl(modelsEndpoint, { headers, signal: controller.signal });
+      const headers = profile.apiKey ? { authorization: `Bearer ${profile.apiKey}` } : undefined;
+      const response = await requestImpl(endpointFor(profile, true), { headers, signal: controller.signal });
       const payload = response.ok ? await response.json() : null;
-      const models = provider === "ollama_raw" ? payload?.models : payload?.data;
-      providerState = Array.isArray(models) && models.some((item) => {
-        const candidate = provider === "ollama_raw" ? item?.name ?? item?.model : item?.id;
-        return candidate === model || (provider === "ollama_raw" && !model.includes(":") && candidate === `${model}:latest`);
-      }) ? "online" : "offline";
+      const models = profile.provider === "ollama_raw" ? payload?.models : payload?.data;
+      const online = Array.isArray(models) && models.some((item) => {
+        const candidate = profile.provider === "ollama_raw" ? item?.name ?? item?.model : item?.id;
+        return candidate === profile.model ||
+          (profile.health.implicitLatestTag && !profile.model.includes(":") && candidate === `${profile.model}:latest`);
+      });
+      health.set(id, online ? "online" : "offline");
     } catch {
-      providerState = "offline";
+      health.set(id, "offline");
     } finally {
       clearTimeout(timer);
     }
+    return health.get(id);
+  }
 
+  async function refreshHealth() {
+    if (!enabled) return getTelemetry();
+    await refreshProfileHealth(preferredId);
+    if (effectiveId !== preferredId) await refreshProfileHealth(effectiveId);
+    if (effectiveId !== preferredId && health.get(preferredId) === "online") recoverPreferred("health_check");
     return getTelemetry();
+  }
+
+  function recoverPreferred(reason) {
+    const from = effectiveId;
+    effectiveId = preferredId;
+    fallbackReason = null;
+    logger?.info({ preferred_profile: preferredId, effective_profile: effectiveId, previous_profile: from, recovery_reason: reason }, "Assistant profile recovered");
+  }
+
+  async function setPreferredProfile(value) {
+    const id = resolveAssistantProfile(value, configuredProfiles);
+    if (!id || !profileById(id)?.enabled) throw assistantError("assistant_profile_invalid", String(value ?? ""));
+    const previous = preferredId;
+    preferredId = id;
+    effectiveId = id;
+    fallbackReason = null;
+    await refreshProfileHealth(id);
+    logger?.info({ previous_profile: previous, preferred_profile: id, effective_profile: id, profile_health: health.get(id) }, "Assistant profile switched");
+    return getTelemetry();
+  }
+
+  async function requestProfile(profile, { deviceId, streamId, transcript, previousExchanges, historyAvailable }) {
+    const endpoint = endpointFor(profile);
+    if (!profile?.enabled || !endpoint || !profile.model) return { kind: "unavailable", error: "assistant_unavailable", availabilityFailure: true };
+    const controller = new AbortController();
+    const startedAt = performance.now();
+    const timer = setTimeout(() => controller.abort(assistantError("assistant_timeout")), profile.timeoutMs);
+    timer.unref();
+    active.set(deviceId, controller);
+
+    try {
+      const usedExchanges = profile.contextPolicy.selectiveHistory && shouldUseHistory(transcript)
+        ? previousExchanges.slice(-1) : [];
+      const includeTime = profile.contextPolicy.selectiveTimeContext && shouldUseTimeContext(transcript);
+      const includeRuntime = profile.contextPolicy.selectiveRuntimeContext && shouldUseRuntimeContext(transcript);
+      const stateMessage = includeRuntime ? runtimeContextMessage(runtimeContext?.({ deviceId, streamId })) : null;
+      const systemParts = [profile.systemPrompt];
+      if (includeTime) systemParts.push(assistantTimeContext(now(), timeZone));
+      if (stateMessage) systemParts.push(stateMessage);
+      const messages = [
+        { role: "system", content: systemParts.join(" ") },
+        ...usedExchanges.flatMap((exchange) => [
+          { role: "user", content: exchange.user },
+          { role: "assistant", content: exchange.assistant },
+        ]),
+        { role: "user", content: transcript },
+      ];
+      const historyUsed = usedExchanges.length;
+      const promptChars = messages.reduce((total, message) => total + message.content.length, 0);
+      logger?.info({ device_id: deviceId, stream_id: streamId, preferred_profile: preferredId,
+        effective_profile: profile.id, fallback_active: profile.id !== preferredId, provider: profile.provider,
+        model: profile.model, transcript_chars: transcript.length, query_text: transcript,
+        history_available: historyAvailable, history_used: historyUsed, history_turns: historyUsed,
+        time_context: includeTime, runtime_context: Boolean(stateMessage), prompt_chars: promptChars },
+      "Assistant LLM request started");
+
+      const headers = { "content-type": "application/json" };
+      if (profile.apiKey) headers.authorization = `Bearer ${profile.apiKey}`;
+      const requestBody = profile.provider === "ollama_raw" ? {
+        model: profile.model,
+        prompt: rawLfmPrompt(messages),
+        raw: profile.requestOptions.raw,
+        stream: profile.requestOptions.stream,
+        keep_alive: profile.keepAlive,
+        options: {
+          num_predict: profile.maxOutputTokens,
+          ...profile.sampling,
+          stop: ["<|im_end|>", "<|im_start|>"],
+        },
+      } : {
+        model: profile.model,
+        messages,
+        max_tokens: profile.maxOutputTokens,
+        ...profile.sampling,
+        stream: profile.requestOptions.stream,
+      };
+      const response = await requestImpl(endpoint, { method: "POST", headers, signal: controller.signal, body: JSON.stringify(requestBody) });
+      if (!response.ok) throw assistantError("assistant_http_error", String(response.status));
+
+      let payload = null;
+      let firstRawTokenAt = null;
+      let firstTokenAt = null;
+      let rawAnswer;
+      if (profile.provider === "ollama_raw") {
+        rawAnswer = await readOllamaStream(response, {
+          onFirstRawToken: () => { firstRawTokenAt ??= performance.now(); },
+          onFirstSpeakableToken: () => { firstTokenAt ??= performance.now(); },
+        });
+      } else {
+        try { payload = await response.json(); }
+        catch { throw assistantError("assistant_invalid_response"); }
+        rawAnswer = payload?.choices?.[0]?.message?.content;
+        if (String(rawAnswer ?? "").length > 0) firstRawTokenAt = firstTokenAt = performance.now();
+      }
+      const answer = boundedText(rawAnswer, profile.maxReplyChars);
+      if (!answer) return { kind: "empty", availabilityFailure: false };
+      health.set(profile.id, "online");
+      const completedAt = performance.now();
+      const timings = {
+        llm_first_raw_token_ms: firstRawTokenAt == null ? null : Math.round(firstRawTokenAt - startedAt),
+        llm_first_token_ms: firstTokenAt == null ? null : Math.round(firstTokenAt - startedAt),
+        llm_request_ms: Math.round(completedAt - startedAt),
+        history_turns: historyUsed, history_available: historyAvailable, history_used: historyUsed,
+        prompt_chars: promptChars, route: "llm", preferred_profile: preferredId,
+        effective_profile: profile.id, fallback_active: profile.id !== preferredId,
+        fallback_reason: profile.id !== preferredId ? fallbackReason : null,
+        provider: profile.provider, model: profile.model,
+      };
+      if (Number.isFinite(payload?.usage?.prompt_tokens)) timings.input_tokens = payload.usage.prompt_tokens;
+      if (Number.isFinite(payload?.usage?.completion_tokens)) timings.output_tokens = payload.usage.completion_tokens;
+      logger?.info({ device_id: deviceId, stream_id: streamId, query_text: transcript,
+        reply_chars: answer.length, reply_text: answer, time_context: includeTime,
+        runtime_context: Boolean(stateMessage), ...timings }, "Assistant text ready");
+      return { kind: "response", text: answer, timings, profileId: profile.id, availabilityFailure: false };
+    } catch (error) {
+      const code = controller.signal.aborted ? controller.signal.reason?.code ?? "assistant_cancelled" : error?.code ?? "assistant_request_failed";
+      const availabilityFailure = ["assistant_timeout", "assistant_http_error", "assistant_request_failed"].includes(code);
+      if (availabilityFailure) health.set(profile.id, "offline");
+      logger?.warn({ device_id: deviceId, stream_id: streamId, preferred_profile: preferredId,
+        effective_profile: profile.id, provider: profile.provider, model: profile.model, error_code: code },
+      "Assistant LLM request failed");
+      return { kind: code === "assistant_timeout" ? "timeout" : "error", error: code, availabilityFailure };
+    } finally {
+      clearTimeout(timer);
+      if (active.get(deviceId) === controller) active.delete(deviceId);
+    }
   }
 
   async function respond({ deviceId, streamId, text }) {
@@ -324,7 +508,6 @@ export function createAssistantRuntime({
 
     if (!enabled || closing) return { kind: "disabled" };
     if (!transcript) return { kind: "empty" };
-    if (!endpoint || !model) return { kind: "unavailable" };
     if (active.has(deviceId)) return { kind: "busy" };
 
     const previousExchanges = history.get(deviceId) ?? [];
@@ -332,7 +515,8 @@ export function createAssistantRuntime({
     const shortcut = memoryShortcut(transcript, previousExchanges);
 
     if (shortcut) {
-      const answer = boundedText(shortcut.text, maxReplyChars);
+      const selected = profileById(effectiveId);
+      const answer = boundedText(shortcut.text, selected?.maxReplyChars ?? maxReplyChars);
       const timings = {
         llm_request_ms: 0,
         history_turns: 0,
@@ -340,6 +524,12 @@ export function createAssistantRuntime({
         history_used: 0,
         prompt_chars: 0,
         route: shortcut.route,
+        preferred_profile: preferredId,
+        effective_profile: effectiveId,
+        fallback_active: preferredId !== effectiveId,
+        fallback_reason: fallbackReason,
+        provider: selected?.provider ?? null,
+        model: selected?.model ?? null,
       };
 
       storeExchange(deviceId, transcript, answer);
@@ -356,182 +546,25 @@ export function createAssistantRuntime({
       return { kind: "response", text: answer, timings };
     }
 
-    const controller = new AbortController();
-    const startedAt = performance.now();
-    const timer = setTimeout(
-      () => controller.abort(assistantError("assistant_timeout")),
-      timeoutMs,
-    );
-    timer.unref();
-    active.set(deviceId, controller);
-
-    try {
-      const usedExchanges = shouldUseHistory(transcript)
-        ? previousExchanges.slice(-1)
-        : [];
-
-      const includeTime = shouldUseTimeContext(transcript);
-      const includeRuntime = shouldUseRuntimeContext(transcript);
-      const stateMessage = includeRuntime
-        ? runtimeContextMessage(runtimeContext?.({ deviceId, streamId }))
-        : null;
-
-      const systemParts = [ASSISTANT_SYSTEM_PROMPT];
-      if (includeTime) systemParts.push(assistantTimeContext(now(), timeZone));
-      if (stateMessage) systemParts.push(stateMessage);
-
-      const messages = [
-        { role: "system", content: systemParts.join(" ") },
-        ...usedExchanges.flatMap((exchange) => [
-          { role: "user", content: exchange.user },
-          { role: "assistant", content: exchange.assistant },
-        ]),
-        { role: "user", content: transcript },
-      ];
-
-      const historyUsed = usedExchanges.length;
-      const promptChars = messages.reduce(
-        (total, message) => total + message.content.length,
-        0,
-      );
-
-      logger?.info({
-        device_id: deviceId,
-        stream_id: streamId,
-        transcript_chars: transcript.length,
-        query_text: transcript,
-        history_available: historyAvailable,
-        history_used: historyUsed,
-        history_turns: historyUsed,
-        time_context: includeTime,
-        runtime_context: Boolean(stateMessage),
-        prompt_chars: promptChars,
-      }, "Assistant LLM request started");
-
-      const headers = { "content-type": "application/json" };
-      if (apiKey) headers.authorization = `Bearer ${apiKey}`;
-
-      const requestBody = provider === "ollama_raw" ? {
-        model,
-        prompt: rawLfmPrompt(messages),
-        raw: true,
-        stream: true,
-        keep_alive: -1,
-        options: {
-          num_predict: maxOutputTokens,
-          temperature: 0.2,
-          top_k: 80,
-          repeat_penalty: 1.05,
-          stop: ["<|im_end|>", "<|im_start|>"],
-        },
-      } : {
-        model,
-        messages,
-        max_tokens: maxOutputTokens,
-        temperature: 0.7,
-        top_p: 0.8,
-        top_k: 20,
-        min_p: 0,
-        stream: false,
-      };
-
-      const response = await requestImpl(endpoint, {
-        method: "POST",
-        headers,
-        signal: controller.signal,
-        body: JSON.stringify(requestBody),
-      });
-
-      if (!response.ok) {
-        throw assistantError("assistant_http_error", String(response.status));
-      }
-
-      let payload = null;
-      let firstRawTokenAt = null;
-      let firstTokenAt = null;
-      let rawAnswer;
-      if (provider === "ollama_raw") {
-        rawAnswer = await readOllamaStream(response, {
-          onFirstRawToken: () => { firstRawTokenAt ??= performance.now(); },
-          onFirstSpeakableToken: () => { firstTokenAt ??= performance.now(); },
-        });
-      } else {
-        try {
-          payload = await response.json();
-        } catch {
-          throw assistantError("assistant_invalid_response");
-        }
-        rawAnswer = payload?.choices?.[0]?.message?.content;
-        if (String(rawAnswer ?? "").length > 0) firstRawTokenAt = firstTokenAt = performance.now();
-      }
-
-      const answer = boundedText(rawAnswer, maxReplyChars);
-
-      if (!answer) return { kind: "empty" };
-
-      storeExchange(deviceId, transcript, answer);
-      providerState = "online";
-
-      const completedAt = performance.now();
-      const timings = {
-        llm_first_raw_token_ms: firstRawTokenAt == null ? null : Math.round(firstRawTokenAt - startedAt),
-        llm_first_token_ms: firstTokenAt == null ? null : Math.round(firstTokenAt - startedAt),
-        llm_request_ms: Math.round(completedAt - startedAt),
-        history_turns: historyUsed,
-        history_available: historyAvailable,
-        history_used: historyUsed,
-        prompt_chars: promptChars,
-        route: "llm",
-      };
-
-      if (Number.isFinite(payload?.usage?.prompt_tokens)) {
-        timings.input_tokens = payload.usage.prompt_tokens;
-      }
-
-      if (Number.isFinite(payload?.usage?.completion_tokens)) {
-        timings.output_tokens = payload.usage.completion_tokens;
-      }
-
-      logger?.info({
-        device_id: deviceId,
-        stream_id: streamId,
-        query_text: transcript,
-        reply_chars: answer.length,
-        reply_text: answer,
-        time_context: includeTime,
-        runtime_context: Boolean(stateMessage),
-        ...timings,
-      }, "Assistant text ready");
-
-      return {
-        kind: "response",
-        text: answer,
-        timings,
-      };
-    } catch (error) {
-      providerState = "offline";
-
-      const code = controller.signal.aborted
-        ? controller.signal.reason?.code ?? "assistant_cancelled"
-        : error?.code ?? "assistant_request_failed";
-
-      logger?.warn({
-        device_id: deviceId,
-        stream_id: streamId,
-        error_code: code,
-      }, "Assistant LLM request failed");
-
-      return {
-        kind: code === "assistant_timeout" ? "timeout" : "error",
-        error: code,
-      };
-    } finally {
-      clearTimeout(timer);
-
-      if (active.get(deviceId) === controller) {
-        active.delete(deviceId);
-      }
+    if (effectiveId !== preferredId && Date.now() - lastFallbackAt >= fallbackCooldownMs) {
+      if (await refreshProfileHealth(preferredId) === "online") recoverPreferred("cooldown_health_check");
+      else lastFallbackAt = Date.now();
     }
+    let selected = profileById(effectiveId);
+    let result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable });
+    const fallbackId = selected?.fallbackProfile;
+    if (result.availabilityFailure && fallbackId && fallbackId !== selected.id && profileById(fallbackId)?.enabled) {
+      fallbackReason = result.error;
+      effectiveId = fallbackId;
+      lastFallbackAt = Date.now();
+      logger?.warn({ preferred_profile: preferredId, failed_profile: selected.id, effective_profile: fallbackId,
+        fallback_reason: fallbackReason }, "Assistant profile fallback activated");
+      selected = profileById(fallbackId);
+      result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable });
+    }
+    if (result.kind === "response") storeExchange(deviceId, transcript, result.text);
+    const { availabilityFailure: _availabilityFailure, profileId: _profileId, ...publicResult } = result;
+    return publicResult;
   }
 
   function abortDevice(deviceId) {
@@ -553,11 +586,11 @@ export function createAssistantRuntime({
   return {
     respond,
     refreshHealth,
+    refreshProfileHealth,
+    setPreferredProfile,
     getTelemetry,
     abortDevice,
     close,
     isActive: (deviceId) => active.has(deviceId),
   };
 }
-import http from "node:http";
-import https from "node:https";

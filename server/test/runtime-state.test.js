@@ -22,3 +22,19 @@ test("automatic speaker state persists across server restart", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("preferred assistant profile persists without changing speaker state", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "newo-profile-state-"));
+  try {
+    const filePath = path.join(directory, "runtime-state.json");
+    const first = createRuntimeStateStore({ filePath });
+    await first.setAssistantProfile("lfm2.5:8b");
+    assert.equal(first.assistantProfile, "lfm2.5:8b");
+    assert.equal(first.speakerEnabled, true);
+    const restarted = createRuntimeStateStore({ filePath });
+    assert.equal(restarted.assistantProfile, "lfm2.5:8b");
+    assert.equal(restarted.speakerEnabled, true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

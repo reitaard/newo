@@ -7,6 +7,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 
 import { createAssistantRuntime } from "./assistant.js";
+import { createAssistantProfiles, QWEN_PROFILE_ID, resolveAssistantProfile } from "./assistant-profiles.js";
 import { createAssistantTurnRuntime } from "./assistant-turn.js";
 import { createRuntimeStateStore } from "./runtime-state.js";
 import { createSpeakerRuntime, startTelegramAndSpeech } from "./tts.js";
@@ -55,6 +56,7 @@ const EnvSchema = z.object({
   VOICE_ASR_HOTWORDS_SCORE: z.preprocess(emptyToUndefined, z.coerce.number().min(0).max(5).default(1.5)),
   VOICE_LIVE_TEST_MODE: z.preprocess(stringToBoolean, z.boolean().default(false)),
   ASSISTANT_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
+  ASSISTANT_PROFILE: z.preprocess(emptyToUndefined, z.string().default("qwen")),
   ASSISTANT_PROVIDER: z.preprocess(emptyToUndefined, z.enum(["openai_chat", "ollama_raw"]).default("openai_chat")),
   ASSISTANT_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   ASSISTANT_MODEL: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
@@ -131,7 +133,13 @@ const REACTION_NAMES = Object.keys(REACTION_PRESETS);
 let bot = null;
 let pendingReboot = null;
 let shuttingDown = false;
-const runtimeState = createRuntimeStateStore({ filePath: env.RUNTIME_STATE_FILE, logger: app.log });
+const assistantProfiles = createAssistantProfiles({ qwenApiKey: env.ASSISTANT_API_KEY });
+const configuredAssistantProfile = resolveAssistantProfile(env.ASSISTANT_PROFILE, assistantProfiles) ?? QWEN_PROFILE_ID;
+const runtimeState = createRuntimeStateStore({
+  filePath: env.RUNTIME_STATE_FILE,
+  logger: app.log,
+  defaults: { speakerEnabled: true, assistantProfile: configuredAssistantProfile },
+});
 let automaticSpeakerEnabled = runtimeState.speakerEnabled;
 
 const ttsBackend = createTtsBackend(env, app.log);
@@ -157,14 +165,9 @@ const speakerRuntime = createSpeakerRuntime({
 });
 const assistantRuntime = createAssistantRuntime({
   enabled: env.ASSISTANT_ENABLED,
-  provider: env.ASSISTANT_PROVIDER,
-  baseUrl: env.ASSISTANT_BASE_URL,
-  model: env.ASSISTANT_MODEL,
-  apiKey: env.ASSISTANT_API_KEY,
+  profiles: assistantProfiles,
+  preferredProfile: resolveAssistantProfile(runtimeState.assistantProfile, assistantProfiles) ?? configuredAssistantProfile,
   timeZone: env.ASSISTANT_TIME_ZONE,
-  timeoutMs: env.ASSISTANT_TIMEOUT_MS,
-  maxOutputTokens: env.ASSISTANT_MAX_OUTPUT_TOKENS,
-  maxReplyChars: env.ASSISTANT_MAX_REPLY_CHARS,
   runtimeContext: ({ deviceId }) => {
     const device = devices.get(deviceId);
     const connected = device?.ws?.readyState === WebSocket.OPEN;
@@ -409,6 +412,9 @@ const TELEGRAM_COMMANDS = [
   { command: "clock", description: "Toggle clock" },
   { command: "voice", description: "Toggle voice" },
   { command: "vs", description: "Voice status" },
+  { command: "profile", description: "Assistant profile status" },
+  { command: "profile_lfm", description: "Use LFM assistant" },
+  { command: "profile_qwen", description: "Use Qwen assistant" },
   { command: "speaker", description: "Toggle speaker" },
   { command: "volume", description: "Set speaker volume" },
   { command: "mute", description: "Toggle mute" },
@@ -732,6 +738,11 @@ const primaryModeHandlers = createPrimaryModeHandlers({
     bufferBytes: 24_576,
   },
   getAssistantInfo: () => ({ ...assistantTurnRuntime.getTelemetry(), speakerEnabled: automaticSpeakerEnabled }),
+  setAssistantProfile: async (profile) => {
+    const telemetry = await assistantRuntime.setPreferredProfile(profile);
+    await runtimeState.setAssistantProfile(telemetry.preferred_profile);
+    return telemetry;
+  },
 });
 
 if (env.TELEGRAM_BOT_TOKEN) {
@@ -781,6 +792,9 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command("clock", primaryModeHandlers.clock);
   bot.command(["voice", "v"], primaryModeHandlers.voice);
   bot.command("vs", primaryModeHandlers.voiceStatus);
+  bot.command("profile", primaryModeHandlers.profile);
+  bot.command("profile_lfm", (ctx) => primaryModeHandlers.profile(ctx, "lfm"));
+  bot.command("profile_qwen", (ctx) => primaryModeHandlers.profile(ctx, "qwen"));
   bot.command("speaker", primaryModeHandlers.speaker);
   bot.command("volume", primaryModeHandlers.volume);
   bot.command("mute", primaryModeHandlers.mute);
@@ -923,8 +937,11 @@ app.log.info({
   voice_sherpa_model: env.VOICE_ASR_BACKEND === "sherpa" ? env.VOICE_SHERPA_MODEL : null,
   voice_live_test_mode: env.VOICE_LIVE_TEST_MODE,
   assistant_enabled: env.ASSISTANT_ENABLED,
-  assistant_provider: env.ASSISTANT_PROVIDER,
-  assistant_model: env.ASSISTANT_ENABLED ? env.ASSISTANT_MODEL : null,
+  assistant_preferred_profile: assistantStartup.preferred_profile,
+  assistant_effective_profile: assistantStartup.effective_profile,
+  assistant_fallback_active: assistantStartup.fallback_active,
+  assistant_provider: assistantStartup.provider,
+  assistant_model: assistantStartup.model,
   assistant_online: assistantStartup.online,
   telegram_enabled: Boolean(bot),
   device_auth_configured: Boolean(env.NEWO_DEVICE_SECRET),

@@ -52,6 +52,17 @@ export function formatVoiceStatus(voice, assistant = {}) {
   ]);
 }
 
+export function formatProfileStatus(assistant = {}) {
+  return message("profile", [
+    `Preferred: ${bold(assistant.preferred_profile ?? "n/a")}`,
+    `Effective: ${bold(assistant.effective_profile ?? "n/a")}`,
+    `Model: ${bold(assistant.model ?? "n/a")}`,
+    `Provider: ${bold(assistant.provider ?? "n/a")}`,
+    `Health: ${bold(String(assistant.online ?? "unknown").toUpperCase())}`,
+    `Fallback: ${bold(assistant.fallback_active ? `ON (${assistant.fallback_reason ?? "unavailable"})` : "OFF")}`,
+  ]);
+}
+
 export function formatSpeakerStatus({ enabled, ttsEnabled, backend, format, bufferBytes, device }) {
   return message("speaker", [
     `Speaker: ${bold(enabled ? "ON" : "OFF")}`,
@@ -121,6 +132,7 @@ export function createPrimaryModeHandlers({
   persistSpeakerEnabled,
   speakerInfo,
   getAssistantInfo = () => ({}),
+  setAssistantProfile = null,
 }) {
   const unavailable = (name, status) => message(name, [`Status: ${bold(status)}`]);
 
@@ -152,6 +164,20 @@ export function createPrimaryModeHandlers({
     const result = await request.promise;
     if (result.kind === "response") return commandReply(ctx, formatVoiceStatus(result.message, getAssistantInfo()), "response", request.requestId, { newoSpeak: false });
     return commandReply(ctx, unavailable("voice", result.kind === "timeout" ? "No reply" : "offline"), result.kind, request.requestId, { newoSpeak: false });
+  }
+
+  async function profile(ctx, forcedProfile = null) {
+    const requested = forcedProfile ?? String(ctx.match ?? "").trim();
+    if (requested) {
+      if (!setAssistantProfile) return commandReply(ctx, unavailable("profile", "Unavailable"), "unavailable", null, { newoSpeak: false });
+      try {
+        const telemetry = await setAssistantProfile(requested);
+        return commandReply(ctx, formatProfileStatus(telemetry), "response", null, { newoSpeak: false });
+      } catch {
+        return commandReply(ctx, message("profile", ["Usage: /profile [lfm|qwen]"]), "usage", null, { newoSpeak: false });
+      }
+    }
+    return commandReply(ctx, formatProfileStatus(getAssistantInfo()), "response", null, { newoSpeak: false });
   }
 
   let speakerToggleQueue = Promise.resolve();
@@ -236,5 +262,5 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, formatMuteStatus(status.device), status.device.applied === false ? "device_error" : "response", status.request.requestId, { newoSpeak: false });
   }
 
-  return { voice, voiceStatus, speaker, eco, clock, volume, mute };
+  return { voice, voiceStatus, profile, speaker, eco, clock, volume, mute };
 }
