@@ -124,4 +124,13 @@ static_assert((VOICE_PRECONNECT_BUFFER_MS % AUDIO_FRAME_DURATION_MS) == 0,
 constexpr size_t VOICE_PRECONNECT_BUFFER_FRAMES = VOICE_PRECONNECT_BUFFER_MS / AUDIO_FRAME_DURATION_MS;
 constexpr size_t VOICE_PRECONNECT_BUFFER_BYTES = VOICE_PRECONNECT_BUFFER_FRAMES * AUDIO_FRAME_BYTES;
 
+// STREAMING-only microphone cleanup. WakeNet keeps using the proven ESP_SR path.
+// WebRTC NS runs on the existing 20 ms / 16 kHz PCM frames. AGC stays off until
+// physical A/B testing shows that level normalization is actually needed.
+constexpr bool VOICE_WEBRTC_NS_ENABLED = true;
+constexpr int8_t VOICE_WEBRTC_NS_MODE = 1;  // 0 mild, 1 medium, 2 aggressive.
+constexpr bool VOICE_WEBRTC_AGC_ENABLED = false;
+static_assert(AUDIO_FRAME_DURATION_MS == 20, "voice WebRTC NS is validated for 20 ms frames");
+static_assert(VOICE_WEBRTC_NS_MODE >= 0 && VOICE_WEBRTC_NS_MODE <= 2, "invalid WebRTC NS mode");
+
 }  // namespace NewoConfig
