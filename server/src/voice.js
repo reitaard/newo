@@ -213,9 +213,9 @@ export class WorkerAsrBackend {
       this.logger?.info({
         event: "SHERPA_READY",
         startup_ms: startupMs,
-        endpoint_rule1_s: this.options.endpointRule1MinTrailingSilence ?? 2.0,
-        endpoint_rule2_s: this.options.endpointRule2MinTrailingSilence ?? 1.0,
-        endpoint_rule3_s: this.options.endpointRule3MinUtteranceLength ?? 20,
+        endpoint_rule1_s: message.endpointRule1MinTrailingSilence ?? this.options.endpointRule1MinTrailingSilence ?? 2.0,
+        endpoint_rule2_s: message.endpointRule2MinTrailingSilence ?? this.options.endpointRule2MinTrailingSilence ?? 1.0,
+        endpoint_rule3_s: message.endpointRule3MinUtteranceLength ?? this.options.endpointRule3MinUtteranceLength ?? 20,
       }, "SHERPA_READY");
       return;
     }
