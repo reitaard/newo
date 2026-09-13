@@ -120,13 +120,25 @@ function normalizedIntent(value) {
     .trim();
 }
 
+function isDirectCurrentTimeIntent(value) {
+  const text = normalizedIntent(value);
+  let intent = text.replace(/\s+(?:with|including|and) seconds?$/, "");
+  const pattern = /^(?:please\s+)?(?:(?:can|could|would) you (?:please )?)?(?:what time is it|what(?:'s| is) the time|tell me (?:what time (?:it is|is it)|the time)|give me (?:the )?(?:current )?time|current time)(?: right now| now| please)?$/;
+  if (pattern.test(intent)) return true;
+  const withoutVocative = intent.replace(/\s+[a-z][a-z'-]*$/, "");
+  return withoutVocative !== intent && pattern.test(withoutVocative);
+}
+
 function shouldUseTimeContext(value) {
   const text = normalizedIntent(value);
+  if (isDirectCurrentTimeIntent(text)) return true;
   return [
     /\bwhat time\b/,
     /\btime is it\b/,
     /\bwhat(?:'s| is) the time\b/,
     /\bcurrent time\b/,
+    /\b(?:tell|give) me (?:the )?(?:current )?time\b/,
+    /\b(?:can|could|would) you (?:please )?(?:tell|give) me (?:the )?(?:current )?time\b/,
     /\bwhat(?:'s| is) the (?:date|day)\b/,
     /\bwhat (?:date|day) is it\b/,
     /\bcurrent date\b/,
@@ -149,10 +161,8 @@ function clockNumber(value) {
 
 export function directClockShortcut(value, date, timeZone = DEFAULT_ASSISTANT_TIME_ZONE) {
   const text = normalizedIntent(value);
-  if (!shouldUseTimeContext(text)) return null;
+  if (!isDirectCurrentTimeIntent(text)) return null;
   const wantsSeconds = /\bseconds?\b/.test(text);
-  const intent = text.replace(/\s+(?:with|including|and) seconds?$/, "");
-  if (!/^(?:what time is it|what(?:'s| is) the time|current time)(?: now| please)?$/.test(intent)) return null;
   const now = date instanceof Date ? date : new Date(date);
   if (Number.isNaN(now.getTime())) throw new RangeError("assistant clock returned an invalid date");
   let parts;
@@ -191,6 +201,10 @@ function shouldUseHistory(value) {
     /^(can you )?explain that$/,
     /^(make|shorten|expand|summarize|explain) (that|it|your last answer|the last answer)\b/,
     /^(and|also|then)\b/,
+    /\bwhat did i (?:just )?(?:ask|say)(?: you)?(?: (?:last time|before|previously))?\b/,
+    /\bwhat was my (?:last|previous) (?:question|message)\b/,
+    /\bwhat did you (?:just )?(?:say|tell)(?: me)?(?: (?:last time|before|previously))?\b/,
+    /\bwhat was your (?:last|previous) (?:answer|reply|response)\b/,
   ].some((pattern) => pattern.test(text));
 }
 
@@ -198,13 +212,13 @@ function memoryShortcut(value, exchanges) {
   const text = normalizedIntent(value);
   const last = exchanges.at(-1);
 
-  if (/^(what did i (just )?(ask|say)( you)?|what was my (last|previous) (question|message))$/.test(text)) {
+  if (/^(what did i (?:just )?(?:ask|say)(?: you)?(?: (?:last time|before|previously))?|what was my (?:last|previous) (?:question|message))$/.test(text)) {
     return last
       ? { route: "memory_user", text: `You just asked: ${last.user}` }
       : { route: "memory_user", text: "I don't have an earlier question in this session." };
   }
 
-  if (/^(what did you (just )?(say|tell)( me)?|what was your (last|previous) (answer|reply|response))$/.test(text)) {
+  if (/^(what did you (?:just )?(?:say|tell)(?: me)?(?: (?:last time|before|previously))?|what was your (?:last|previous) (?:answer|reply|response))$/.test(text)) {
     return last
       ? { route: "memory_assistant", text: `I just said: ${last.assistant}` }
       : { route: "memory_assistant", text: "I haven't given an earlier answer in this session." };
@@ -574,6 +588,8 @@ export function createAssistantRuntime({
         history_used: 0,
         prompt_chars: 0,
         route: shortcut.route,
+        time_context: shortcut.route === "local_time",
+        runtime_context: false,
         preferred_profile: preferredId,
         effective_profile: effectiveId,
         fallback_active: preferredId !== effectiveId,
