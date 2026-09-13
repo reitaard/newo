@@ -29,6 +29,7 @@ function createHarness(sendDeviceRequest, overrides = {}) {
     getAssistantTuning: overrides.getAssistantTuning,
     setAssistantTuningPreset: overrides.setAssistantTuningPreset,
     setAssistantTuningValue: overrides.setAssistantTuningValue,
+    setAssistantSystemPrompt: overrides.setAssistantSystemPrompt,
     getTrackDesired: () => trackDesired,
     persistTrackDesired: async (enabled) => { trackDesired = enabled; return enabled; },
     renderTrackSnapshot: ({ debug, transient } = {}) => debug ? "DEBUG PANEL" : transient ? "STARTING PANEL" : "STATUS PANEL",
@@ -209,6 +210,24 @@ test("/p hidden direct tuning accepts short aliases and rejects invalid values",
   await harness.handlers.profile({ match: "set maxchars 280" });
   assert.deepEqual(selected, [["topk", "60"], ["maxchars", "280"]]);
   assert.ok(harness.replies.every((reply) => reply.options.newoSpeak === false));
+});
+
+test("/p s sysprompt accepts the next message or /cancel", async () => {
+  const saved = [];
+  const tuning = { id: "lfm2.5:8b", temperature: 0.2, top_k: 80, repeat_penalty: 1.05, max_tokens: 64, max_chars: 300, timeout_ms: 15_000, system_prompt: "New prompt." };
+  const harness = createHarness(() => ({ kind: "offline" }), {
+    setAssistantSystemPrompt: async (prompt) => { saved.push(prompt); return tuning; },
+  });
+  const ctx = { match: "s sysprompt", chat: { id: 7 }, from: { id: 9 } };
+  await harness.handlers.profile(ctx);
+  assert.match(harness.replies[0].text, /Send the new system prompt now, or use \/cancel/);
+  assert.equal(await harness.handlers.profilePromptInput({ ...ctx, message: { text: "New prompt." } }), true);
+  assert.deepEqual(saved, ["New prompt."]);
+  assert.match(harness.replies[1].text, /<i>System prompt:<\/i>\n<blockquote>New prompt\.<\/blockquote>/);
+  await harness.handlers.profile(ctx);
+  await harness.handlers.cancelProfilePrompt(ctx);
+  assert.equal(await harness.handlers.profilePromptInput({ ...ctx, message: { text: "Must not save." } }), false);
+  assert.deepEqual(saved, ["New prompt."]);
 });
 
 test("/speaker toggles OFF with terse non-spoken confirmation", async () => {

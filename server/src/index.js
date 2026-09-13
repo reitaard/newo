@@ -834,6 +834,17 @@ const primaryModeHandlers = createPrimaryModeHandlers({
     assistantRuntime.replaceProfile(profiles[id]);
     return assistantRuntime.getPreferredProfileConfig();
   },
+  setAssistantSystemPrompt: async (systemPrompt) => {
+    const id = assistantRuntime.getTelemetry().preferred_profile;
+    const tuning = normalizeProfileTuning({ system_prompt: systemPrompt });
+    if (!Object.hasOwn(tuning, "system_prompt")) throw new Error("invalid system prompt");
+    const nextOverrides = { ...assistantProfileOverrides, [id]: { ...(assistantProfileOverrides[id] ?? {}), ...tuning } };
+    const profiles = createAssistantProfiles({ qwenApiKey: env.ASSISTANT_API_KEY, overrides: nextOverrides });
+    await runtimeState.setAssistantProfileOverrides(nextOverrides);
+    assistantProfileOverrides = nextOverrides;
+    assistantRuntime.replaceProfile(profiles[id]);
+    return assistantRuntime.getPreferredProfileConfig();
+  },
 });
 
 if (env.TELEGRAM_BOT_TOKEN) {
@@ -891,10 +902,12 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["profile_tune", "pt"], primaryModeHandlers.profileTune);
   bot.command("p_conf", (ctx) => primaryModeHandlers.profileTune(ctx, ""));
   bot.command("p_reset", (ctx) => primaryModeHandlers.profileTune(ctx, "reset"));
+  bot.command("cancel", primaryModeHandlers.cancelProfilePrompt);
   bot.command("speaker", primaryModeHandlers.speaker);
   bot.command("volume", primaryModeHandlers.volume);
   bot.command("mute", primaryModeHandlers.mute);
   bot.command(["speak", "sp"], handleSpeakCommand);
+  bot.on("message:text", async (ctx) => { await primaryModeHandlers.profilePromptInput(ctx); });
   void bot.api.setMyCommands(TELEGRAM_COMMANDS).catch(() => app.log.warn("Failed to register the Telegram command menu"));
   const telegramUpdates = createTelegramUpdateAcceptor({
     handleUpdate: (update) => bot.handleUpdate(update),

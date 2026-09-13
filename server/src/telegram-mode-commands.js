@@ -64,7 +64,7 @@ export function formatProfileStatus(assistant = {}) {
 }
 
 export function formatProfileTuning(tuning = {}) {
-  return message("profile tuning", [
+  return `${title("profile tuning:")}\n${quote([
     `Profile: ${bold(tuning.id ?? "n/a")}`,
     `Temperature: ${bold(tuning.temperature ?? "n/a")}`,
     `Top K: ${bold(tuning.top_k ?? "n/a")}`,
@@ -73,7 +73,7 @@ export function formatProfileTuning(tuning = {}) {
     `Output: ${bold(`${tuning.max_tokens ?? "n/a"} tokens / ${tuning.max_chars ?? "n/a"} chars`)}`,
     `Timeout: ${bold(timing(tuning.timeout_ms))}`,
     `Preset: ${bold("/pt fast | balanced | quality | reset")}`,
-  ]);
+  ])}\n${italic("System prompt:")}\n${quote([escapeHtml(tuning.system_prompt ?? "n/a")])}`;
 }
 
 export function formatSpeakerStatus({ enabled, ttsEnabled, backend, format, bufferBytes, device }) {
@@ -156,6 +156,7 @@ export function createPrimaryModeHandlers({
   getAssistantTuning = () => ({}),
   setAssistantTuningPreset = null,
   setAssistantTuningValue = null,
+  setAssistantSystemPrompt = null,
   getTrackDesired = () => false,
   persistTrackDesired = async () => false,
   handleTrackCommandResult = () => {},
@@ -165,6 +166,8 @@ export function createPrimaryModeHandlers({
   hasTrackLive = () => false,
 }) {
   const unavailable = (name, status) => message(name, [`Status: ${bold(status)}`]);
+  const pendingSystemPrompts = new Set();
+  const promptEditorKey = (ctx) => `${ctx.chat?.id ?? "chat"}:${ctx.from?.id ?? "user"}`;
 
   async function requestSpeakerStatus(ctx, action = null, fields = {}) {
     const request = action
@@ -198,6 +201,10 @@ export function createPrimaryModeHandlers({
 
   async function profile(ctx, forcedProfile = null) {
     const requested = forcedProfile ?? String(ctx.match ?? "").trim();
+    if (/^(?:set|s)\s+sysprompt$/i.test(requested)) {
+      pendingSystemPrompts.add(promptEditorKey(ctx));
+      return commandReply(ctx, `${title("system prompt:")}\n${quote(["Send the new system prompt now, or use /cancel."])}`, "prompt", null, { newoSpeak: false });
+    }
     const setting = requested.match(/^(?:set|s)\s+(topk|topp|maxtoken|maxchars|timeout|rpenalty|temp)\s+([^\s]+)$/i);
     if (setting) {
       if (!setAssistantTuningValue) return commandReply(ctx, unavailable("profile tuning", "Unavailable"), "unavailable", null, { newoSpeak: false });
@@ -217,6 +224,26 @@ export function createPrimaryModeHandlers({
       }
     }
     return commandReply(ctx, formatProfileStatus(getAssistantInfo()), "response", null, { newoSpeak: false });
+  }
+
+  async function profilePromptInput(ctx) {
+    const key = promptEditorKey(ctx);
+    if (!pendingSystemPrompts.has(key)) return false;
+    const prompt = String(ctx.message?.text ?? "").trim();
+    if (!prompt || prompt.startsWith("/")) return false;
+    pendingSystemPrompts.delete(key);
+    try {
+      const tuning = await setAssistantSystemPrompt(prompt);
+      await commandReply(ctx, formatProfileTuning(tuning), "response", null, { newoSpeak: false });
+    } catch {
+      await commandReply(ctx, unavailable("system prompt", "State could not be saved"), "persistence_error", null, { newoSpeak: false });
+    }
+    return true;
+  }
+
+  async function cancelProfilePrompt(ctx) {
+    const cancelled = pendingSystemPrompts.delete(promptEditorKey(ctx));
+    return commandReply(ctx, cancelled ? "System prompt edit cancelled." : "Nothing to cancel.", cancelled ? "cancelled" : "response", null, { newoSpeak: false });
   }
 
   async function profileTune(ctx, forcedPreset = null) {
@@ -402,5 +429,5 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, formatMuteStatus(status.device), status.device.applied === false ? "device_error" : "response", status.request.requestId, { newoSpeak: false });
   }
 
-  return { voice, voiceStatus, profile, profileTune, speaker, eco, clock, track, trackBackground, volume, mute };
+  return { voice, voiceStatus, profile, profileTune, profilePromptInput, cancelProfilePrompt, speaker, eco, clock, track, trackBackground, volume, mute };
 }

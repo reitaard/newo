@@ -38,6 +38,10 @@ export const PROFILE_TUNING_PRESETS = Object.freeze({
 
 export function normalizeProfileTuning(input = {}) {
   const tuning = {};
+  if (typeof input?.system_prompt === "string") {
+    const prompt = input.system_prompt.trim();
+    if (prompt.length >= 1 && prompt.length <= 2_000) tuning.system_prompt = prompt;
+  }
   for (const [key, value] of Object.entries(input ?? {})) {
     const bounds = TUNING_RULES[key];
     if (!bounds || typeof value !== "number" || !Number.isFinite(value) || value < bounds[0] || value > bounds[1]) continue;
@@ -54,6 +58,7 @@ export function profileTuning(profile) {
     ...(profile.sampling.top_p == null ? {} : { top_p: profile.sampling.top_p }),
     ...(profile.sampling.repeat_penalty == null ? {} : { repeat_penalty: profile.sampling.repeat_penalty }),
     max_tokens: profile.maxOutputTokens, max_chars: profile.maxReplyChars, timeout_ms: profile.timeoutMs,
+    system_prompt: profile.systemPrompt,
   };
 }
 
@@ -62,6 +67,7 @@ function applyTuning(profile, input) {
   const sampling = { ...profile.sampling };
   for (const key of ["temperature", "top_k", "top_p", "repeat_penalty"]) if (key in tuning) sampling[key] = tuning[key];
   return Object.freeze({ ...profile, sampling: Object.freeze(sampling),
+    systemPrompt: tuning.system_prompt ?? profile.systemPrompt,
     maxOutputTokens: tuning.max_tokens ?? profile.maxOutputTokens,
     maxReplyChars: tuning.max_chars ?? profile.maxReplyChars,
     timeoutMs: tuning.timeout_ms ?? profile.timeoutMs });

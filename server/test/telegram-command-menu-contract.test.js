@@ -63,6 +63,8 @@ test("Telegram menu exposes core controls, semantic faces, and composed reaction
   assert.match(server, /bot\.command\(\["profile_tune", "pt"\], primaryModeHandlers\.profileTune\)/);
   assert.match(server, /bot\.command\("p_conf",/);
   assert.match(server, /bot\.command\("p_reset",/);
+  assert.match(server, /bot\.command\("cancel", primaryModeHandlers\.cancelProfilePrompt\)/);
+  assert.match(server, /bot\.on\("message:text"/);
   assert.match(server, /bot\.command\(\["ping", "pi"\], handlePingCommand\)/);
   assert.match(server, /for \(const reaction of REACTION_NAMES\) bot\.command\(`reaction_\$\{reaction\}`/);
   assert.match(server, /const steps = \[[\s\S]*mode: preset\.face[\s\S]*mode: "effect"[\s\S]*mode: "caption"/);

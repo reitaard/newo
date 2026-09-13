@@ -12,10 +12,12 @@ test("assistant profile aliases resolve to stable short IDs", () => {
 });
 
 test("profile tuning presets override only the selected profile", () => {
-  const profiles = createAssistantProfiles({ overrides: { [LFM_PROFILE_ID]: { max_tokens: 48, max_chars: 240, timeout_ms: 10_000 } } });
+  const profiles = createAssistantProfiles({ overrides: { [LFM_PROFILE_ID]: { max_tokens: 48, max_chars: 240, timeout_ms: 10_000, system_prompt: "Custom LFM prompt." } } });
   assert.equal(profiles[LFM_PROFILE_ID].maxOutputTokens, 48);
   assert.equal(profiles[LFM_PROFILE_ID].maxReplyChars, 240);
   assert.equal(profiles[LFM_PROFILE_ID].timeoutMs, 10_000);
+  assert.equal(profiles[LFM_PROFILE_ID].systemPrompt, "Custom LFM prompt.");
+  assert.equal(profiles[QWEN_PROFILE_ID].systemPrompt, QWEN_SYSTEM_PROMPT);
   assert.equal(profiles[QWEN_PROFILE_ID].maxOutputTokens, 72);
   assert.deepEqual(profiles[QWEN_PROFILE_ID].sampling, { temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0 });
 });
