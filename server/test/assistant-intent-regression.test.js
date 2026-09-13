@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createAssistantRuntime, directClockShortcut } from "../src/assistant.js";
+import { createAssistantTurnRuntime } from "../src/assistant-turn.js";
 
 const quietLogger = { info() {}, warn() {} };
 
@@ -74,4 +75,30 @@ test("combined previous-question requests include the latest exchange", async ()
   assert.deepEqual(requests[1].messages.map((message) => message.role), ["system", "user", "assistant", "user"]);
   assert.equal(requests[1].messages[1].content, "Tell me something about Bermuda Triangle");
   assert.equal(requests[1].messages[2].content, "Bermuda answer.");
+});
+
+test("assistant turn preserves a profile-bounded reply longer than the legacy turn cap", async () => {
+  const text = "A".repeat(420);
+  let spoken = null;
+  let options = null;
+  const assistant = {
+    async respond() { return { kind: "response", text, timings: { llm_request_ms: 1 } }; },
+    abortDevice() {}, close() {},
+  };
+  const speakerRuntime = {
+    speak(value, supplied) {
+      spoken = value;
+      options = supplied;
+      return { kind: "queued", playbackId: "playback", completion: Promise.resolve({ kind: "complete" }) };
+    },
+  };
+  const turns = createAssistantTurnRuntime({
+    assistant, speakerRuntime, isPersistentSpeakerEnabled: () => true,
+    maxReplyChars: 300, logger: quietLogger,
+  });
+
+  const started = turns.handleFinalTranscript({ deviceId: "newo-01", streamId: "long-reply", text: "summary" });
+  assert.equal((await started.completion).kind, "complete");
+  assert.equal(spoken, text);
+  assert.equal(options.maxChars, 420);
 });
