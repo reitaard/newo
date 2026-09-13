@@ -255,6 +255,7 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("display_ack"), request_id: z.string().optional(), mode: z.string().max(16) }).passthrough(),
   z.object({ type: z.literal("clock_ack"), request_id: z.string(), enabled: z.boolean(), applied: z.boolean() }).passthrough(),
+  z.object({ type: z.literal("usb_ack"), request_id: z.string(), host: z.boolean(), audio: z.boolean(), storage: z.boolean(), vcp: z.boolean(), active: z.boolean(), applied: z.boolean(), reboot_required: z.boolean(), trial_pending: z.boolean() }).passthrough(),
   z.object({ type: z.literal("track_ack"), request_id: z.string(), command_epoch: z.string(), command_sequence: z.number().int().positive(), state: z.enum(["off", "active"]), applied: z.boolean(), duplicate: z.boolean().optional(), peer_state: z.enum(["active", "stopped", "uncertain", "unavailable", "unknown"]).optional(), collector_source: z.enum(["configured", "discovered", "override"]).optional(), error: z.string().optional() }).passthrough(),
   z.object({ type: z.literal("speaker_ack"), request_id: z.string(), enabled: z.boolean(), connection: z.enum(["Ready", "Connecting", "Disconnected"]), volume: z.number().int().min(0).max(100), muted: z.boolean(), applied: z.boolean(), last_playback: z.enum(["None", "Playing", "Complete", "Failed"]), underruns: z.number().int().nonnegative(), overflows: z.number().int().nonnegative(), buffer_bytes: z.number().int().positive() }).passthrough(),
   z.object({ type: z.literal("speaker_started"), playback_id: z.string().uuid(), first_pcm_to_play_ms: z.number().int().nonnegative() }).passthrough(),
@@ -489,6 +490,7 @@ const TELEGRAM_COMMANDS = [
   { command: "reaction_tsk", description: "Unimpressed Tsk! reaction" },
   { command: "eco", description: "Toggle eco display" },
   { command: "clock", description: "Toggle clock" },
+  { command: "usb", description: "USB configuration" },
   { command: "voice", description: "Toggle voice" },
   { command: "vs", description: "Voice status" },
   { command: "profile", description: "Assistant profile status" },
@@ -922,6 +924,15 @@ if (env.TELEGRAM_BOT_TOKEN) {
   for (const reaction of REACTION_NAMES) bot.command(`reaction_${reaction}`, (ctx) => handleReactionCommand(ctx, reaction));
   bot.command("eco", primaryModeHandlers.eco);
   bot.command("clock", primaryModeHandlers.clock);
+  bot.command(["usb", "u"], (ctx) => primaryModeHandlers.usb(ctx));
+  bot.command(["usb_on", "u_on"], (ctx) => primaryModeHandlers.usb(ctx, "on"));
+  bot.command(["usb_off", "u_off"], (ctx) => primaryModeHandlers.usb(ctx, "off"));
+  bot.command(["usb_audio_on", "u_a_on"], (ctx) => primaryModeHandlers.usb(ctx, "a on"));
+  bot.command(["usb_audio_off", "u_a_off"], (ctx) => primaryModeHandlers.usb(ctx, "a off"));
+  bot.command(["usb_storage_on", "u_s_on"], (ctx) => primaryModeHandlers.usb(ctx, "s on"));
+  bot.command(["usb_storage_off", "u_s_off"], (ctx) => primaryModeHandlers.usb(ctx, "s off"));
+  bot.command(["usb_vcp_on", "u_v_on"], (ctx) => primaryModeHandlers.usb(ctx, "v on"));
+  bot.command(["usb_vcp_off", "u_v_off"], (ctx) => primaryModeHandlers.usb(ctx, "v off"));
   bot.command("track", primaryModeHandlers.track);
   bot.command("track_bg", primaryModeHandlers.trackBackground);
   bot.command(["voice", "v"], primaryModeHandlers.voice);

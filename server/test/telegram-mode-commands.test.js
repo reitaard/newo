@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createPrimaryModeHandlers, parseClockArgument, parseTrackArgument, parseVolumeArgument } from "../src/telegram-mode-commands.js";
+import { createPrimaryModeHandlers, parseClockArgument, parseTrackArgument, parseUsbArgument, parseVolumeArgument } from "../src/telegram-mode-commands.js";
 
 function response(message) {
   return { kind: "sent", requestId: "request-1", promise: Promise.resolve({ kind: "response", message }) };
@@ -54,6 +54,28 @@ test("/track parser accepts toggle, explicit state, status, and debug", () => {
   assert.deepEqual(parseTrackArgument("status"), { kind: "status" });
   assert.deepEqual(parseTrackArgument("debug"), { kind: "debug" });
   assert.deepEqual(parseTrackArgument("maybe"), { kind: "invalid" });
+});
+
+test("/usb aliases resolve real host and granular client controls", () => {
+  assert.deepEqual(parseUsbArgument(""), { action: "status" });
+  assert.deepEqual(parseUsbArgument("on"), { action: "host", enabled: true });
+  assert.deepEqual(parseUsbArgument("a off"), { action: "audio", enabled: false });
+  assert.deepEqual(parseUsbArgument("storage_on"), { action: "storage", enabled: true });
+  assert.deepEqual(parseUsbArgument("v off"), { action: "vcp", enabled: false });
+  assert.equal(parseUsbArgument("fake on"), null);
+});
+
+test("/usb sends granular control and renders acknowledged firmware state", async () => {
+  const requests = [];
+  const harness = createHarness((type, responseType, fields) => {
+    requests.push({ type, responseType, fields });
+    return response({ type: "usb_ack", host: true, audio: true, storage: false, vcp: false,
+      active: false, applied: true, reboot_required: true, trial_pending: true });
+  });
+  await harness.handlers.usb({ match: "a on" });
+  assert.deepEqual(requests[0], { type: "usb_control", responseType: "usb_ack", fields: { action: "audio", enabled: true } });
+  assert.match(harness.replies[0].text, /VCP\/Nano/);
+  assert.match(harness.replies[0].text, /REBOOTING/);
 });
 
 test("/track starts one live panel and persists desired state", async () => {

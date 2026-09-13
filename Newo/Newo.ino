@@ -7,6 +7,7 @@
 #include "newo_display.h"
 #include "newo_log.h"
 #include "newo_led.h"
+#include "newo_memory_diagnostics.h"
 #include "newo_physical_voice.h"
 #include "newo_portal.h"
 #include "newo_speaker.h"
@@ -94,35 +95,46 @@ void setup() {
   newoCloud.begin();
   newoAudio.begin();
   newoSpeaker.begin();
+  NewoMemoryDiagnostics::log("BEFORE_USB_SETUP");
 
   // Install one physical host first, register every independent client while
   // enumeration is still stopped, then start the shared event pump. A D07,
   // flash drive or Arduino already plugged into the hub at power-on therefore
   // cannot race past a client that has not registered yet.
-  if (!newoUsbHost.begin()) {
-    Serial.println("[usb-host] HOST_FAILED — reason=startup");
+  if (!newoStorage.usbHostEnabled()) {
+    Serial.println("[usb-host] HOST_DISABLED — memory isolation");
   } else {
-    if (!newoUsbAudio.begin(newoUsbHost)) {
-      Serial.println("[usb-uac2] CLIENT_FAILED — reason=startup");
-    }
-    if (!newoUsbStorage.begin(newoUsbHost)) {
-      Serial.println("[usb-storage] CLIENT_FAILED — reason=startup");
-    }
-    if (!newoUsbVcp.begin(newoUsbHost)) {
-      Serial.println("[usb-vcp] CLIENT_FAILED — reason=startup");
-    } else if (!newoArduinoNode.begin(newoUsbVcp)) {
-      Serial.println("[arduino] START_FAILED — reason=startup");
-    }
-    if (!newoUsbHost.start()) {
-      Serial.println("[usb-host] HOST_FAILED — reason=event_pump");
+    if (!newoUsbHost.begin()) {
+      Serial.println("[usb-host] HOST_FAILED — reason=startup");
+    } else {
+      if (newoStorage.usbAudioEnabled() && !newoUsbAudio.begin(newoUsbHost)) {
+        Serial.println("[usb-uac2] CLIENT_FAILED — reason=startup");
+      }
+      if (newoStorage.usbStorageEnabled() && !newoUsbStorage.begin(newoUsbHost)) {
+        Serial.println("[usb-storage] CLIENT_FAILED — reason=startup");
+      }
+      if (newoStorage.usbVcpEnabled()) {
+        if (!newoUsbVcp.begin(newoUsbHost)) {
+          Serial.println("[usb-vcp] CLIENT_FAILED — reason=startup");
+        } else if (!newoArduinoNode.begin(newoUsbVcp)) {
+          Serial.println("[arduino] START_FAILED — reason=startup");
+        }
+      }
+      if (!newoUsbHost.start()) {
+        Serial.println("[usb-host] HOST_FAILED — reason=event_pump");
+      }
     }
   }
+  NewoMemoryDiagnostics::log("AFTER_USB_SETUP");
 
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::BOOT, "BOOT_READY");
   newoCloud.recordStack("after boot");
 }
 
 void loop() {
+  static uint32_t usbRebootAtMs = 0;
+  static uint32_t usbTrialDeadlineMs = millis() + 30'000;
+  if (usbRebootAtMs && static_cast<int32_t>(millis() - usbRebootAtMs) >= 0) ESP.restart();
   struct VoiceAck { char requestId[40]; bool applied; };
   struct SpeakerAck { char requestId[40]; bool targetEnabled; bool applied; bool ledFeedback; uint32_t startedMs; };
   static VoiceAck pendingVoiceAcks[8] = {};
@@ -131,11 +143,23 @@ void loop() {
   static uint8_t pendingSpeakerAckCount = 0;
   NewoCloud::VoiceRequest voiceRequest;
   NewoCloud::SpeakerControlRequest speakerControlRequest;
+  NewoCloud::UsbControlRequest usbControlRequest;
   NewoSpeaker::PlaybackStarted speakerStarted;
   NewoSpeaker::Result speakerResult;
   newoWiFi.loop();
   newoPortal.loop();
   newoCloud.loop();
+  if (newoStorage.usbTrialPending()) {
+    if (newoCloud.ready()) {
+      newoStorage.setUsbTrialPending(false);
+      Serial.println("[usb-host] TRIAL_CONFIRMED — cloud authenticated");
+    } else if (static_cast<int32_t>(millis() - usbTrialDeadlineMs) >= 0) {
+      newoStorage.setUsbHostEnabled(false);
+      newoStorage.setUsbTrialPending(false);
+      Serial.println("[usb-host] TRIAL_ROLLBACK — cloud unavailable");
+      usbRebootAtMs = millis() + NewoConfig::REMOTE_REBOOT_DELAY_MS;
+    }
+  }
   newoLed.setProvisioning(newoWiFi.provisioningActive());
   newoLed.setConnectivity(newoWiFi.connected() && newoCloud.connected());
   switch (newoWiFi.consumeLedEvent()) {
@@ -236,6 +260,35 @@ void loop() {
                                applied, newoSpeaker.lastPlayback(), newoSpeaker.lastUnderruns(),
                                newoSpeaker.lastOverflows());
     }
+  }
+  while (newoCloud.consumeUsbControlRequest(usbControlRequest)) {
+    const bool active = newoUsbHost.running();
+    bool changed = false, applied = true;
+    using UsbTarget = NewoCloud::UsbControlRequest::Target;
+    if (usbControlRequest.target == UsbTarget::HOST) {
+      changed = usbControlRequest.enabled != newoStorage.usbHostEnabled();
+      applied = !changed || newoStorage.setUsbHostEnabled(usbControlRequest.enabled);
+      if (applied && changed && usbControlRequest.enabled) applied = newoStorage.setUsbTrialPending(true);
+      if (applied && changed && !usbControlRequest.enabled) newoStorage.setUsbTrialPending(false);
+    } else if (usbControlRequest.target != UsbTarget::STATUS) {
+      bool current = usbControlRequest.target == UsbTarget::AUDIO ? newoStorage.usbAudioEnabled() :
+                     usbControlRequest.target == UsbTarget::STORAGE ? newoStorage.usbStorageEnabled() : newoStorage.usbVcpEnabled();
+      changed = current != usbControlRequest.enabled;
+      if (usbControlRequest.target == UsbTarget::AUDIO) applied = !changed || newoStorage.setUsbAudioEnabled(usbControlRequest.enabled);
+      else if (usbControlRequest.target == UsbTarget::STORAGE) applied = !changed || newoStorage.setUsbStorageEnabled(usbControlRequest.enabled);
+      else applied = !changed || newoStorage.setUsbVcpEnabled(usbControlRequest.enabled);
+      if (applied && usbControlRequest.enabled && !newoStorage.usbHostEnabled()) {
+        applied = newoStorage.setUsbHostEnabled(true) && newoStorage.setUsbTrialPending(true);
+        changed = true;
+      } else if (applied && changed && usbControlRequest.enabled) {
+        applied = newoStorage.setUsbTrialPending(true);
+      }
+    }
+    newoCloud.sendUsbAck(usbControlRequest.requestId, newoStorage.usbHostEnabled(),
+                         newoStorage.usbAudioEnabled(), newoStorage.usbStorageEnabled(),
+                         newoStorage.usbVcpEnabled(), active, applied, applied && changed,
+                         newoStorage.usbTrialPending());
+    if (applied && changed) usbRebootAtMs = millis() + NewoConfig::REMOTE_REBOOT_DELAY_MS;
   }
   newoAudio.loop();
   newoSpeaker.loop(newoCloud.connected());

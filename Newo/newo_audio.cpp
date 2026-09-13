@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "newo_log.h"
+#include "newo_memory_diagnostics.h"
 
 #if __has_include("newo_secrets.h")
 #include "newo_secrets.h"
@@ -52,7 +53,10 @@ void NewoAudio::releaseI2s() {
 bool NewoAudio::startWakeNet() {
   if (!enabled_ || playbackSuppressed_ || wakeNetRunning_) return wakeNetRunning_;
   if (!configureI2s()) return false;
-  if (!wakeEngine_.start(i2s_, srEvent)) {
+  NewoMemoryDiagnostics::log("BEFORE_WAKENET_START");
+  const bool started = wakeEngine_.start(i2s_, srEvent);
+  NewoMemoryDiagnostics::log("AFTER_WAKENET_START");
+  if (!started) {
     NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::AUDIO, "WAKENET_START_FAILED");
     releaseI2s();
     return false;
@@ -68,6 +72,7 @@ void NewoAudio::stopWakeNet() {
   // end waits for ESP_SR feed/detect tasks to stop, so I2S is not concurrently
   // read when the streaming task is created.
   wakeEngine_.stop();
+  NewoMemoryDiagnostics::log("AFTER_WAKENET_STOP");
   wakeNetRunning_ = false;
   releaseI2s();
 }

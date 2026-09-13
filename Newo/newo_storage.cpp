@@ -13,6 +13,11 @@ constexpr char kSpeakerVolumeKey[] = "speaker-vol";
 constexpr char kSpeakerMutedKey[] = "speaker-mute";
 constexpr char kSpeakerEnabledKey[] = "speaker-on";
 constexpr char kClockEnabledKey[] = "clock-on";
+constexpr char kUsbHostEnabledKey[] = "usb-host-on";
+constexpr char kUsbAudioEnabledKey[] = "usb-audio-on";
+constexpr char kUsbStorageEnabledKey[] = "usb-store-on";
+constexpr char kUsbVcpEnabledKey[] = "usb-vcp-on";
+constexpr char kUsbTrialPendingKey[] = "usb-trial";
 }
 
 bool NewoStorage::begin() {
@@ -31,6 +36,11 @@ bool NewoStorage::begin() {
   speakerMuted_ = preferences_.getBool(kSpeakerMutedKey, false);
   speakerEnabled_ = preferences_.getBool(kSpeakerEnabledKey, true);
   clockEnabled_ = preferences_.getBool(kClockEnabledKey, true);
+  usbHostEnabled_ = preferences_.getBool(kUsbHostEnabledKey, NewoConfig::USB_HOST_DEFAULT_ENABLED);
+  usbAudioEnabled_ = preferences_.getBool(kUsbAudioEnabledKey, true);
+  usbStorageEnabled_ = preferences_.getBool(kUsbStorageEnabledKey, false);
+  usbVcpEnabled_ = preferences_.getBool(kUsbVcpEnabledKey, false);
+  usbTrialPending_ = preferences_.getBool(kUsbTrialPendingKey, false);
   return loadNetworks();
 }
 
@@ -143,6 +153,25 @@ bool NewoStorage::setClockEnabled(bool enabled) {
   clockEnabled_ = enabled;
   return true;
 }
+
+bool NewoStorage::setUsbHostEnabled(bool enabled) {
+  if (!started_ || enabled == usbHostEnabled_) return started_;
+  if (preferences_.putBool(kUsbHostEnabledKey, enabled) != sizeof(enabled)) return false;
+  usbHostEnabled_ = enabled;
+  return true;
+}
+
+#define NEWO_USB_BOOL_SETTER(Name, Key, Field) \
+bool NewoStorage::Name(bool enabled) { \
+  if (!started_ || enabled == Field) return started_; \
+  if (preferences_.putBool(Key, enabled) != sizeof(enabled)) return false; \
+  Field = enabled; return true; \
+}
+NEWO_USB_BOOL_SETTER(setUsbAudioEnabled, kUsbAudioEnabledKey, usbAudioEnabled_)
+NEWO_USB_BOOL_SETTER(setUsbStorageEnabled, kUsbStorageEnabledKey, usbStorageEnabled_)
+NEWO_USB_BOOL_SETTER(setUsbVcpEnabled, kUsbVcpEnabledKey, usbVcpEnabled_)
+NEWO_USB_BOOL_SETTER(setUsbTrialPending, kUsbTrialPendingKey, usbTrialPending_)
+#undef NEWO_USB_BOOL_SETTER
 
 bool NewoStorage::addOrUpdateNetwork(const String& ssid, const String& password) {
   if (!started_ || !isCredentialValid(ssid, password)) {

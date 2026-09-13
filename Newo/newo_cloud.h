@@ -29,6 +29,14 @@ class NewoCloud {
   };
   bool consumeVoiceRequest(VoiceRequest& request);
   bool consumeSpeakerControlRequest(SpeakerControlRequest& request);
+  struct UsbControlRequest {
+    enum class Target : uint8_t { STATUS, HOST, AUDIO, STORAGE, VCP } target;
+    bool enabled;
+    char requestId[40];
+  };
+  bool consumeUsbControlRequest(UsbControlRequest& request);
+  void sendUsbAck(const char* requestId, bool host, bool audio, bool storage, bool vcp,
+                  bool active, bool applied, bool rebootRequired, bool trialPending);
   enum class LedEvent : uint8_t { NONE, PING, REBOOT };
   LedEvent consumeLedEvent();
   bool assistantThinking() const { return assistantThinking_; }
@@ -83,6 +91,9 @@ class NewoCloud {
   uint8_t speakerControlRequestHead_ = 0;
   uint8_t speakerControlRequestTail_ = 0;
   uint8_t speakerControlRequestCount_ = 0;
+  static constexpr uint8_t kUsbControlQueueDepth = 2;
+  UsbControlRequest usbControlRequests_[kUsbControlQueueDepth] = {};
+  uint8_t usbControlRequestHead_ = 0, usbControlRequestTail_ = 0, usbControlRequestCount_ = 0;
   NewoVoiceState voiceState_ = NewoVoiceState::OFF;
   bool voiceConnected_ = false;
   uint32_t voiceWakes_ = 0, voiceSessions_ = 0, voiceFailures_ = 0, voiceTimeouts_ = 0;

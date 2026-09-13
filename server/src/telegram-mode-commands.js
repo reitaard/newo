@@ -136,6 +136,18 @@ export function parseClockArgument(match) {
   return { kind: "invalid" };
 }
 
+export function parseUsbArgument(match) {
+  const input = String(match ?? "").trim().toLowerCase().replaceAll("_", " ");
+  if (!input || input === "status") return { action: "status" };
+  const aliases = { a: "audio", audio: "audio", s: "storage", storage: "storage", v: "vcp", vcp: "vcp", nano: "vcp" };
+  if (input === "on" || input === "off") return { action: "host", enabled: input === "on" };
+  const parts = input.split(/\s+/);
+  if (parts.length === 2 && aliases[parts[0]] && ["on", "off"].includes(parts[1])) {
+    return { action: aliases[parts[0]], enabled: parts[1] === "on" };
+  }
+  return null;
+}
+
 export function parseTrackArgument(match) {
   const input = String(match ?? "").trim().toLowerCase();
   if (!input) return { kind: "toggle" };
@@ -352,6 +364,26 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, "Clock unavailable.", result.kind, request.requestId, { newoSpeak: false });
   }
 
+  async function usb(ctx, forced = null) {
+    const parsed = parseUsbArgument(forced ?? ctx.match);
+    if (!parsed) return commandReply(ctx, "Usage: /u [on|off|a on|a off|s on|s off|v on|v off]", "usage", null, { newoSpeak: false });
+    const request = sendDeviceRequest("usb_control", "usb_ack", parsed, commandTrace(ctx));
+    if (request.kind !== "sent") return commandReply(ctx, unavailable("USB", "offline"), "offline", null, { newoSpeak: false });
+    const result = await request.promise;
+    if (result.kind !== "response") return commandReply(ctx, unavailable("USB", result.kind === "timeout" ? "No reply" : "offline"), result.kind, request.requestId, { newoSpeak: false });
+    const u = result.message;
+    const text = message("USB", [
+      `Host: ${bold(u.host ? "ON" : "OFF")}`,
+      `Audio: ${bold(u.audio ? "ON" : "OFF")}`,
+      `Storage: ${bold(u.storage ? "ON" : "OFF")}`,
+      `VCP/Nano: ${bold(u.vcp ? "ON" : "OFF")}`,
+      `Active: ${bold(u.active ? "ON" : "OFF")}`,
+      `Safety trial: ${bold(u.trial_pending ? "PENDING" : "OFF")}`,
+      `Apply: ${bold(u.reboot_required ? "REBOOTING" : "CURRENT")}`,
+    ]);
+    return commandReply(ctx, text, u.applied === false ? "device_error" : "response", request.requestId, { newoSpeak: false });
+  }
+
   let trackQueue = Promise.resolve();
   async function trackSnapshot(ctx, debug = false) {
     const request = sendDeviceRequest("track_control", "track_ack", { action: "status" }, commandTrace(ctx));
@@ -455,5 +487,5 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, formatMuteStatus(status.device), status.device.applied === false ? "device_error" : "response", status.request.requestId, { newoSpeak: false });
   }
 
-  return { voice, voiceStatus, ownerEnroll, ownerStatus, ownerCancel, profile, profileTune, profilePromptInput, cancelProfilePrompt, speaker, eco, clock, track, trackBackground, volume, mute };
+  return { voice, voiceStatus, ownerEnroll, ownerStatus, ownerCancel, profile, profileTune, profilePromptInput, cancelProfilePrompt, speaker, eco, clock, usb, track, trackBackground, volume, mute };
 }

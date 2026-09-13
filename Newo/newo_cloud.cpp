@@ -7,6 +7,7 @@
 
 #include "newo_config.h"
 #include "newo_log.h"
+#include "newo_memory_diagnostics.h"
 #include "newo_storage.h"
 
 #if __has_include("newo_secrets.h")
@@ -15,6 +16,32 @@
 #else
 #define NEWO_HAS_LOCAL_SECRETS 0
 #endif
+
+namespace {
+
+void logWebSocketDetail(const char* event, const uint8_t* payload, size_t length) {
+  constexpr size_t kMaxDetailBytes = 96;
+  char detail[kMaxDetailBytes + 1] = {};
+  char lower[kMaxDetailBytes + 1] = {};
+  const size_t copied = payload ? (length < kMaxDetailBytes ? length : kMaxDetailBytes) : 0;
+  for (size_t i = 0; i < copied; ++i) {
+    const uint8_t value = payload[i];
+    detail[i] = value >= 0x20 && value <= 0x7e ? static_cast<char>(value) : '.';
+    lower[i] = detail[i] >= 'A' && detail[i] <= 'Z' ? detail[i] + ('a' - 'A') : detail[i];
+  }
+  if (strstr(lower, "authorization") || strstr(lower, "bearer") ||
+      strstr(lower, "token") || strstr(lower, "private key")) {
+    strcpy(detail, "[redacted]");
+  }
+  const uint16_t closeCode = payload && length >= 2
+                                 ? static_cast<uint16_t>((payload[0] << 8) | payload[1])
+                                 : 0;
+  Serial.printf("[cloud_ws] %s length=%lu close_code=%u detail=\"%s\"%s\n", event,
+                static_cast<unsigned long>(length), static_cast<unsigned>(closeCode), detail,
+                length > copied ? " truncated=true" : "");
+}
+
+}  // namespace
 
 NewoCloud::NewoCloud(NewoWiFi& wifi, NewoDisplay& display, NewoStorage& storage)
     : wifi_(wifi), display_(display), storage_(storage) {}
@@ -61,6 +88,7 @@ void NewoCloud::startConnection() {
   headers += NewoSecrets::DEVICE_SECRET;
 
   webSocket_.setExtraHeaders(headers.c_str());
+  NewoMemoryDiagnostics::log("BEFORE_CLOUD_BEGIN_SSL_WITH_CA");
   webSocket_.beginSslWithCA(NewoConfig::CLOUD_HOST, NewoConfig::CLOUD_PORT,
                             NewoConfig::CLOUD_PATH, NewoSecrets::CLOUD_CA_CERT, "");
   started_ = true;
@@ -110,6 +138,25 @@ bool NewoCloud::consumeSpeakerControlRequest(SpeakerControlRequest& request) {
   speakerControlRequestHead_ = (speakerControlRequestHead_ + 1) % kSpeakerControlQueueDepth;
   --speakerControlRequestCount_;
   return true;
+}
+
+bool NewoCloud::consumeUsbControlRequest(UsbControlRequest& request) {
+  if (usbControlRequestCount_ == 0) return false;
+  request = usbControlRequests_[usbControlRequestHead_];
+  usbControlRequestHead_ = (usbControlRequestHead_ + 1) % kUsbControlQueueDepth;
+  --usbControlRequestCount_;
+  return true;
+}
+
+void NewoCloud::sendUsbAck(const char* requestId, bool host, bool audio, bool storage, bool vcp,
+                           bool active, bool applied, bool rebootRequired, bool trialPending) {
+  if (!connected_ || !requestId || !requestId[0]) return;
+  JsonDocument doc;
+  doc["type"] = "usb_ack"; doc["request_id"] = requestId;
+  doc["host"] = host; doc["audio"] = audio; doc["storage"] = storage; doc["vcp"] = vcp;
+  doc["active"] = active; doc["trial_pending"] = trialPending;
+  doc["applied"] = applied; doc["reboot_required"] = rebootRequired;
+  String body; serializeJson(doc, body); webSocket_.sendTXT(body);
 }
 
 NewoCloud::LedEvent NewoCloud::consumeLedEvent() {
@@ -191,6 +238,7 @@ void NewoCloud::recordStack(const char* point) {
 void NewoCloud::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
   switch (type) {
     case WStype_CONNECTED:
+      NewoMemoryDiagnostics::log("CLOUD_CONNECTED");
       connected_ = true;
       ++connectionCount_;
       NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::CLOUD, "CLOUD_CONNECTED");
@@ -198,6 +246,8 @@ void NewoCloud::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
       sendStatus();
       break;
     case WStype_DISCONNECTED:
+      NewoMemoryDiagnostics::log("CLOUD_WSTYPE_DISCONNECTED");
+      logWebSocketDetail("WStype_DISCONNECTED", payload, length);
       if (connected_) {
         ++disconnectCount_;
         NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "CLOUD_DISCONNECTED");
@@ -212,6 +262,8 @@ void NewoCloud::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
       handleTextMessage(payload, length);
       break;
     case WStype_ERROR:
+      NewoMemoryDiagnostics::log("CLOUD_WSTYPE_ERROR");
+      logWebSocketDetail("WStype_ERROR", payload, length);
       ++errorCount_;
       NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::CLOUD, "CLOUD_WS_ERROR");
       display_.noteSystemError();
@@ -464,6 +516,25 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
   if (strcmp(type, "voice_status") == 0) {
     sendVoiceAck(doc["request_id"] | "", voiceState_, voiceConnected_, voiceWakes_, voiceSessions_,
                  voiceFailures_, voiceTimeouts_);
+    return;
+  }
+
+  if (strcmp(type, "usb_control") == 0) {
+    const char* requestId = doc["request_id"] | "";
+    const char* action = doc["action"] | "";
+    if (!requestId[0] || usbControlRequestCount_ == kUsbControlQueueDepth) return;
+    UsbControlRequest request = {};
+    if (strcmp(action, "status") == 0) request.target = UsbControlRequest::Target::STATUS;
+    else if (doc["enabled"].is<bool>() && strcmp(action, "host") == 0) request.target = UsbControlRequest::Target::HOST;
+    else if (doc["enabled"].is<bool>() && strcmp(action, "audio") == 0) request.target = UsbControlRequest::Target::AUDIO;
+    else if (doc["enabled"].is<bool>() && strcmp(action, "storage") == 0) request.target = UsbControlRequest::Target::STORAGE;
+    else if (doc["enabled"].is<bool>() && strcmp(action, "vcp") == 0) request.target = UsbControlRequest::Target::VCP;
+    else return;
+    request.enabled = doc["enabled"] | false;
+    strlcpy(request.requestId, requestId, sizeof(request.requestId));
+    usbControlRequests_[usbControlRequestTail_] = request;
+    usbControlRequestTail_ = (usbControlRequestTail_ + 1) % kUsbControlQueueDepth;
+    ++usbControlRequestCount_;
     return;
   }
 

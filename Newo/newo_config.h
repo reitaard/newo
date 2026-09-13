@@ -112,6 +112,9 @@ constexpr uint32_t CLOUD_STATUS_INTERVAL_MS = 30'000;
 constexpr uint32_t CLOUD_WS_PING_INTERVAL_MS = 15'000;
 constexpr uint32_t CLOUD_WS_PONG_TIMEOUT_MS = 3'000;
 constexpr uint8_t CLOUD_WS_MISSED_PONG_LIMIT = 2;
+// Temporary memory-isolation variant: skip the complete USB host/client stack
+// while keeping WakeNet, MultiNet, cloud, speaker, and manual /v unchanged.
+constexpr bool USB_HOST_DEFAULT_ENABLED = false;
 // Hands-free voice arms WakeNet at boot. WakeNet and direct streaming continue
 // to share exclusive I2S ownership, and playback suppresses local detection.
 constexpr bool VOICE_DEFAULT_ENABLED = true;
