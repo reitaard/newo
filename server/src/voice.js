@@ -46,7 +46,17 @@ function pcm16leToFloat32(chunk) {
 
 /** Streaming sherpa-onnx adapter. One recognizer is shared, while every voice connection owns its stream. */
 export class SherpaAsrBackend {
-  constructor({ modelDirectory, model = "20m", numThreads = 2, provider = "cpu", hotwordsFile, hotwordsScore = 1.5 }) {
+  constructor({
+    modelDirectory,
+    model = "20m",
+    numThreads = 2,
+    provider = "cpu",
+    hotwordsFile,
+    hotwordsScore = 1.5,
+    endpointRule1MinTrailingSilence = 2.0,
+    endpointRule2MinTrailingSilence = 1.0,
+    endpointRule3MinUtteranceLength = 20,
+  }) {
     this.sherpa = require("sherpa-onnx-node");
     this.modelDirectory = path.resolve(modelDirectory);
     const libriGiga = model === "libri-giga";
@@ -70,9 +80,9 @@ export class SherpaAsrBackend {
         } : {}),
       },
       enableEndpoint: true,
-      rule1MinTrailingSilence: 2.4,
-      rule2MinTrailingSilence: 1.2,
-      rule3MinUtteranceLength: 20,
+      rule1MinTrailingSilence: endpointRule1MinTrailingSilence,
+      rule2MinTrailingSilence: endpointRule2MinTrailingSilence,
+      rule3MinUtteranceLength: endpointRule3MinUtteranceLength,
     };
     if (hotwordsFile) {
       if (!libriGiga) throw new Error("Hotwords are currently supported only with the libri-giga BPE model");
@@ -201,7 +211,13 @@ export class WorkerAsrBackend {
       this.resolveStart?.();
       this.resolveStart = null;
       this.rejectStart = null;
-      this.logger?.info({ event: "SHERPA_READY", startup_ms: startupMs }, "SHERPA_READY");
+      this.logger?.info({
+        event: "SHERPA_READY",
+        startup_ms: startupMs,
+        endpoint_rule1_s: message.endpointRule1MinTrailingSilence ?? this.options.endpointRule1MinTrailingSilence ?? 2.0,
+        endpoint_rule2_s: message.endpointRule2MinTrailingSilence ?? this.options.endpointRule2MinTrailingSilence ?? 1.0,
+        endpoint_rule3_s: message.endpointRule3MinUtteranceLength ?? this.options.endpointRule3MinUtteranceLength ?? 20,
+      }, "SHERPA_READY");
       return;
     }
     if (message.type === "fatal") {

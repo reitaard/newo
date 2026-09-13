@@ -35,6 +35,10 @@ constexpr uint32_t AUDIO_SAMPLE_RATE = 16'000;
 constexpr uint16_t AUDIO_FRAME_DURATION_MS = 20;
 constexpr size_t AUDIO_SAMPLES_PER_FRAME = AUDIO_SAMPLE_RATE * AUDIO_FRAME_DURATION_MS / 1'000;
 constexpr size_t AUDIO_FRAME_BYTES = AUDIO_SAMPLES_PER_FRAME * sizeof(int16_t);
+// A dedicated capture task owns RX while streaming. Keep its blocking read short
+// so stop/cancel can join the task without dangling I2S or PSRAM ownership.
+constexpr uint32_t AUDIO_I2S_READ_TIMEOUT_MS = 250;
+
 // MAX98357A on a dedicated TX controller. Microphone mappings above are unchanged.
 constexpr int8_t SPEAKER_I2S_BCLK_PIN = 21;
 constexpr int8_t SPEAKER_I2S_WS_PIN = 47;
@@ -116,5 +120,31 @@ constexpr uint8_t CLOUD_WS_MISSED_PONG_LIMIT = 2;
 // to share exclusive I2S ownership, and playback suppresses local detection.
 constexpr bool VOICE_DEFAULT_ENABLED = true;
 constexpr uint32_t VOICE_ACTIVE_SESSION_TIMEOUT_MS = 30'000;
+
+// Streaming capture must not depend on the synchronous WebSocket/TLS task.
+// WebSockets 2.7.2 can block a connect/write for up to 5 s; retain 10 s of raw
+// microphone PCM so a temporary network or DSP stall cannot eat the utterance.
+// This is storage, not a startup delay: frames transmit immediately when possible.
+constexpr uint32_t VOICE_CAPTURE_BUFFER_MS = 10'000;
+static_assert((VOICE_CAPTURE_BUFFER_MS % AUDIO_FRAME_DURATION_MS) == 0,
+              "voice capture buffer must align to whole audio frames");
+constexpr size_t VOICE_CAPTURE_BUFFER_FRAMES = VOICE_CAPTURE_BUFFER_MS / AUDIO_FRAME_DURATION_MS;
+constexpr size_t VOICE_CAPTURE_BUFFER_BYTES = VOICE_CAPTURE_BUFFER_FRAMES * AUDIO_FRAME_BYTES;
+// Drain backlog in bounded 100 ms WebSocket chunks. Steady state does not wait
+// for a full batch; whatever is already captured is sent immediately.
+constexpr size_t VOICE_TX_MAX_BATCH_FRAMES = 5;
+constexpr size_t VOICE_TX_MAX_BATCH_BYTES = VOICE_TX_MAX_BATCH_FRAMES * AUDIO_FRAME_BYTES;
+constexpr uint32_t VOICE_CAPTURE_TASK_STACK_BYTES = 8'192;
+constexpr uint32_t VOICE_TX_STALL_LOG_MS = 250;
+static_assert(VOICE_TX_MAX_BATCH_BYTES <= 64 * 1024, "voice batch exceeds server WebSocket limit");
+
+// STREAMING-only microphone cleanup. WakeNet keeps using the proven ESP_SR path.
+// The standalone ESP-SR WebRTC path accepts our existing 20 ms / 16 kHz PCM.
+// AGC stays off until physical A/B testing shows level normalization is needed.
+constexpr bool VOICE_WEBRTC_NS_ENABLED = true;
+constexpr int8_t VOICE_WEBRTC_NS_MODE = 1;  // 0 mild, 1 medium, 2 aggressive.
+constexpr bool VOICE_WEBRTC_AGC_ENABLED = false;
+static_assert(AUDIO_FRAME_DURATION_MS == 20, "voice WebRTC NS is validated for 20 ms frames");
+static_assert(VOICE_WEBRTC_NS_MODE >= 0 && VOICE_WEBRTC_NS_MODE <= 2, "invalid WebRTC NS mode");
 
 }  // namespace NewoConfig
