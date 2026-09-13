@@ -27,6 +27,8 @@ class NewoStorage {
   bool usbStorageEnabled() const { return usbStorageEnabled_; }
   bool usbVcpEnabled() const { return usbVcpEnabled_; }
   bool usbTrialPending() const { return usbTrialPending_; }
+  uint8_t micProcessingMode() const { return micProcessingMode_; }
+  uint8_t micNsLevel() const { return micNsLevel_; }
   bool setSpeakerVolume(uint8_t volume);
   bool setSpeakerMuted(bool muted);
   bool setSpeakerEnabled(bool enabled);
@@ -36,6 +38,7 @@ class NewoStorage {
   bool setUsbStorageEnabled(bool enabled);
   bool setUsbVcpEnabled(bool enabled);
   bool setUsbTrialPending(bool pending);
+  bool setMicProcessing(uint8_t mode, uint8_t nsLevel);
 
  private:
   bool loadNetworks();
@@ -53,5 +56,7 @@ class NewoStorage {
   bool usbStorageEnabled_ = false;
   bool usbVcpEnabled_ = false;
   bool usbTrialPending_ = false;
+  uint8_t micProcessingMode_ = 1;
+  uint8_t micNsLevel_ = 1;
   bool started_ = false;
 };

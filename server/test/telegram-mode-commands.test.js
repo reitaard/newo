@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createPrimaryModeHandlers, parseClockArgument, parseTrackArgument, parseUsbArgument, parseVolumeArgument } from "../src/telegram-mode-commands.js";
+import { createPrimaryModeHandlers, parseClockArgument, parseMicArgument, parseTrackArgument, parseUsbArgument, parseVolumeArgument } from "../src/telegram-mode-commands.js";
 
 function response(message) {
   return { kind: "sent", requestId: "request-1", promise: Promise.resolve({ kind: "response", message }) };
@@ -76,6 +76,25 @@ test("/usb sends granular control and renders acknowledged firmware state", asyn
   assert.deepEqual(requests[0], { type: "usb_control", responseType: "usb_ack", fields: { action: "audio", enabled: true } });
   assert.match(harness.replies[0].text, /VCP\/Nano/);
   assert.match(harness.replies[0].text, /REBOOTING/);
+});
+
+test("/mic aliases select one real processing path and report metrics", async () => {
+  assert.deepEqual(parseMicArgument("raw"), { action: "set", mode: "raw", ns_level: 1 });
+  assert.deepEqual(parseMicArgument("mild"), { action: "set", mode: "ns", ns_level: 0 });
+  assert.deepEqual(parseMicArgument("3"), { action: "set", mode: "ns", ns_level: 2 });
+  assert.equal(parseMicArgument("agc"), null);
+  const requests = [];
+  const harness = createHarness((type, responseType, fields) => {
+    requests.push({ type, responseType, fields });
+    return response({ type: "mic_ack", mode: "ns", ns_level: 2, applied: true,
+      raw_rms: 120, clean_rms: 80, raw_peak: 900, clean_peak: 700,
+      raw_clipped: 0, clean_clipped: 0, noise_floor_rms: 12 });
+  });
+  await harness.handlers.mic({ match: "strong" });
+  assert.deepEqual(requests[0], { type: "mic_control", responseType: "mic_ack",
+    fields: { action: "set", mode: "ns", ns_level: 2 } });
+  assert.match(harness.replies[0].text, /STRONG/);
+  assert.match(harness.replies[0].text, /Noise floor/);
 });
 
 test("/track starts one live panel and persists desired state", async () => {

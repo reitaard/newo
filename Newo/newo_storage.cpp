@@ -18,6 +18,8 @@ constexpr char kUsbAudioEnabledKey[] = "usb-audio-on";
 constexpr char kUsbStorageEnabledKey[] = "usb-store-on";
 constexpr char kUsbVcpEnabledKey[] = "usb-vcp-on";
 constexpr char kUsbTrialPendingKey[] = "usb-trial";
+constexpr char kMicProcessingModeKey[] = "mic-mode";
+constexpr char kMicNsLevelKey[] = "mic-ns-level";
 }
 
 bool NewoStorage::begin() {
@@ -41,6 +43,10 @@ bool NewoStorage::begin() {
   usbStorageEnabled_ = preferences_.getBool(kUsbStorageEnabledKey, false);
   usbVcpEnabled_ = preferences_.getBool(kUsbVcpEnabledKey, false);
   usbTrialPending_ = preferences_.getBool(kUsbTrialPendingKey, false);
+  micProcessingMode_ = preferences_.getUChar(kMicProcessingModeKey, 1) <= 1
+      ? preferences_.getUChar(kMicProcessingModeKey, 1) : 1;
+  micNsLevel_ = preferences_.getUChar(kMicNsLevelKey, 1) <= 2
+      ? preferences_.getUChar(kMicNsLevelKey, 1) : 1;
   return loadNetworks();
 }
 
@@ -172,6 +178,15 @@ NEWO_USB_BOOL_SETTER(setUsbStorageEnabled, kUsbStorageEnabledKey, usbStorageEnab
 NEWO_USB_BOOL_SETTER(setUsbVcpEnabled, kUsbVcpEnabledKey, usbVcpEnabled_)
 NEWO_USB_BOOL_SETTER(setUsbTrialPending, kUsbTrialPendingKey, usbTrialPending_)
 #undef NEWO_USB_BOOL_SETTER
+
+bool NewoStorage::setMicProcessing(uint8_t mode, uint8_t nsLevel) {
+  if (!started_ || mode > 1 || nsLevel > 2) return false;
+  if (mode != micProcessingMode_ && preferences_.putUChar(kMicProcessingModeKey, mode) != sizeof(mode)) return false;
+  if (nsLevel != micNsLevel_ && preferences_.putUChar(kMicNsLevelKey, nsLevel) != sizeof(nsLevel)) return false;
+  micProcessingMode_ = mode;
+  micNsLevel_ = nsLevel;
+  return true;
+}
 
 bool NewoStorage::addOrUpdateNetwork(const String& ssid, const String& password) {
   if (!started_ || !isCredentialValid(ssid, password)) {

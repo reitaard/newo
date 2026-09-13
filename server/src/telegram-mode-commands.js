@@ -53,6 +53,27 @@ export function formatVoiceStatus(voice, assistant = {}) {
   ]);
 }
 
+export function parseMicArgument(value = "") {
+  const input = String(value).trim().toLowerCase().replaceAll("-", "_");
+  if (!input || input === "status") return { action: "status" };
+  if (input === "raw") return { action: "set", mode: "raw", ns_level: 1 };
+  const levels = { ns: 1, mild: 0, medium: 1, strong: 2, "1": 0, "2": 1, "3": 2 };
+  if (Object.hasOwn(levels, input)) return { action: "set", mode: "ns", ns_level: levels[input] };
+  return null;
+}
+
+export function formatMicStatus(mic = {}) {
+  const strength = ["MILD", "MEDIUM", "STRONG"][mic.ns_level] ?? "UNKNOWN";
+  return message("microphone", [
+    `Processing: ${bold(String(mic.mode ?? "unknown").toUpperCase())}`,
+    `NS strength: ${bold(strength)}`,
+    `Raw RMS / peak: ${bold(`${mic.raw_rms ?? 0} / ${mic.raw_peak ?? 0}`)}`,
+    `Clean RMS / peak: ${bold(`${mic.clean_rms ?? 0} / ${mic.clean_peak ?? 0}`)}`,
+    `Clipped raw / clean: ${bold(`${mic.raw_clipped ?? 0} / ${mic.clean_clipped ?? 0}`)}`,
+    `Noise floor: ${bold(mic.noise_floor_rms ?? 0)}`,
+  ]);
+}
+
 export function formatProfileStatus(assistant = {}) {
   return message("profile", [
     `Preferred: ${bold(assistant.preferred_profile ?? "n/a")}`,
@@ -211,6 +232,16 @@ export function createPrimaryModeHandlers({
     const result = await request.promise;
     if (result.kind === "response") return commandReply(ctx, formatVoiceStatus(result.message, getAssistantInfo()), "response", request.requestId, { newoSpeak: false });
     return commandReply(ctx, unavailable("voice", result.kind === "timeout" ? "No reply" : "offline"), result.kind, request.requestId, { newoSpeak: false });
+  }
+
+  async function mic(ctx, forced = null) {
+    const fields = parseMicArgument(forced ?? ctx.match ?? "");
+    if (!fields) return commandReply(ctx, "Usage: /mic raw | mild | medium | strong", "usage", null, { newoSpeak: false });
+    const request = sendDeviceRequest("mic_control", "mic_ack", fields, commandTrace(ctx));
+    if (request.kind !== "sent") return commandReply(ctx, unavailable("microphone", "offline"), "offline", null, { newoSpeak: false });
+    const result = await request.promise;
+    if (result.kind === "response") return commandReply(ctx, formatMicStatus(result.message), "response", request.requestId, { newoSpeak: false });
+    return commandReply(ctx, unavailable("microphone", result.kind === "timeout" ? "No reply" : "offline"), result.kind, request.requestId, { newoSpeak: false });
   }
 
   function formatOwnerStatus(status = {}) {
@@ -487,5 +518,5 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, formatMuteStatus(status.device), status.device.applied === false ? "device_error" : "response", status.request.requestId, { newoSpeak: false });
   }
 
-  return { voice, voiceStatus, ownerEnroll, ownerStatus, ownerCancel, profile, profileTune, profilePromptInput, cancelProfilePrompt, speaker, eco, clock, usb, track, trackBackground, volume, mute };
+  return { voice, voiceStatus, mic, ownerEnroll, ownerStatus, ownerCancel, profile, profileTune, profilePromptInput, cancelProfilePrompt, speaker, eco, clock, usb, track, trackBackground, volume, mute };
 }
