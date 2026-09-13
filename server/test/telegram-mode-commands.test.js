@@ -22,7 +22,7 @@ function createHarness(sendDeviceRequest, overrides = {}) {
     setSpeakerAccepting: (enabled) => { speakerEnabled = enabled; },
     persistSpeakerEnabled: async (enabled) => { speakerEnabled = enabled; return enabled; },
     speakerInfo: { ttsEnabled: true, backend: "kokoro", format: "24 kHz PCM16", bufferBytes: 24_576 },
-    getAssistantInfo: overrides.getAssistantInfo ?? (() => ({ status: "ready", model: "helix-qwen3-0.6b", qwen: "online", speakerEnabled, latest: { result: "n/a", llmMs: null, asrFinalMs: null, ttsQueuedMs: null, totalMs: null } })),
+    getAssistantInfo: overrides.getAssistantInfo ?? (() => ({ status: "ready", provider: "openai_chat", model: "helix-qwen3-0.6b", online: "online", speakerEnabled, latest: { result: "n/a", llmMs: null, asrFinalMs: null, ttsQueuedMs: null, totalMs: null } })),
   });
   return { handlers, replies, get speakerEnabled() { return speakerEnabled; } };
 }
@@ -76,7 +76,7 @@ test("/vs reads bounded assistant telemetry without invoking chat", async () => 
   }, {
     getAssistantInfo: () => {
       telemetryReads += 1;
-      return { status: "error", model: "helix-qwen3-0.6b", qwen: "offline", speakerEnabled: true,
+      return { status: "error", provider: "openai_chat", model: "helix-qwen3-0.6b", online: "offline", speakerEnabled: true,
         latest: { result: "timeout", llmMs: 143, asrFinalMs: null, ttsQueuedMs: null, totalMs: null } };
     },
   });
@@ -84,7 +84,8 @@ test("/vs reads bounded assistant telemetry without invoking chat", async () => 
   assert.equal(telemetryReads, 1);
   assert.match(harness.replies[0].text, /Assistant: <b>ERROR<\/b>/);
   assert.match(harness.replies[0].text, /LLM: <b>helix-qwen3-0\.6b<\/b>/);
-  assert.match(harness.replies[0].text, /Qwen: <b>OFFLINE<\/b>/);
+  assert.match(harness.replies[0].text, /Provider: <b>openai_chat<\/b>/);
+  assert.match(harness.replies[0].text, /Model state: <b>OFFLINE<\/b>/);
   assert.match(harness.replies[0].text, /Last LLM: <b>143 ms<\/b>/);
   assert.match(harness.replies[0].text, /Last turn: <b>timeout<\/b>/);
   assert.match(harness.replies[0].text, /ASR final: <b>n\/a<\/b>/);
@@ -93,7 +94,7 @@ test("/vs reads bounded assistant telemetry without invoking chat", async () => 
 
 test("/vs represents a disabled assistant with clean never values", async () => {
   const harness = createHarness(() => response({ state: "off", voice_connected: false, wake_count: 0, session_count: 0, failures: 0, timeouts: 0 }), {
-    getAssistantInfo: () => ({ status: "disabled", model: null, qwen: "disabled", speakerEnabled: false,
+    getAssistantInfo: () => ({ status: "disabled", provider: "openai_chat", model: null, online: "disabled", speakerEnabled: false,
       latest: { result: "n/a", llmMs: null, asrFinalMs: null, ttsQueuedMs: null, totalMs: null } }),
   });
   await harness.handlers.voiceStatus({ match: "" });

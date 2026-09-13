@@ -35,11 +35,59 @@ export function assistantTimeContext(date, timeZone = DEFAULT_ASSISTANT_TIME_ZON
   ].join(" ");
 }
 
+class ThinkFilter {
+  constructor() { this.pending = ""; this.thinking = false; }
+
+  push(value, final = false) {
+    this.pending += String(value ?? "");
+    let visible = "";
+    while (this.pending) {
+      const lower = this.pending.toLowerCase();
+      if (this.thinking) {
+        const closeAt = lower.indexOf("</think>");
+        if (closeAt >= 0) {
+          this.pending = this.pending.slice(closeAt + 8);
+          this.thinking = false;
+          continue;
+        }
+        const keep = final ? 0 : partialTagSuffix(lower, ["</think>"]);
+        this.pending = keep ? this.pending.slice(-keep) : "";
+        break;
+      }
+      const openAt = lower.indexOf("<think>");
+      const closeAt = lower.indexOf("</think>");
+      const tagAt = openAt < 0 ? closeAt : closeAt < 0 ? openAt : Math.min(openAt, closeAt);
+      if (tagAt >= 0) {
+        visible += this.pending.slice(0, tagAt);
+        const opening = tagAt === openAt;
+        this.pending = this.pending.slice(tagAt + (opening ? 7 : 8));
+        this.thinking = opening;
+        continue;
+      }
+      const keep = final ? 0 : partialTagSuffix(lower, ["<think>", "</think>"]);
+      visible += keep ? this.pending.slice(0, -keep) : this.pending;
+      this.pending = keep ? this.pending.slice(-keep) : "";
+      break;
+    }
+    return visible;
+  }
+}
+
+function partialTagSuffix(value, tags) {
+  for (let length = Math.min(value.length, 7); length > 0; --length) {
+    const suffix = value.slice(-length);
+    if (tags.some((tag) => tag.startsWith(suffix))) return length;
+  }
+  return 0;
+}
+
+function withoutThinking(value) {
+  const filter = new ThinkFilter();
+  return filter.push(value) + filter.push("", true);
+}
+
 function boundedText(value, maxChars) {
-  const text = String(value ?? "")
-    .replace(/<think>[\s\S]*?<\/think>/gi, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const text = withoutThinking(value).replace(/\s+/g, " ").trim();
   if (!text) return "";
   if (text.length <= maxChars) return text;
   const clipped = text.slice(0, maxChars + 1);
@@ -49,7 +97,7 @@ function boundedText(value, maxChars) {
 }
 
 function boundedHistoryText(value) {
-  const text = String(value ?? "").replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/\s+/g, " ").trim();
+  const text = withoutThinking(value).replace(/\s+/g, " ").trim();
   if (text.length <= ASSISTANT_HISTORY_MAX_CHARS_PER_MESSAGE) return text;
   const contentLimit = ASSISTANT_HISTORY_MAX_CHARS_PER_MESSAGE - 1;
   const clipped = text.slice(0, contentLimit + 1);
@@ -133,6 +181,74 @@ function assistantError(code, detail) {
   return error;
 }
 
+function rawLfmPrompt(messages) {
+  const [system, ...conversation] = messages;
+  const systemText = `${system.content}\n\nNO-THINK MODE IS ACTIVE.\nDo not produce chain-of-thought, hidden analysis, plans, drafts, or self-talk.\nIf thinking begins, close it immediately.\nPut only the useful response after </think>.`;
+  const turns = conversation.map((message) => `<|im_start|>${message.role}\n${message.content}\n<|im_end|>`).join("\n");
+  return `<|startoftext|><|im_start|>system\n${systemText}\n<|im_end|>\n${turns}\n<|im_start|>assistant\n<think>\nNo unnecessary reasoning. Close thinking and answer immediately.\n</think>\n`;
+}
+
+async function readOllamaStream(response, { onFirstRawToken, onFirstSpeakableToken }) {
+  if (!response.body) throw assistantError("assistant_invalid_response");
+  const decoder = new TextDecoder();
+  const thinkFilter = new ThinkFilter();
+  let pending = "";
+  let answer = "";
+  const consume = (line) => {
+    if (!line.trim()) return;
+    let payload;
+    try { payload = JSON.parse(line); }
+    catch { throw assistantError("assistant_invalid_response"); }
+    if (payload.error) throw assistantError("assistant_request_failed", String(payload.error));
+    if (typeof payload.response === "string" && payload.response.length > 0) {
+      onFirstRawToken();
+      const visible = thinkFilter.push(payload.response);
+      if (/\S/.test(visible)) onFirstSpeakableToken();
+      answer += visible;
+    }
+  };
+  for await (const chunk of response.body) {
+    pending += decoder.decode(chunk, { stream: true });
+    const lines = pending.split(/\r?\n/);
+    pending = lines.pop() ?? "";
+    for (const line of lines) consume(line);
+  }
+  pending += decoder.decode();
+  if (pending.trim()) consume(pending);
+  const tail = thinkFilter.push("", true);
+  if (/\S/.test(tail)) onFirstSpeakableToken();
+  return answer + tail;
+}
+
+function createOllamaTransport() {
+  const agents = {
+    "http:": new http.Agent({ keepAlive: true }),
+    "https:": new https.Agent({ keepAlive: true }),
+  };
+  function request(url, { method = "GET", headers, body, signal } = {}) {
+    return new Promise((resolve, reject) => {
+      const target = new URL(url);
+      const client = target.protocol === "https:" ? https : http;
+      const req = client.request(target, { method, headers, agent: agents[target.protocol], signal }, (incoming) => {
+        resolve({
+          ok: incoming.statusCode >= 200 && incoming.statusCode < 300,
+          status: incoming.statusCode,
+          body: incoming,
+          async json() {
+            let text = "";
+            for await (const chunk of incoming) text += chunk.toString("utf8");
+            return JSON.parse(text);
+          },
+        });
+      });
+      req.on("error", reject);
+      req.end(body);
+    });
+  }
+  function close() { for (const agent of Object.values(agents)) agent.destroy(); }
+  return { request, close };
+}
+
 function runtimeContextMessage(context) {
   if (!context || typeof context !== "object") return null;
   const parts = [];
@@ -144,23 +260,25 @@ function runtimeContextMessage(context) {
   return parts.length ? `Current runtime state: ${parts.join(", ")}.` : null;
 }
 
-/** A bounded, provider-neutral OpenAI-chat client for one finalized voice turn. */
+/** A bounded provider-selectable client for one finalized voice turn. */
 export function createAssistantRuntime({
-  enabled = false, baseUrl, model, apiKey, timeoutMs = 15_000, maxOutputTokens = 72,
+  enabled = false, provider = "openai_chat", baseUrl, model, apiKey, timeoutMs = 15_000, maxOutputTokens = 72,
   maxReplyChars = 300, timeZone = DEFAULT_ASSISTANT_TIME_ZONE, now = () => new Date(),
-  runtimeContext = null, fetchImpl = fetch, logger = null,
+  runtimeContext = null, fetchImpl, logger = null,
 } = {}) {
   assistantTimeContext(new Date(0), timeZone);
   const active = new Map();
   let closing = false;
-  let qwenState = enabled ? "unknown" : "disabled";
+  let providerState = enabled ? "unknown" : "disabled";
+  const ollamaTransport = !fetchImpl && provider === "ollama_raw" ? createOllamaTransport() : null;
+  const requestImpl = fetchImpl ?? ollamaTransport?.request ?? fetch;
   const history = new Map();
   const base = baseUrl ? String(baseUrl).replace(/\/+$/, "") : null;
-  const endpoint = base ? `${base}/v1/chat/completions` : null;
-  const modelsEndpoint = base ? `${base}/v1/models` : null;
+  const endpoint = base ? `${base}${provider === "ollama_raw" ? "/api/generate" : "/v1/chat/completions"}` : null;
+  const modelsEndpoint = base ? `${base}${provider === "ollama_raw" ? "/api/tags" : "/v1/models"}` : null;
 
   function getTelemetry() {
-    return { enabled, model: model ?? null, qwen: qwenState, active: active.size > 0 };
+    return { enabled, provider, model: model ?? null, online: providerState, qwen: providerState, active: active.size > 0 };
   }
 
   function storeExchange(deviceId, user, assistant) {
@@ -175,7 +293,7 @@ export function createAssistantRuntime({
   async function refreshHealth() {
     if (!enabled) return getTelemetry();
     if (!modelsEndpoint || !model) {
-      qwenState = "offline";
+      providerState = "offline";
       return getTelemetry();
     }
 
@@ -185,12 +303,12 @@ export function createAssistantRuntime({
 
     try {
       const headers = apiKey ? { authorization: `Bearer ${apiKey}` } : undefined;
-      const response = await fetchImpl(modelsEndpoint, { headers, signal: controller.signal });
+      const response = await requestImpl(modelsEndpoint, { headers, signal: controller.signal });
       const payload = response.ok ? await response.json() : null;
-      const models = payload?.data;
-      qwenState = Array.isArray(models) && models.some((item) => item?.id === model) ? "online" : "offline";
+      const models = provider === "ollama_raw" ? payload?.models : payload?.data;
+      providerState = Array.isArray(models) && models.some((item) => (provider === "ollama_raw" ? item?.name ?? item?.model : item?.id) === model) ? "online" : "offline";
     } catch {
-      qwenState = "offline";
+      providerState = "offline";
     } finally {
       clearTimeout(timer);
     }
@@ -290,45 +408,71 @@ export function createAssistantRuntime({
       const headers = { "content-type": "application/json" };
       if (apiKey) headers.authorization = `Bearer ${apiKey}`;
 
-      const response = await fetchImpl(endpoint, {
+      const requestBody = provider === "ollama_raw" ? {
+        model,
+        prompt: rawLfmPrompt(messages),
+        raw: true,
+        stream: true,
+        keep_alive: -1,
+        options: {
+          num_predict: maxOutputTokens,
+          temperature: 0.2,
+          top_k: 80,
+          repeat_penalty: 1.05,
+          stop: ["<|im_end|>", "<|im_start|>"],
+        },
+      } : {
+        model,
+        messages,
+        max_tokens: maxOutputTokens,
+        temperature: 0.7,
+        top_p: 0.8,
+        top_k: 20,
+        min_p: 0,
+        stream: false,
+      };
+
+      const response = await requestImpl(endpoint, {
         method: "POST",
         headers,
         signal: controller.signal,
-        body: JSON.stringify({
-          model,
-          messages,
-          max_tokens: maxOutputTokens,
-          temperature: 0.7,
-          top_p: 0.8,
-          top_k: 20,
-          min_p: 0,
-          stream: false,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
         throw assistantError("assistant_http_error", String(response.status));
       }
 
-      let payload;
-      try {
-        payload = await response.json();
-      } catch {
-        throw assistantError("assistant_invalid_response");
+      let payload = null;
+      let firstRawTokenAt = null;
+      let firstTokenAt = null;
+      let rawAnswer;
+      if (provider === "ollama_raw") {
+        rawAnswer = await readOllamaStream(response, {
+          onFirstRawToken: () => { firstRawTokenAt ??= performance.now(); },
+          onFirstSpeakableToken: () => { firstTokenAt ??= performance.now(); },
+        });
+      } else {
+        try {
+          payload = await response.json();
+        } catch {
+          throw assistantError("assistant_invalid_response");
+        }
+        rawAnswer = payload?.choices?.[0]?.message?.content;
+        if (String(rawAnswer ?? "").length > 0) firstRawTokenAt = firstTokenAt = performance.now();
       }
 
-      const answer = boundedText(
-        payload?.choices?.[0]?.message?.content,
-        maxReplyChars,
-      );
+      const answer = boundedText(rawAnswer, maxReplyChars);
 
       if (!answer) return { kind: "empty" };
 
       storeExchange(deviceId, transcript, answer);
-      qwenState = "online";
+      providerState = "online";
 
       const completedAt = performance.now();
       const timings = {
+        llm_first_raw_token_ms: firstRawTokenAt == null ? null : Math.round(firstRawTokenAt - startedAt),
+        llm_first_token_ms: firstTokenAt == null ? null : Math.round(firstTokenAt - startedAt),
         llm_request_ms: Math.round(completedAt - startedAt),
         history_turns: historyUsed,
         history_available: historyAvailable,
@@ -362,7 +506,7 @@ export function createAssistantRuntime({
         timings,
       };
     } catch (error) {
-      qwenState = "offline";
+      providerState = "offline";
 
       const code = controller.signal.aborted
         ? controller.signal.reason?.code ?? "assistant_cancelled"
@@ -400,6 +544,7 @@ export function createAssistantRuntime({
     }
 
     history.clear();
+    ollamaTransport?.close();
   }
 
   return {
@@ -411,3 +556,5 @@ export function createAssistantRuntime({
     isActive: (deviceId) => active.has(deviceId),
   };
 }
+import http from "node:http";
+import https from "node:https";

@@ -55,6 +55,7 @@ const EnvSchema = z.object({
   VOICE_ASR_HOTWORDS_SCORE: z.preprocess(emptyToUndefined, z.coerce.number().min(0).max(5).default(1.5)),
   VOICE_LIVE_TEST_MODE: z.preprocess(stringToBoolean, z.boolean().default(false)),
   ASSISTANT_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
+  ASSISTANT_PROVIDER: z.preprocess(emptyToUndefined, z.enum(["openai_chat", "ollama_raw"]).default("openai_chat")),
   ASSISTANT_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   ASSISTANT_MODEL: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   ASSISTANT_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
@@ -156,6 +157,7 @@ const speakerRuntime = createSpeakerRuntime({
 });
 const assistantRuntime = createAssistantRuntime({
   enabled: env.ASSISTANT_ENABLED,
+  provider: env.ASSISTANT_PROVIDER,
   baseUrl: env.ASSISTANT_BASE_URL,
   model: env.ASSISTANT_MODEL,
   apiKey: env.ASSISTANT_API_KEY,
@@ -902,7 +904,7 @@ process.once("SIGTERM", () => handleShutdownSignal("SIGTERM"));
 try { await voiceAsr.prewarm?.(); }
 catch { /* WorkerAsrBackend emitted SHERPA_START_FAILED with the exact error. */ }
 await app.listen({ host: env.HOST, port: env.PORT });
-void assistantRuntime.refreshHealth();
+const assistantStartup = await assistantRuntime.refreshHealth();
 app.log.info({
   bind: `${env.HOST}:${env.PORT}`,
   public_base_url: env.PUBLIC_BASE_URL,
@@ -921,7 +923,9 @@ app.log.info({
   voice_sherpa_model: env.VOICE_ASR_BACKEND === "sherpa" ? env.VOICE_SHERPA_MODEL : null,
   voice_live_test_mode: env.VOICE_LIVE_TEST_MODE,
   assistant_enabled: env.ASSISTANT_ENABLED,
+  assistant_provider: env.ASSISTANT_PROVIDER,
   assistant_model: env.ASSISTANT_ENABLED ? env.ASSISTANT_MODEL : null,
+  assistant_online: assistantStartup.online,
   telegram_enabled: Boolean(bot),
   device_auth_configured: Boolean(env.NEWO_DEVICE_SECRET),
 }, "Newo cloud started");
