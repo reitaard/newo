@@ -50,5 +50,13 @@ test("native Opus flow credit progresses while realtime drain is active", async 
     assert.ok(ws.queueHigh >= 25); assert.equal(ws.received, 76_800); assert.equal(ws.consumed, 76_800); assert.equal(ws.buffered, 0);
     const pacer = events.find((event) => event.event === "SPEAKER_PACER");
     assert.equal(pacer.initial_pcm_bytes, 48_000); assert.equal(pacer.catchup_frames, 0);
+    const flow = events.find((event) => event.event === "SPEAKER_FLOW_FINAL");
+    assert.ok(Number.isInteger(flow.opus_queue_min_active_packets));
+    assert.ok(Number.isInteger(flow.opus_queue_min_active_pcm_bytes));
+    assert.ok(Number.isInteger(flow.min_active_total_reservoir_bytes));
+    assert.ok(flow.max_active_total_reservoir_bytes >= flow.min_active_total_reservoir_bytes);
+    assert.ok(Number.isInteger(flow.low_reservoir_events_600ms));
+    assert.ok(Number.isInteger(flow.low_reservoir_events_400ms));
+    assert.ok(Number.isInteger(flow.low_reservoir_events_200ms));
   } finally { runtime.close(); process.env.SPEAKER_CODEC = saved; }
 });

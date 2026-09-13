@@ -173,6 +173,16 @@ class NewoSpeaker {
   uint32_t opusDecodeWorstUs_ = 0;
   uint32_t opusQueueHighWaterPackets_ = 0;
   uint32_t opusQueueHighWaterBytes_ = 0;
+  uint32_t opusQueueMinimumActivePackets_ = UINT32_MAX;
+  uint32_t opusQueueMinimumActivePcmBytes_ = UINT32_MAX;
+  uint32_t opusReservoirMinimumActiveBytes_ = UINT32_MAX;
+  uint32_t opusReservoirMaximumActiveBytes_ = 0;
+  uint32_t opusLowReservoir600MsEvents_ = 0;
+  uint32_t opusLowReservoir400MsEvents_ = 0;
+  uint32_t opusLowReservoir200MsEvents_ = 0;
+  bool opusBelowReservoir600Ms_ = false;
+  bool opusBelowReservoir400Ms_ = false;
+  bool opusBelowReservoir200Ms_ = false;
   uint32_t opusQueueOverflows_ = 0;
   volatile uint32_t opusQueuedWireBytes_ = 0;
   volatile uint32_t opusQueuedPcmBytes_ = 0;

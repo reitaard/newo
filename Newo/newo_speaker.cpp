@@ -301,6 +301,16 @@ bool NewoSpeaker::startPlayback(const Request& request) {
   decoderAbort_ = false;
   opusQueueHighWaterPackets_ = 0;
   opusQueueHighWaterBytes_ = 0;
+  opusQueueMinimumActivePackets_ = UINT32_MAX;
+  opusQueueMinimumActivePcmBytes_ = UINT32_MAX;
+  opusReservoirMinimumActiveBytes_ = UINT32_MAX;
+  opusReservoirMaximumActiveBytes_ = 0;
+  opusLowReservoir600MsEvents_ = 0;
+  opusLowReservoir400MsEvents_ = 0;
+  opusLowReservoir200MsEvents_ = 0;
+  opusBelowReservoir600Ms_ = false;
+  opusBelowReservoir400Ms_ = false;
+  opusBelowReservoir200Ms_ = false;
   opusQueueOverflows_ = 0;
   opusQueuedWireBytes_ = 0;
   opusQueuedPcmBytes_ = 0;
@@ -806,6 +816,24 @@ void NewoSpeaker::loop(bool cloudReady) {
     const uint32_t admitted = request_.codec == Codec::OPUS ? opusAdmittedBytes_ : received;
     const uint32_t consumed = consumedBytes_;
     const uint32_t buffered = static_cast<uint32_t>(xStreamBufferBytesAvailable(buffer_));
+    if (request_.codec == Codec::OPUS && playbackStarted_ && !endReceived_) {
+      const uint32_t queuedPackets = static_cast<uint32_t>(uxQueueMessagesWaiting(opusReadyQueue_));
+      const uint32_t queuedPcmBytes = opusQueuedPcmBytes_;
+      const uint32_t totalReservoirBytes = buffered + queuedPcmBytes;
+      if (queuedPackets < opusQueueMinimumActivePackets_) opusQueueMinimumActivePackets_ = queuedPackets;
+      if (queuedPcmBytes < opusQueueMinimumActivePcmBytes_) opusQueueMinimumActivePcmBytes_ = queuedPcmBytes;
+      if (totalReservoirBytes < opusReservoirMinimumActiveBytes_) opusReservoirMinimumActiveBytes_ = totalReservoirBytes;
+      if (totalReservoirBytes > opusReservoirMaximumActiveBytes_) opusReservoirMaximumActiveBytes_ = totalReservoirBytes;
+      const bool below600 = totalReservoirBytes < NewoConfig::SPEAKER_OPUS_LOW_RESERVOIR_600_MS_BYTES;
+      const bool below400 = totalReservoirBytes < NewoConfig::SPEAKER_OPUS_LOW_RESERVOIR_400_MS_BYTES;
+      const bool below200 = totalReservoirBytes < NewoConfig::SPEAKER_OPUS_LOW_RESERVOIR_200_MS_BYTES;
+      if (below600 && !opusBelowReservoir600Ms_) ++opusLowReservoir600MsEvents_;
+      if (below400 && !opusBelowReservoir400Ms_) ++opusLowReservoir400MsEvents_;
+      if (below200 && !opusBelowReservoir200Ms_) ++opusLowReservoir200MsEvents_;
+      opusBelowReservoir600Ms_ = below600;
+      opusBelowReservoir400Ms_ = below400;
+      opusBelowReservoir200Ms_ = below200;
+    }
     const bool receiveProgress = newoSpeakerReceiptReportDue(
         receiptReportPending_, millis(), receiptPendingSinceMs_,
         admitted - lastFlowSentReceivedBytes_, NewoConfig::SPEAKER_RECEIVE_REPORT_BYTES,
@@ -854,16 +882,23 @@ void NewoSpeaker::loop(bool cloudReady) {
     NewoLog::log(overflowCount_ == 0 ? NewoLog::Level::INFO : NewoLog::Level::ERROR,
                  NewoLog::Subsystem::AUDIO, "SPEAKER_BUFFER", bufferDiagnostics);
     if (request_.codec == Codec::OPUS) {
-      char opusDiagnostics[320];
+      char opusDiagnostics[512];
       const uint32_t averageDecodeUs = opusDecodeCount_ == 0 ? 0 :
           static_cast<uint32_t>(opusDecodeTotalUs_ / opusDecodeCount_);
       const uint32_t averageCallbackUs = opusCallbackCount_ == 0 ? 0 :
           static_cast<uint32_t>(opusCallbackTotalUs_ / opusCallbackCount_);
       snprintf(opusDiagnostics, sizeof(opusDiagnostics),
-               "packets_rx=%lu decoded=%lu wire_bytes=%lu decoded_pcm=%lu q_high_packets=%lu q_high_bytes=%lu q_overflows=%lu decode_avg_us=%lu decode_worst_us=%lu decoder_errors=%lu decoder_stack_low=%lu callback_avg_us=%lu callback_worst_us=%lu",
+               "packets_rx=%lu decoded=%lu wire_bytes=%lu decoded_pcm=%lu q_high_packets=%lu q_high_bytes=%lu q_min_active_packets=%lu q_min_active_pcm=%lu reservoir_min_active=%lu reservoir_max_active=%lu low_600ms=%lu low_400ms=%lu low_200ms=%lu q_overflows=%lu decode_avg_us=%lu decode_worst_us=%lu decoder_errors=%lu decoder_stack_low=%lu callback_avg_us=%lu callback_worst_us=%lu",
                static_cast<unsigned long>(opusPacketsReceived_), static_cast<unsigned long>(opusDecodeCount_),
                static_cast<unsigned long>(opusBytesReceived_), static_cast<unsigned long>(receivedBytes_),
                static_cast<unsigned long>(opusQueueHighWaterPackets_), static_cast<unsigned long>(opusQueueHighWaterBytes_),
+               static_cast<unsigned long>(opusQueueMinimumActivePackets_ == UINT32_MAX ? 0 : opusQueueMinimumActivePackets_),
+               static_cast<unsigned long>(opusQueueMinimumActivePcmBytes_ == UINT32_MAX ? 0 : opusQueueMinimumActivePcmBytes_),
+               static_cast<unsigned long>(opusReservoirMinimumActiveBytes_ == UINT32_MAX ? 0 : opusReservoirMinimumActiveBytes_),
+               static_cast<unsigned long>(opusReservoirMaximumActiveBytes_),
+               static_cast<unsigned long>(opusLowReservoir600MsEvents_),
+               static_cast<unsigned long>(opusLowReservoir400MsEvents_),
+               static_cast<unsigned long>(opusLowReservoir200MsEvents_),
                static_cast<unsigned long>(opusQueueOverflows_), static_cast<unsigned long>(averageDecodeUs),
                static_cast<unsigned long>(opusDecodeWorstUs_), static_cast<unsigned long>(opusDecoderErrors_),
                static_cast<unsigned long>(minimumDecoderStackBytes_ == UINT32_MAX ? 0 : minimumDecoderStackBytes_),

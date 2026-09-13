@@ -226,10 +226,10 @@ test("delivery-aware flow separates network flight, ESP buffer, and total outsta
 
 test("Opus reservoir credit targets compressed plus decoded future audio with a hard ceiling", () => {
   assert.equal(SPEAKER_OPUS_STARTUP_BYTES, 48_000);
-  assert.equal(SPEAKER_OPUS_RESERVOIR_TARGET_BYTES, 57_600);
-  assert.equal(SPEAKER_OPUS_RESERVOIR_CEILING_BYTES, 72_000);
-  assert.equal(speakerOpusReservoirCreditBytes(48_000, 48_000, 0, 12_000, 36_000), 9_600);
-  assert.equal(speakerOpusReservoirCreditBytes(72_000, 72_000, 0, 24_000, 48_000), 0);
+  assert.equal(SPEAKER_OPUS_RESERVOIR_TARGET_BYTES, 65_280);
+  assert.equal(SPEAKER_OPUS_RESERVOIR_CEILING_BYTES, 81_600);
+  assert.equal(speakerOpusReservoirCreditBytes(48_000, 48_000, 0, 12_000, 36_000), 17_280);
+  assert.equal(speakerOpusReservoirCreditBytes(81_600, 81_600, 0, 24_000, 57_600), 0);
   assert.throws(() => speakerOpusReservoirCreditBytes(10, 11, 0, 0, 0), /ordering/);
 });
 

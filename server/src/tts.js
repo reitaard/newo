@@ -74,8 +74,8 @@ export const SPEAKER_MEDIA_FRAME_MS = 40;
 export const SPEAKER_MEDIA_STARTUP_BYTES = 13_440;
 export const SPEAKER_OPUS_STARTUP_BYTES = 48_000;
 export const SPEAKER_OPUS_RESERVOIR_LOW_BYTES = 28_800;
-export const SPEAKER_OPUS_RESERVOIR_TARGET_BYTES = 57_600;
-export const SPEAKER_OPUS_RESERVOIR_CEILING_BYTES = 72_000;
+export const SPEAKER_OPUS_RESERVOIR_TARGET_BYTES = 65_280;
+export const SPEAKER_OPUS_RESERVOIR_CEILING_BYTES = 81_600;
 export const SPEAKER_FIRMWARE_PREBUFFER_BYTES = 12_288;
 export const SPEAKER_PCM_PRODUCER_QUEUE_MAX_BYTES = 65_536;
 export const SPEAKER_REALTIME_HIGH_WATER_BYTES = SPEAKER_RECEIVER_CAPACITY_BYTES - 2_048;
@@ -772,6 +772,22 @@ export function createSpeakerRuntime({
     const activeReceiver = consumedBytes > 0 && (!job.endSent || consumedBytes < receivedBytes);
     if (activeReceiver) job.minReportedBufferedBytes = Math.min(job.minReportedBufferedBytes, bufferedBytes);
     job.maxReportedBufferedBytes = Math.max(job.maxReportedBufferedBytes, bufferedBytes);
+    if (job.transport?.enabled && job.playbackStartedAt !== null && !job.endSent) {
+      const totalReservoirBytes = bufferedBytes + queuedPcmBytes;
+      job.minReportedOpusQueuedPackets = Math.min(job.minReportedOpusQueuedPackets, queuedPackets);
+      job.minReportedOpusQueuedPcmBytes = Math.min(job.minReportedOpusQueuedPcmBytes, queuedPcmBytes);
+      job.minReportedTotalReservoirBytes = Math.min(job.minReportedTotalReservoirBytes, totalReservoirBytes);
+      job.maxReportedTotalReservoirBytes = Math.max(job.maxReportedTotalReservoirBytes, totalReservoirBytes);
+      for (const [threshold, key, latch] of [
+        [28_800, "lowReservoirEvents600Ms", "belowReservoir600Ms"],
+        [19_200, "lowReservoirEvents400Ms", "belowReservoir400Ms"],
+        [9_600, "lowReservoirEvents200Ms", "belowReservoir200Ms"],
+      ]) {
+        const below = totalReservoirBytes < threshold;
+        if (below && !job[latch]) job[key] += 1;
+        job[latch] = below;
+      }
+    }
     job.maxNetworkInFlightBytes = Math.max(job.maxNetworkInFlightBytes, job.bytesSent - admittedBytes);
     job.totalOutstandingHighWaterBytes = Math.max(job.totalOutstandingHighWaterBytes, job.bytesSent - consumedBytes);
     signalFlow(job);
@@ -1062,6 +1078,13 @@ export function createSpeakerRuntime({
       catchup_frames: job.catchupFrames, high_water_brake_count: job.highWaterBrakeCount,
       high_water_brake_max_ms: Math.round(job.highWaterBrakeMaxMs), pcm_bytes: job.bytesSent,
       opus_queue_high_water_packets: job.maxReportedOpusQueuedPackets,
+      opus_queue_min_active_packets: Number.isFinite(job.minReportedOpusQueuedPackets) ? job.minReportedOpusQueuedPackets : null,
+      opus_queue_min_active_pcm_bytes: Number.isFinite(job.minReportedOpusQueuedPcmBytes) ? job.minReportedOpusQueuedPcmBytes : null,
+      min_active_total_reservoir_bytes: Number.isFinite(job.minReportedTotalReservoirBytes) ? job.minReportedTotalReservoirBytes : null,
+      max_active_total_reservoir_bytes: job.maxReportedTotalReservoirBytes,
+      low_reservoir_events_600ms: job.lowReservoirEvents600Ms,
+      low_reservoir_events_400ms: job.lowReservoirEvents400Ms,
+      low_reservoir_events_200ms: job.lowReservoirEvents200Ms,
     }, "SPEAKER_PACER");
     logger.info({
       event: "SPEAKER_AUDIO", playback_id: job.id,
@@ -1133,6 +1156,10 @@ export function createSpeakerRuntime({
       backendMetrics: null, playbackStartedAt: null, firstPcmToPlayMs: null, cancelSource: null,
       resolve, reject, completion, bytesSent: 0, admittedBytes: 0, receivedBytes: 0, consumedBytes: 0, reportedBufferedBytes: 0,
       reportedOpusQueuedPcmBytes: 0, reportedOpusQueuedPackets: 0, maxReportedOpusQueuedPackets: 0,
+      minReportedOpusQueuedPackets: Number.POSITIVE_INFINITY, minReportedOpusQueuedPcmBytes: Number.POSITIVE_INFINITY,
+      minReportedTotalReservoirBytes: Number.POSITIVE_INFINITY, maxReportedTotalReservoirBytes: 0,
+      lowReservoirEvents600Ms: 0, lowReservoirEvents400Ms: 0, lowReservoirEvents200Ms: 0,
+      belowReservoir600Ms: false, belowReservoir400Ms: false, belowReservoir200Ms: false,
       flowVersion: 0, flowWaiters: new Set(), pacerWaiters: new Set(), flowReports: 0, receivedFlowReports: 0, lastFlowReceivedBytes: 0,
       maxNetworkInFlightBytes: 0, totalOutstandingHighWaterBytes: 0, endSent: false,
       maxWebSocketBufferedAmount: 0,
@@ -1238,6 +1265,13 @@ export function createSpeakerRuntime({
       receiver_buffer_target_bytes: job.transport?.enabled ? SPEAKER_OPUS_RESERVOIR_TARGET_BYTES : receiverBufferTargetBytes,
       opus_reservoir_low_bytes: job.transport?.enabled ? SPEAKER_OPUS_RESERVOIR_LOW_BYTES : null,
       opus_queue_high_water_packets: job.maxReportedOpusQueuedPackets,
+      opus_queue_min_active_packets: Number.isFinite(job.minReportedOpusQueuedPackets) ? job.minReportedOpusQueuedPackets : null,
+      opus_queue_min_active_pcm_bytes: Number.isFinite(job.minReportedOpusQueuedPcmBytes) ? job.minReportedOpusQueuedPcmBytes : null,
+      min_active_total_reservoir_bytes: Number.isFinite(job.minReportedTotalReservoirBytes) ? job.minReportedTotalReservoirBytes : null,
+      max_active_total_reservoir_bytes: job.maxReportedTotalReservoirBytes,
+      low_reservoir_events_600ms: job.lowReservoirEvents600Ms,
+      low_reservoir_events_400ms: job.lowReservoirEvents400Ms,
+      low_reservoir_events_200ms: job.lowReservoirEvents200Ms,
       network_inflight_limit_bytes: networkInFlightLimitBytes,
       total_outstanding_high_water_bytes: job.totalOutstandingHighWaterBytes,
       total_outstanding_limit_bytes: job.transport?.enabled ? SPEAKER_OPUS_RESERVOIR_CEILING_BYTES : maxOutstandingBytes,

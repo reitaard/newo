@@ -64,6 +64,9 @@ constexpr size_t SPEAKER_OPUS_PACKET_HEADER_BYTES = 8;
 constexpr size_t SPEAKER_OPUS_PACKET_MAX_BYTES = 4'000;
 constexpr size_t SPEAKER_OPUS_QUEUE_DEPTH = 32;
 constexpr size_t SPEAKER_OPUS_STARTUP_PACKETS = 25;  // 1,000 ms.
+constexpr size_t SPEAKER_OPUS_LOW_RESERVOIR_600_MS_BYTES = 28'800;
+constexpr size_t SPEAKER_OPUS_LOW_RESERVOIR_400_MS_BYTES = 19'200;
+constexpr size_t SPEAKER_OPUS_LOW_RESERVOIR_200_MS_BYTES = 9'600;
 constexpr uint32_t SPEAKER_OPUS_DECODER_STACK_BYTES = 8'192;
 static_assert(SPEAKER_OPUS_FRAME_SAMPLES == 960, "speaker Opus frame samples changed");
 static_assert(SPEAKER_OPUS_FRAME_PCM_BYTES == 1'920, "speaker Opus frame bytes changed");

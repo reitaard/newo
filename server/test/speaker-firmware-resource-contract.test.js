@@ -4,6 +4,7 @@ import test from "node:test";
 
 const speakerPath = new URL("../../Newo/newo_speaker.cpp", import.meta.url);
 const speakerHeaderPath = new URL("../../Newo/newo_speaker.h", import.meta.url);
+const speakerConfigPath = new URL("../../Newo/newo_config.h", import.meta.url);
 
 test("Opus decoder uses a bounded PSRAM task stack with matching deletion", async () => {
   const speaker = await readFile(speakerPath, "utf8");
@@ -45,4 +46,22 @@ test("speaker receipt accounting follows successful PCM admission and has a boun
   assert.doesNotMatch(speaker, /receivedBytes_ \+= length;[\s\S]{0,300}xStreamBufferSend\(buffer_, payload, length, 0\)/);
   assert.match(speaker, /newoSpeakerReceiptReportDue\([\s\S]*?SPEAKER_RECEIPT_REPORT_MAX_LATENCY_MS/);
   assert.match(header, /bool receiptReportPending_ = false;/);
+});
+
+test("Opus continuity diagnostics sample only active playback and preserve fixed memory bounds", async () => {
+  const [speaker, header, config] = await Promise.all([
+    readFile(speakerPath, "utf8"),
+    readFile(speakerHeaderPath, "utf8"),
+    readFile(speakerConfigPath, "utf8"),
+  ]);
+
+  assert.match(speaker, /request_\.codec == Codec::OPUS && playbackStarted_ && !endReceived_/);
+  assert.match(speaker, /opusReservoirMinimumActiveBytes_/);
+  assert.match(speaker, /opusLowReservoir600MsEvents_/);
+  assert.match(speaker, /opusLowReservoir400MsEvents_/);
+  assert.match(speaker, /opusLowReservoir200MsEvents_/);
+  assert.match(header, /uint32_t opusQueueMinimumActivePackets_/);
+  assert.match(config, /SPEAKER_OPUS_QUEUE_DEPTH\s*=\s*32/);
+  assert.match(config, /SPEAKER_OPUS_STARTUP_PACKETS\s*=\s*25/);
+  assert.match(config, /SPEAKER_BUFFER_BYTES\s*=\s*24'576/);
 });
