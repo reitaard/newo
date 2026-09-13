@@ -7,7 +7,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 
 import { createAssistantRuntime } from "./assistant.js";
-import { createAssistantProfiles, PROFILE_TUNING_PRESETS, QWEN_PROFILE_ID, resolveAssistantProfile } from "./assistant-profiles.js";
+import { createAssistantProfiles, normalizeProfileTuning, PROFILE_TUNING_PRESETS, QWEN_PROFILE_ID, resolveAssistantProfile } from "./assistant-profiles.js";
 import { createAssistantTurnRuntime } from "./assistant-turn.js";
 import { createRuntimeStateStore } from "./runtime-state.js";
 import { createSpeakerRuntime, startTelegramAndSpeech } from "./tts.js";
@@ -470,7 +470,6 @@ const TELEGRAM_COMMANDS = [
   { command: "profile", description: "Assistant profile status" },
   { command: "profile_lfm", description: "Use LFM assistant" },
   { command: "profile_qwen", description: "Use Qwen assistant" },
-  { command: "profile_tune", description: "Assistant tuning preset" },
   { command: "speaker", description: "Toggle speaker" },
   { command: "volume", description: "Set speaker volume" },
   { command: "mute", description: "Toggle mute" },
@@ -813,12 +812,26 @@ const primaryModeHandlers = createPrimaryModeHandlers({
   getAssistantTuning: () => assistantRuntime.getPreferredProfileConfig(),
   setAssistantTuningPreset: async (preset) => {
     const id = assistantRuntime.getTelemetry().preferred_profile;
-    if (preset === "reset" || preset === "balanced") delete assistantProfileOverrides[id];
-    else if (PROFILE_TUNING_PRESETS[preset]) assistantProfileOverrides[id] = PROFILE_TUNING_PRESETS[preset];
+    const nextOverrides = { ...assistantProfileOverrides };
+    if (preset === "reset" || preset === "balanced") delete nextOverrides[id];
+    else if (PROFILE_TUNING_PRESETS[preset]) nextOverrides[id] = PROFILE_TUNING_PRESETS[preset];
     else throw new Error("invalid profile tuning preset");
-    const profiles = createAssistantProfiles({ qwenApiKey: env.ASSISTANT_API_KEY, overrides: assistantProfileOverrides });
+    const profiles = createAssistantProfiles({ qwenApiKey: env.ASSISTANT_API_KEY, overrides: nextOverrides });
+    await runtimeState.setAssistantProfileOverrides(nextOverrides);
+    assistantProfileOverrides = nextOverrides;
     assistantRuntime.replaceProfile(profiles[id]);
-    await runtimeState.setAssistantProfileOverrides(assistantProfileOverrides);
+    return assistantRuntime.getPreferredProfileConfig();
+  },
+  setAssistantTuningValue: async (key, value) => {
+    const id = assistantRuntime.getTelemetry().preferred_profile;
+    const canonical = { topk: "top_k", topp: "top_p", maxtoken: "max_tokens", maxchars: "max_chars", timeout: "timeout_ms", rpenalty: "repeat_penalty", temp: "temperature" }[key];
+    const tuning = normalizeProfileTuning({ [canonical]: Number(value) });
+    if (!canonical || !Object.hasOwn(tuning, canonical)) throw new Error("invalid profile tuning value");
+    const nextOverrides = { ...assistantProfileOverrides, [id]: { ...(assistantProfileOverrides[id] ?? {}), ...tuning } };
+    const profiles = createAssistantProfiles({ qwenApiKey: env.ASSISTANT_API_KEY, overrides: nextOverrides });
+    await runtimeState.setAssistantProfileOverrides(nextOverrides);
+    assistantProfileOverrides = nextOverrides;
+    assistantRuntime.replaceProfile(profiles[id]);
     return assistantRuntime.getPreferredProfileConfig();
   },
 });
@@ -876,6 +889,8 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["profile_lfm", "p_lfm"], (ctx) => primaryModeHandlers.profile(ctx, "lfm"));
   bot.command(["profile_qwen", "p_qwen"], (ctx) => primaryModeHandlers.profile(ctx, "qwen"));
   bot.command(["profile_tune", "pt"], primaryModeHandlers.profileTune);
+  bot.command("p_conf", (ctx) => primaryModeHandlers.profileTune(ctx, ""));
+  bot.command("p_reset", (ctx) => primaryModeHandlers.profileTune(ctx, "reset"));
   bot.command("speaker", primaryModeHandlers.speaker);
   bot.command("volume", primaryModeHandlers.volume);
   bot.command("mute", primaryModeHandlers.mute);

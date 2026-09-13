@@ -155,6 +155,7 @@ export function createPrimaryModeHandlers({
   setAssistantProfile = null,
   getAssistantTuning = () => ({}),
   setAssistantTuningPreset = null,
+  setAssistantTuningValue = null,
   getTrackDesired = () => false,
   persistTrackDesired = async () => false,
   handleTrackCommandResult = () => {},
@@ -197,6 +198,15 @@ export function createPrimaryModeHandlers({
 
   async function profile(ctx, forcedProfile = null) {
     const requested = forcedProfile ?? String(ctx.match ?? "").trim();
+    const setting = requested.match(/^(?:set|s)\s+(topk|topp|maxtoken|maxchars|timeout|rpenalty|temp)\s+([^\s]+)$/i);
+    if (setting) {
+      if (!setAssistantTuningValue) return commandReply(ctx, unavailable("profile tuning", "Unavailable"), "unavailable", null, { newoSpeak: false });
+      try {
+        return commandReply(ctx, formatProfileTuning(await setAssistantTuningValue(setting[1].toLowerCase(), setting[2])), "response", null, { newoSpeak: false });
+      } catch {
+        return commandReply(ctx, message("profile tuning", ["Invalid value. Use /p_conf for current settings."]), "usage", null, { newoSpeak: false });
+      }
+    }
     if (requested) {
       if (!setAssistantProfile) return commandReply(ctx, unavailable("profile", "Unavailable"), "unavailable", null, { newoSpeak: false });
       try {
@@ -209,8 +219,8 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, formatProfileStatus(getAssistantInfo()), "response", null, { newoSpeak: false });
   }
 
-  async function profileTune(ctx) {
-    const preset = String(ctx.match ?? "").trim().toLowerCase();
+  async function profileTune(ctx, forcedPreset = null) {
+    const preset = forcedPreset ?? String(ctx.match ?? "").trim().toLowerCase();
     if (!preset) return commandReply(ctx, formatProfileTuning(getAssistantTuning()), "response", null, { newoSpeak: false });
     if (!setAssistantTuningPreset || !["fast", "balanced", "quality", "reset"].includes(preset)) {
       return commandReply(ctx, message("profile tuning", ["Usage: /pt [fast|balanced|quality|reset]"]), "usage", null, { newoSpeak: false });

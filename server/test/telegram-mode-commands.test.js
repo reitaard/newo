@@ -28,6 +28,7 @@ function createHarness(sendDeviceRequest, overrides = {}) {
     setAssistantProfile: overrides.setAssistantProfile,
     getAssistantTuning: overrides.getAssistantTuning,
     setAssistantTuningPreset: overrides.setAssistantTuningPreset,
+    setAssistantTuningValue: overrides.setAssistantTuningValue,
     getTrackDesired: () => trackDesired,
     persistTrackDesired: async (enabled) => { trackDesired = enabled; return enabled; },
     renderTrackSnapshot: ({ debug, transient } = {}) => debug ? "DEBUG PANEL" : transient ? "STARTING PANEL" : "STATUS PANEL",
@@ -196,6 +197,18 @@ test("/pt shows and applies compact persistent tuning presets", async () => {
   assert.match(harness.replies[0].text, /64 tokens \/ 300 chars/);
   assert.match(harness.replies[1].text, /48 tokens \/ 240 chars/);
   assert.deepEqual(selected, ["fast"]);
+});
+
+test("/p hidden direct tuning accepts short aliases and rejects invalid values", async () => {
+  const selected = [];
+  const tuning = { id: "lfm2.5:8b", temperature: 0.2, top_k: 80, repeat_penalty: 1.05, max_tokens: 64, max_chars: 300, timeout_ms: 15_000 };
+  const harness = createHarness(() => ({ kind: "offline" }), {
+    setAssistantTuningValue: async (key, value) => { selected.push([key, value]); return tuning; },
+  });
+  await harness.handlers.profile({ match: "s topk 60" });
+  await harness.handlers.profile({ match: "set maxchars 280" });
+  assert.deepEqual(selected, [["topk", "60"], ["maxchars", "280"]]);
+  assert.ok(harness.replies.every((reply) => reply.options.newoSpeak === false));
 });
 
 test("/speaker toggles OFF with terse non-spoken confirmation", async () => {
