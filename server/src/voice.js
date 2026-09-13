@@ -322,6 +322,8 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
     const connectedAt = Date.now();
     const batchDurationMs = config.batchDurationMs ?? 100;
     const batchBytes = Math.round(bytesPerSecond * batchDurationMs / 1_000);
+    const maxPendingAudioMs = config.maxPendingAudioMs ?? 3_000;
+    const pendingLimitBytes = Math.round(bytesPerSecond * maxPendingAudioMs / 1_000);
     let startedAt = null;
     let bytesReceived = 0;
     let rawFramesReceived = 0;
@@ -518,7 +520,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
         requestClose(1009, "voice stream too large");
         return;
       }
-      if (activeBatchBytes + pendingBytes + chunk.length > batchBytes * 2) {
+      if (activeBatchBytes + pendingBytes + chunk.length > pendingLimitBytes) {
         ++workerBackpressureEvents;
         logger.warn({
           event: "VOICE_WORKER_BACKPRESSURE",

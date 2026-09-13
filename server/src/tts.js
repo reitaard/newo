@@ -553,6 +553,7 @@ export function createSpeakerRuntime({
   logger, backend, enabled, getDevice, sendControl, isPersistentEnabled = () => true,
   format = { sampleRate: 24_000, channels: 1, bitsPerSample: 16 }, chunkBytes = 2_048,
   maxTextChars = 300, maxStreamBytes = SPEAKER_STREAM_MAX_BYTES, connectionTimeoutMs = 9_000,
+  codecNegotiationTimeoutMs = 1_500,
   resultTimeoutMs = 75_000, flowTimeoutMs = SPEAKER_FLOW_TIMEOUT_MS, playbackStartTimeoutMs = 5_000,
   receiverCapacityBytes = SPEAKER_RECEIVER_CAPACITY_BYTES,
   receiverBufferTargetBytes = SPEAKER_RECEIVER_BUFFER_TARGET_BYTES,
@@ -650,6 +651,31 @@ export function createSpeakerRuntime({
     for (const waiter of connectionWaiters) { clearTimeout(waiter.timer); waiter.resolve(current); }
     connectionWaiters.clear();
   }
+
+  async function waitForCodecNegotiation(current) {
+    if (String(process.env.SPEAKER_CODEC ?? "pcm").toLowerCase() !== "opus") return;
+    if (current.codecsNegotiated) return;
+
+    let timer = null;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(resolve, codecNegotiationTimeoutMs);
+      timer.unref?.();
+    });
+
+    await Promise.race([current.codecsReady, timeout]);
+    if (timer) clearTimeout(timer);
+
+    if (connection !== current || current.ws.readyState !== 1) {
+      throw new Error("speaker disconnected");
+    }
+
+    if (!current.codecsNegotiated) {
+      logger.warn({
+        device_id: current.deviceId,
+        timeout_ms: codecNegotiationTimeoutMs,
+      }, "Speaker codec negotiation timed out; using PCM");
+    }
+  }
   async function requestTemporaryConnection(job) {
     if (connection?.ws.readyState === 1) return connection;
     const device = getDevice();
@@ -729,6 +755,9 @@ export function createSpeakerRuntime({
     catch { return false; }
     if (message?.type === "speaker_ready") {
       current.codecs = new Set(Array.isArray(message.codecs) ? message.codecs.map((codec) => String(codec).toLowerCase()) : []);
+      current.codecsNegotiated = true;
+      current.resolveCodecsReady?.();
+      current.resolveCodecsReady = null;
       logger.info({ device_id: current.deviceId, codecs: [...current.codecs] }, "Speaker codecs negotiated");
       return true;
     }
@@ -895,6 +924,7 @@ export function createSpeakerRuntime({
       job.backendMetrics = source.metrics;
       beginJob(job);
       const begin = { type: "speaker_begin", playback_id: job.id, sample_rate: format.sampleRate, channels: 1, bits_per_sample: 16, streaming: true, max_bytes: maxStreamBytes };
+      await waitForCodecNegotiation(current);
       job.transport = new OpusPlaybackTransport({ playbackId: job.id, enabled: String(process.env.SPEAKER_CODEC ?? "pcm").toLowerCase() === "opus" && OpusPlaybackTransport.supported(current.codecs) });
       await job.transport.begin();
       job.beginSentAt = performance.now();
@@ -964,6 +994,7 @@ export function createSpeakerRuntime({
     job.pcmBytes = pcm.length;
     beginJob(job);
     const begin = { type: "speaker_begin", playback_id: job.id, sample_rate: format.sampleRate, channels: 1, bits_per_sample: 16, bytes: pcm.length };
+    await waitForCodecNegotiation(current);
     job.transport = new OpusPlaybackTransport({ playbackId: job.id, enabled: String(process.env.SPEAKER_CODEC ?? "pcm").toLowerCase() === "opus" && OpusPlaybackTransport.supported(current.codecs) });
     await job.transport.begin();
     job.beginSentAt = performance.now();
@@ -1086,10 +1117,22 @@ export function createSpeakerRuntime({
   }
   function handleConnection(ws, deviceId) {
     if (connection?.ws && connection.ws !== ws && connection.ws.readyState === 1) connection.ws.close(4001, "replaced by new connection");
-    const current = { ws, deviceId, connectedAt: performance.now(), codecs: new Set() };
+    let resolveCodecsReady;
+    const codecsReady = new Promise((resolve) => { resolveCodecsReady = resolve; });
+    const current = {
+      ws,
+      deviceId,
+      connectedAt: performance.now(),
+      codecs: new Set(),
+      codecsNegotiated: false,
+      codecsReady,
+      resolveCodecsReady,
+    };
     connection = current;
     ws.on?.("message", (data, isBinary) => { handleSocketMessage(current, data, isBinary); });
     ws.on?.("close", () => {
+      current.resolveCodecsReady?.();
+      current.resolveCodecsReady = null;
       if (connection === current) connection = null;
       for (const job of jobs.values()) {
         void job.cancelSource?.();

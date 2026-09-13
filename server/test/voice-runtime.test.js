@@ -171,7 +171,7 @@ async function waitFor(predicate, timeoutMs = 1_000) {
   }
 }
 
-function cadenceRuntime({ latencyForBatch, onAccept, onStop } = {}) {
+function cadenceRuntime({ latencyForBatch, onAccept, onStop, maxPendingAudioMs = 3_000 } = {}) {
   const logs = [];
   let batchIndex = 0;
   const runtime = createVoiceRuntime({
@@ -192,7 +192,7 @@ function cadenceRuntime({ latencyForBatch, onAccept, onStop } = {}) {
       },
     },
     config: { sampleRate: 16000, channels: 1, bitsPerSample: 16, maxStreamBytes: 640_000,
-      batchDurationMs: 100, firstAudioTimeoutMs: 500, saveWav: false, liveTestMode: false },
+      batchDurationMs: 100, maxPendingAudioMs, firstAudioTimeoutMs: 500, saveWav: false, liveTestMode: false },
   });
   return { runtime, logs };
 }
@@ -249,7 +249,7 @@ test("one slightly slow worker batch is absorbed by the bounded pending bundle",
 });
 
 test("sustained slower-than-realtime ASR closes once with a bounded backlog", async () => {
-  const { runtime, logs } = cadenceRuntime({ latencyForBatch: () => 180 });
+  const { runtime, logs } = cadenceRuntime({ latencyForBatch: () => 180, maxPendingAudioMs: 200 });
   const socket = new FakeSocket();
   await runtime.handleConnection(socket, "test-device");
   await sendRealtimeFrames(socket, 60);
