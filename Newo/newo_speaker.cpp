@@ -303,6 +303,7 @@ bool NewoSpeaker::startPlayback(const Request& request) {
   opusQueueHighWaterBytes_ = 0;
   opusQueueOverflows_ = 0;
   opusQueuedWireBytes_ = 0;
+  opusQueuedPcmBytes_ = 0;
   opusCallbackCount_ = 0;
   opusCallbackTotalUs_ = 0;
   opusCallbackWorstUs_ = 0;
@@ -351,6 +352,10 @@ void NewoSpeaker::opusDecoderTask() {
   int opusError = OPUS_OK;
   opusDecoder_ = opus_decoder_create(NewoConfig::SPEAKER_SAMPLE_RATE, 1, &opusError);
   if (!opusDecoder_ || opusError != OPUS_OK) fail("opus_decoder_init");
+  while (!failed_ && !decoderAbort_ && !endReceived_ &&
+         uxQueueMessagesWaiting(opusReadyQueue_) < NewoConfig::SPEAKER_OPUS_STARTUP_PACKETS) {
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
   OpusPacketRef packet;
   while (!failed_ && !decoderAbort_) {
     if (xQueueReceive(opusReadyQueue_, &packet, pdMS_TO_TICKS(10)) != pdTRUE) {
@@ -361,6 +366,8 @@ void NewoSpeaker::opusDecoderTask() {
     portENTER_CRITICAL(&stateMux_);
     if (opusQueuedWireBytes_ < packet.length) { portEXIT_CRITICAL(&stateMux_); fail("opus_queue_accounting"); break; }
     opusQueuedWireBytes_ -= packet.length;
+    if (opusQueuedPcmBytes_ < packet.validPcmBytes) { portEXIT_CRITICAL(&stateMux_); fail("opus_queue_accounting"); break; }
+    opusQueuedPcmBytes_ -= packet.validPcmBytes;
     portEXIT_CRITICAL(&stateMux_);
     const uint32_t started = micros();
     const int samples = opus_decode(opusDecoder_, encoded + NewoConfig::SPEAKER_OPUS_PACKET_HEADER_BYTES,
@@ -449,18 +456,24 @@ bool NewoSpeaker::handleOpusPacket(const uint8_t* payload, size_t length) {
   opusBytesReceived_ += static_cast<uint32_t>(length);
   opusAdmittedBytes_ += validPcmBytes;
   opusQueuedWireBytes_ += length;
+  opusQueuedPcmBytes_ += validPcmBytes;
   if (opusQueuedWireBytes_ > opusQueueHighWaterBytes_) opusQueueHighWaterBytes_ = opusQueuedWireBytes_;
   if (validPcmBytes < NewoConfig::SPEAKER_OPUS_FRAME_PCM_BYTES) opusSawPartialFrame_ = true;
   portEXIT_CRITICAL(&stateMux_);
   if (xQueueSend(opusReadyQueue_, &packet, 0) != pdTRUE) {
     portENTER_CRITICAL(&stateMux_);
     --expectedOpusSequence_; --opusPacketsReceived_; opusBytesReceived_ -= length;
-    opusAdmittedBytes_ -= validPcmBytes; opusQueuedWireBytes_ -= length;
+    opusAdmittedBytes_ -= validPcmBytes; opusQueuedWireBytes_ -= length; opusQueuedPcmBytes_ -= validPcmBytes;
     portEXIT_CRITICAL(&stateMux_);
     xQueueSend(opusFreeQueue_, &slot, 0); ++opusQueueOverflows_; fail("opus_queue_overflow"); return false;
   }
   const uint32_t queued = uxQueueMessagesWaiting(opusReadyQueue_);
   if (queued > opusQueueHighWaterPackets_) opusQueueHighWaterPackets_ = queued;
+  lastPcmReceivedMs_ = millis();
+  if (!receiptReportPending_) {
+    receiptPendingSinceMs_ = lastPcmReceivedMs_;
+    receiptReportPending_ = true;
+  }
   return true;
 }
 
@@ -593,9 +606,10 @@ void NewoSpeaker::sendPlaybackStartedDirect() {
 void NewoSpeaker::sendFlowReport(bool force) {
   if (!connected_ || !playing() || !buffer_) return;
   const uint32_t received = receivedBytes_;
+  const uint32_t admitted = request_.codec == Codec::OPUS ? opusAdmittedBytes_ : received;
   const uint32_t consumed = consumedBytes_;
   const uint32_t nowMs = millis();
-  const bool receiveProgress = received > lastFlowSentReceivedBytes_;
+  const bool receiveProgress = admitted > lastFlowSentReceivedBytes_;
   const bool consumeProgress = consumed > lastFlowSentConsumedBytes_;
   if (!force && !receiveProgress && !consumeProgress) return;
 
@@ -604,8 +618,11 @@ void NewoSpeaker::sendFlowReport(bool force) {
   doc["playback_id"] = request_.playbackId;
   doc["codec"] = request_.codec == Codec::OPUS ? "opus" : "pcm";
   doc["received_bytes"] = received;
+  doc["admitted_bytes"] = admitted;
   doc["consumed_bytes"] = consumed;
   doc["buffered_bytes"] = static_cast<uint32_t>(xStreamBufferBytesAvailable(buffer_));
+  doc["opus_queued_packets"] = request_.codec == Codec::OPUS ? static_cast<uint32_t>(uxQueueMessagesWaiting(opusReadyQueue_)) : 0;
+  doc["opus_queued_pcm_bytes"] = request_.codec == Codec::OPUS ? opusQueuedPcmBytes_ : 0;
   doc["capacity_bytes"] = static_cast<uint32_t>(NewoConfig::SPEAKER_BUFFER_BYTES);
   doc["report_interval_ms"] = static_cast<uint32_t>(nowMs - lastFlowReportMs_);
   doc["receipt_report_delay_ms"] = receiveProgress && receiptReportPending_
@@ -619,7 +636,7 @@ void NewoSpeaker::sendFlowReport(bool force) {
     if (delayMs > maximumReceiptReportDelayMs_) maximumReceiptReportDelayMs_ = delayMs;
     receiptReportPending_ = false;
   }
-  lastFlowSentReceivedBytes_ = received;
+  lastFlowSentReceivedBytes_ = admitted;
   lastFlowSentConsumedBytes_ = consumed;
   lastFlowReportMs_ = nowMs;
   ++flowReportCount_;
@@ -786,11 +803,12 @@ void NewoSpeaker::loop(bool cloudReady) {
 
   if (playing() && connected_ && buffer_) {
     const uint32_t received = receivedBytes_;
+    const uint32_t admitted = request_.codec == Codec::OPUS ? opusAdmittedBytes_ : received;
     const uint32_t consumed = consumedBytes_;
     const uint32_t buffered = static_cast<uint32_t>(xStreamBufferBytesAvailable(buffer_));
     const bool receiveProgress = newoSpeakerReceiptReportDue(
         receiptReportPending_, millis(), receiptPendingSinceMs_,
-        received - lastFlowSentReceivedBytes_, NewoConfig::SPEAKER_RECEIVE_REPORT_BYTES,
+        admitted - lastFlowSentReceivedBytes_, NewoConfig::SPEAKER_RECEIVE_REPORT_BYTES,
         NewoConfig::SPEAKER_RECEIPT_REPORT_MAX_LATENCY_MS);
     const bool consumeProgress = consumed - lastFlowSentConsumedBytes_ >= NewoConfig::SPEAKER_CONSUME_REPORT_BYTES;
     const bool lowWaterHeartbeat = playbackStarted_ && buffered < NewoConfig::SPEAKER_LOW_WATER_BYTES &&

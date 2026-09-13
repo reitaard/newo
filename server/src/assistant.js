@@ -6,6 +6,7 @@ import {
   LFM_PROFILE_ID,
   QWEN_PROFILE_ID,
   QWEN_SYSTEM_PROMPT,
+  profileTuning,
   resolveAssistantProfile,
 } from "./assistant-profiles.js";
 
@@ -326,7 +327,6 @@ export function createAssistantRuntime({
       provider: profile?.provider ?? null,
       model: profile?.model ?? null,
       online,
-      qwen: online,
       profile_health: profileHealth,
       active: active.size > 0,
     };
@@ -394,6 +394,17 @@ export function createAssistantRuntime({
     await refreshProfileHealth(id);
     logger?.info({ previous_profile: previous, preferred_profile: id, effective_profile: id, profile_health: health.get(id) }, "Assistant profile switched");
     return getTelemetry();
+  }
+
+  function replaceProfile(profile) {
+    if (!profile?.id || !configuredProfiles[profile.id]) throw assistantError("assistant_profile_invalid", String(profile?.id ?? ""));
+    configuredProfiles = Object.freeze({ ...configuredProfiles, [profile.id]: profile });
+    return getTelemetry();
+  }
+
+  function getPreferredProfileConfig() {
+    const profile = profileById(preferredId);
+    return { id: preferredId, ...profileTuning(profile) };
   }
 
   async function requestProfile(profile, { deviceId, streamId, transcript, previousExchanges, historyAvailable }) {
@@ -588,6 +599,8 @@ export function createAssistantRuntime({
     refreshHealth,
     refreshProfileHealth,
     setPreferredProfile,
+    replaceProfile,
+    getPreferredProfileConfig,
     getTelemetry,
     abortDevice,
     close,

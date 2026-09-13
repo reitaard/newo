@@ -7,7 +7,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 
 import { createAssistantRuntime } from "./assistant.js";
-import { createAssistantProfiles, QWEN_PROFILE_ID, resolveAssistantProfile } from "./assistant-profiles.js";
+import { createAssistantProfiles, PROFILE_TUNING_PRESETS, QWEN_PROFILE_ID, resolveAssistantProfile } from "./assistant-profiles.js";
 import { createAssistantTurnRuntime } from "./assistant-turn.js";
 import { createRuntimeStateStore } from "./runtime-state.js";
 import { createSpeakerRuntime, startTelegramAndSpeech } from "./tts.js";
@@ -139,13 +139,15 @@ const REACTION_NAMES = Object.keys(REACTION_PRESETS);
 let bot = null;
 let pendingReboot = null;
 let shuttingDown = false;
-const assistantProfiles = createAssistantProfiles({ qwenApiKey: env.ASSISTANT_API_KEY });
-const configuredAssistantProfile = resolveAssistantProfile(env.ASSISTANT_PROFILE, assistantProfiles) ?? QWEN_PROFILE_ID;
+const builtInAssistantProfiles = createAssistantProfiles({ qwenApiKey: env.ASSISTANT_API_KEY });
+const configuredAssistantProfile = resolveAssistantProfile(env.ASSISTANT_PROFILE, builtInAssistantProfiles) ?? QWEN_PROFILE_ID;
 const runtimeState = createRuntimeStateStore({
   filePath: env.RUNTIME_STATE_FILE,
   logger: app.log,
-  defaults: { speakerEnabled: true, assistantProfile: configuredAssistantProfile, trackDesired: false, telegramUpdateIds: [] },
+  defaults: { speakerEnabled: true, assistantProfile: configuredAssistantProfile, assistantProfileOverrides: {}, trackDesired: false, telegramUpdateIds: [] },
 });
+let assistantProfileOverrides = runtimeState.assistantProfileOverrides;
+const assistantProfiles = createAssistantProfiles({ qwenApiKey: env.ASSISTANT_API_KEY, overrides: assistantProfileOverrides });
 let automaticSpeakerEnabled = runtimeState.speakerEnabled;
 let desiredTrackEnabled = runtimeState.trackDesired;
 
@@ -305,7 +307,7 @@ function sendDeviceRequest(requestType, responseType, fields = {}, trace = null)
   return { kind: "sent", requestId, promise };
 }
 
-+const trackReconciler = createTrackReconciler({
+const trackReconciler = createTrackReconciler({
   getDesired: () => desiredTrackEnabled,
   logger: app.log,
   request: async (action) => {
@@ -468,6 +470,7 @@ const TELEGRAM_COMMANDS = [
   { command: "profile", description: "Assistant profile status" },
   { command: "profile_lfm", description: "Use LFM assistant" },
   { command: "profile_qwen", description: "Use Qwen assistant" },
+  { command: "profile_tune", description: "Assistant tuning preset" },
   { command: "speaker", description: "Toggle speaker" },
   { command: "volume", description: "Set speaker volume" },
   { command: "mute", description: "Toggle mute" },
@@ -807,6 +810,17 @@ const primaryModeHandlers = createPrimaryModeHandlers({
     await runtimeState.setAssistantProfile(telemetry.preferred_profile);
     return telemetry;
   },
+  getAssistantTuning: () => assistantRuntime.getPreferredProfileConfig(),
+  setAssistantTuningPreset: async (preset) => {
+    const id = assistantRuntime.getTelemetry().preferred_profile;
+    if (preset === "reset" || preset === "balanced") delete assistantProfileOverrides[id];
+    else if (PROFILE_TUNING_PRESETS[preset]) assistantProfileOverrides[id] = PROFILE_TUNING_PRESETS[preset];
+    else throw new Error("invalid profile tuning preset");
+    const profiles = createAssistantProfiles({ qwenApiKey: env.ASSISTANT_API_KEY, overrides: assistantProfileOverrides });
+    assistantRuntime.replaceProfile(profiles[id]);
+    await runtimeState.setAssistantProfileOverrides(assistantProfileOverrides);
+    return assistantRuntime.getPreferredProfileConfig();
+  },
 });
 
 if (env.TELEGRAM_BOT_TOKEN) {
@@ -841,7 +855,7 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["logs", "l"], (ctx) => handleLogsCommand(ctx));
   bot.command("errors", (ctx) => handleLogsCommand(ctx, true));
   bot.command("e", (ctx) => handleLogsCommand(ctx, true));
-  bot.command(["ping", "p"], handlePingCommand);
+  bot.command(["ping", "pi"], handlePingCommand);
   bot.command(["reboot", "r"], handleRebootCommand);
   bot.command(["newo", "n"], handleNewoCommand);
   bot.command(["face", "f"], handleFaceCommand);
@@ -858,15 +872,28 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command("track_bg", primaryModeHandlers.trackBackground);
   bot.command(["voice", "v"], primaryModeHandlers.voice);
   bot.command("vs", primaryModeHandlers.voiceStatus);
-  bot.command("profile", primaryModeHandlers.profile);
-  bot.command("profile_lfm", (ctx) => primaryModeHandlers.profile(ctx, "lfm"));
-  bot.command("profile_qwen", (ctx) => primaryModeHandlers.profile(ctx, "qwen"));
+  bot.command(["profile", "p"], primaryModeHandlers.profile);
+  bot.command(["profile_lfm", "p_lfm"], (ctx) => primaryModeHandlers.profile(ctx, "lfm"));
+  bot.command(["profile_qwen", "p_qwen"], (ctx) => primaryModeHandlers.profile(ctx, "qwen"));
+  bot.command(["profile_tune", "pt"], primaryModeHandlers.profileTune);
   bot.command("speaker", primaryModeHandlers.speaker);
   bot.command("volume", primaryModeHandlers.volume);
   bot.command("mute", primaryModeHandlers.mute);
   bot.command(["speak", "sp"], handleSpeakCommand);
   void bot.api.setMyCommands(TELEGRAM_COMMANDS).catch(() => app.log.warn("Failed to register the Telegram command menu"));
-  app.post("/telegram/webhook", webhookCallback(bot, "fastify", { secretToken: env.TELEGRAM_WEBHOOK_SECRET, onTimeout: "return", timeoutMilliseconds: 9_000 }));
+  const telegramUpdates = createTelegramUpdateAcceptor({
+    handleUpdate: (update) => bot.handleUpdate(update),
+    acceptUpdateId: (updateId) => runtimeState.acceptTelegramUpdate(updateId),
+    logger: app.log,
+  });
+  app.post("/telegram/webhook", async (request, reply) => {
+    if (!safeEqual(request.headers["x-telegram-bot-api-secret-token"], env.TELEGRAM_WEBHOOK_SECRET)) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+    const result = await telegramUpdates.accept(request.body);
+    if (result.invalid) return reply.code(400).send({ error: "invalid update" });
+    return reply.code(200).send({ ok: true, duplicate: result.duplicate });
+  });
 }
 
 app.server.on("upgrade", (request, socket, head) => {
@@ -897,7 +924,7 @@ wss.on("connection", (ws, request, deviceId) => {
   const offlineDuration = reconnectingAfterNotifiedOffline ? Math.max(0, Date.now() - previous.offlineSince) : 0;
   cancelOfflineTimer(previous);
   if (previous?.ws.readyState === WebSocket.OPEN) { failPendingRequestsForDevice(deviceId, previous.ws, "disconnected"); previous.ws.close(4001, "replaced by new connection"); }
-  const state = { ws, connectedAt: new Date().toISOString(), lastSeen: new Date().toISOString(), hello: previous?.hello ?? null, status: previous?.status ?? null, speaker: previous?.speaker ?? null, hasBeenConnected: previous?.hasBeenConnected ?? true, offlineSince: null, offlineNotified: false, offlineTimer: null, isAlive: true };
+  const state = { ws, connectedAt: new Date().toISOString(), lastSeen: new Date().toISOString(), hello: previous?.hello ?? null, status: previous?.status ?? null, speaker: previous?.speaker ?? null, hasBeenConnected: previous?.hasBeenConnected ?? true, offlineSince: null, offlineNotified: false, offlineTimer: null, isAlive: true, commandEpoch: randomUUID(), trackCommandSequence: 0 };
   devices.set(deviceId, state);
   const completedIntentionalReboot = completePendingReboot(deviceId);
   if (reconnectingAfterNotifiedOffline && !completedIntentionalReboot) sendConnectivityNotification(commandMessage("connectivity", [quote([`Status: ${bold("Back online")}`, `Offline for: ${boldItalic(formatDuration(offlineDuration))}`]) ]));
@@ -914,7 +941,10 @@ wss.on("connection", (ws, request, deviceId) => {
     if (!parsed.success) { app.log.warn({ device_id: deviceId, issues: parsed.error.issues }, "Ignoring invalid device message"); return; }
     const message = parsed.data;
     if (message.type === "hello" && message.device !== deviceId) { app.log.warn({ authenticated_device: deviceId, claimed_device: message.device }, "Device hello identity mismatch"); ws.close(4003, "device identity mismatch"); return; }
-    if (message.type === "hello") state.hello = { device: message.device, firmware: message.firmware ?? null, autonomy_revision: message.autonomy_revision ?? null, chip: message.chip ?? null, received_at: state.lastSeen };
+    if (message.type === "hello") {
+      state.hello = { device: message.device, firmware: message.firmware ?? null, autonomy_revision: message.autonomy_revision ?? null, chip: message.chip ?? null, received_at: state.lastSeen };
+      trackReconciler.start();
+    }
     if (message.type === "status" || message.type === "pong") state.status = { ...(state.status ?? {}), ...message, received_at: state.lastSeen };
     if (message.type === "speaker_ack") state.speaker = { enabled: message.enabled, connection: message.connection, volume: message.volume, muted: message.muted };
     resolvePendingResponse(deviceId, ws, message);
@@ -926,7 +956,7 @@ wss.on("connection", (ws, request, deviceId) => {
     const current = devices.get(deviceId);
     failPendingRequestsForDevice(deviceId, ws, "disconnected");
     assistantTurnRuntime.abortDevice(deviceId);
-    if (current?.ws === ws) { current.lastSeen = new Date().toISOString(); scheduleOfflineNotification(deviceId, current, ws); }
+    if (current?.ws === ws) { current.lastSeen = new Date().toISOString(); trackReconciler.disconnected(); scheduleOfflineNotification(deviceId, current, ws); }
     app.log.info({ device_id: deviceId, code, reason: reason.toString() }, "Newo device disconnected");
   });
   ws.on("error", () => app.log.warn({ device_id: deviceId }, "Newo WebSocket error"));
@@ -967,6 +997,7 @@ async function shutdown(signal) {
   for (const [requestId] of pendingRequests) settlePendingRequest(requestId, { kind: "shutdown" });
   for (const state of devices.values()) cancelOfflineTimer(state);
   assistantTurnRuntime.close();
+  trackLive.stopAll();
   speakerRuntime.close();
   await Promise.all([...[...devices.values()].map((state) => state.ws), ...voiceWss.clients, ...speakerWss.clients].filter((ws) => ws.readyState !== WebSocket.CLOSED).map(closeDeviceSocket));
   await Promise.all([wss, voiceWss, speakerWss].map((server) => new Promise((resolve) => { try { server.close(() => resolve()); } catch { resolve(); } })));

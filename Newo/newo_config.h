@@ -59,13 +59,15 @@ constexpr uint16_t SPEAKER_OPUS_FRAME_MS = 40;
 constexpr size_t SPEAKER_OPUS_FRAME_SAMPLES = SPEAKER_SAMPLE_RATE * SPEAKER_OPUS_FRAME_MS / 1'000;
 constexpr size_t SPEAKER_OPUS_FRAME_PCM_BYTES = SPEAKER_OPUS_FRAME_SAMPLES * sizeof(int16_t);
 constexpr size_t SPEAKER_OPUS_PACKET_HEADER_BYTES = 8;
-// The server rejects envelopes above 4,000 bytes. Sixteen PSRAM slots provide
-// 640 ms of bounded compressed-audio scheduling margin without a PCM reservoir.
+// The server rejects envelopes above 4,000 bytes. Thirty-two PSRAM slots provide
+// a bounded 1.28 s compressed jitter reservoir at 40 ms per packet.
 constexpr size_t SPEAKER_OPUS_PACKET_MAX_BYTES = 4'000;
-constexpr size_t SPEAKER_OPUS_QUEUE_DEPTH = 16;
+constexpr size_t SPEAKER_OPUS_QUEUE_DEPTH = 32;
+constexpr size_t SPEAKER_OPUS_STARTUP_PACKETS = 25;  // 1,000 ms.
 constexpr uint32_t SPEAKER_OPUS_DECODER_STACK_BYTES = 8'192;
 static_assert(SPEAKER_OPUS_FRAME_SAMPLES == 960, "speaker Opus frame samples changed");
 static_assert(SPEAKER_OPUS_FRAME_PCM_BYTES == 1'920, "speaker Opus frame bytes changed");
+static_assert(SPEAKER_OPUS_STARTUP_PACKETS < SPEAKER_OPUS_QUEUE_DEPTH, "speaker Opus startup reservoir must leave refill room");
 
 // Delivery-aware flow reports are emitted from loop(), never the WebSocket
 // callback or playback task. Counters remain decoded/original PCM bytes for

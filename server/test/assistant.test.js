@@ -505,7 +505,7 @@ test("assistant readiness probes the configured model without generating chat", 
       return jsonResponse({ data: [{ id: "helix-qwen3-0.6b" }] });
     },
   });
-  assert.equal((await runtime.refreshHealth()).qwen, "online");
+  assert.equal((await runtime.refreshHealth()).online, "online");
   assert.deepEqual(requests, ["/v1/models"]);
 });
 
@@ -564,7 +564,7 @@ test("assistant telemetry retains only the latest turn and exposes timeout state
   ];
   const assistant = {
     async respond() { return outcomes.shift(); }, abortDevice() {}, close() {},
-    getTelemetry() { return { enabled: true, model: "helix-qwen3-0.6b", qwen: "online", active: false }; },
+    getTelemetry() { return { enabled: true, model: "helix-qwen3-0.6b", online: "online", active: false }; },
   };
   const speakerRuntime = { speak() { return { kind: "queued", playbackId: "p", completion: Promise.resolve() }; } };
   const turns = createAssistantTurnRuntime({ assistant, speakerRuntime, isPersistentSpeakerEnabled: () => true, maxReplyChars: 240, logger: quietLogger });

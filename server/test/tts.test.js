@@ -8,6 +8,7 @@ import {
   KokoroTtsBackend,
   speakerAudioFilter,
   speakerCreditBytes,
+  speakerOpusReservoirCreditBytes,
   speakerCodecFlowState,
   speakerDeliveryState,
   speakerOutstandingBytes,
@@ -17,6 +18,9 @@ import {
   SPEAKER_LIMITER,
   SPEAKER_MAX_OUTSTANDING_BYTES,
   SPEAKER_NETWORK_INFLIGHT_LIMIT_BYTES,
+  SPEAKER_OPUS_RESERVOIR_CEILING_BYTES,
+  SPEAKER_OPUS_RESERVOIR_TARGET_BYTES,
+  SPEAKER_OPUS_STARTUP_BYTES,
   SPEAKER_RECEIVER_BUFFER_TARGET_BYTES,
   SPEAKER_RECEIVER_CAPACITY_BYTES,
   startTelegramAndSpeech,
@@ -218,6 +222,15 @@ test("delivery-aware flow separates network flight, ESP buffer, and total outsta
   assert.equal(opus.networkDecodedPcmInFlight, 1_920);
   assert.equal(opus.receiverDecodedPcmOutstanding, 2_880);
   assert.throws(() => speakerCodecFlowState({ logicalPcmProduced: 1, wireBytes: 0, opusPackets: 0, decodedPcmAdmitted: 2, decodedPcmReceived: 0, decodedPcmConsumed: 0, decodedPcmBuffered: 0 }), /ordering/);
+});
+
+test("Opus reservoir credit targets compressed plus decoded future audio with a hard ceiling", () => {
+  assert.equal(SPEAKER_OPUS_STARTUP_BYTES, 48_000);
+  assert.equal(SPEAKER_OPUS_RESERVOIR_TARGET_BYTES, 57_600);
+  assert.equal(SPEAKER_OPUS_RESERVOIR_CEILING_BYTES, 72_000);
+  assert.equal(speakerOpusReservoirCreditBytes(48_000, 48_000, 0, 12_000, 36_000), 9_600);
+  assert.equal(speakerOpusReservoirCreditBytes(72_000, 72_000, 0, 24_000, 48_000), 0);
+  assert.throws(() => speakerOpusReservoirCreditBytes(10, 11, 0, 0, 0), /ordering/);
 });
 
 test("speaker conditioning adds configurable gain before the limiter", () => {

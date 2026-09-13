@@ -15,7 +15,7 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
   }
 
   function getTelemetry() {
-    const assistantStatus = assistant.getTelemetry?.() ?? { enabled: true, model: null, qwen: "unknown", active: false };
+    const assistantStatus = assistant.getTelemetry?.() ?? { enabled: true, model: null, online: "unknown", active: false };
     const hasError = ["timeout", "error", "speaker_failed", "speaker_unavailable", "unavailable"].includes(latest.result);
     return {
       ...assistantStatus,

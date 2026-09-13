@@ -37,6 +37,9 @@ struct NewoOpusQueueLifecycle {
 
   void reset() { ready = 0; freeSlots = depth; expectedSequence = 0; admittedBytes = 0; sawPartial = false; }
   bool readyForPlayback() const { return !decoderActive && ready == 0 && freeSlots == depth; }
+  bool readyToDecode(uint16_t startupPackets, bool endReceived) const {
+    return endReceived ? ready > 0 : ready >= startupPackets;
+  }
   bool admit(uint16_t sequence, uint16_t validBytes, uint16_t fullFrameBytes) {
     if (!readyForAdmission() || sequence != expectedSequence || sawPartial || validBytes == 0 ||
         (validBytes & 1) || validBytes > fullFrameBytes) return false;

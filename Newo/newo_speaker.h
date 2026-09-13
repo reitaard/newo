@@ -175,6 +175,7 @@ class NewoSpeaker {
   uint32_t opusQueueHighWaterBytes_ = 0;
   uint32_t opusQueueOverflows_ = 0;
   volatile uint32_t opusQueuedWireBytes_ = 0;
+  volatile uint32_t opusQueuedPcmBytes_ = 0;
   uint32_t opusCallbackCount_ = 0;
   uint64_t opusCallbackTotalUs_ = 0;
   uint32_t opusCallbackWorstUs_ = 0;

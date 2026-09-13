@@ -26,8 +26,49 @@ const sharedContextPolicy = Object.freeze({
   deterministicMemoryRoutes: true,
 });
 
-export function createAssistantProfiles({ qwenApiKey = null } = {}) {
-  return Object.freeze({
+const TUNING_RULES = Object.freeze({
+  temperature: [0, 2], top_k: [0, 200], top_p: [0, 1], repeat_penalty: [0.5, 2],
+  max_tokens: [8, 128], max_chars: [40, 500], timeout_ms: [1_000, 30_000],
+});
+
+export const PROFILE_TUNING_PRESETS = Object.freeze({
+  fast: Object.freeze({ max_tokens: 48, max_chars: 240, timeout_ms: 10_000 }),
+  quality: Object.freeze({ max_tokens: 96, max_chars: 400, timeout_ms: 20_000 }),
+});
+
+export function normalizeProfileTuning(input = {}) {
+  const tuning = {};
+  for (const [key, value] of Object.entries(input ?? {})) {
+    const bounds = TUNING_RULES[key];
+    if (!bounds || typeof value !== "number" || !Number.isFinite(value) || value < bounds[0] || value > bounds[1]) continue;
+    if (["top_k", "max_tokens", "max_chars", "timeout_ms"].includes(key) && !Number.isInteger(value)) continue;
+    tuning[key] = value;
+  }
+  return tuning;
+}
+
+export function profileTuning(profile) {
+  return {
+    temperature: profile.sampling.temperature,
+    ...(profile.sampling.top_k == null ? {} : { top_k: profile.sampling.top_k }),
+    ...(profile.sampling.top_p == null ? {} : { top_p: profile.sampling.top_p }),
+    ...(profile.sampling.repeat_penalty == null ? {} : { repeat_penalty: profile.sampling.repeat_penalty }),
+    max_tokens: profile.maxOutputTokens, max_chars: profile.maxReplyChars, timeout_ms: profile.timeoutMs,
+  };
+}
+
+function applyTuning(profile, input) {
+  const tuning = normalizeProfileTuning(input);
+  const sampling = { ...profile.sampling };
+  for (const key of ["temperature", "top_k", "top_p", "repeat_penalty"]) if (key in tuning) sampling[key] = tuning[key];
+  return Object.freeze({ ...profile, sampling: Object.freeze(sampling),
+    maxOutputTokens: tuning.max_tokens ?? profile.maxOutputTokens,
+    maxReplyChars: tuning.max_chars ?? profile.maxReplyChars,
+    timeoutMs: tuning.timeout_ms ?? profile.timeoutMs });
+}
+
+export function createAssistantProfiles({ qwenApiKey = null, overrides = {} } = {}) {
+  const profiles = {
     [LFM_PROFILE_ID]: Object.freeze({
       id: LFM_PROFILE_ID,
       aliases: Object.freeze(["lfm"]),
@@ -72,7 +113,9 @@ export function createAssistantProfiles({ qwenApiKey = null } = {}) {
       requestOptions: Object.freeze({ stream: false }),
       fallbackProfile: null,
     }),
-  });
+  };
+  for (const [id, tuning] of Object.entries(overrides ?? {})) if (profiles[id]) profiles[id] = applyTuning(profiles[id], tuning);
+  return Object.freeze(profiles);
 }
 
 export function resolveAssistantProfile(value, profiles = createAssistantProfiles()) {

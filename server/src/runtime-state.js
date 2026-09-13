@@ -2,13 +2,14 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-export function createRuntimeStateStore({ filePath, logger, defaults = { speakerEnabled: true, assistantProfile: "qwen3:0.6b", trackDesired: false, telegramUpdateIds: [] } }) {
+export function createRuntimeStateStore({ filePath, logger, defaults = { speakerEnabled: true, assistantProfile: "qwen3:0.6b", assistantProfileOverrides: {}, trackDesired: false, telegramUpdateIds: [] } }) {
   const resolvedPath = path.resolve(filePath);
   let state = { ...defaults };
   try {
     const parsed = JSON.parse(readFileSync(resolvedPath, "utf8"));
     if (typeof parsed?.speakerEnabled === "boolean") state.speakerEnabled = parsed.speakerEnabled;
     if (typeof parsed?.assistantProfile === "string" && parsed.assistantProfile.trim()) state.assistantProfile = parsed.assistantProfile;
+    if (parsed?.assistantProfileOverrides && typeof parsed.assistantProfileOverrides === "object" && !Array.isArray(parsed.assistantProfileOverrides)) state.assistantProfileOverrides = parsed.assistantProfileOverrides;
     if (typeof parsed?.trackDesired === "boolean") state.trackDesired = parsed.trackDesired;
     if (Array.isArray(parsed?.telegramUpdateIds)) {
       state.telegramUpdateIds = parsed.telegramUpdateIds.filter((value) => Number.isSafeInteger(value) && value >= 0).slice(-512);
@@ -38,11 +39,14 @@ export function createRuntimeStateStore({ filePath, logger, defaults = { speaker
   return {
     get speakerEnabled() { return state.speakerEnabled; },
     get assistantProfile() { return state.assistantProfile; },
+    get assistantProfileOverrides() { return structuredClone(state.assistantProfileOverrides ?? {}); },
     get trackDesired() { return state.trackDesired; },
     setSpeakerEnabled: (enabled) => enqueue(async () => (await persist({ speakerEnabled: Boolean(enabled) })).speakerEnabled),
     toggleSpeakerEnabled: () => enqueue(async () => (await persist({ speakerEnabled: !state.speakerEnabled })).speakerEnabled),
     setAssistantProfile: (assistantProfile) => enqueue(async () =>
       (await persist({ assistantProfile: String(assistantProfile) })).assistantProfile),
+    setAssistantProfileOverrides: (assistantProfileOverrides) => enqueue(async () =>
+      structuredClone((await persist({ assistantProfileOverrides: structuredClone(assistantProfileOverrides ?? {}) })).assistantProfileOverrides)),
     setTrackDesired: (enabled) => enqueue(async () => (await persist({ trackDesired: Boolean(enabled) })).trackDesired),
     acceptTelegramUpdate: (updateId, limit = 512) => enqueue(async () => {
       if (!Number.isSafeInteger(updateId) || updateId < 0) throw new TypeError("invalid Telegram update_id");

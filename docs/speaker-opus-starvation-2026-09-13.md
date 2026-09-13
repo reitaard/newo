@@ -97,3 +97,16 @@ A successful physical run should show:
 
 Latency may intentionally increase by roughly 1 second in exchange for
 continuous playback.
+
+## Implementation status
+
+The next build implements this experiment without changing the validated Opus
+codec or speaker connection-readiness path. It uses a 32-packet PSRAM queue,
+waits for 25 packets (about 1,000 ms) before decoding normal-length playback,
+and makes server flow credit target about 1,200 ms with a 1,500 ms hard
+ceiling. Compressed admission, decoded PCM, and consumed PCM are reported
+separately. The Opus sender no longer performs wall-clock catch-up bursts after
+playback starts.
+
+This implementation is host-tested and must still be flashed and physically
+validated before the chopping can be considered solved.

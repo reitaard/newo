@@ -32,12 +32,14 @@ int main() {
   assert(newoValidateSpeakerEnd(true, true, limit + 2, limit + 2, 0, limit) == NewoSpeakerEndValidation::INVALID_BYTES);
 
   // Queue lifecycle resets every playback, including after cancellation/failure.
-  NewoOpusQueueLifecycle queue = {16, 0, 16, 0, 0, false, false};
+  NewoOpusQueueLifecycle queue = {32, 0, 32, 0, 0, false, false};
   assert(queue.readyForPlayback());
   queue.decoderActive = true;
   assert(queue.admit(0, 1920, 1920));
   assert(queue.admit(1, 100, 1920));
-  assert(queue.ready == 2 && queue.freeSlots == 14 && queue.expectedSequence == 2 && queue.admittedBytes == 2020);
+  assert(queue.ready == 2 && queue.freeSlots == 30 && queue.expectedSequence == 2 && queue.admittedBytes == 2020);
+  assert(!queue.readyToDecode(25, false));
+  assert(queue.readyToDecode(25, true));
   assert(!queue.admit(2, 1920, 1920));  // partial frame must be final
   queue.reset();
   queue.decoderActive = false;

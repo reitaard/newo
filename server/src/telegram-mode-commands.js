@@ -37,7 +37,7 @@ export function formatVoiceStatus(voice, assistant = {}) {
     `Assistant: ${bold(String(assistant.status ?? "disabled").toUpperCase())}`,
     `Provider: ${bold(assistant.provider ?? "n/a")}`,
     `LLM: ${bold(assistant.model ?? "n/a")}`,
-    `Model state: ${bold(String(assistant.online ?? assistant.qwen ?? "n/a").toUpperCase())}`,
+    `Model state: ${bold(String(assistant.online ?? "n/a").toUpperCase())}`,
     `Last LLM: ${bold(timing(latest.llmMs))}`,
     `Last turn: ${bold(latest.result ?? "n/a")}`,
     `ASR final: ${bold(timing(latest.asrFinalMs))}`,
@@ -60,6 +60,19 @@ export function formatProfileStatus(assistant = {}) {
     `Provider: ${bold(assistant.provider ?? "n/a")}`,
     `Health: ${bold(String(assistant.online ?? "unknown").toUpperCase())}`,
     `Fallback: ${bold(assistant.fallback_active ? `ON (${assistant.fallback_reason ?? "unavailable"})` : "OFF")}`,
+  ]);
+}
+
+export function formatProfileTuning(tuning = {}) {
+  return message("profile tuning", [
+    `Profile: ${bold(tuning.id ?? "n/a")}`,
+    `Temperature: ${bold(tuning.temperature ?? "n/a")}`,
+    `Top K: ${bold(tuning.top_k ?? "n/a")}`,
+    `Top P: ${bold(tuning.top_p ?? "n/a")}`,
+    `Repeat penalty: ${bold(tuning.repeat_penalty ?? "n/a")}`,
+    `Output: ${bold(`${tuning.max_tokens ?? "n/a"} tokens / ${tuning.max_chars ?? "n/a"} chars`)}`,
+    `Timeout: ${bold(timing(tuning.timeout_ms))}`,
+    `Preset: ${bold("/pt fast | balanced | quality | reset")}`,
   ]);
 }
 
@@ -140,6 +153,8 @@ export function createPrimaryModeHandlers({
   speakerInfo,
   getAssistantInfo = () => ({}),
   setAssistantProfile = null,
+  getAssistantTuning = () => ({}),
+  setAssistantTuningPreset = null,
   getTrackDesired = () => false,
   persistTrackDesired = async () => false,
   handleTrackCommandResult = () => {},
@@ -192,6 +207,19 @@ export function createPrimaryModeHandlers({
       }
     }
     return commandReply(ctx, formatProfileStatus(getAssistantInfo()), "response", null, { newoSpeak: false });
+  }
+
+  async function profileTune(ctx) {
+    const preset = String(ctx.match ?? "").trim().toLowerCase();
+    if (!preset) return commandReply(ctx, formatProfileTuning(getAssistantTuning()), "response", null, { newoSpeak: false });
+    if (!setAssistantTuningPreset || !["fast", "balanced", "quality", "reset"].includes(preset)) {
+      return commandReply(ctx, message("profile tuning", ["Usage: /pt [fast|balanced|quality|reset]"]), "usage", null, { newoSpeak: false });
+    }
+    try {
+      return commandReply(ctx, formatProfileTuning(await setAssistantTuningPreset(preset)), "response", null, { newoSpeak: false });
+    } catch {
+      return commandReply(ctx, unavailable("profile tuning", "State could not be saved"), "persistence_error", null, { newoSpeak: false });
+    }
   }
 
   let speakerToggleQueue = Promise.resolve();
@@ -261,7 +289,7 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, "Clock unavailable.", result.kind, request.requestId, { newoSpeak: false });
   }
 
-+  let trackQueue = Promise.resolve();
+  let trackQueue = Promise.resolve();
   async function trackSnapshot(ctx, debug = false) {
     const request = sendDeviceRequest("track_control", "track_ack", { action: "status" }, commandTrace(ctx));
     if (request.kind !== "sent") {
@@ -364,5 +392,5 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, formatMuteStatus(status.device), status.device.applied === false ? "device_error" : "response", status.request.requestId, { newoSpeak: false });
   }
 
-  return { voice, voiceStatus, profile, speaker, eco, clock, track, trackBackground, volume, mute };
+  return { voice, voiceStatus, profile, profileTune, speaker, eco, clock, track, trackBackground, volume, mute };
 }

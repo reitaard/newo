@@ -72,6 +72,10 @@ export const SPEAKER_STREAM_ABSOLUTE_MS = 70_000;
 export const SPEAKER_MEDIA_FRAME_BYTES = 1_920;
 export const SPEAKER_MEDIA_FRAME_MS = 40;
 export const SPEAKER_MEDIA_STARTUP_BYTES = 13_440;
+export const SPEAKER_OPUS_STARTUP_BYTES = 48_000;
+export const SPEAKER_OPUS_RESERVOIR_LOW_BYTES = 28_800;
+export const SPEAKER_OPUS_RESERVOIR_TARGET_BYTES = 57_600;
+export const SPEAKER_OPUS_RESERVOIR_CEILING_BYTES = 72_000;
 export const SPEAKER_FIRMWARE_PREBUFFER_BYTES = 12_288;
 export const SPEAKER_PCM_PRODUCER_QUEUE_MAX_BYTES = 65_536;
 export const SPEAKER_REALTIME_HIGH_WATER_BYTES = SPEAKER_RECEIVER_CAPACITY_BYTES - 2_048;
@@ -543,6 +547,27 @@ export function speakerCreditBytes(sentBytes, receivedBytes, consumedBytes, buff
   ));
 }
 
+export function speakerOpusReservoirCreditBytes(sentBytes, admittedBytes, consumedBytes, bufferedBytes, queuedPcmBytes, {
+  targetBytes = SPEAKER_OPUS_RESERVOIR_TARGET_BYTES,
+  networkInFlightLimitBytes = SPEAKER_NETWORK_INFLIGHT_LIMIT_BYTES,
+  ceilingBytes = SPEAKER_OPUS_RESERVOIR_CEILING_BYTES,
+} = {}) {
+  for (const value of [sentBytes, admittedBytes, consumedBytes, bufferedBytes, queuedPcmBytes]) {
+    if (!Number.isInteger(value) || value < 0) throw new Error("invalid Opus reservoir counters");
+  }
+  if (consumedBytes > admittedBytes || admittedBytes > sentBytes || bufferedBytes + queuedPcmBytes > admittedBytes - consumedBytes) {
+    throw new Error("invalid Opus reservoir ordering");
+  }
+  const networkInFlightBytes = sentBytes - admittedBytes;
+  const receiverReservoirBytes = bufferedBytes + queuedPcmBytes;
+  const totalOutstandingBytes = sentBytes - consumedBytes;
+  return Math.max(0, Math.min(
+    targetBytes - receiverReservoirBytes - networkInFlightBytes,
+    networkInFlightLimitBytes - networkInFlightBytes,
+    ceilingBytes - totalOutstandingBytes,
+  ));
+}
+
 export function startTelegramAndSpeech(sendTelegram, startSpeech) {
   const telegramReply = sendTelegram();
   startSpeech();
@@ -710,26 +735,38 @@ export function createSpeakerRuntime({
     const job = jobs.get(message.playback_id);
     if (!job || connection !== current || job.settled) return false;
     const receivedBytes = message.received_bytes;
+    const admittedBytes = message.admitted_bytes ?? receivedBytes;
     const consumedBytes = message.consumed_bytes;
     const bufferedBytes = message.buffered_bytes;
+    const queuedPcmBytes = message.opus_queued_pcm_bytes ?? 0;
+    const queuedPackets = message.opus_queued_packets ?? 0;
     const capacityBytes = message.capacity_bytes;
     const reportIntervalMs = message.report_interval_ms;
     const receiptReportDelayMs = message.receipt_report_delay_ms;
-    if (!Number.isInteger(receivedBytes) || !Number.isInteger(consumedBytes) || !Number.isInteger(bufferedBytes) ||
+    if (!Number.isInteger(receivedBytes) || !Number.isInteger(admittedBytes) || !Number.isInteger(consumedBytes) ||
+        !Number.isInteger(bufferedBytes) || !Number.isInteger(queuedPcmBytes) || !Number.isInteger(queuedPackets) ||
         !Number.isInteger(capacityBytes) || receivedBytes < job.receivedBytes || consumedBytes < job.consumedBytes ||
-        receivedBytes > job.bytesSent || consumedBytes > receivedBytes || bufferedBytes < 0 ||
+        admittedBytes < job.admittedBytes || admittedBytes > job.bytesSent || receivedBytes > admittedBytes ||
+        consumedBytes > receivedBytes || bufferedBytes < 0 || queuedPcmBytes < 0 || queuedPackets < 0 ||
+        bufferedBytes + queuedPcmBytes > admittedBytes - consumedBytes ||
         bufferedBytes > receiverCapacityBytes || capacityBytes !== receiverCapacityBytes) {
       logger.warn({
         device_id: current.deviceId, playback_id: message.playback_id, received_bytes: receivedBytes,
         consumed_bytes: consumedBytes, buffered_bytes: bufferedBytes, capacity_bytes: capacityBytes,
-        bytes_sent: job.bytesSent,
+        admitted_bytes: admittedBytes, opus_queued_pcm_bytes: queuedPcmBytes,
+        opus_queued_packets: queuedPackets, bytes_sent: job.bytesSent,
       }, "Ignored invalid speaker flow report");
       return false;
     }
-    if (receivedBytes === job.receivedBytes && consumedBytes === job.consumedBytes && bufferedBytes === job.reportedBufferedBytes) return true;
+    if (receivedBytes === job.receivedBytes && admittedBytes === job.admittedBytes && consumedBytes === job.consumedBytes &&
+        bufferedBytes === job.reportedBufferedBytes && queuedPcmBytes === job.reportedOpusQueuedPcmBytes) return true;
     job.receivedBytes = receivedBytes;
+    job.admittedBytes = admittedBytes;
     job.consumedBytes = consumedBytes;
     job.reportedBufferedBytes = bufferedBytes;
+    job.reportedOpusQueuedPcmBytes = queuedPcmBytes;
+    job.reportedOpusQueuedPackets = queuedPackets;
+    job.maxReportedOpusQueuedPackets = Math.max(job.maxReportedOpusQueuedPackets, queuedPackets);
     if (Number.isInteger(reportIntervalMs) && reportIntervalMs >= 0) {
       job.maxFlowReportIntervalMs = Math.max(job.maxFlowReportIntervalMs, reportIntervalMs);
     }
@@ -742,9 +779,8 @@ export function createSpeakerRuntime({
     const activeReceiver = consumedBytes > 0 && (!job.endSent || consumedBytes < receivedBytes);
     if (activeReceiver) job.minReportedBufferedBytes = Math.min(job.minReportedBufferedBytes, bufferedBytes);
     job.maxReportedBufferedBytes = Math.max(job.maxReportedBufferedBytes, bufferedBytes);
-    const state = speakerDeliveryState(job.bytesSent, receivedBytes, consumedBytes, bufferedBytes);
-    job.maxNetworkInFlightBytes = Math.max(job.maxNetworkInFlightBytes, state.networkInFlightBytes);
-    job.totalOutstandingHighWaterBytes = Math.max(job.totalOutstandingHighWaterBytes, state.receiverOutstandingBytes);
+    job.maxNetworkInFlightBytes = Math.max(job.maxNetworkInFlightBytes, job.bytesSent - admittedBytes);
+    job.totalOutstandingHighWaterBytes = Math.max(job.totalOutstandingHighWaterBytes, job.bytesSent - consumedBytes);
     signalFlow(job);
     return true;
   }
@@ -765,10 +801,12 @@ export function createSpeakerRuntime({
     return message?.type === "speaker_flow" ? handleFlow(current, message) : false;
   }
   function recordOutstanding(job, enforceWindow = true) {
-    const state = speakerDeliveryState(job.bytesSent, job.receivedBytes, job.consumedBytes, job.reportedBufferedBytes);
-    job.maxNetworkInFlightBytes = Math.max(job.maxNetworkInFlightBytes, state.networkInFlightBytes);
-    job.totalOutstandingHighWaterBytes = Math.max(job.totalOutstandingHighWaterBytes, state.receiverOutstandingBytes);
-    if (enforceWindow && (state.networkInFlightBytes > networkInFlightLimitBytes || state.receiverOutstandingBytes > maxOutstandingBytes)) {
+    const networkInFlightBytes = job.bytesSent - (job.transport?.enabled ? job.admittedBytes : job.receivedBytes);
+    const receiverOutstandingBytes = job.bytesSent - job.consumedBytes;
+    job.maxNetworkInFlightBytes = Math.max(job.maxNetworkInFlightBytes, networkInFlightBytes);
+    job.totalOutstandingHighWaterBytes = Math.max(job.totalOutstandingHighWaterBytes, receiverOutstandingBytes);
+    const outstandingLimit = job.transport?.enabled ? SPEAKER_OPUS_RESERVOIR_CEILING_BYTES : maxOutstandingBytes;
+    if (enforceWindow && (networkInFlightBytes > networkInFlightLimitBytes || receiverOutstandingBytes > outstandingLimit)) {
       throw new Error("speaker flow window exceeded");
     }
   }
@@ -780,7 +818,8 @@ export function createSpeakerRuntime({
     if (!chunk.length || (chunk.length & 1)) throw new Error("invalid_pcm");
     if (job.settled || connection !== current || current.ws.readyState !== 1) throw new Error("speaker disconnected");
     if (job.bytesSent + chunk.length > maxStreamBytes) throw new Error("speaker stream exceeded limit");
-    if (enforceFlowWindow && job.bytesSent + chunk.length - job.consumedBytes > maxOutstandingBytes) throw new Error("speaker flow window exceeded");
+    const outstandingLimit = job.transport?.enabled ? SPEAKER_OPUS_RESERVOIR_CEILING_BYTES : maxOutstandingBytes;
+    if (enforceFlowWindow && job.bytesSent + chunk.length - job.consumedBytes > outstandingLimit) throw new Error("speaker flow window exceeded");
     // Account before awaiting the socket callback so an exceptionally fast ESP
     // flow report cannot appear to acknowledge bytes the sender has not recorded.
     job.bytesSent += chunk.length;
@@ -811,10 +850,12 @@ export function createSpeakerRuntime({
     while (offset < chunk.length) {
       if (job.settled || connection !== current || current.ws.readyState !== 1) throw new Error("speaker disconnected");
       const nextLength = Math.min(chunkBytes, chunk.length - offset);
-      const credit = speakerCreditBytes(
-        job.bytesSent, job.receivedBytes, job.consumedBytes, job.reportedBufferedBytes,
-        { receiverBufferTargetBytes, networkInFlightLimitBytes, maxOutstandingBytes },
-      );
+      const credit = job.transport?.enabled
+        ? speakerOpusReservoirCreditBytes(job.bytesSent, job.admittedBytes, job.consumedBytes,
+          job.reportedBufferedBytes, job.reportedOpusQueuedPcmBytes,
+          { networkInFlightLimitBytes })
+        : speakerCreditBytes(job.bytesSent, job.receivedBytes, job.consumedBytes, job.reportedBufferedBytes,
+          { receiverBufferTargetBytes, networkInFlightLimitBytes, maxOutstandingBytes });
       if (credit < nextLength) {
         const waitStartedAt = performance.now();
         await waitForFlow(job);
@@ -927,12 +968,13 @@ export function createSpeakerRuntime({
       await waitForCodecNegotiation(current);
       job.transport = new OpusPlaybackTransport({ playbackId: job.id, enabled: String(process.env.SPEAKER_CODEC ?? "pcm").toLowerCase() === "opus" && OpusPlaybackTransport.supported(current.codecs) });
       await job.transport.begin();
+      const startupBytes = job.transport.enabled ? SPEAKER_OPUS_STARTUP_BYTES : SPEAKER_MEDIA_STARTUP_BYTES;
       job.beginSentAt = performance.now();
       await sendFrame(current.ws, JSON.stringify(job.transport.beginMessage(begin)));
       logger.info({ device_id: current.deviceId, playback_id: job.id, streaming: true, max_pcm_bytes: maxStreamBytes }, "Speaker begin sent");
       let initialBytes = 0;
-      while (initialBytes < SPEAKER_MEDIA_STARTUP_BYTES) {
-        const frame = await take(Math.min(SPEAKER_MEDIA_FRAME_BYTES, SPEAKER_MEDIA_STARTUP_BYTES - initialBytes));
+      while (initialBytes < startupBytes) {
+        const frame = await take(Math.min(SPEAKER_MEDIA_FRAME_BYTES, startupBytes - initialBytes));
         if (!frame) break;
         await sendPcmChunk(job, current, frame, { enforceFlowWindow: false });
         initialBytes += frame.length;
@@ -941,7 +983,8 @@ export function createSpeakerRuntime({
       job.pacerInitialPcmBytes = initialBytes;
       // A naturally completed short utterance cannot reach firmware's prebuffer.
       // End it now so firmware may take its exact-all-PCM startup path.
-      if (producerDone && queuedBytes === 0 && initialBytes < SPEAKER_FIRMWARE_PREBUFFER_BYTES) {
+      if (producerDone && queuedBytes === 0 &&
+          (job.transport.enabled || initialBytes < SPEAKER_FIRMWARE_PREBUFFER_BYTES)) {
         if (!job.bytesSent || (job.bytesSent & 1)) throw new Error("invalid_pcm");
         job.ttsCompletedAt = source.metrics.completedAt ?? performance.now();
         job.audio = job.statistics.result(backend.limiter ?? SPEAKER_LIMITER);
@@ -960,17 +1003,19 @@ export function createSpeakerRuntime({
       while (true) {
         const frame = await take(SPEAKER_MEDIA_FRAME_BYTES);
         if (!frame) break;
-        await brakeHighWater();
-        const deadline = pacingStart + frameIndex * SPEAKER_MEDIA_FRAME_MS;
-        const lateMs = performance.now() - deadline;
-        if (lateMs > 0) {
-          job.maxScheduleLateMs = Math.max(job.maxScheduleLateMs, lateMs);
-          job.lateOver20Ms += lateMs > 20;
-          job.lateOver40Ms += lateMs > 40;
-          job.lateOver80Ms += lateMs > 80;
-          if (catchupsThisTurn >= 2) { await new Promise((resolve) => setImmediate(resolve)); catchupsThisTurn = 0; }
-          else { catchupsThisTurn += 1; job.catchupFrames += 1; }
-        } else { await waitUntil(deadline); catchupsThisTurn = 0; }
+        if (!job.transport.enabled) await brakeHighWater();
+        if (!job.transport.enabled) {
+          const deadline = pacingStart + frameIndex * SPEAKER_MEDIA_FRAME_MS;
+          const lateMs = performance.now() - deadline;
+          if (lateMs > 0) {
+            job.maxScheduleLateMs = Math.max(job.maxScheduleLateMs, lateMs);
+            job.lateOver20Ms += lateMs > 20;
+            job.lateOver40Ms += lateMs > 40;
+            job.lateOver80Ms += lateMs > 80;
+            if (catchupsThisTurn >= 2) { await new Promise((resolve) => setImmediate(resolve)); catchupsThisTurn = 0; }
+            else { catchupsThisTurn += 1; job.catchupFrames += 1; }
+          } else { await waitUntil(deadline); catchupsThisTurn = 0; }
+        }
         await sendWithFlow(job, current, frame);
         job.pacerFramesSent += 1;
         frameIndex += 1;
@@ -1025,6 +1070,7 @@ export function createSpeakerRuntime({
       late_over_40_ms: job.lateOver40Ms, late_over_80_ms: job.lateOver80Ms,
       catchup_frames: job.catchupFrames, high_water_brake_count: job.highWaterBrakeCount,
       high_water_brake_max_ms: Math.round(job.highWaterBrakeMaxMs), pcm_bytes: job.bytesSent,
+      opus_queue_high_water_packets: job.maxReportedOpusQueuedPackets,
     }, "SPEAKER_PACER");
     logger.info({
       event: "SPEAKER_AUDIO", playback_id: job.id,
@@ -1039,10 +1085,13 @@ export function createSpeakerRuntime({
       max_network_inflight_bytes: job.maxNetworkInFlightBytes,
       min_receiver_buffer_bytes: Number.isFinite(job.minReportedBufferedBytes) ? job.minReportedBufferedBytes : null,
       max_receiver_buffer_bytes: job.maxReportedBufferedBytes,
-      receiver_buffer_target_bytes: receiverBufferTargetBytes,
+      receiver_buffer_target_bytes: job.transport?.enabled ? SPEAKER_OPUS_RESERVOIR_TARGET_BYTES : receiverBufferTargetBytes,
+      opus_reservoir_low_bytes: job.transport?.enabled ? SPEAKER_OPUS_RESERVOIR_LOW_BYTES : null,
+      opus_queued_pcm_bytes: job.reportedOpusQueuedPcmBytes,
+      opus_queue_packets: job.reportedOpusQueuedPackets,
       network_inflight_limit_bytes: networkInFlightLimitBytes,
       total_outstanding_high_water_bytes: job.totalOutstandingHighWaterBytes,
-      total_outstanding_limit_bytes: maxOutstandingBytes,
+      total_outstanding_limit_bytes: job.transport?.enabled ? SPEAKER_OPUS_RESERVOIR_CEILING_BYTES : maxOutstandingBytes,
       max_websocket_buffered_amount: job.maxWebSocketBufferedAmount,
       max_flow_report_interval_ms: job.maxFlowReportIntervalMs,
       max_receipt_report_delay_ms: job.maxReceiptReportDelayMs,
@@ -1091,7 +1140,8 @@ export function createSpeakerRuntime({
       id, text, temporary, metadata, settled: false, resultTimer: null, queuedAt: performance.now(), replyReadyAt,
       synthesisStartedAt: null, ttsCompletedAt: null, beginSentAt: null, firstPcmSentAt: null,
       backendMetrics: null, playbackStartedAt: null, firstPcmToPlayMs: null, cancelSource: null,
-      resolve, reject, completion, bytesSent: 0, receivedBytes: 0, consumedBytes: 0, reportedBufferedBytes: 0,
+      resolve, reject, completion, bytesSent: 0, admittedBytes: 0, receivedBytes: 0, consumedBytes: 0, reportedBufferedBytes: 0,
+      reportedOpusQueuedPcmBytes: 0, reportedOpusQueuedPackets: 0, maxReportedOpusQueuedPackets: 0,
       flowVersion: 0, flowWaiters: new Set(), pacerWaiters: new Set(), flowReports: 0, receivedFlowReports: 0, lastFlowReceivedBytes: 0,
       maxNetworkInFlightBytes: 0, totalOutstandingHighWaterBytes: 0, endSent: false,
       maxWebSocketBufferedAmount: 0,
@@ -1194,15 +1244,17 @@ export function createSpeakerRuntime({
       max_network_inflight_bytes: job.maxNetworkInFlightBytes,
       min_receiver_buffer_bytes: Number.isFinite(job.minReportedBufferedBytes) ? job.minReportedBufferedBytes : null,
       max_receiver_buffer_bytes: job.maxReportedBufferedBytes,
-      receiver_buffer_target_bytes: receiverBufferTargetBytes,
+      receiver_buffer_target_bytes: job.transport?.enabled ? SPEAKER_OPUS_RESERVOIR_TARGET_BYTES : receiverBufferTargetBytes,
+      opus_reservoir_low_bytes: job.transport?.enabled ? SPEAKER_OPUS_RESERVOIR_LOW_BYTES : null,
+      opus_queue_high_water_packets: job.maxReportedOpusQueuedPackets,
       network_inflight_limit_bytes: networkInFlightLimitBytes,
       total_outstanding_high_water_bytes: job.totalOutstandingHighWaterBytes,
-      total_outstanding_limit_bytes: maxOutstandingBytes,
+      total_outstanding_limit_bytes: job.transport?.enabled ? SPEAKER_OPUS_RESERVOIR_CEILING_BYTES : maxOutstandingBytes,
       max_websocket_buffered_amount: job.maxWebSocketBufferedAmount,
       max_flow_report_interval_ms: job.maxFlowReportIntervalMs,
       max_receipt_report_delay_ms: job.maxReceiptReportDelayMs,
       flow_reports: job.flowReports, received_flow_reports: job.receivedFlowReports,
-      bytes_sent: job.bytesSent, bytes_received: job.receivedBytes, bytes_consumed: job.consumedBytes,
+      bytes_sent: job.bytesSent, bytes_admitted: job.admittedBytes, bytes_received: job.receivedBytes, bytes_consumed: job.consumedBytes,
       result: result.kind, error: result.error,
     }, "SPEAKER_FLOW_FINAL");
     if (result.kind === "complete") {
