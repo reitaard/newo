@@ -21,22 +21,36 @@ Physical barge-in is explicitly disabled in this version. The microphone and spe
 
 Firmware source cannot select an absent WakeNet model. Arduino-ESP32 3.3.10's installed ESP32-S3 SDK currently selects `CONFIG_SR_WN_WN9_HIESP=y`, so its stock `srmodels.bin` contains **Hi ESP**, not Hi Wall-E. The `esp_sr_16` board option copies that stock file into the build and uploads it at `0xC10000`.
 
-Use `Newo/prepare_hiwalle_srmodels.ps1` after compiling and before uploading. It clones the installed S3 sdkconfig, changes only the two WakeNet selections, and invokes ESP-SR's official `model/movemodel.py`. The script refuses anything except ESP-SR component `2.4.6`, the exact version recorded in Arduino-ESP32 3.3.10's installed `versions.txt`. The generated `srmodels.bin` replaces the build output that the Arduino post-build hook populated.
+Use `Newo/prepare_hiwalle_srmodels.ps1` after compiling and before uploading. It clones the installed S3 sdkconfig, changes only the two WakeNet selections, and invokes ESP-SR's official `model/movemodel.py`. The script refuses anything except ESP-SR component `2.4.6`, the exact version recorded in Arduino-ESP32 3.3.10's installed `versions.txt`. It also verifies that the selected build was made by Arduino-ESP32 3.3.10 with `esp_sr_16` and `EraseFlash=none`, that the partition table places the model at `0xC10000`, and that the generated binary identifies `wn9_hiwalle_tts2` rather than `wn9_hiesp`.
 
-```powershell
-# In an activated ESP-IDF shell, resolve the pinned registry component once:
-mkdir C:\src\newo-sr-pack; cd C:\src\newo-sr-pack
+The order is strict: **compile once, replace that build directory's `srmodels.bin`, then upload that same directory without recompiling**. Never use `compile --upload` after model preparation: Arduino's post-build hook can replace the custom model with its stock `srmodels.bin`.
+
+The copy-paste Windows Git Bash commands are kept as separate dependency, build, model-preparation, upload-only, and monitor phases below. Run the one-time dependency phase from an ESP-IDF environment in which `idf.py` is available. The upload phase targets COM7 only and the workflow has no Nano trigger.
+
+```bash
+# A. One time, only when C:/src/newo-sr-pack/model_pack/managed_components/espressif__esp-sr is absent
+mkdir -p /c/src/newo-sr-pack
+cd /c/src/newo-sr-pack
 idf.py create-project model_pack
 cd model_pack
 idf.py add-dependency "espressif/esp-sr==2.4.6"
 idf.py reconfigure
-cd C:\Users\re_Lax\Desktop\re\newo
-arduino-cli compile --fqbn "esp32:esp32:esp32s3:UploadSpeed=921600,USBMode=hwcdc,CDCOnBoot=default,MSCOnBoot=default,DFUOnBoot=default,UploadMode=default,CPUFreq=240,FlashMode=qio,FlashSize=16M,PartitionScheme=esp_sr_16,DebugLevel=none,PSRAM=opi,LoopCore=1,EventsCore=1,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default" --output-dir .\Newo\build\esp32.esp32.esp32s3 .\Newo
-.\Newo\prepare_hiwalle_srmodels.ps1 -EspSrPath C:\src\newo-sr-pack\model_pack\managed_components\espressif__esp-sr
-arduino-cli upload -p COM7 --fqbn "esp32:esp32:esp32s3:UploadSpeed=921600,USBMode=hwcdc,CDCOnBoot=default,MSCOnBoot=default,DFUOnBoot=default,UploadMode=default,CPUFreq=240,FlashMode=qio,FlashSize=16M,PartitionScheme=esp_sr_16,DebugLevel=none,PSRAM=opi,LoopCore=1,EventsCore=1,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default" --input-dir .\Newo\build\esp32.esp32.esp32s3
+
+# B. Compile to the chosen output directory; do not add --upload
+cd /c/Users/re_Lax/Desktop/re/newo
+"/c/Program Files/Arduino CLI/arduino-cli.exe" compile --fqbn "esp32:esp32:esp32s3:UploadSpeed=921600,USBMode=hwcdc,CDCOnBoot=default,MSCOnBoot=default,DFUOnBoot=default,UploadMode=default,CPUFreq=240,FlashMode=qio,FlashSize=16M,PartitionScheme=esp_sr_16,DebugLevel=none,PSRAM=opi,LoopCore=1,EventsCore=1,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default" --output-dir "Newo/build/esp32.esp32.esp32s3" "Newo"
+
+# C. Replace and verify this exact output directory's srmodels.bin
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$PWD/Newo/prepare_hiwalle_srmodels.ps1")" -EspSrPath "C:\\src\\newo-sr-pack\\model_pack\\managed_components\\espressif__esp-sr" -OutputDirectory "$(cygpath -w "$PWD/Newo/build/esp32.esp32.esp32s3")"
+
+# D. Upload the already-prepared output directory to COM7; this does not compile
+"/c/Program Files/Arduino CLI/arduino-cli.exe" upload --port COM7 --fqbn "esp32:esp32:esp32s3:UploadSpeed=921600,USBMode=hwcdc,CDCOnBoot=default,MSCOnBoot=default,DFUOnBoot=default,UploadMode=default,CPUFreq=240,FlashMode=qio,FlashSize=16M,PartitionScheme=esp_sr_16,DebugLevel=none,PSRAM=opi,LoopCore=1,EventsCore=1,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default" --input-dir "Newo/build/esp32.esp32.esp32s3"
+
+# E. Optional serial monitor
+"/c/Program Files/Arduino CLI/arduino-cli.exe" monitor --port COM7 --config baudrate=115200
 ```
 
-Never use erase-all for this workflow. Physical acceptance must confirm `WAKENET_ARMED`, repeated wake detection, release before streaming, suppression during playback, and re-arm after playback.
+The `esp_sr_16` board definition adds `0xC10000 {build.path}/srmodels.bin` to the upload, so phase D writes the verified model partition as well as the normal firmware images. `EraseFlash=none` leaves the upload recipe's erase argument empty. Never use erase-all for this workflow. Physical acceptance must confirm boot reaches `WAKENET_ARMED`, repeated wake detection, release before streaming, suppression during playback, and re-arm after playback. `/v` remains the manual one-shot and returns to OFF.
 
 ## Owner enrollment and verification
 
