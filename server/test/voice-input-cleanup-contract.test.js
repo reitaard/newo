@@ -56,9 +56,12 @@ test("streaming microphone cleanup requires WebRTC NS medium with AGC bypassed",
   assert.match(config, /VOICE_WEBRTC_NS_ENABLED\s*=\s*true/);
   assert.match(config, /VOICE_WEBRTC_NS_MODE\s*=\s*1/);
   assert.match(config, /VOICE_WEBRTC_AGC_ENABLED\s*=\s*false/);
-  assert.match(audio, /#include "esp_sr_webrtc\.h"/);
-  assert.equal(audio.includes('__has_include("esp_sr_webrtc.h")'), false,
-    "enabled production NS must not silently compile into a raw-audio fallback");
+  assert.match(audio, /#include "newo_webrtc\.h"/);
+  const compatibilityHeader = await read("../../Newo/newo_webrtc.h");
+  assert.match(compatibilityHeader, /struct NewoWebRtcHandle/);
+  assert.match(compatibilityHeader, /extern "C"/);
+  assert.doesNotMatch(compatibilityHeader, /^\s*#include\s+[<"]sr_ringbuf\.h[>"]/m,
+    "Arduino's missing private ring-buffer header must not leak into the sketch");
   assert.match(audio, /webrtc_create\(/);
   assert.match(audio, /webrtc_process\(/);
   assert.match(audio, /webrtc_destroy\(/);

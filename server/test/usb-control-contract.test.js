@@ -26,3 +26,9 @@ test("USB enable trial automatically rolls back without cloud authentication", (
   assert.match(ino, /TRIAL_ROLLBACK/);
   assert.match(ino, /setUsbHostEnabled\(false\)/);
 });
+
+test("disabled USB VCP leaves Arduino-node queues safely inactive", () => {
+  const node = source("Newo/newo_arduino_node.cpp");
+  assert.match(node, /receiveEvent[\s\S]*if \(!events_\) return false;/);
+  assert.match(node, /receiveAcknowledgement[\s\S]*if \(!acknowledgements_\) return false;/);
+});
