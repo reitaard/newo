@@ -56,6 +56,7 @@ const EnvSchema = z.object({
   VOICE_ASR_HOTWORDS_SCORE: z.preprocess(emptyToUndefined, z.coerce.number().min(0).max(5).default(1.5)),
   VOICE_LIVE_TEST_MODE: z.preprocess(stringToBoolean, z.boolean().default(false)),
   ASSISTANT_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
+  ASSISTANT_PROVIDER: z.preprocess(emptyToUndefined, z.enum(["openai_chat", "ollama_raw"]).default("openai_chat")),
   ASSISTANT_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   ASSISTANT_MODEL: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   ASSISTANT_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
@@ -156,6 +157,7 @@ const speakerRuntime = createSpeakerRuntime({
 });
 const assistantRuntime = createAssistantRuntime({
   enabled: env.ASSISTANT_ENABLED,
+  provider: env.ASSISTANT_PROVIDER,
   baseUrl: env.ASSISTANT_BASE_URL,
   model: env.ASSISTANT_MODEL,
   apiKey: env.ASSISTANT_API_KEY,

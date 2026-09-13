@@ -13,16 +13,64 @@ function jsonResponse(payload, status = 200) {
 
 test("assistant sends one bounded OpenAI-compatible quick-chat request", async () => {
   let request;
+  let requestUrl;
   const runtime = createAssistantRuntime({
     enabled: true, baseUrl: "http://127.0.0.1:8181", model: "helix-qwen3-0.6b", logger: quietLogger,
-    fetchImpl: async (_url, options) => { request = JSON.parse(options.body); return jsonResponse({ choices: [{ message: { content: "Hello. I am Newo." } }] }); },
+    fetchImpl: async (url, options) => { requestUrl = url; request = JSON.parse(options.body); return jsonResponse({ choices: [{ message: { content: "Hello. I am Newo." } }] }); },
   });
   const result = await runtime.respond(turn);
   assert.equal(result.kind, "response");
   assert.equal(result.text, "Hello. I am Newo.");
+  assert.equal(requestUrl, "http://127.0.0.1:8181/v1/chat/completions");
   assert.equal(request.model, "helix-qwen3-0.6b");
   assert.equal(request.messages.at(-1).content, turn.text);
   assert.equal(request.reasoning_effort, "none");
+  assert.equal(runtime.getTelemetry().provider, "openai_chat");
+});
+
+test("ollama_raw sends the LFM request and assembles NDJSON without thinking text", async () => {
+  let request;
+  let requestUrl;
+  const encoder = new TextEncoder();
+  const runtime = createAssistantRuntime({
+    enabled: true, provider: "ollama_raw", baseUrl: "http://100.68.131.86:11435/", model: "newo-main",
+    maxOutputTokens: 48, logger: quietLogger,
+    fetchImpl: async (url, options) => {
+      requestUrl = url;
+      request = JSON.parse(options.body);
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('{"response":"<think>private"}\n{"response":" notes</think> Hello"}\n'));
+          controller.enqueue(encoder.encode('{"response":" from Neo.","done":false}\n{"response":"","done":true}\n'));
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "application/x-ndjson" } });
+    },
+  });
+  const result = await runtime.respond(turn);
+  assert.equal(requestUrl, "http://100.68.131.86:11435/api/generate");
+  assert.equal(result.kind, "response");
+  assert.equal(result.text, "Hello from Neo.");
+  assert.equal(typeof result.timings.llm_first_token_ms, "number");
+  assert.deepEqual(request, {
+    model: "newo-main",
+    prompt: `<|im_start|>system\n${ASSISTANT_SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\n${turn.text}<|im_end|>\n<|im_start|>assistant\n<think>\nNo unnecessary reasoning. Close thinking and answer immediately.\n</think>\n`,
+    raw: true,
+    stream: true,
+    keep_alive: -1,
+    options: { temperature: 0.2, top_k: 80, repeat_penalty: 1.05, num_predict: 48, stop: ["<|im_end|>", "<|im_start|>"] },
+  });
+  assert.equal("num_ctx" in request.options, false);
+});
+
+test("ollama_raw cancellation aborts an active streaming request", async () => {
+  const runtime = createAssistantRuntime({
+    enabled: true, provider: "ollama_raw", baseUrl: "http://local", model: "model", logger: quietLogger,
+    fetchImpl: (_url, { signal }) => new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason))),
+  });
+  const pending = runtime.respond(turn);
+  runtime.abortDevice(turn.deviceId);
+  assert.deepEqual(await pending, { kind: "error", error: "assistant_cancelled" });
 });
 
 test("assistant identifies Newo as pronounced Neo", async () => {
@@ -108,7 +156,7 @@ test("assistant telemetry retains only the latest turn and exposes timeout state
   };
   const speakerRuntime = { speak() { return { kind: "queued", playbackId: "p", completion: Promise.resolve() }; } };
   const turns = createAssistantTurnRuntime({ assistant, speakerRuntime, isPersistentSpeakerEnabled: () => true, maxReplyChars: 240, logger: quietLogger });
-  assert.deepEqual(turns.getTelemetry().latest, { result: "n/a", llmMs: null, streamId: null, at: null, ttsQueuedMs: null, totalMs: null, asrFinalMs: null });
+  assert.deepEqual(turns.getTelemetry().latest, { result: "n/a", llmMs: null, llmFirstTokenMs: null, streamId: null, at: null, ttsQueuedMs: null, totalMs: null, asrFinalMs: null });
   await turns.handleFinalTranscript({ ...turn, streamId: "first", asrFinalMs: 321 }).completion;
   assert.deepEqual(turns.getTelemetry().latest.result, "complete");
   assert.equal(turns.getTelemetry().latest.llmMs, 17);

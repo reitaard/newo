@@ -9,6 +9,8 @@ export const ASSISTANT_SYSTEM_PROMPT = [
 function boundedText(value, maxChars) {
   const text = String(value ?? "")
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<think>[\s\S]*$/gi, "")
+    .replace(/<\/?think>/gi, "")
     .replace(/\s+/g, " ")
     .trim();
   if (!text) return "";
@@ -24,20 +26,51 @@ function assistantError(code, detail) {
   return error;
 }
 
-/** A bounded, provider-neutral OpenAI-chat client for one finalized voice turn. */
+function rawLfmPrompt(transcript) {
+  return `<|im_start|>system\n${ASSISTANT_SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\n${transcript}<|im_end|>\n<|im_start|>assistant\n<think>\nNo unnecessary reasoning. Close thinking and answer immediately.\n</think>\n`;
+}
+
+async function readOllamaStream(response, onFirstToken) {
+  if (!response.body) throw assistantError("assistant_invalid_response");
+  const decoder = new TextDecoder();
+  let pending = "";
+  let answer = "";
+  const consume = (line) => {
+    if (!line.trim()) return;
+    let payload;
+    try { payload = JSON.parse(line); }
+    catch { throw assistantError("assistant_invalid_response"); }
+    if (payload.error) throw assistantError("assistant_request_failed", String(payload.error));
+    if (typeof payload.response === "string" && payload.response.length > 0) {
+      onFirstToken();
+      answer += payload.response;
+    }
+  };
+  for await (const chunk of response.body) {
+    pending += decoder.decode(chunk, { stream: true });
+    const lines = pending.split(/\r?\n/);
+    pending = lines.pop() ?? "";
+    for (const line of lines) consume(line);
+  }
+  pending += decoder.decode();
+  if (pending.trim()) consume(pending);
+  return answer;
+}
+
+/** A bounded provider-selectable client for one finalized voice turn. */
 export function createAssistantRuntime({
-  enabled = false, baseUrl, model, apiKey, timeoutMs = 15_000, maxOutputTokens = 48,
+  enabled = false, provider = "openai_chat", baseUrl, model, apiKey, timeoutMs = 15_000, maxOutputTokens = 48,
   maxReplyChars = 300, fetchImpl = fetch, logger = null,
 } = {}) {
   const active = new Map();
   let closing = false;
   let qwenState = enabled ? "unknown" : "disabled";
   const base = baseUrl ? String(baseUrl).replace(/\/+$/, "") : null;
-  const endpoint = base ? `${base}/v1/chat/completions` : null;
-  const modelsEndpoint = base ? `${base}/v1/models` : null;
+  const endpoint = base ? `${base}${provider === "ollama_raw" ? "/api/generate" : "/v1/chat/completions"}` : null;
+  const modelsEndpoint = base ? `${base}${provider === "ollama_raw" ? "/api/tags" : "/v1/models"}` : null;
 
   function getTelemetry() {
-    return { enabled, model: model ?? null, qwen: qwenState, active: active.size > 0 };
+    return { enabled, provider, model: model ?? null, qwen: qwenState, active: active.size > 0 };
   }
 
   async function refreshHealth() {
@@ -50,8 +83,8 @@ export function createAssistantRuntime({
       const headers = apiKey ? { authorization: `Bearer ${apiKey}` } : undefined;
       const response = await fetchImpl(modelsEndpoint, { headers, signal: controller.signal });
       const payload = response.ok ? await response.json() : null;
-      const models = payload?.data;
-      qwenState = Array.isArray(models) && models.some((item) => item?.id === model) ? "online" : "offline";
+      const models = provider === "ollama_raw" ? payload?.models : payload?.data;
+      qwenState = Array.isArray(models) && models.some((item) => (provider === "ollama_raw" ? item?.name ?? item?.model : item?.id) === model) ? "online" : "offline";
     } catch {
       qwenState = "offline";
     } finally {
@@ -76,23 +109,41 @@ export function createAssistantRuntime({
       logger?.info({ device_id: deviceId, stream_id: streamId, transcript_chars: transcript.length }, "Assistant LLM request started");
       const headers = { "content-type": "application/json" };
       if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+      const requestBody = provider === "ollama_raw" ? {
+        model, prompt: rawLfmPrompt(transcript), raw: true, stream: true, keep_alive: -1,
+        options: {
+          temperature: 0.2, top_k: 80, repeat_penalty: 1.05, num_predict: maxOutputTokens,
+          stop: ["<|im_end|>", "<|im_start|>"],
+        },
+      } : {
+        model,
+        messages: [{ role: "system", content: ASSISTANT_SYSTEM_PROMPT }, { role: "user", content: transcript }],
+        max_tokens: maxOutputTokens, temperature: 0.45, reasoning_effort: "none", stream: false,
+      };
       const response = await fetchImpl(endpoint, {
         method: "POST", headers, signal: controller.signal,
-        body: JSON.stringify({
-          model,
-          messages: [{ role: "system", content: ASSISTANT_SYSTEM_PROMPT }, { role: "user", content: transcript }],
-          max_tokens: maxOutputTokens, temperature: 0.45, reasoning_effort: "none", stream: false,
-        }),
+        body: JSON.stringify(requestBody),
       });
       if (!response.ok) throw assistantError("assistant_http_error", String(response.status));
-      let payload;
-      try { payload = await response.json(); }
-      catch { throw assistantError("assistant_invalid_response"); }
-      const answer = boundedText(payload?.choices?.[0]?.message?.content, maxReplyChars);
+      let firstTokenAt = null;
+      let rawAnswer;
+      if (provider === "ollama_raw") {
+        rawAnswer = await readOllamaStream(response, () => { firstTokenAt ??= performance.now(); });
+      } else {
+        let payload;
+        try { payload = await response.json(); }
+        catch { throw assistantError("assistant_invalid_response"); }
+        rawAnswer = payload?.choices?.[0]?.message?.content;
+        if (String(rawAnswer ?? "").length > 0) firstTokenAt = performance.now();
+      }
+      const answer = boundedText(rawAnswer, maxReplyChars);
       if (!answer) return { kind: "empty" };
       qwenState = "online";
       const completedAt = performance.now();
-      const timings = { llm_request_ms: Math.round(completedAt - startedAt) };
+      const timings = {
+        llm_first_token_ms: firstTokenAt == null ? null : Math.round(firstTokenAt - startedAt),
+        llm_request_ms: Math.round(completedAt - startedAt),
+      };
       logger?.info({ device_id: deviceId, stream_id: streamId, reply_chars: answer.length, ...timings }, "Assistant text ready");
       return { kind: "response", text: answer, timings };
     } catch (error) {

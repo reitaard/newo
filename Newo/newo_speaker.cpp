@@ -4,6 +4,7 @@
 #include <cstring>
 #include <driver/i2s_common.h>
 #include <esp_heap_caps.h>
+#include <freertos/idf_additions.h>
 
 #include "newo_config.h"
 #include "newo_log.h"
@@ -287,7 +288,13 @@ bool NewoSpeaker::startPlayback(const Request& request) {
   opusCallbackTotalUs_ = 0;
   opusCallbackWorstUs_ = 0;
   minimumDecoderStackBytes_ = UINT32_MAX;
-  if (request.codec == Codec::OPUS && xTaskCreatePinnedToCore(decoderTaskEntry, "newo-opus", NewoConfig::SPEAKER_OPUS_DECODER_STACK_BYTES, this, 1, &decoderTask_, 1) != pdPASS) {
+  // Keep the decoder stack out of scarce internal RAM. TLS temporarily consumes
+  // roughly 70 KiB there, while the ESP-IDF configuration explicitly permits
+  // external task stacks. The TCB remains internal and Opus packet/PCM behavior
+  // is unchanged.
+  if (request.codec == Codec::OPUS && xTaskCreatePinnedToCoreWithCaps(
+      decoderTaskEntry, "newo-opus", NewoConfig::SPEAKER_OPUS_DECODER_STACK_BYTES,
+      this, 1, &decoderTask_, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     decoderTask_ = nullptr; audio_.setPlaybackActive(false); releaseOpusQueue();
     publishStartupFailure(request, "opus_decoder_task_create_failed");
     return false;
@@ -353,7 +360,7 @@ void NewoSpeaker::opusDecoderTask() {
   releaseOpusDecoder();
   decoderFinished_ = true;
   decoderTask_ = nullptr;
-  vTaskDelete(nullptr);
+  vTaskDeleteWithCaps(nullptr);
 }
 
 bool IRAM_ATTR NewoSpeaker::onI2sSent(i2s_chan_handle_t handle, i2s_event_data_t* event, void* userData) {
