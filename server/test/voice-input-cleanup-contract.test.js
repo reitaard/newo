@@ -47,3 +47,15 @@ test("streaming microphone cleanup uses WebRTC NS medium with AGC bypassed", asy
   assert.equal(wakeSection.includes("webrtc_process"), false,
     "WakeNet path must remain untouched by streaming-only NS");
 });
+
+test("Sherpa endpoint defaults reduce tail latency without shortening max utterances", async () => {
+  const voice = await read("../src/voice.js");
+
+  assert.match(voice, /endpointRule1MinTrailingSilence\s*=\s*2\.0/);
+  assert.match(voice, /endpointRule2MinTrailingSilence\s*=\s*1\.0/);
+  assert.match(voice, /endpointRule3MinUtteranceLength\s*=\s*20/);
+  assert.match(voice, /rule1MinTrailingSilence:\s*endpointRule1MinTrailingSilence/);
+  assert.match(voice, /rule2MinTrailingSilence:\s*endpointRule2MinTrailingSilence/);
+  assert.match(voice, /rule3MinUtteranceLength:\s*endpointRule3MinUtteranceLength/);
+  assert.match(voice, /endpoint_rule2_s/);
+});
