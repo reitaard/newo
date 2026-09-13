@@ -146,7 +146,7 @@ test("ollama_raw reports stream errors and provider/model health", async () => {
   assert.deepEqual(await failed.respond(turn), { kind: "error", error: "assistant_request_failed" });
 
   const healthy = createAssistantRuntime({ enabled: true, provider: "ollama_raw", baseUrl: "http://local", model: "newo-main", logger: quietLogger,
-    fetchImpl: async () => jsonResponse({ models: [{ name: "newo-main" }] }) });
+    fetchImpl: async () => jsonResponse({ models: [{ name: "newo-main:latest" }] }) });
   const telemetry = await healthy.refreshHealth();
   assert.deepEqual({ provider: telemetry.provider, model: telemetry.model, online: telemetry.online }, { provider: "ollama_raw", model: "newo-main", online: "online" });
 });

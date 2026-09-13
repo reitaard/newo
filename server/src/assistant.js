@@ -306,7 +306,10 @@ export function createAssistantRuntime({
       const response = await requestImpl(modelsEndpoint, { headers, signal: controller.signal });
       const payload = response.ok ? await response.json() : null;
       const models = provider === "ollama_raw" ? payload?.models : payload?.data;
-      providerState = Array.isArray(models) && models.some((item) => (provider === "ollama_raw" ? item?.name ?? item?.model : item?.id) === model) ? "online" : "offline";
+      providerState = Array.isArray(models) && models.some((item) => {
+        const candidate = provider === "ollama_raw" ? item?.name ?? item?.model : item?.id;
+        return candidate === model || (provider === "ollama_raw" && !model.includes(":") && candidate === `${model}:latest`);
+      }) ? "online" : "offline";
     } catch {
       providerState = "offline";
     } finally {
