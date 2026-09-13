@@ -29,7 +29,8 @@ test("built-in profiles keep prompts, settings, and fallbacks isolated", () => {
   assert.deepEqual(lfm.sampling, { temperature: 0.2, top_k: 80, repeat_penalty: 1.05 });
   assert.equal(lfm.systemPrompt, LFM_SYSTEM_PROMPT);
   assert.equal(lfm.promptFormat, "lfm_chat_markup");
-  assert.equal(lfm.maxOutputTokens, 64);
+  assert.equal(lfm.maxOutputTokens, 96);
+  assert.equal(lfm.maxReplyChars, 450);
   assert.equal(lfm.fallbackProfile, QWEN_PROFILE_ID);
   assert.deepEqual(qwen.sampling, { temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0 });
   assert.equal(qwen.systemPrompt, QWEN_SYSTEM_PROMPT);
