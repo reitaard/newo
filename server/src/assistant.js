@@ -125,6 +125,7 @@ function shouldUseTimeContext(value) {
   return [
     /\bwhat time\b/,
     /\btime is it\b/,
+    /\bwhat(?:'s| is) the time\b/,
     /\bcurrent time\b/,
     /\bwhat(?:'s| is) the (?:date|day)\b/,
     /\bwhat (?:date|day) is it\b/,
@@ -133,6 +134,43 @@ function shouldUseTimeContext(value) {
     /\bwhat year is it\b/,
     /\bwhat month is it\b/,
   ].some((pattern) => pattern.test(text));
+}
+
+const CLOCK_HOURS = ["twelve", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven"];
+const CLOCK_SMALL_NUMBERS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"];
+const CLOCK_TENS = { 20: "twenty", 30: "thirty", 40: "forty", 50: "fifty" };
+
+function clockNumber(value) {
+  if (value < 20) return CLOCK_SMALL_NUMBERS[value];
+  const tens = Math.floor(value / 10) * 10;
+  const ones = value % 10;
+  return ones ? `${CLOCK_TENS[tens]} ${CLOCK_SMALL_NUMBERS[ones]}` : CLOCK_TENS[tens];
+}
+
+export function directClockShortcut(value, date, timeZone = DEFAULT_ASSISTANT_TIME_ZONE) {
+  const text = normalizedIntent(value);
+  if (!shouldUseTimeContext(text)) return null;
+  const wantsSeconds = /\bseconds?\b/.test(text);
+  const intent = text.replace(/\s+(?:with|including|and) seconds?$/, "");
+  if (!/^(?:what time is it|what(?:'s| is) the time|current time)(?: now| please)?$/.test(intent)) return null;
+  const now = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(now.getTime())) throw new RangeError("assistant clock returned an invalid date");
+  let parts;
+  try {
+    parts = new Intl.DateTimeFormat("en-US", {
+      timeZone, hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true,
+    }).formatToParts(now);
+  } catch (error) {
+    throw new RangeError(`invalid assistant IANA time zone: ${timeZone}`, { cause: error });
+  }
+  const part = (type) => parts.find((item) => item.type === type)?.value;
+  const hour = Number(part("hour"));
+  const minute = Number(part("minute"));
+  const second = Number(part("second"));
+  const period = part("dayPeriod");
+  const minuteWords = minute === 0 ? "" : minute < 10 ? ` oh ${clockNumber(minute)}` : ` ${clockNumber(minute)}`;
+  const secondsWords = wantsSeconds ? ` and ${clockNumber(second)} ${second === 1 ? "second" : "seconds"}` : "";
+  return { route: "local_time", text: `It's ${CLOCK_HOURS[hour % 12]}${minuteWords} ${period}${secondsWords}.` };
 }
 
 function shouldUseRuntimeContext(value) {
@@ -521,7 +559,10 @@ export function createAssistantRuntime({
 
     const previousExchanges = history.get(deviceId) ?? [];
     const historyAvailable = previousExchanges.length;
-    const shortcut = memoryShortcut(transcript, previousExchanges);
+    const clockShortcut = shouldUseTimeContext(transcript)
+      ? directClockShortcut(transcript, now(), timeZone)
+      : null;
+    const shortcut = clockShortcut ?? memoryShortcut(transcript, previousExchanges);
 
     if (shortcut) {
       const selected = profileById(effectiveId);

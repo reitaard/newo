@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import { ASSISTANT_HISTORY_MAX_CHARS_PER_MESSAGE, ASSISTANT_SYSTEM_PROMPT, createAssistantRuntime } from "../src/assistant.js";
+import { ASSISTANT_HISTORY_MAX_CHARS_PER_MESSAGE, ASSISTANT_SYSTEM_PROMPT, createAssistantRuntime, directClockShortcut } from "../src/assistant.js";
 import { createAssistantProfiles, LFM_PROFILE_ID, LFM_SYSTEM_PROMPT, QWEN_PROFILE_ID } from "../src/assistant-profiles.js";
 import { createAssistantTurnRuntime } from "../src/assistant-turn.js";
 
@@ -367,36 +367,33 @@ test("assistant includes compact known runtime state and backend usage telemetry
   assert.equal(logs.at(-1).runtime_context, true);
 });
 
-test("assistant supplies current server time in the configured IANA timezone per turn", async () => {
-  const requests = [];
-  const clockValues = [
-    new Date("2026-09-12T21:35:12.000Z"),
-    new Date("2026-09-12T21:35:13.000Z"),
-  ];
+test("direct clock shortcuts speak midnight, noon, and minutes naturally in Asia/Phnom_Penh", () => {
+  const zone = "Asia/Phnom_Penh";
+  assert.equal(directClockShortcut("what time is it", new Date("2026-09-12T17:00:00Z"), zone).text, "It's twelve AM.");
+  assert.equal(directClockShortcut("what's the time", new Date("2026-09-13T05:00:00Z"), zone).text, "It's twelve PM.");
+  assert.equal(directClockShortcut("current time", new Date("2026-09-13T06:05:00Z"), zone).text, "It's one oh five PM.");
+  assert.equal(directClockShortcut("what is the time", new Date("2026-09-13T06:15:00Z"), zone).text, "It's one fifteen PM.");
+  assert.equal(directClockShortcut("what time is it with seconds", new Date("2026-09-13T06:05:42Z"), zone).text, "It's one oh five PM and forty two seconds.");
+});
+
+test("clear direct clock intents bypass the LLM", async () => {
+  let fetchCalls = 0;
 
   const runtime = createAssistantRuntime({
     enabled: true,
     baseUrl: "http://local",
     model: "model",
     timeZone: "Asia/Phnom_Penh",
-    now: () => clockValues.shift(),
+    now: () => new Date("2026-09-13T06:05:42.000Z"),
     logger: quietLogger,
-    fetchImpl: async (_url, options) => {
-      requests.push(JSON.parse(options.body));
-      return jsonResponse({
-        choices: [{ message: { content: "It is four thirty-five AM." } }],
-      });
-    },
+    fetchImpl: async () => { fetchCalls += 1; throw new Error("LLM must not be called"); },
   });
 
-  await runtime.respond({ ...turn, streamId: "time-1", text: "What time is it?" });
-  await runtime.respond({ ...turn, streamId: "time-2", text: "What time is it now?" });
-
-  assert.match(requests[0].messages[0].content,
-    /Sunday, September 13, 2026 at 4:35:12 AM/);
-  assert.match(requests[0].messages[0].content,
-    /Asia\/Phnom_Penh \(UTC\+07:00\)/);
-  assert.match(requests[1].messages[0].content, /4:35:13 AM/);
+  const result = await runtime.respond({ ...turn, streamId: "time-1", text: "What time is it?" });
+  assert.equal(result.text, "It's one oh five PM.");
+  assert.equal(result.timings.route, "local_time");
+  assert.equal(result.timings.llm_request_ms, 0);
+  assert.equal(fetchCalls, 0);
 });
 
 test("assistant respects another requested timezone and rejects invalid IANA zones", async () => {
@@ -415,7 +412,7 @@ test("assistant respects another requested timezone and rejects invalid IANA zon
     },
   });
 
-  await runtime.respond({ ...turn, text: "What time is it?" });
+  await runtime.respond({ ...turn, text: "What date is it?" });
 
   assert.match(request.messages[0].content,
     /Thursday, January 15, 2026 at 12:08:09 PM/);
