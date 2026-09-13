@@ -1,4 +1,5 @@
 import { parentPort, workerData } from "node:worker_threads";
+import { resolveSherpaEndpointConfig } from "./sherpa-endpoint-config.js";
 import { SherpaAsrBackend } from "./voice.js";
 
 let backend;
@@ -7,12 +8,29 @@ let nextSessionId = 1;
 
 function respond(requestId, payload = {}) { parentPort.postMessage({ requestId, ...payload }); }
 
+const endpointConfig = resolveSherpaEndpointConfig(process.env, {
+  rule1Seconds: workerData.endpointRule1MinTrailingSilence ?? 2.0,
+  rule2Seconds: workerData.endpointRule2MinTrailingSilence ?? 1.0,
+  rule3Seconds: workerData.endpointRule3MinUtteranceLength ?? 20,
+});
+const asrOptions = {
+  ...workerData,
+  endpointRule1MinTrailingSilence: endpointConfig.rule1Seconds,
+  endpointRule2MinTrailingSilence: endpointConfig.rule2Seconds,
+  endpointRule3MinUtteranceLength: endpointConfig.rule3Seconds,
+};
+
 try {
   // Native module loading, recognizer ownership, Float32 conversion, and every
   // synchronous decode occur in this worker, never in Fastify's main thread.
-  backend = new SherpaAsrBackend(workerData);
+  backend = new SherpaAsrBackend(asrOptions);
   await backend.prewarm();
-  parentPort.postMessage({ type: "ready" });
+  parentPort.postMessage({
+    type: "ready",
+    endpointRule1MinTrailingSilence: asrOptions.endpointRule1MinTrailingSilence,
+    endpointRule2MinTrailingSilence: asrOptions.endpointRule2MinTrailingSilence,
+    endpointRule3MinUtteranceLength: asrOptions.endpointRule3MinUtteranceLength,
+  });
 } catch (error) {
   parentPort.postMessage({ type: "fatal", error: error?.message ?? "ASR worker startup failed" });
 }
