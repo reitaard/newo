@@ -45,6 +45,14 @@ TLS, WebSocket writes and WebRTC processing all happen after the ring. A transpo
 - WakeNet remains on the existing ESP_SR path and is not routed through the streaming NS path.
 - AEC is intentionally not part of this checkpoint. Proper AEC requires simultaneous speaker + microphone operation and the exact playback reference signal.
 
+The active path is mutually exclusive and persisted in firmware NVS: `raw`, or
+WebRTC NS at mild, medium, or strong strength. Telegram exposes `/mic` (`/mi`)
+for status and `/mic_raw`, `/mic_ns`, `/mic_mild`, `/mic_medium`, and
+`/mic_strong` with corresponding `mi_*` aliases. No second audio ring or parallel
+DSP pipeline is created. Each completed turn reports raw/clean RMS and peak,
+raw/clean clipping counts, and a streaming minimum-frame RMS noise-floor estimate.
+Memory checkpoints surround WebRTC creation and destruction.
+
 ## Sherpa endpoint policy
 
 Defaults:

@@ -5,7 +5,6 @@
 
 #include <esp_heap_caps.h>
 #include <freertos/idf_additions.h>
-
 #include "newo_log.h"
 #include "newo_memory_diagnostics.h"
 #include "newo_pcm_ring.h"
@@ -68,6 +67,13 @@ void voiceCaptureTaskEntry(void* parameter) {
 NewoAudio* NewoAudio::instance_ = nullptr;
 
 NewoAudio::NewoAudio(NewoWiFi& wifi, NewoDisplay& display) : wifi_(wifi), display_(display) {}
+
+bool NewoAudio::setMicProcessing(MicMode mode, uint8_t nsLevel) {
+  if (state_ == NewoVoiceState::STREAMING || nsLevel > 2) return false;
+  micMode_ = mode;
+  micNsLevel_ = nsLevel;
+  return true;
+}
 
 void NewoAudio::begin() {
   instance_ = this;
@@ -314,10 +320,12 @@ void NewoAudio::streamTask() {
   if (capture.finished && capture.error) streamEndReason_ = capture.error;
 
   NewoWebRtcHandle* voiceDsp = nullptr;
-  if (!streamEndReason_ && NewoConfig::VOICE_WEBRTC_NS_ENABLED) {
+  if (!streamEndReason_ && micMode_ == MicMode::NS) {
+    NewoMemoryDiagnostics::log("BEFORE_WEBRTC_CREATE");
     voiceDsp = webrtc_create(NewoConfig::AUDIO_FRAME_DURATION_MS,
-                             NewoConfig::VOICE_WEBRTC_NS_MODE,
+                             micNsLevel_,
                              AGC_MODE_SR, 9, -3, NewoConfig::AUDIO_SAMPLE_RATE);
+    NewoMemoryDiagnostics::log("AFTER_WEBRTC_CREATE");
     if (!voiceDsp) {
       streamEndReason_ = "ns_create_failed";
       NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::AUDIO,
@@ -325,8 +333,7 @@ void NewoAudio::streamTask() {
     } else {
       char detail[96];
       snprintf(detail, sizeof(detail), "mode=%d agc=%s frame_ms=%u sample_rate=%lu",
-               static_cast<int>(NewoConfig::VOICE_WEBRTC_NS_MODE),
-               NewoConfig::VOICE_WEBRTC_AGC_ENABLED ? "on" : "off",
+               static_cast<int>(micNsLevel_), "off",
                static_cast<unsigned>(NewoConfig::AUDIO_FRAME_DURATION_MS),
                static_cast<unsigned long>(NewoConfig::AUDIO_SAMPLE_RATE));
       NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO,
@@ -358,6 +365,9 @@ void NewoAudio::streamTask() {
   bool prerollLogged = false;
   uint32_t reportedOverwrittenFrames = 0;
   uint32_t transmittedFrames = 0;
+  uint64_t rawSquareSum = 0, cleanSquareSum = 0;
+  uint32_t measuredSamples = 0, rawPeakAll = 0, cleanPeakAll = 0;
+  uint32_t rawClipped = 0, cleanClipped = 0, noiseFloorRms = UINT32_MAX;
 
   while (!stopStreaming_ && !streamEndReason_) {
     // WebSockets 2.7.2 may block here for TCP/TLS. I2S capture is deliberately
@@ -428,6 +438,13 @@ void NewoAudio::streamTask() {
     size_t processedFrames = 0;
     for (size_t frame = 0; frame < frames; ++frame) {
       int16_t* rawFrame = rawBatch + frame * NewoConfig::AUDIO_SAMPLES_PER_FRAME;
+      for (size_t i = 0; i < NewoConfig::AUDIO_SAMPLES_PER_FRAME; ++i) {
+        const int32_t sample = rawFrame[i];
+        const uint32_t absolute = sample < 0 ? static_cast<uint32_t>(-sample) : static_cast<uint32_t>(sample);
+        rawSquareSum += static_cast<uint64_t>(sample * sample);
+        if (absolute > rawPeakAll) rawPeakAll = absolute;
+        if (absolute >= 32760) ++rawClipped;
+      }
       const bool collectHealth = healthFrames < kHealthFrames;
       if (collectHealth) {
         for (size_t i = 0; i < NewoConfig::AUDIO_SAMPLES_PER_FRAME; ++i) {
@@ -458,6 +475,20 @@ void NewoAudio::streamTask() {
       }
       memcpy(txBatch + frame * NewoConfig::AUDIO_SAMPLES_PER_FRAME,
              processed, NewoConfig::AUDIO_FRAME_BYTES);
+      uint64_t frameSquareSum = 0;
+      for (size_t i = 0; i < NewoConfig::AUDIO_SAMPLES_PER_FRAME; ++i) {
+        const int32_t sample = processed[i];
+        const uint32_t absolute = sample < 0 ? static_cast<uint32_t>(-sample) : static_cast<uint32_t>(sample);
+        const uint64_t square = static_cast<uint64_t>(sample * sample);
+        cleanSquareSum += square;
+        frameSquareSum += square;
+        if (absolute > cleanPeakAll) cleanPeakAll = absolute;
+        if (absolute >= 32760) ++cleanClipped;
+      }
+      measuredSamples += NewoConfig::AUDIO_SAMPLES_PER_FRAME;
+      const uint32_t frameRms = static_cast<uint32_t>(sqrt(
+          static_cast<double>(frameSquareSum) / NewoConfig::AUDIO_SAMPLES_PER_FRAME));
+      if (frameRms && frameRms < noiseFloorRms) noiseFloorRms = frameRms;
       ++processedFrames;
 
       if (collectHealth) {
@@ -514,7 +545,17 @@ void NewoAudio::streamTask() {
   // readBytes uses a 250 ms timeout, so joining the producer is bounded in normal
   // operation. Never free its stack context/ring storage while it still owns them.
   while (!capture.finished) vTaskDelay(pdMS_TO_TICKS(1));
-  if (voiceDsp) webrtc_destroy(voiceDsp);
+  if (voiceDsp) {
+    webrtc_destroy(voiceDsp);
+    NewoMemoryDiagnostics::log("AFTER_WEBRTC_DESTROY");
+  }
+  micMetrics_.rawRms = measuredSamples ? static_cast<uint32_t>(sqrt(static_cast<double>(rawSquareSum) / measuredSamples)) : 0;
+  micMetrics_.cleanRms = measuredSamples ? static_cast<uint32_t>(sqrt(static_cast<double>(cleanSquareSum) / measuredSamples)) : 0;
+  micMetrics_.rawPeak = rawPeakAll;
+  micMetrics_.cleanPeak = cleanPeakAll;
+  micMetrics_.rawClipped = rawClipped;
+  micMetrics_.cleanClipped = cleanClipped;
+  micMetrics_.noiseFloorRms = noiseFloorRms == UINT32_MAX ? 0 : noiseFloorRms;
 
   size_t remainingFrames = 0;
   uint32_t pushedFrames = 0;
@@ -535,6 +576,16 @@ void NewoAudio::streamTask() {
            static_cast<unsigned long>(remainingFrames * NewoConfig::AUDIO_FRAME_DURATION_MS));
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO,
                "VOICE_CAPTURE_SUMMARY", summary);
+  char processing[220];
+  snprintf(processing, sizeof(processing),
+           "mode=%s ns_level=%u raw_rms=%lu clean_rms=%lu raw_peak=%lu clean_peak=%lu raw_clipped=%lu clean_clipped=%lu noise_floor_rms=%lu",
+           micMode_ == MicMode::NS ? "ns" : "raw", static_cast<unsigned>(micNsLevel_),
+           static_cast<unsigned long>(micMetrics_.rawRms), static_cast<unsigned long>(micMetrics_.cleanRms),
+           static_cast<unsigned long>(micMetrics_.rawPeak), static_cast<unsigned long>(micMetrics_.cleanPeak),
+           static_cast<unsigned long>(micMetrics_.rawClipped), static_cast<unsigned long>(micMetrics_.cleanClipped),
+           static_cast<unsigned long>(micMetrics_.noiseFloorRms));
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO,
+               "VOICE_PROCESSING_SUMMARY", processing);
 
   voiceConnected_ = false;
   voiceWebSocket_.disconnect();

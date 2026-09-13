@@ -148,6 +148,28 @@ bool NewoCloud::consumeUsbControlRequest(UsbControlRequest& request) {
   return true;
 }
 
+bool NewoCloud::consumeMicControlRequest(MicControlRequest& request) {
+  if (micControlRequestCount_ == 0) return false;
+  request = micControlRequests_[micControlRequestHead_];
+  micControlRequestHead_ = (micControlRequestHead_ + 1) % kMicControlQueueDepth;
+  --micControlRequestCount_;
+  return true;
+}
+
+void NewoCloud::sendMicAck(const char* requestId, const char* mode, uint8_t nsLevel, bool applied,
+                           uint32_t rawRms, uint32_t cleanRms, uint32_t rawPeak, uint32_t cleanPeak,
+                           uint32_t rawClipped, uint32_t cleanClipped, uint32_t noiseFloorRms) {
+  if (!connected_ || !requestId || !requestId[0]) return;
+  JsonDocument doc;
+  doc["type"] = "mic_ack"; doc["request_id"] = requestId; doc["mode"] = mode;
+  doc["ns_level"] = nsLevel; doc["applied"] = applied;
+  doc["raw_rms"] = rawRms; doc["clean_rms"] = cleanRms;
+  doc["raw_peak"] = rawPeak; doc["clean_peak"] = cleanPeak;
+  doc["raw_clipped"] = rawClipped; doc["clean_clipped"] = cleanClipped;
+  doc["noise_floor_rms"] = noiseFloorRms;
+  String body; serializeJson(doc, body); webSocket_.sendTXT(body);
+}
+
 void NewoCloud::sendUsbAck(const char* requestId, bool host, bool audio, bool storage, bool vcp,
                            bool active, bool applied, bool rebootRequired, bool trialPending) {
   if (!connected_ || !requestId || !requestId[0]) return;
@@ -559,6 +581,27 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     voiceRequests_[voiceRequestTail_] = request;
     voiceRequestTail_ = (voiceRequestTail_ + 1) % kVoiceRequestQueueDepth;
     ++voiceRequestCount_;
+    return;
+  }
+
+  if (strcmp(type, "mic_control") == 0) {
+    const char* requestId = doc["request_id"] | "";
+    const char* action = doc["action"] | "";
+    if (!requestId[0] || micControlRequestCount_ == kMicControlQueueDepth) return;
+    MicControlRequest request = {};
+    if (strcmp(action, "status") == 0) request.action = MicControlRequest::Action::STATUS;
+    else if (strcmp(action, "set") == 0) {
+      const char* mode = doc["mode"] | "";
+      const int level = doc["ns_level"] | 1;
+      if ((strcmp(mode, "raw") != 0 && strcmp(mode, "ns") != 0) || level < 0 || level > 2) return;
+      request.action = MicControlRequest::Action::SET;
+      request.mode = strcmp(mode, "ns") == 0 ? 1 : 0;
+      request.nsLevel = static_cast<uint8_t>(level);
+    } else return;
+    strlcpy(request.requestId, requestId, sizeof(request.requestId));
+    micControlRequests_[micControlRequestTail_] = request;
+    micControlRequestTail_ = (micControlRequestTail_ + 1) % kMicControlQueueDepth;
+    ++micControlRequestCount_;
     return;
   }
 

@@ -256,6 +256,7 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("display_ack"), request_id: z.string().optional(), mode: z.string().max(16) }).passthrough(),
   z.object({ type: z.literal("clock_ack"), request_id: z.string(), enabled: z.boolean(), applied: z.boolean() }).passthrough(),
   z.object({ type: z.literal("usb_ack"), request_id: z.string(), host: z.boolean(), audio: z.boolean(), storage: z.boolean(), vcp: z.boolean(), active: z.boolean(), applied: z.boolean(), reboot_required: z.boolean(), trial_pending: z.boolean() }).passthrough(),
+  z.object({ type: z.literal("mic_ack"), request_id: z.string(), mode: z.enum(["raw", "ns"]), ns_level: z.number().int().min(0).max(2), applied: z.boolean(), raw_rms: z.number().nonnegative(), clean_rms: z.number().nonnegative(), raw_peak: z.number().nonnegative(), clean_peak: z.number().nonnegative(), raw_clipped: z.number().nonnegative(), clean_clipped: z.number().nonnegative(), noise_floor_rms: z.number().nonnegative() }).passthrough(),
   z.object({ type: z.literal("track_ack"), request_id: z.string(), command_epoch: z.string(), command_sequence: z.number().int().positive(), state: z.enum(["off", "active"]), applied: z.boolean(), duplicate: z.boolean().optional(), peer_state: z.enum(["active", "stopped", "uncertain", "unavailable", "unknown"]).optional(), collector_source: z.enum(["configured", "discovered", "override"]).optional(), error: z.string().optional() }).passthrough(),
   z.object({ type: z.literal("speaker_ack"), request_id: z.string(), enabled: z.boolean(), connection: z.enum(["Ready", "Connecting", "Disconnected"]), volume: z.number().int().min(0).max(100), muted: z.boolean(), applied: z.boolean(), last_playback: z.enum(["None", "Playing", "Complete", "Failed"]), underruns: z.number().int().nonnegative(), overflows: z.number().int().nonnegative(), buffer_bytes: z.number().int().positive() }).passthrough(),
   z.object({ type: z.literal("speaker_started"), playback_id: z.string().uuid(), first_pcm_to_play_ms: z.number().int().nonnegative() }).passthrough(),
@@ -491,6 +492,7 @@ const TELEGRAM_COMMANDS = [
   { command: "eco", description: "Toggle eco display" },
   { command: "clock", description: "Toggle clock" },
   { command: "usb", description: "USB configuration" },
+  { command: "mic", description: "Microphone processing" },
   { command: "voice", description: "Toggle voice" },
   { command: "vs", description: "Voice status" },
   { command: "profile", description: "Assistant profile status" },
@@ -937,6 +939,12 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command("track_bg", primaryModeHandlers.trackBackground);
   bot.command(["voice", "v"], primaryModeHandlers.voice);
   bot.command("vs", primaryModeHandlers.voiceStatus);
+  bot.command(["mic", "mi"], (ctx) => primaryModeHandlers.mic(ctx));
+  bot.command(["mic_raw", "mi_raw"], (ctx) => primaryModeHandlers.mic(ctx, "raw"));
+  bot.command(["mic_ns", "mi_ns"], (ctx) => primaryModeHandlers.mic(ctx, "ns"));
+  bot.command(["mic_mild", "mi_1"], (ctx) => primaryModeHandlers.mic(ctx, "mild"));
+  bot.command(["mic_medium", "mi_2"], (ctx) => primaryModeHandlers.mic(ctx, "medium"));
+  bot.command(["mic_strong", "mi_3"], (ctx) => primaryModeHandlers.mic(ctx, "strong"));
   bot.command("owner_enroll", primaryModeHandlers.ownerEnroll);
   bot.command("owner_status", primaryModeHandlers.ownerStatus);
   bot.command("owner_cancel", primaryModeHandlers.ownerCancel);

@@ -15,10 +15,19 @@
 // streaming task while STREAMING. OFF owns neither.
 class NewoAudio {
  public:
+  enum class MicMode : uint8_t { RAW = 0, NS = 1 };
+  struct MicMetrics {
+    uint32_t rawRms = 0, cleanRms = 0, rawPeak = 0, cleanPeak = 0;
+    uint32_t rawClipped = 0, cleanClipped = 0, noiseFloorRms = 0;
+  };
   NewoAudio(NewoWiFi& wifi, NewoDisplay& display);
   void begin();
   void loop();
   bool setEnabled(bool enabled);
+  bool setMicProcessing(MicMode mode, uint8_t nsLevel);
+  MicMode micMode() const { return micMode_; }
+  uint8_t micNsLevel() const { return micNsLevel_; }
+  const MicMetrics& micMetrics() const { return micMetrics_; }
   // Starts one direct microphone session, or cancels it when already streaming.
   // It intentionally does not enable or re-arm WakeNet.
   bool manualToggle();
@@ -72,4 +81,7 @@ class NewoAudio {
   uint32_t sessionCount_ = 0;
   uint32_t failures_ = 0;
   uint32_t timeouts_ = 0;
+  MicMode micMode_ = MicMode::NS;
+  uint8_t micNsLevel_ = 1;
+  MicMetrics micMetrics_;
 };
