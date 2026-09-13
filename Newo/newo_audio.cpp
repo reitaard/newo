@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstring>
 
+#include <esp_heap_caps.h>
+
 #include "newo_log.h"
 
 #if __has_include("newo_secrets.h")
@@ -212,6 +214,18 @@ void NewoAudio::streamTask() {
   headers += F("X-Newo-Device-Id: "); headers += NewoSecrets::DEVICE_ID;
   headers += F("\r\nAuthorization: Bearer "); headers += NewoSecrets::DEVICE_SECRET;
   voiceWebSocket_.setExtraHeaders(headers.c_str());
+
+  int16_t* preconnectPcm = static_cast<int16_t*>(heap_caps_malloc(
+      NewoConfig::VOICE_PRECONNECT_BUFFER_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  size_t preconnectWriteFrame = 0;
+  size_t preconnectFrameCount = 0;
+  uint32_t preconnectOverwrittenFrames = 0;
+  bool preconnectFlushed = false;
+  if (!preconnectPcm) {
+    NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO,
+                 "VOICE_PREROLL_DISABLED", "reason=psram_alloc_failed");
+  }
+
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_CONNECTING");
   voiceWebSocket_.beginSslWithCA(NewoConfig::CLOUD_HOST, NewoConfig::CLOUD_PORT,
                                  NewoConfig::VOICE_PATH, NewoSecrets::CLOUD_CA_CERT, "");
@@ -227,51 +241,103 @@ void NewoAudio::streamTask() {
   int16_t healthMax = -32768;
   while (!stopStreaming_) {
     voiceWebSocket_.loop();
-    if (voiceConnected_) {
-      if (i2s_.readBytes(reinterpret_cast<char*>(stereo), sizeof(stereo)) != sizeof(stereo)) {
-        streamEndReason_ = "i2s_read_failed";
-        break;
-      }
+
+    // Capture immediately, even while TLS/WebSocket is still connecting. Before
+    // the socket is ready these frames are kept in a bounded rolling PSRAM ring.
+    if (i2s_.readBytes(reinterpret_cast<char*>(stereo), sizeof(stereo)) != sizeof(stereo)) {
+      streamEndReason_ = "i2s_read_failed";
+      break;
+    }
+    for (size_t i = 0; i < NewoConfig::AUDIO_SAMPLES_PER_FRAME; ++i) {
+      mono[i] = stereo[i * 2 + (NewoConfig::AUDIO_I2S_MIC_IS_LEFT ? 0 : 1)];
+    }
+
+    if (healthFrames < kHealthFrames) {
       for (size_t i = 0; i < NewoConfig::AUDIO_SAMPLES_PER_FRAME; ++i) {
-        mono[i] = stereo[i * 2 + (NewoConfig::AUDIO_I2S_MIC_IS_LEFT ? 0 : 1)];
+        const int32_t sample = mono[i];
+        const uint32_t absolute = sample < 0 ? static_cast<uint32_t>(-sample) : static_cast<uint32_t>(sample);
+        if (sample != 0) ++healthNonzero;
+        if (absolute > healthPeak) healthPeak = absolute;
+        if (sample < healthMin) healthMin = static_cast<int16_t>(sample);
+        if (sample > healthMax) healthMax = static_cast<int16_t>(sample);
+        healthSquareSum += static_cast<uint64_t>(sample * sample);
       }
-      if (healthFrames < kHealthFrames) {
-        for (size_t i = 0; i < NewoConfig::AUDIO_SAMPLES_PER_FRAME; ++i) {
-          const int32_t sample = mono[i];
-          const uint32_t absolute = sample < 0 ? static_cast<uint32_t>(-sample) : static_cast<uint32_t>(sample);
-          if (sample != 0) ++healthNonzero;
-          if (absolute > healthPeak) healthPeak = absolute;
-          if (sample < healthMin) healthMin = static_cast<int16_t>(sample);
-          if (sample > healthMax) healthMax = static_cast<int16_t>(sample);
-          healthSquareSum += static_cast<uint64_t>(sample * sample);
-        }
-        ++healthFrames;
-        healthSamples += NewoConfig::AUDIO_SAMPLES_PER_FRAME;
-        if (healthFrames == kHealthFrames) {
-          const uint32_t rms = static_cast<uint32_t>(sqrt(
-              static_cast<double>(healthSquareSum) / static_cast<double>(healthSamples)));
-          char detail[160];
-          snprintf(detail, sizeof(detail),
-                   "frames=%lu samples=%lu peak=%lu rms=%lu nonzero=%lu min=%d max=%d channel=%s",
-                   static_cast<unsigned long>(healthFrames), static_cast<unsigned long>(healthSamples),
-                   static_cast<unsigned long>(healthPeak), static_cast<unsigned long>(rms),
-                   static_cast<unsigned long>(healthNonzero), static_cast<int>(healthMin),
-                   static_cast<int>(healthMax), NewoConfig::AUDIO_I2S_MIC_IS_LEFT ? "left" : "right");
-          NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_PCM_HEALTH", detail);
-        }
-      }
-      // One 20 ms PCM16 frame is sent directly: no queue and no stale backlog.
-      if (!voiceWebSocket_.sendBIN(reinterpret_cast<uint8_t*>(mono), sizeof(mono))) {
-        streamEndReason_ = "send_failed";
-        break;
+      ++healthFrames;
+      healthSamples += NewoConfig::AUDIO_SAMPLES_PER_FRAME;
+      if (healthFrames == kHealthFrames) {
+        const uint32_t rms = static_cast<uint32_t>(sqrt(
+            static_cast<double>(healthSquareSum) / static_cast<double>(healthSamples)));
+        char detail[160];
+        snprintf(detail, sizeof(detail),
+                 "frames=%lu samples=%lu peak=%lu rms=%lu nonzero=%lu min=%d max=%d channel=%s",
+                 static_cast<unsigned long>(healthFrames), static_cast<unsigned long>(healthSamples),
+                 static_cast<unsigned long>(healthPeak), static_cast<unsigned long>(rms),
+                 static_cast<unsigned long>(healthNonzero), static_cast<int>(healthMin),
+                 static_cast<int>(healthMax), NewoConfig::AUDIO_I2S_MIC_IS_LEFT ? "left" : "right");
+        NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_PCM_HEALTH", detail);
       }
     }
+
+    if (!voiceConnected_) {
+      if (preconnectPcm) {
+        memcpy(preconnectPcm + preconnectWriteFrame * NewoConfig::AUDIO_SAMPLES_PER_FRAME,
+               mono, NewoConfig::AUDIO_FRAME_BYTES);
+        preconnectWriteFrame = (preconnectWriteFrame + 1) % NewoConfig::VOICE_PRECONNECT_BUFFER_FRAMES;
+        if (preconnectFrameCount < NewoConfig::VOICE_PRECONNECT_BUFFER_FRAMES) {
+          ++preconnectFrameCount;
+        } else {
+          ++preconnectOverwrittenFrames;
+        }
+      }
+      continue;
+    }
+
+    if (!preconnectFlushed) {
+      if (preconnectPcm && preconnectFrameCount > 0) {
+        const size_t oldestFrame =
+            (preconnectWriteFrame + NewoConfig::VOICE_PRECONNECT_BUFFER_FRAMES - preconnectFrameCount) %
+            NewoConfig::VOICE_PRECONNECT_BUFFER_FRAMES;
+        for (size_t frame = 0; frame < preconnectFrameCount; ++frame) {
+          const size_t frameIndex = (oldestFrame + frame) % NewoConfig::VOICE_PRECONNECT_BUFFER_FRAMES;
+          if (!voiceWebSocket_.sendBIN(
+                  reinterpret_cast<uint8_t*>(preconnectPcm + frameIndex * NewoConfig::AUDIO_SAMPLES_PER_FRAME),
+                  NewoConfig::AUDIO_FRAME_BYTES)) {
+            streamEndReason_ = "preroll_send_failed";
+            stopStreaming_ = true;
+            break;
+          }
+          // Give the WebSocket state machine a chance to service the burst while
+          // preserving strict oldest-to-newest ordering.
+          voiceWebSocket_.loop();
+        }
+      }
+
+      char detail[160];
+      snprintf(detail, sizeof(detail),
+               "connect_ms=%lu buffered_frames=%lu buffered_ms=%lu overwritten_frames=%lu psram=%s",
+               static_cast<unsigned long>(millis() - streamStartedMs_),
+               static_cast<unsigned long>(preconnectFrameCount),
+               static_cast<unsigned long>(preconnectFrameCount * NewoConfig::AUDIO_FRAME_DURATION_MS),
+               static_cast<unsigned long>(preconnectOverwrittenFrames), preconnectPcm ? "yes" : "no");
+      NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_PREROLL", detail);
+      preconnectFlushed = true;
+      if (stopStreaming_) break;
+    }
+
+    // One 20 ms PCM16 frame is sent directly after the preserved prefix: no
+    // queue and no stale backlog during steady-state streaming.
+    if (!voiceWebSocket_.sendBIN(reinterpret_cast<uint8_t*>(mono), sizeof(mono))) {
+      streamEndReason_ = "send_failed";
+      break;
+    }
+
     if (static_cast<uint32_t>(millis() - streamStartedMs_) >= NewoConfig::VOICE_ACTIVE_SESSION_TIMEOUT_MS) {
       streamEndReason_ = "timeout"; break;
     }
     vTaskDelay(pdMS_TO_TICKS(1));
   }
   if (!streamEndReason_) streamEndReason_ = stopStreaming_ ? "cancelled" : "disconnected";
+  if (preconnectPcm) heap_caps_free(preconnectPcm);
   voiceConnected_ = false;
   voiceWebSocket_.disconnect();
   releaseI2s();
