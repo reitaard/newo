@@ -687,6 +687,8 @@ export function createSpeakerRuntime({
     const consumedBytes = message.consumed_bytes;
     const bufferedBytes = message.buffered_bytes;
     const capacityBytes = message.capacity_bytes;
+    const reportIntervalMs = message.report_interval_ms;
+    const receiptReportDelayMs = message.receipt_report_delay_ms;
     if (!Number.isInteger(receivedBytes) || !Number.isInteger(consumedBytes) || !Number.isInteger(bufferedBytes) ||
         !Number.isInteger(capacityBytes) || receivedBytes < job.receivedBytes || consumedBytes < job.consumedBytes ||
         receivedBytes > job.bytesSent || consumedBytes > receivedBytes || bufferedBytes < 0 ||
@@ -702,6 +704,12 @@ export function createSpeakerRuntime({
     job.receivedBytes = receivedBytes;
     job.consumedBytes = consumedBytes;
     job.reportedBufferedBytes = bufferedBytes;
+    if (Number.isInteger(reportIntervalMs) && reportIntervalMs >= 0) {
+      job.maxFlowReportIntervalMs = Math.max(job.maxFlowReportIntervalMs, reportIntervalMs);
+    }
+    if (Number.isInteger(receiptReportDelayMs) && receiptReportDelayMs >= 0) {
+      job.maxReceiptReportDelayMs = Math.max(job.maxReceiptReportDelayMs, receiptReportDelayMs);
+    }
     job.flowReports += 1;
     if (receivedBytes > job.lastFlowReceivedBytes) job.receivedFlowReports += 1;
     job.lastFlowReceivedBytes = receivedBytes;
@@ -750,6 +758,8 @@ export function createSpeakerRuntime({
     job.statistics.add(chunk);
     recordOutstanding(job, enforceFlowWindow);
     await job.transport.sendPcm((data, options) => sendFrame(current.ws, data, options), chunk);
+    const wsBufferedAmount = Number.isFinite(current.ws.bufferedAmount) ? current.ws.bufferedAmount : null;
+    if (wsBufferedAmount !== null) job.maxWebSocketBufferedAmount = Math.max(job.maxWebSocketBufferedAmount, wsBufferedAmount);
     const sentAt = performance.now();
     if (job.lastSuccessfulPcmSendAt !== null) {
       const gapMs = sentAt - job.lastSuccessfulPcmSendAt;
@@ -931,7 +941,7 @@ export function createSpeakerRuntime({
           if (catchupsThisTurn >= 2) { await new Promise((resolve) => setImmediate(resolve)); catchupsThisTurn = 0; }
           else { catchupsThisTurn += 1; job.catchupFrames += 1; }
         } else { await waitUntil(deadline); catchupsThisTurn = 0; }
-        await sendPcmChunk(job, current, frame, { enforceFlowWindow: false });
+        await sendWithFlow(job, current, frame);
         job.pacerFramesSent += 1;
         frameIndex += 1;
       }
@@ -1002,6 +1012,9 @@ export function createSpeakerRuntime({
       network_inflight_limit_bytes: networkInFlightLimitBytes,
       total_outstanding_high_water_bytes: job.totalOutstandingHighWaterBytes,
       total_outstanding_limit_bytes: maxOutstandingBytes,
+      max_websocket_buffered_amount: job.maxWebSocketBufferedAmount,
+      max_flow_report_interval_ms: job.maxFlowReportIntervalMs,
+      max_receipt_report_delay_ms: job.maxReceiptReportDelayMs,
       flow_reports: job.flowReports, received_flow_reports: job.receivedFlowReports,
       chunk_bytes: chunkBytes, producer_queue_high_water_bytes: job.backendMetrics?.producerQueueHighWaterBytes ?? null,
     }, "Speaker PCM stream sent");
@@ -1050,6 +1063,8 @@ export function createSpeakerRuntime({
       resolve, reject, completion, bytesSent: 0, receivedBytes: 0, consumedBytes: 0, reportedBufferedBytes: 0,
       flowVersion: 0, flowWaiters: new Set(), pacerWaiters: new Set(), flowReports: 0, receivedFlowReports: 0, lastFlowReceivedBytes: 0,
       maxNetworkInFlightBytes: 0, totalOutstandingHighWaterBytes: 0, endSent: false,
+      maxWebSocketBufferedAmount: 0,
+      maxFlowReportIntervalMs: 0, maxReceiptReportDelayMs: 0,
       pacerFramesSent: 0, pacerInitialPcmBytes: 0, producerQueueHighWaterBytes: 0,
       maxScheduleLateMs: 0, lateOver20Ms: 0, lateOver40Ms: 0, lateOver80Ms: 0, catchupFrames: 0,
       highWaterBrakeCount: 0, highWaterBrakeMaxMs: 0,
@@ -1140,6 +1155,9 @@ export function createSpeakerRuntime({
       network_inflight_limit_bytes: networkInFlightLimitBytes,
       total_outstanding_high_water_bytes: job.totalOutstandingHighWaterBytes,
       total_outstanding_limit_bytes: maxOutstandingBytes,
+      max_websocket_buffered_amount: job.maxWebSocketBufferedAmount,
+      max_flow_report_interval_ms: job.maxFlowReportIntervalMs,
+      max_receipt_report_delay_ms: job.maxReceiptReportDelayMs,
       flow_reports: job.flowReports, received_flow_reports: job.receivedFlowReports,
       bytes_sent: job.bytesSent, bytes_received: job.receivedBytes, bytes_consumed: job.consumedBytes,
       result: result.kind, error: result.error,

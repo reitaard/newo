@@ -5,11 +5,11 @@
 export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersistentSpeakerEnabled, maxReplyChars, logger, setAssistantState = () => {} }) {
   const active = new Map();
   let closing = false;
-  let latest = { result: "n/a", llmMs: null, streamId: null, at: null, ttsQueuedMs: null, totalMs: null, asrFinalMs: null };
+  let latest = { result: "n/a", llmMs: null, llmFirstRawTokenMs: null, llmFirstTokenMs: null, streamId: null, at: null, ttsQueuedMs: null, totalMs: null, asrFinalMs: null };
 
   function record(result, turn, fields = {}) {
     latest = {
-      result, streamId: turn?.streamId ?? null, at: Date.now(), llmMs: null,
+      result, streamId: turn?.streamId ?? null, at: Date.now(), llmMs: null, llmFirstRawTokenMs: null, llmFirstTokenMs: null,
       ttsQueuedMs: null, totalMs: null, asrFinalMs: turn?.asrFinalMs ?? null, ...fields,
     };
   }
@@ -35,14 +35,21 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
     record("busy", turn);
     setAssistantState(turn.deviceId, "thinking");
     const completion = (async () => {
+      const llmStartedAt = performance.now();
       const answer = await assistant.respond(turn);
+      const timingFields = {
+        llmMs: answer.timings?.llm_request_ms ?? null,
+        llmFirstRawTokenMs: answer.timings?.llm_first_raw_token_ms ?? null,
+        llmFirstTokenMs: answer.timings?.llm_first_token_ms ?? null,
+      };
       if (answer.kind !== "response") {
-        record(answer.kind, turn, { llmMs: answer.timings?.llm_request_ms ?? null });
+        record(answer.kind, turn, timingFields);
         logger.info({ device_id: turn.deviceId, stream_id: turn.streamId, result: answer.kind }, "Assistant turn settled without speech");
         return answer;
       }
       const replyReadyAt = performance.now();
       const ttsQueuedMs = Math.round(replyReadyAt - finalAt);
+      const finalToFirstTokenMs = answer.timings?.llm_first_token_ms == null ? null : Math.round(llmStartedAt - finalAt + answer.timings.llm_first_token_ms);
       const speech = speakerRuntime.speak(answer.text, {
         maxChars: maxReplyChars,
         // Preserve the user's persistent speaker preference. The established
@@ -52,24 +59,25 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
         metadata: { assistant_turn: true, voice_stream_id: turn.streamId, final_at: finalAt },
       });
       if (speech.kind !== "queued") {
-        record("speaker_unavailable", turn, { llmMs: answer.timings?.llm_request_ms ?? null, ttsQueuedMs });
+        record("speaker_unavailable", turn, { ...timingFields, ttsQueuedMs });
         logger.warn({ device_id: turn.deviceId, stream_id: turn.streamId, speaker_result: speech.kind }, "Assistant response was not spoken");
         return { kind: "speaker_unavailable", speaker: speech.kind };
       }
-      record("playing", turn, { llmMs: answer.timings?.llm_request_ms ?? null, ttsQueuedMs });
+      record("playing", turn, { ...timingFields, ttsQueuedMs });
       logger.info({ device_id: turn.deviceId, stream_id: turn.streamId, playback_id: speech.playbackId,
-        final_to_tts_start_ms: ttsQueuedMs, ...answer.timings }, "Assistant TTS queued");
+        final_asr_to_first_llm_token_ms: finalToFirstTokenMs, final_asr_to_llm_complete_ms: Math.round(replyReadyAt - finalAt),
+        final_asr_to_tts_queued_ms: ttsQueuedMs, final_to_tts_start_ms: ttsQueuedMs, ...answer.timings }, "Assistant TTS queued");
       try {
         const result = await speech.completion;
         const totalMs = Math.round(performance.now() - finalAt);
-        record("complete", turn, { llmMs: answer.timings?.llm_request_ms ?? null, ttsQueuedMs, totalMs });
+        record("complete", turn, { ...timingFields, ttsQueuedMs, totalMs });
         logger.info({ device_id: turn.deviceId, stream_id: turn.streamId, playback_id: speech.playbackId,
           total_final_to_playback_complete_ms: totalMs }, "Assistant turn complete");
         return { kind: "complete", result };
       } catch (error) {
         const totalMs = Math.round(performance.now() - finalAt);
         const errorCode = error?.message ?? "speaker_failed";
-        record("speaker_failed", turn, { llmMs: answer.timings?.llm_request_ms ?? null, ttsQueuedMs, totalMs });
+        record("speaker_failed", turn, { ...timingFields, ttsQueuedMs, totalMs });
         logger.warn({ device_id: turn.deviceId, stream_id: turn.streamId, playback_id: speech.playbackId,
           error_code: errorCode }, "Assistant speaker playback failed");
         return { kind: "speaker_failed", error: errorCode };

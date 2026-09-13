@@ -1,0 +1,17 @@
+[Unit]
+Description=Newo Pocket TTS worker
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/newo
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/newo-pocket-tts-proto/.venv/bin/python server/pocket-tts-service.py --port 8123 --generation-stall-seconds 15
+Restart=on-failure
+RestartSec=2
+StandardOutput=append:/opt/newo/server/data/pocket-tts.log
+StandardError=append:/opt/newo/server/data/pocket-tts.log
+
+[Install]
+WantedBy=multi-user.target

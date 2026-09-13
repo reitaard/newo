@@ -322,6 +322,11 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
     const connectedAt = Date.now();
     const batchDurationMs = config.batchDurationMs ?? 100;
     const batchBytes = Math.round(bytesPerSecond * batchDurationMs / 1_000);
+    // A cold/native decode can briefly take more than a second even after
+    // prewarm. Keep receiving into a strict time-sized cap so the ESP sender
+    // does not fail, while sustained slower-than-realtime ASR still closes.
+    const maxPendingAudioMs = config.maxPendingAudioMs ?? 3_000;
+    const maxOutstandingBytes = Math.round(bytesPerSecond * maxPendingAudioMs / 1_000);
     let startedAt = null;
     let bytesReceived = 0;
     let rawFramesReceived = 0;
@@ -335,7 +340,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
     let pendingParts = [];
     let pendingBytes = 0;
     let activeBatchBytes = 0;
-    let maxOutstandingBytes = 0;
+    let outstandingHighWaterBytes = 0;
     let asrBatchesSent = 0;
     let workerBatchTotalMs = 0;
     let worstWorkerBatchMs = 0;
@@ -375,7 +380,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
     };
     const acceptBatch = async (batch) => {
       activeBatchBytes = batch.length;
-      maxOutstandingBytes = Math.max(maxOutstandingBytes, activeBatchBytes + pendingBytes);
+      outstandingHighWaterBytes = Math.max(outstandingHighWaterBytes, activeBatchBytes + pendingBytes);
       await capture?.write(batch);
       const workerStartedAt = performance.now();
       ++asrBatchesSent;
@@ -491,7 +496,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
           batch_bytes: batchBytes,
           raw_frames_received: rawFramesReceived,
           asr_batches_sent: asrBatchesSent,
-          max_pending_audio_ms: Math.round(maxOutstandingBytes / bytesPerSecond * 1_000),
+          max_pending_audio_ms: Math.round(outstandingHighWaterBytes / bytesPerSecond * 1_000),
           worker_backpressure_events: workerBackpressureEvents,
           average_worker_batch_ms: asrBatchesSent ? Math.round(workerBatchTotalMs / asrBatchesSent) : 0,
           worst_worker_batch_ms: Math.round(worstWorkerBatchMs),
@@ -518,7 +523,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
         requestClose(1009, "voice stream too large");
         return;
       }
-      if (activeBatchBytes + pendingBytes + chunk.length > batchBytes * 2) {
+      if (activeBatchBytes + pendingBytes + chunk.length > maxOutstandingBytes) {
         ++workerBackpressureEvents;
         logger.warn({
           event: "VOICE_WORKER_BACKPRESSURE",
@@ -548,7 +553,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
       bytesReceived += chunk.length;
       pendingParts.push(chunk);
       pendingBytes += chunk.length;
-      maxOutstandingBytes = Math.max(maxOutstandingBytes, activeBatchBytes + pendingBytes);
+      outstandingHighWaterBytes = Math.max(outstandingHighWaterBytes, activeBatchBytes + pendingBytes);
       if (pendingBytes >= batchBytes) startPump();
       if (bytesReceived >= nextProgressBytes) {
         const audioDurationMs = Math.round((bytesReceived / bytesPerSecond) * 1_000);
