@@ -153,6 +153,7 @@ void loop() {
   newoWiFi.loop();
   newoPortal.loop();
   newoCloud.loop();
+  if (newoCloud.consumeAssistantTurnTerminal()) newoAudio.completeAssistantTurn();
   if (newoStorage.usbTrialPending()) {
     if (newoCloud.ready()) {
       newoStorage.setUsbTrialPending(false);

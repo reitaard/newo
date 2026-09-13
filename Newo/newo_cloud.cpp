@@ -277,6 +277,7 @@ void NewoCloud::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
       connected_ = false;
       authenticated_ = false;
       assistantThinking_ = false;
+      assistantTurnTerminalPending_ = true;
       display_.setAssistantThinking(false);
       started_ = false;
       break;
@@ -340,6 +341,7 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     } else if (strcmp(state, "idle") == 0 || strcmp(state, "speaking") == 0) {
       assistantThinking_ = false;
       display_.setAssistantState(NewoDisplayMode::IDLE);
+      if (strcmp(state, "idle") == 0) assistantTurnTerminalPending_ = true;
     }
     else NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "ASSISTANT_STATE_INVALID");
     return;

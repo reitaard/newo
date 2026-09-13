@@ -26,11 +26,22 @@ test("manual microphone emits one bounded PCM health summary per full diagnostic
   assert.match(audio, /AUDIO_I2S_MIC_IS_LEFT \? "left" : "right"/);
 });
 
-test("manual sessions settle OFF while the future WakeNet path remains re-armable", async () => {
+test("manual sessions settle OFF while hands-free re-arm waits for assistant completion", async () => {
   const audio = await firmware("newo_audio.cpp");
-  assert.match(audio, /if \(rearmAfterStream_ && enabled_ && startWakeNet\(\)\) return;/);
+  assert.match(audio, /strcmp\(reason, "final"\) == 0/);
+  assert.match(audio, /awaitingAssistantCompletion_ = true;/);
+  assert.match(audio, /void NewoAudio::completeAssistantTurn\(\)[\s\S]*startWakeNet\(\)/);
+  assert.match(audio, /!playbackSuppressed_ && !awaitingAssistantCompletion_\) startWakeNet\(\);/);
   assert.match(audio, /rearmAfterStream_ = false;\n  state_ = NewoVoiceState::OFF;/);
   assert.match(audio, /if \(state_ == NewoVoiceState::STREAMING\) \{\n    setEnabled\(false\);/);
   assert.match(audio, /VOICE_MANUAL_BUSY", "speaker_playback/);
   assert.match(audio, /transitionPending_ = false;\n  return true;/);
+});
+
+test("failed hands-free capture re-arms locally without waiting for an assistant", async () => {
+  const audio = await firmware("newo_audio.cpp");
+  const finish = audio.match(/void NewoAudio::finishStreaming[\s\S]*?\n}\n\nvoid NewoAudio::handleVoiceEvent/);
+  assert.ok(finish);
+  assert.match(finish[0], /successfulHandsFreeFinal/);
+  assert.match(finish[0], /if \(enabled_ && !playbackSuppressed_\) startWakeNet\(\);/);
 });

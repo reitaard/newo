@@ -37,6 +37,9 @@ class NewoAudio {
   // Temporarily releases WakeNet while preserving the user's OFF/ARMED choice.
   // Returns false only when an active STREAMING session makes playback unsafe.
   bool setPlaybackActive(bool active);
+  // Release a deferred hands-free re-arm only after the server's complete
+  // assistant/speaker turn reaches a terminal boundary.
+  void completeAssistantTurn();
   NewoVoiceState state() const { return state_; }
   uint32_t wakeCount() const { return wakeCount_; }
   uint32_t sessionCount() const { return sessionCount_; }
@@ -75,6 +78,8 @@ class NewoAudio {
   bool transitionPending_ = false;
   bool playbackSuppressed_ = false;
   bool rearmAfterStream_ = false;
+  bool awaitingAssistantCompletion_ = false;
+  bool assistantTerminalSeen_ = false;
   const char* volatile streamEndReason_ = nullptr;
   uint32_t streamStartedMs_ = 0;
   uint32_t wakeCount_ = 0;

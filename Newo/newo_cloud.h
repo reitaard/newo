@@ -45,6 +45,11 @@ class NewoCloud {
   enum class LedEvent : uint8_t { NONE, PING, REBOOT };
   LedEvent consumeLedEvent();
   bool assistantThinking() const { return assistantThinking_; }
+  bool consumeAssistantTurnTerminal() {
+    const bool pending = assistantTurnTerminalPending_;
+    assistantTurnTerminalPending_ = false;
+    return pending;
+  }
   bool assistantError() const { return static_cast<int32_t>(assistantErrorUntilMs_ - millis()) > 0; }
   void sendSpeakerStarted(const char* playbackId, uint32_t firstPcmToPlayMs);
   void sendSpeakerResult(const char* playbackId, bool success, uint32_t bytes, const char* error = nullptr);
@@ -107,6 +112,7 @@ class NewoCloud {
   uint32_t voiceWakes_ = 0, voiceSessions_ = 0, voiceFailures_ = 0, voiceTimeouts_ = 0;
   uint32_t minimumLoopStackBytes_ = UINT32_MAX;
   bool assistantThinking_ = false;
+  bool assistantTurnTerminalPending_ = false;
   uint32_t assistantErrorUntilMs_ = 0;
   LedEvent pendingLedEvent_ = LedEvent::NONE;
 };

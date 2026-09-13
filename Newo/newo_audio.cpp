@@ -149,7 +149,11 @@ bool NewoAudio::setPlaybackActive(bool active) {
   }
   if (!playbackSuppressed_) return true;
   playbackSuppressed_ = false;
-  if (enabled_ && state_ != NewoVoiceState::STREAMING) {
+  if (awaitingAssistantCompletion_) {
+    // Physical speaker teardown is itself an authoritative terminal boundary;
+    // do not wait for the matching cloud idle message to make a round trip.
+    completeAssistantTurn();
+  } else if (enabled_ && state_ != NewoVoiceState::STREAMING) {
     state_ = NewoVoiceState::ARMED;
     if (!startWakeNet()) state_ = NewoVoiceState::OFF;
   } else if (!enabled_) {
@@ -159,10 +163,32 @@ bool NewoAudio::setPlaybackActive(bool active) {
   return true;
 }
 
+void NewoAudio::completeAssistantTurn() {
+  if (!awaitingAssistantCompletion_) {
+    // A terminal cloud event can race the final voice-task cleanup. Latch it
+    // only for the current hands-free stream; beginStreaming clears stale
+    // startup/disconnect events before each new session.
+    if (state_ == NewoVoiceState::STREAMING && rearmAfterStream_)
+      assistantTerminalSeen_ = true;
+    return;
+  }
+  awaitingAssistantCompletion_ = false;
+  assistantTerminalSeen_ = false;
+  if (enabled_ && !playbackSuppressed_ && state_ != NewoVoiceState::STREAMING) {
+    if (!startWakeNet()) state_ = NewoVoiceState::OFF;
+  } else if (!enabled_) {
+    state_ = NewoVoiceState::OFF;
+  }
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO,
+               "WAKENET_ASSISTANT_TURN_COMPLETE");
+}
+
 bool NewoAudio::setEnabled(bool enabled) {
   enabled_ = enabled;
   if (!enabled) {
     wakePending_ = false;
+    awaitingAssistantCompletion_ = false;
+    assistantTerminalSeen_ = false;
     if (state_ == NewoVoiceState::STREAMING) {
       stopStreaming_ = true;
       transitionPending_ = true;
@@ -206,6 +232,7 @@ bool NewoAudio::beginStreaming(bool rearmAfterStream) {
   stopWakeNet();
   if (!configureI2s()) { ++failures_; return false; }
   rearmAfterStream_ = rearmAfterStream;
+  assistantTerminalSeen_ = false;
   if (!rearmAfterStream_) enabled_ = false;
   state_ = NewoVoiceState::STREAMING;
   transitionPending_ = true;
@@ -610,9 +637,20 @@ void NewoAudio::finishStreaming(const char* reason) {
   releaseI2s();
   // LISTENING is session-only; recover the normal face before re-arming/OFF.
   display_.setListeningActive(false);
-  if (rearmAfterStream_ && enabled_ && startWakeNet()) return;
+  const bool successfulHandsFreeFinal = rearmAfterStream_ && enabled_ && reason &&
+                                        strcmp(reason, "final") == 0;
   rearmAfterStream_ = false;
   state_ = NewoVoiceState::OFF;
+  if (successfulHandsFreeFinal && !assistantTerminalSeen_) {
+    awaitingAssistantCompletion_ = true;
+    NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO,
+                 "WAKENET_REARM_DEFERRED");
+    return;
+  }
+  assistantTerminalSeen_ = false;
+  // A failed/aborted capture has no assistant response to wait for. Restore
+  // hands-free listening locally instead of depending on a server event.
+  if (enabled_ && !playbackSuppressed_) startWakeNet();
 }
 
 void NewoAudio::handleVoiceEvent(WStype_t type, uint8_t* payload, size_t length) {
@@ -647,5 +685,6 @@ void NewoAudio::loop() {
     if (beginStreaming(true)) ++wakeCount_;
   }
   if (state_ == NewoVoiceState::STREAMING && streamFinished_) finishStreaming(streamEndReason_);
-  if (state_ == NewoVoiceState::OFF && enabled_ && !transitionPending_ && !playbackSuppressed_) startWakeNet();
+  if (state_ == NewoVoiceState::OFF && enabled_ && !transitionPending_ &&
+      !playbackSuppressed_ && !awaitingAssistantCompletion_) startWakeNet();
 }
