@@ -4,7 +4,7 @@ import test from "node:test";
 
 const read = (relative) => readFile(new URL(relative, import.meta.url), "utf8");
 
-test("voice capture is independent from blocking WebSocket/TLS work", async () => {
+test("voice capture is independent from blocking WebSocket/TLS and DSP work", async () => {
   const [config, audio, ring] = await Promise.all([
     read("../../Newo/newo_config.h"),
     read("../../Newo/newo_audio.cpp"),
@@ -35,12 +35,16 @@ test("voice capture is independent from blocking WebSocket/TLS work", async () =
     "dedicated capture producer must own I2S reads");
   assert.equal(captureSection.includes("voiceWebSocket_"), false,
     "capture producer must never perform WebSocket work");
+  assert.equal(captureSection.includes("webrtc_"), false,
+    "capture producer must not wait for DSP setup or processing");
   assert.match(networkSection, /voiceWebSocket_\.loop\(\)/,
     "network consumer must service the WebSocket");
   assert.equal(networkSection.includes("i2s_.readBytes"), false,
     "blocking WebSocket consumer must never directly capture I2S");
   assert.match(networkSection, /ring\.pop\(/,
     "network consumer must drain the producer ring oldest-first");
+  assert.match(networkSection, /webrtc_process\(/,
+    "DSP must run after preserved PCM is dequeued, not in the capture producer");
 });
 
 test("streaming microphone cleanup requires WebRTC NS medium with AGC bypassed", async () => {
@@ -87,6 +91,7 @@ test("Sherpa endpoint tuning has one validated source and truthful ready telemet
   assert.match(endpointConfig, /throw new Error/);
 
   assert.match(worker, /resolveSherpaEndpointConfig/);
+  assert.match(worker, /workerData\.endpointRule1MinTrailingSilence/);
   assert.match(worker, /endpointRule1MinTrailingSilence:\s*endpointConfig\.rule1Seconds/);
   assert.match(worker, /type:\s*"ready"[\s\S]*endpointRule1MinTrailingSilence/);
   assert.match(voice, /message\.endpointRule1MinTrailingSilence/);

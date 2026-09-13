@@ -122,8 +122,8 @@ constexpr bool VOICE_DEFAULT_ENABLED = false;
 constexpr uint32_t VOICE_ACTIVE_SESSION_TIMEOUT_MS = 30'000;
 
 // Streaming capture must not depend on the synchronous WebSocket/TLS task.
-// WebSockets 2.7.2 can block a connect/write for up to 5 s; retain 10 s of
-// processed PCM so a temporary network stall cannot silently eat the utterance.
+// WebSockets 2.7.2 can block a connect/write for up to 5 s; retain 10 s of raw
+// microphone PCM so a temporary network or DSP stall cannot eat the utterance.
 // This is storage, not a startup delay: frames transmit immediately when possible.
 constexpr uint32_t VOICE_CAPTURE_BUFFER_MS = 10'000;
 static_assert((VOICE_CAPTURE_BUFFER_MS % AUDIO_FRAME_DURATION_MS) == 0,
