@@ -144,10 +144,7 @@ static_assert(VOICE_TX_MAX_BATCH_BYTES <= 64 * 1024, "voice batch exceeds server
 // STREAMING-only microphone cleanup. WakeNet keeps using the proven ESP_SR path.
 // The standalone ESP-SR WebRTC path accepts our existing 20 ms / 16 kHz PCM.
 // AGC stays off until physical A/B testing shows level normalization is needed.
-constexpr bool VOICE_WEBRTC_NS_ENABLED = true;
-constexpr int8_t VOICE_WEBRTC_NS_MODE = 1;  // 0 mild, 1 medium, 2 aggressive.
 constexpr bool VOICE_WEBRTC_AGC_ENABLED = false;
 static_assert(AUDIO_FRAME_DURATION_MS == 20, "voice WebRTC NS is validated for 20 ms frames");
-static_assert(VOICE_WEBRTC_NS_MODE >= 0 && VOICE_WEBRTC_NS_MODE <= 2, "invalid WebRTC NS mode");
 
 }  // namespace NewoConfig

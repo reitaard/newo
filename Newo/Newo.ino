@@ -198,10 +198,13 @@ void loop() {
   while (newoCloud.consumeMicControlRequest(micControlRequest)) {
     bool applied = true;
     if (micControlRequest.action == NewoCloud::MicControlRequest::Action::SET) {
+      const auto previousMode = newoAudio.micMode();
+      const uint8_t previousLevel = newoAudio.micNsLevel();
       applied = newoAudio.setMicProcessing(
           micControlRequest.mode == 0 ? NewoAudio::MicMode::RAW : NewoAudio::MicMode::NS,
           micControlRequest.nsLevel);
       if (applied) applied = newoStorage.setMicProcessing(micControlRequest.mode, micControlRequest.nsLevel);
+      if (!applied) newoAudio.setMicProcessing(previousMode, previousLevel);
     }
     const auto& metrics = newoAudio.micMetrics();
     newoCloud.sendMicAck(micControlRequest.requestId,
