@@ -116,5 +116,12 @@ constexpr uint8_t CLOUD_WS_MISSED_PONG_LIMIT = 2;
 // STREAMING has a finite lifetime and must never retain stale PCM.
 constexpr bool VOICE_DEFAULT_ENABLED = false;
 constexpr uint32_t VOICE_ACTIVE_SESSION_TIMEOUT_MS = 30'000;
+// Preserve speech spoken while the TLS/WebSocket session is still connecting.
+// This is a rolling PSRAM buffer; it adds no intentional wait before playback or ASR.
+constexpr uint32_t VOICE_PRECONNECT_BUFFER_MS = 1'000;
+static_assert((VOICE_PRECONNECT_BUFFER_MS % AUDIO_FRAME_DURATION_MS) == 0,
+              "voice preconnect buffer must align to whole audio frames");
+constexpr size_t VOICE_PRECONNECT_BUFFER_FRAMES = VOICE_PRECONNECT_BUFFER_MS / AUDIO_FRAME_DURATION_MS;
+constexpr size_t VOICE_PRECONNECT_BUFFER_BYTES = VOICE_PRECONNECT_BUFFER_FRAMES * AUDIO_FRAME_BYTES;
 
 }  // namespace NewoConfig
