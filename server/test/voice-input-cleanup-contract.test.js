@@ -49,7 +49,10 @@ test("streaming microphone cleanup uses WebRTC NS medium with AGC bypassed", asy
 });
 
 test("Sherpa endpoint defaults reduce tail latency without shortening max utterances", async () => {
-  const voice = await read("../src/voice.js");
+  const [voice, worker] = await Promise.all([
+    read("../src/voice.js"),
+    read("../src/sherpa-worker.js"),
+  ]);
 
   assert.match(voice, /endpointRule1MinTrailingSilence\s*=\s*2\.0/);
   assert.match(voice, /endpointRule2MinTrailingSilence\s*=\s*1\.0/);
@@ -58,4 +61,9 @@ test("Sherpa endpoint defaults reduce tail latency without shortening max uttera
   assert.match(voice, /rule2MinTrailingSilence:\s*endpointRule2MinTrailingSilence/);
   assert.match(voice, /rule3MinUtteranceLength:\s*endpointRule3MinUtteranceLength/);
   assert.match(voice, /endpoint_rule2_s/);
+
+  assert.match(worker, /VOICE_ASR_ENDPOINT_RULE1_S/);
+  assert.match(worker, /VOICE_ASR_ENDPOINT_RULE2_S/);
+  assert.match(worker, /VOICE_ASR_ENDPOINT_RULE3_S/);
+  assert.match(worker, /positiveNumber/);
 });
