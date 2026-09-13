@@ -5,11 +5,11 @@
 
 #include <esp_heap_caps.h>
 #include <freertos/idf_additions.h>
-#include "esp_sr_webrtc.h"
 
 #include "newo_log.h"
 #include "newo_memory_diagnostics.h"
 #include "newo_pcm_ring.h"
+#include "newo_webrtc.h"
 
 #if __has_include("newo_secrets.h")
 #include "newo_secrets.h"
@@ -313,7 +313,7 @@ void NewoAudio::streamTask() {
   while (!capture.started && !capture.finished) vTaskDelay(pdMS_TO_TICKS(1));
   if (capture.finished && capture.error) streamEndReason_ = capture.error;
 
-  webrtc_handle_t* voiceDsp = nullptr;
+  NewoWebRtcHandle* voiceDsp = nullptr;
   if (!streamEndReason_ && NewoConfig::VOICE_WEBRTC_NS_ENABLED) {
     voiceDsp = webrtc_create(NewoConfig::AUDIO_FRAME_DURATION_MS,
                              NewoConfig::VOICE_WEBRTC_NS_MODE,

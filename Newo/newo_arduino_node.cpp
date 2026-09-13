@@ -234,9 +234,11 @@ bool NewoArduinoNode::validToken(const char* value) {
 }
 
 bool NewoArduinoNode::receiveEvent(Event& event, uint32_t timeoutMs) {
+  if (!events_) return false;
   return xQueueReceive(events_, &event, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
 }
 
 bool NewoArduinoNode::receiveAcknowledgement(Acknowledgement& ack, uint32_t timeoutMs) {
+  if (!acknowledgements_) return false;
   return xQueueReceive(acknowledgements_, &ack, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
 }
