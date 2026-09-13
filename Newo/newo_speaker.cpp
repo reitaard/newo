@@ -497,6 +497,7 @@ void NewoSpeaker::handleText(const uint8_t* payload, size_t length) {
   if (strcmp(type, "speaker_begin") == 0) {
     Request request = {};
     strlcpy(request.playbackId, doc["playback_id"] | "", sizeof(request.playbackId));
+    request.generationId = doc["generation_id"] | 0;
     request.sampleRate = doc["sample_rate"] | 0;
     request.channels = doc["channels"] | 0;
     request.bitsPerSample = doc["bits_per_sample"] | 0;
@@ -517,9 +518,22 @@ void NewoSpeaker::handleText(const uint8_t* payload, size_t length) {
                    "SPEAKER_BEGIN_REJECTED", "unsupported_codec");
       return;
     }
-    if (!request.playbackId[0] || !startPlayback(request)) {
+    if (!request.playbackId[0] || (request.generationId != 0 && request.generationId <= lastCancelledGenerationId_) || !startPlayback(request)) {
       NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::AUDIO,
                    "SPEAKER_BEGIN_REJECTED", request.playbackId);
+    }
+    return;
+  }
+  if (strcmp(type, "speaker_cancel") == 0) {
+    const char* playbackId = doc["playback_id"] | "";
+    const uint32_t generationId = doc["generation_id"] | 0;
+    if (generationId > lastCancelledGenerationId_) lastCancelledGenerationId_ = generationId;
+    if (playing() && !taskFinished_ && strcmp(playbackId, request_.playbackId) == 0 &&
+        (generationId == 0 || generationId == request_.generationId)) {
+      decoderAbort_ = true;
+      fail("cancelled");
+      NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO,
+                   "SPEAKER_CANCELLED", playbackId);
     }
     return;
   }
@@ -541,6 +555,10 @@ void NewoSpeaker::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
     if (!enabled_ && !temporaryRequested_) { webSocket_.disconnect(); started_ = false; return; }
     connected_ = true;
     started_ = true;
+    // Generation IDs are monotonic only within one server process. A fresh
+    // authenticated WebSocket is a new ordering epoch, so old cancellation
+    // floors must not reject generation 1 after a VPS restart.
+    lastCancelledGenerationId_ = 0;
     connectedMemory_ = memorySnapshot();
     logMemory("connected", connectedMemory_, &beforeConnection_);
     webSocket_.sendTXT("{\"type\":\"speaker_ready\",\"codecs\":[\"pcm\",\"opus\"]}");
@@ -549,7 +567,7 @@ void NewoSpeaker::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
   if (type == WStype_BIN) {
     // The loop publishes completion after worker cleanup; late frames belong to
     // that finished playback and must not poison its already-final result.
-    if (taskFinished_) return;
+    if (taskFinished_ || failed_) return;
     if (!playing()) { fail("invalid_audio"); return; }
     if (request_.codec == Codec::OPUS) {
       const uint32_t callbackStartedUs = micros();

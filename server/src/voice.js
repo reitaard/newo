@@ -4,6 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
+import { NullSpeakerVerifier } from "./speaker-verification.js";
 
 const require = createRequire(import.meta.url);
 
@@ -301,7 +302,7 @@ class WavCapture {
   }
 }
 
-export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() }) {
+export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend(), speakerVerifier = new NullSpeakerVerifier() }) {
   const format = Object.freeze({
     sampleRate: config.sampleRate,
     channels: config.channels,
@@ -329,6 +330,13 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
     let rawFramesReceived = 0;
     let capture = null;
     let asrStream = null;
+    let speakerStream = null;
+    const enrollmentSession = speakerVerifier.isEnrolling?.(deviceId) === true;
+    let speakerTranscript = "";
+    let speakerPendingBytes = 0;
+    let speakerFailed = false;
+    let speakerChain = Promise.resolve();
+    let speakerInitialization = null;
     let nextProgressBytes = bytesPerSecond * 5;
     let firstPartialMs = null;
     let finalMs = null;
@@ -381,6 +389,20 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
       await capture?.write(batch);
       const workerStartedAt = performance.now();
       ++asrBatchesSent;
+      if (!speakerFailed && speakerInitialization && speakerPendingBytes + batch.length <= pendingLimitBytes) {
+        const speakerBatch = Buffer.from(batch);
+        speakerPendingBytes += speakerBatch.length;
+        speakerChain = speakerChain.then(async () => {
+          const stream = await speakerInitialization;
+          if (stream && !speakerFailed) await stream.acceptAudio(speakerBatch);
+        }).catch((error) => {
+          speakerFailed = true;
+          logger.warn({ event: "SPEAKER_VERIFICATION_FAILED", device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Speaker verification disabled for voice turn");
+        }).finally(() => { speakerPendingBytes -= speakerBatch.length; });
+      } else if (!speakerFailed && speakerInitialization) {
+        speakerFailed = true;
+        logger.warn({ event: "SPEAKER_VERIFICATION_BACKPRESSURE", device_id: deviceId, stream_id: streamId, pending_audio_ms: Math.round(speakerPendingBytes / bytesPerSecond * 1_000) }, "Speaker verification queue dropped for voice turn");
+      }
       try { await asrStream.acceptAudio(batch); }
       finally {
         const workerBatchMs = Math.max(0, performance.now() - workerStartedAt);
@@ -396,6 +418,15 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
       requestClose(1011, "voice stream processing failed");
     };
     const initializeStream = async () => {
+      speakerInitialization = Promise.resolve(speakerVerifier.createSession({ deviceId, streamId, format })).then((stream) => {
+        speakerStream = stream;
+        if (speakerTranscript) speakerStream?.setTranscript?.(speakerTranscript);
+        return stream;
+      }).catch((error) => {
+        speakerFailed = true;
+        logger.warn({ event: "SPEAKER_VERIFICATION_FAILED", device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Speaker verification disabled for voice turn");
+        return null;
+      });
       asrStream = await asr.createStream({
         deviceId,
         streamId,
@@ -412,6 +443,10 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
             finalTranscript = event.text;
             logger.info({ event: "VOICE_FINAL", device_id: deviceId, stream_id: streamId, elapsed_ms: elapsedMs }, "VOICE_FINAL");
           }
+          if (event.type === "final") {
+            speakerTranscript = String(event.text ?? "");
+            speakerStream?.setTranscript?.(speakerTranscript);
+          }
           logTranscript(deviceId, streamId, event, {
             elapsed_ms: elapsedMs,
             audio_duration_ms: audioDurationMs,
@@ -422,7 +457,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
           if (event.type === "final" && !assistantFinalDelivered && typeof config.onFinalTranscript === "function") {
             assistantFinalDelivered = true;
             void Promise.resolve()
-              .then(() => config.onFinalTranscript({ deviceId, streamId, text: event.text, asrFinalMs: finalMs }))
+              .then(() => config.onFinalTranscript({ deviceId, streamId, text: event.text, asrFinalMs: finalMs, enrollment: enrollmentSession }))
               .catch((error) => logger.warn({ device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Voice final callback failed"));
           }
         },
@@ -463,6 +498,9 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
       stopping = true;
       cleanupPromise = (async () => {
         if (noAudioTimer) { clearTimeout(noAudioTimer); noAudioTimer = null; }
+        if (startedAt && !assistantFinalDelivered && typeof config.onSpeechEnd === "function") {
+          config.onSpeechEnd({ deviceId, streamId, outcome });
+        }
         await initializationPromise?.catch(() => {});
         await pumpPromise?.catch(() => {});
         if (!processingFailed && asrStream && pendingBytes > 0) {
@@ -482,6 +520,20 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
           } catch (error) {
             logger.warn({ device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Voice WAV cleanup failed");
           }
+        }
+        void (async () => {
+          await speakerChain;
+          const stream = await speakerInitialization;
+          if (!stream || speakerFailed) { await stream?.cancel?.().catch(() => {}); return; }
+          if (speakerTranscript) stream.setTranscript?.(speakerTranscript);
+          const identity = await stream.finish();
+          if (identity) {
+            logger.info({ event: "SPEAKER_IDENTITY", device_id: deviceId, stream_id: streamId, ...identity }, "SPEAKER_IDENTITY");
+            config.onSpeakerIdentity?.({ deviceId, streamId, ...identity });
+          }
+        })().catch((error) => logger.warn({ event: "SPEAKER_VERIFICATION_FAILED", device_id: deviceId, stream_id: streamId, error_message: error?.message ?? "unknown" }, "Speaker verification finalization failed"));
+        if (startedAt && !assistantFinalDelivered && typeof config.onSpeechCancelled === "function") {
+          config.onSpeechCancelled({ deviceId, streamId, outcome });
         }
         if (asrStream) logger.info({ old_stream_id: streamId, device_id: deviceId, outcome }, "VOICE_ASR_STREAM_CLOSED");
         asrStream = null;
@@ -534,6 +586,7 @@ export function createVoiceRuntime({ logger, config, asr = new NullAsrBackend() 
 
       if (!startedAt) {
         startedAt = Date.now();
+        config.onSpeechStart?.({ deviceId, streamId, at: startedAt });
         if (noAudioTimer) { clearTimeout(noAudioTimer); noAudioTimer = null; }
         logger.info({
           event: "VOICE_FIRST_AUDIO",

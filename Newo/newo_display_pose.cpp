@@ -186,12 +186,23 @@ NewoEyePose NewoDisplay::resolveEyePose(uint32_t now, NewoDisplayMode mode) cons
       pose.leftHeight = pose.rightHeight = 42;
       pose.gap = 17;
       break;
+    case NewoDisplayMode::PROCESSING:
+      pose.leftWidth = pose.rightWidth = 64;
+      pose.leftHeight = pose.rightHeight = 32;
+      pose.gap = 18;
+      break;
     case NewoDisplayMode::THINKING:
       pose.leftWidth = 56;
       pose.rightWidth = 62;
       pose.leftHeight = pose.rightHeight = 35;
       pose.leftYOffset = pose.rightYOffset = -2;
       pose.leftTopCut = pose.rightTopCut = 8;
+      break;
+    case NewoDisplayMode::RESPONDING:
+      pose.leftWidth = pose.rightWidth = 66;
+      pose.leftHeight = pose.rightHeight = 38;
+      pose.gap = 18;
+      pose.leftBottomCut = pose.rightBottomCut = 8;
       break;
     case NewoDisplayMode::SPEAKING:
       pose.leftWidth = pose.rightWidth = 62;
@@ -277,7 +288,9 @@ NewoDisplay::EyeMotionOverlay NewoDisplay::resolveEyeMotionOverlay(uint32_t now,
 uint16_t NewoDisplay::eyePoseTransitionMs(NewoDisplayMode mode) const {
   if (mode == NewoDisplayMode::ERROR) return 120;
   if (mode == NewoDisplayMode::LISTENING) return 160;
+  if (mode == NewoDisplayMode::PROCESSING) return 180;
   if (mode == NewoDisplayMode::SPEAKING) return 180;
+  if (mode == NewoDisplayMode::RESPONDING) return 160;
   if (mode == NewoDisplayMode::THINKING) return 220;
   if (mode != NewoDisplayMode::IDLE || !autoFaceEnabled_) {
     if (faceStyle_ == NewoFaceStyle::SLEEPING || faceStyle_ == NewoFaceStyle::CLOSED) return 420;

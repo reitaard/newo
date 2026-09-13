@@ -97,6 +97,39 @@ test("a voice socket closes its ASR stream exactly once", async () => {
   assert.equal(messages.filter((message) => message === "VOICE_ASR_STREAM_CLOSED").length, 1);
 });
 
+test("speech end enters processing until ASR settles without a final transcript", async () => {
+  const states = [];
+  const runtime = createVoiceRuntime({
+    logger: { info() {}, warn() {} },
+    asr: { async createStream() { return { async acceptAudio() {}, async stop() {} }; } },
+    config: { sampleRate: 16000, channels: 1, bitsPerSample: 16, maxStreamBytes: 64000,
+      saveWav: false, liveTestMode: false,
+      onSpeechEnd: () => states.push("processing"),
+      onSpeechCancelled: () => states.push("idle") },
+  });
+  const socket = new FakeSocket();
+  await runtime.handleConnection(socket, "test-device");
+  socket.emit("message", Buffer.alloc(3200), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  socket.emit("close", 1000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(states, ["processing", "idle"]);
+});
+
+test("first real voice PCM interrupts playback before STT work", async () => {
+  const events = [];
+  const runtime = createVoiceRuntime({ logger: { info() {}, warn() {} },
+    asr: { async createStream() { events.push("asr"); return { async acceptAudio() {}, async stop() {} }; } },
+    config: { sampleRate: 16000, channels: 1, bitsPerSample: 16, maxStreamBytes: 64000,
+      saveWav: false, liveTestMode: false, onSpeechStart: () => events.push("interrupt") } });
+  const socket = new FakeSocket();
+  await runtime.handleConnection(socket, "test-device");
+  socket.emit("message", Buffer.alloc(3200), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events.slice(0, 2), ["interrupt", "asr"]);
+  socket.close();
+});
+
 test("only one final ASR event starts an assistant turn; partials never do", async () => {
   const finals = [];
   let emit;
@@ -118,6 +151,58 @@ test("only one final ASR event starts an assistant turn; partials never do", asy
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(finals.length, 1);
   assert.equal(finals[0].text, "hello Newo");
+});
+
+test("speaker verification consumes PCM beside ASR and does not delay the final assistant callback", async () => {
+  const events = [];
+  let emit;
+  let finishIdentity;
+  const identityGate = new Promise((resolve) => { finishIdentity = resolve; });
+  const runtime = createVoiceRuntime({
+    logger: { info() {}, warn() {} },
+    asr: { async createStream({ onEvent }) { emit = onEvent; return { async acceptAudio() { events.push("asr-audio"); }, async stop() { emit({ type: "final", text: "hello" }); } }; } },
+    speakerVerifier: { async createSession() { return { enrollment: false, setTranscript(text) { events.push(`transcript:${text}`); }, async acceptAudio() { events.push("speaker-audio"); }, async finish() { await identityGate; events.push("identity"); return { identity: "owner", score: 0.9 }; } }; } },
+    config: { sampleRate: 16000, channels: 1, bitsPerSample: 16, maxStreamBytes: 64000, saveWav: false, liveTestMode: false,
+      onFinalTranscript: () => events.push("assistant") },
+  });
+  const socket = new FakeSocket();
+  await runtime.handleConnection(socket, "test-device");
+  socket.emit("message", Buffer.alloc(3200), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(events.includes("asr-audio"));
+  assert.ok(events.includes("speaker-audio"));
+  socket.close();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(events.includes("assistant"));
+  assert.equal(events.includes("identity"), false);
+  finishIdentity();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(events.indexOf("assistant") < events.indexOf("identity"));
+});
+
+test("speaker verifier failures never fail or close the authoritative ASR stream", async () => {
+  for (const speakerVerifier of [
+    { isEnrolling: () => false, async createSession() { throw new Error("model unavailable"); } },
+    { isEnrolling: () => false, async createSession() { return { async acceptAudio() { throw new Error("worker failed"); }, async cancel() {} }; } },
+  ]) {
+    let final = 0;
+    let emit;
+    const warnings = [];
+    const runtime = createVoiceRuntime({ logger: { info() {}, warn: (fields) => warnings.push(fields) }, speakerVerifier,
+      asr: { async createStream({ onEvent }) { emit = onEvent; return { async acceptAudio() {}, async stop() {} }; } },
+      config: { sampleRate: 16000, channels: 1, bitsPerSample: 16, maxStreamBytes: 64000, saveWav: false, liveTestMode: false,
+        onFinalTranscript: () => { final += 1; } } });
+    const socket = new FakeSocket();
+    await runtime.handleConnection(socket, "test-device");
+    socket.emit("message", Buffer.alloc(3200), true);
+    await new Promise((resolve) => setImmediate(resolve));
+    emit({ type: "final", text: "hello" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(final, 1);
+    assert.notEqual(socket.closeCode, 1011);
+    assert.ok(warnings.some((fields) => fields.event === "SPEAKER_VERIFICATION_FAILED"));
+    socket.close();
+  }
 });
 
 test("a connected voice socket with no PCM closes on the bounded first-audio timeout", async () => {

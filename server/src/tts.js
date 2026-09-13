@@ -967,11 +967,13 @@ export function createSpeakerRuntime({
     job.cancelSource = cancelSource;
     try {
       while (!producerDone && queuedBytes < SPEAKER_MEDIA_STARTUP_BYTES) await waitQueue();
+      if (job.cancelRequested) return job.completion;
       if (producerError) throw producerError;
       if (!queuedBytes) throw new Error("invalid_pcm");
       job.backendMetrics = source.metrics;
       beginJob(job);
-      const begin = { type: "speaker_begin", playback_id: job.id, sample_rate: format.sampleRate, channels: 1, bits_per_sample: 16, streaming: true, max_bytes: maxStreamBytes };
+      const begin = { type: "speaker_begin", playback_id: job.id, generation_id: job.metadata?.generation_id ?? 0,
+        sample_rate: format.sampleRate, channels: 1, bits_per_sample: 16, streaming: true, max_bytes: maxStreamBytes };
       await waitForCodecNegotiation(current);
       job.transport = new OpusPlaybackTransport({ playbackId: job.id, enabled: String(process.env.SPEAKER_CODEC ?? "pcm").toLowerCase() === "opus" && OpusPlaybackTransport.supported(current.codecs) });
       await job.transport.begin();
@@ -981,6 +983,7 @@ export function createSpeakerRuntime({
       logger.info({ device_id: current.deviceId, playback_id: job.id, streaming: true, max_pcm_bytes: maxStreamBytes }, "Speaker begin sent");
       let initialBytes = 0;
       while (initialBytes < startupBytes) {
+        if (job.cancelRequested) return job.completion;
         const frame = await take(Math.min(SPEAKER_MEDIA_FRAME_BYTES, startupBytes - initialBytes));
         if (!frame) break;
         await sendPcmChunk(job, current, frame, { enforceFlowWindow: false });
@@ -1004,10 +1007,12 @@ export function createSpeakerRuntime({
       // Firmware's speaker_started is authoritative: it is sent only after its
       // physical prebuffer has arrived and I2S playback is about to drain.
       await waitForPlaybackStart(job, playbackStartTimeoutMs);
+      if (job.cancelRequested) return job.completion;
       let frameIndex = 1;
       let catchupsThisTurn = 0;
       const pacingStart = performance.now();
       while (true) {
+        if (job.cancelRequested) return job.completion;
         const frame = await take(SPEAKER_MEDIA_FRAME_BYTES);
         if (!frame) break;
         if (!job.transport.enabled) await brakeHighWater();
@@ -1043,16 +1048,20 @@ export function createSpeakerRuntime({
     }
   }
   async function streamKnown(job, current, pcm) {
+    if (job.cancelRequested) return job.completion;
     job.pcmBytes = pcm.length;
     beginJob(job);
-    const begin = { type: "speaker_begin", playback_id: job.id, sample_rate: format.sampleRate, channels: 1, bits_per_sample: 16, bytes: pcm.length };
+    const begin = { type: "speaker_begin", playback_id: job.id, generation_id: job.metadata?.generation_id ?? 0,
+      sample_rate: format.sampleRate, channels: 1, bits_per_sample: 16, bytes: pcm.length };
     await waitForCodecNegotiation(current);
     job.transport = new OpusPlaybackTransport({ playbackId: job.id, enabled: String(process.env.SPEAKER_CODEC ?? "pcm").toLowerCase() === "opus" && OpusPlaybackTransport.supported(current.codecs) });
     await job.transport.begin();
     job.beginSentAt = performance.now();
     await sendFrame(current.ws, JSON.stringify(job.transport.beginMessage(begin)));
     logger.info({ device_id: current.deviceId, playback_id: job.id, pcm_bytes: pcm.length, streaming: false }, "Speaker begin sent");
+    if (job.cancelRequested) return job.completion;
     await sendWithFlow(job, current, pcm);
+    if (job.cancelRequested) return job.completion;
     job.audio = job.statistics.result(backend.limiter ?? SPEAKER_LIMITER);
     job.endSent = true;
     await job.transport.finish((data, options) => sendFrame(current.ws, data, options));
@@ -1123,7 +1132,9 @@ export function createSpeakerRuntime({
     if (typeof backend.stream === "function") {
       // A backend can have opened a local streaming response while speaker connection
       // negotiation fails. Explicitly cancel it rather than leaving Pocket producing.
-      const sourcePromise = backend.stream(job.text, format, { playbackId: job.id });
+      const sourcePromise = job.segments
+        ? backend.streamSegments(job.segments, format, { playbackId: job.id })
+        : backend.stream(job.text, format, { playbackId: job.id });
       let source = null;
       try {
         const result = await Promise.all([sourcePromise, connectionPromise]);
@@ -1139,19 +1150,19 @@ export function createSpeakerRuntime({
     job.ttsCompletedAt = performance.now();
     return streamKnown(job, current, pcm);
   }
-  function speak(html, { maxChars = maxTextChars, temporary = false, replyReadyAt = performance.now(), metadata = null } = {}) {
+  function queueSpeech(text, { temporary = false, replyReadyAt = performance.now(), metadata = null, segments = null } = {}) {
     if (!enabled || closing) return { kind: "disabled" };
     if (allJobs.size >= maxPendingJobs) return { kind: "busy" };
-    const text = telegramHtmlToSpeech(html, maxChars);
     if (!text) return { kind: "empty" };
     if (!getDevice()) return { kind: "offline" };
+    if (segments && typeof backend.streamSegments !== "function") return { kind: "unsupported" };
     const id = randomUUID();
     let resolve;
     let reject;
     const completion = new Promise((res, rej) => { resolve = res; reject = rej; });
     completion.catch(() => {});
     const job = {
-      id, text, temporary, metadata, settled: false, resultTimer: null, queuedAt: performance.now(), replyReadyAt,
+      id, text, segments, temporary, metadata, settled: false, cancelRequested: false, resultTimer: null, queuedAt: performance.now(), replyReadyAt,
       synthesisStartedAt: null, ttsCompletedAt: null, beginSentAt: null, firstPcmSentAt: null,
       backendMetrics: null, playbackStartedAt: null, firstPcmToPlayMs: null, cancelSource: null,
       resolve, reject, completion, bytesSent: 0, admittedBytes: 0, receivedBytes: 0, consumedBytes: 0, reportedBufferedBytes: 0,
@@ -1181,7 +1192,36 @@ export function createSpeakerRuntime({
       settle(job, { kind: "error", error: error?.code ?? error?.message ?? "TTS failed" });
       logger.warn({ playback_id: id, error_message: error?.code ?? error?.message ?? "unknown" }, "Speaker/TTS job failed");
     });
-    return { kind: "queued", playbackId: id, text, completion };
+    const cancel = () => {
+      if (job.settled || job.cancelRequested) return;
+      job.cancelRequested = true;
+      void job.cancelSource?.();
+      if (!jobs.has(job.id) || connection?.ws.readyState !== 1) {
+        settle(job, { kind: "cancelled", error: "speaker_cancelled" });
+        return;
+      }
+      try {
+        if (job.playbackStartWaiter) {
+          const waiter = job.playbackStartWaiter;
+          job.playbackStartWaiter = null;
+          clearTimeout(waiter.timer);
+          waiter.resolve();
+        }
+        connection.ws.send(JSON.stringify({ type: "speaker_cancel", playback_id: job.id,
+          generation_id: job.metadata?.generation_id ?? 0 }));
+        logger.info({ playback_id: job.id, generation_id: job.metadata?.generation_id ?? 0 }, "Speaker cancellation sent");
+      } catch {
+        settle(job, { kind: "cancelled", error: "speaker_cancelled" });
+      }
+    };
+    return { kind: "queued", playbackId: id, text, completion, cancel };
+  }
+  function speak(html, { maxChars = maxTextChars, ...options } = {}) {
+    return queueSpeech(telegramHtmlToSpeech(html, maxChars), options);
+  }
+  function speakProgressive(segments, options = {}) {
+    if (!segments || typeof segments[Symbol.asyncIterator] !== "function") return { kind: "empty" };
+    return queueSpeech("progressive", { ...options, segments });
   }
   function handleConnection(ws, deviceId) {
     if (connection?.ws && connection.ws !== ws && connection.ws.readyState === 1) connection.ws.close(4001, "replaced by new connection");
@@ -1247,6 +1287,10 @@ export function createSpeakerRuntime({
       assistant_turn: job.metadata?.assistant_turn ?? false,
       voice_stream_id: job.metadata?.voice_stream_id ?? null,
       final_to_audible_ms: job.metadata?.final_at == null ? null : Math.round(performance.now() - job.metadata.final_at),
+      llm_start_to_first_tts_chunk_ms: job.metadata?.llm_started_at == null || job.metadata?.first_tts_chunk_at == null ? null : Math.round(job.metadata.first_tts_chunk_at - job.metadata.llm_started_at),
+      llm_start_to_first_audio_ms: job.metadata?.llm_started_at == null || job.backendMetrics?.firstAudioByteAt == null ? null : Math.round(job.backendMetrics.firstAudioByteAt - job.metadata.llm_started_at),
+      llm_start_to_audible_ms: job.metadata?.llm_started_at == null ? null : Math.round(job.playbackStartedAt - job.metadata.llm_started_at),
+      progressive: job.metadata?.progressive ?? false,
     }, "SPEAKER_TTFA");
     return true;
   }
@@ -1255,7 +1299,9 @@ export function createSpeakerRuntime({
     if (!job) return false;
     let result;
     if (message.type === "speaker_complete") {
-      result = message.bytes === job.bytesSent ? { kind: "complete", bytes: message.bytes } : { kind: "error", error: "truncated" };
+      result = message.bytes === job.bytesSent ? { kind: "complete", bytes: message.bytes,
+        llmStartToFirstAudioMs: job.metadata?.llm_started_at == null || job.backendMetrics?.firstAudioByteAt == null
+          ? null : Math.round(job.backendMetrics.firstAudioByteAt - job.metadata.llm_started_at) } : { kind: "error", error: "truncated" };
     } else result = { kind: "error", error: message.error ?? "device playback failed" };
     logger[result.kind === "complete" ? "info" : "warn"]({
       event: "SPEAKER_FLOW_FINAL", device_id: deviceId, playback_id: job.id,
@@ -1293,6 +1339,10 @@ export function createSpeakerRuntime({
         estimated_reply_ready_to_audible_ms: job.firstPcmSentAt == null || job.firstPcmToPlayMs == null ? null : Math.round(job.firstPcmSentAt - job.replyReadyAt + job.firstPcmToPlayMs),
         full_tts_generation_ms: job.backendMetrics?.completedAt == null ? (job.ttsCompletedAt == null ? null : Math.round(job.ttsCompletedAt - job.synthesisStartedAt)) : Math.round(job.backendMetrics.completedAt - job.backendMetrics.requestStartedAt),
         total_playback_ms: job.beginSentAt == null ? null : Math.round(performance.now() - job.beginSentAt), bytes: message.bytes,
+        llm_start_to_first_tts_chunk_ms: job.metadata?.llm_started_at == null || job.metadata?.first_tts_chunk_at == null ? null : Math.round(job.metadata.first_tts_chunk_at - job.metadata.llm_started_at),
+        llm_start_to_first_audio_ms: result.llmStartToFirstAudioMs ?? null,
+        llm_start_to_audible_ms: job.metadata?.llm_started_at == null || job.playbackStartedAt == null ? null : Math.round(job.playbackStartedAt - job.metadata.llm_started_at),
+        progressive: job.metadata?.progressive ?? false,
       }, "SPEAKER_TTFA_FINAL");
     }
     settle(job, result);
@@ -1310,5 +1360,5 @@ export function createSpeakerRuntime({
     for (const job of [...allJobs]) settle(job, { kind: "shutdown", error: "server shutting down" });
     closeConnection("server shutting down");
   }
-  return { speak, handleConnection, handleDeviceConnected, handlePlaybackStarted, handleResult, setPersistentEnabled, close, isReady: () => connection?.ws.readyState === 1, format };
+  return { speak, speakProgressive, handleConnection, handleDeviceConnected, handlePlaybackStarted, handleResult, setPersistentEnabled, close, isReady: () => connection?.ws.readyState === 1, format };
 }

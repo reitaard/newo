@@ -18,6 +18,7 @@ import { createTrackTelemetryCache, renderTrackPanel } from "./track-telemetry.j
 import { createTrackLiveManager } from "./track-live.js";
 import { createTelegramUpdateAcceptor } from "./telegram-webhook.js";
 import { createVoiceRuntime, NullAsrBackend, WorkerAsrBackend } from "./voice.js";
+import { NullSpeakerVerifier, SpeakerVerifier } from "./speaker-verification.js";
 
 try {
   loadEnvFile(".env");
@@ -59,6 +60,11 @@ const EnvSchema = z.object({
   VOICE_ASR_HOTWORDS_FILE: z.preprocess(emptyToUndefined, z.string().default("config/newo-hotwords.txt")),
   VOICE_ASR_HOTWORDS_SCORE: z.preprocess(emptyToUndefined, z.coerce.number().min(0).max(5).default(1.5)),
   VOICE_LIVE_TEST_MODE: z.preprocess(stringToBoolean, z.boolean().default(false)),
+  SPEAKER_VERIFICATION_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
+  SPEAKER_VERIFICATION_MODEL: z.preprocess(emptyToUndefined, z.string().default("models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx")),
+  SPEAKER_VERIFICATION_THREADS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(4).default(1)),
+  SPEAKER_VERIFICATION_THRESHOLD: z.preprocess(emptyToUndefined, z.coerce.number().min(0).max(1).default(0.65)),
+  SPEAKER_VOICEPRINT_DIRECTORY: z.preprocess(emptyToUndefined, z.string().default("data/voiceprints")),
   ASSISTANT_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
   ASSISTANT_PROFILE: z.preprocess(emptyToUndefined, z.string().default("qwen")),
   ASSISTANT_PROVIDER: z.preprocess(emptyToUndefined, z.enum(["openai_chat", "ollama_raw"]).default("openai_chat")),
@@ -118,6 +124,9 @@ const voiceAsr = env.VOICE_ASR_BACKEND === "sherpa"
     hotwordsScore: env.VOICE_ASR_HOTWORDS_SCORE,
   }, { logger: app.log })
   : new NullAsrBackend();
+const speakerVerifier = env.SPEAKER_VERIFICATION_ENABLED
+  ? new SpeakerVerifier({ modelPath: env.SPEAKER_VERIFICATION_MODEL, storageDirectory: env.SPEAKER_VOICEPRINT_DIRECTORY, threshold: env.SPEAKER_VERIFICATION_THRESHOLD, numThreads: env.SPEAKER_VERIFICATION_THREADS, logger: app.log })
+  : new NullSpeakerVerifier();
 const devices = new Map();
 const pendingRequests = new Map();
 const DEVICE_REQUEST_TIMEOUT_MS = 5_000;
@@ -189,22 +198,25 @@ const assistantRuntime = createAssistantRuntime({
   },
   logger: app.log,
 });
+function sendAssistantState(deviceId, state) {
+  const device = devices.get(deviceId);
+  if (!device || device.ws.readyState !== WebSocket.OPEN) return false;
+  try { device.ws.send(JSON.stringify({ type: "assistant_state", state })); return true; }
+  catch { return false; }
+}
+
 const assistantTurnRuntime = createAssistantTurnRuntime({
   assistant: assistantRuntime,
   speakerRuntime,
   isPersistentSpeakerEnabled: () => automaticSpeakerEnabled,
   maxReplyChars: env.ASSISTANT_MAX_REPLY_CHARS,
   logger: app.log,
-  setAssistantState(deviceId, state) {
-    const device = devices.get(deviceId);
-    if (!device || device.ws.readyState !== WebSocket.OPEN) return false;
-    try { device.ws.send(JSON.stringify({ type: "assistant_state", state })); return true; }
-    catch { return false; }
-  },
+  setAssistantState: sendAssistantState,
 });
 const voiceRuntime = createVoiceRuntime({
   logger: app.log,
   asr: voiceAsr,
+  speakerVerifier,
   config: {
     sampleRate: env.VOICE_SAMPLE_RATE,
     channels: env.VOICE_CHANNELS,
@@ -215,7 +227,16 @@ const voiceRuntime = createVoiceRuntime({
     liveTestMode: env.VOICE_LIVE_TEST_MODE,
     firstAudioTimeoutMs: env.VOICE_FIRST_AUDIO_TIMEOUT_MS,
     batchDurationMs: env.VOICE_ASR_BATCH_MS,
-    onFinalTranscript: (turn) => assistantTurnRuntime.handleFinalTranscript(turn),
+    onSpeechStart: ({ deviceId }) => assistantTurnRuntime.interruptDevice(deviceId, "vad_speech_start"),
+    onSpeechEnd: ({ deviceId }) => env.ASSISTANT_ENABLED && sendAssistantState(deviceId, "processing"),
+    onSpeechCancelled: ({ deviceId }) => env.ASSISTANT_ENABLED && sendAssistantState(deviceId, "idle"),
+    onFinalTranscript: (turn) => turn.enrollment ? sendAssistantState(turn.deviceId, "idle") : assistantTurnRuntime.handleFinalTranscript(turn),
+    onSpeakerIdentity: (result) => {
+      if (result.enrollmentStatus?.enrolled) {
+        const rearm = sendDeviceRequest("voice_control", "voice_ack", { action: "on" });
+        if (rearm.kind === "sent") void rearm.promise;
+      }
+    },
   },
 });
 
@@ -416,7 +437,7 @@ function scheduleOfflineNotification(deviceId, state, ws) {
 app.get("/", async () => ({ service: "newo-cloud", status: "ok" }));
 app.get("/health", async () => {
   const device = getDeviceSnapshot();
-  return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), track_reconciliation: trackReconciler.status(), device: { connected: device.connected, id: device.id, connected_at: device.connected_at, last_seen: device.last_seen, firmware: device.hello?.firmware ?? null, autonomy_revision: device.hello?.autonomy_revision ?? null, chip: device.hello?.chip ?? null } };
+  return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), barge_in_available: false, track_reconciliation: trackReconciler.status(), device: { connected: device.connected, id: device.id, connected_at: device.connected_at, last_seen: device.last_seen, firmware: device.hello?.firmware ?? null, autonomy_revision: device.hello?.autonomy_revision ?? null, chip: device.hello?.chip ?? null } };
 });
 app.post("/track/telemetry/v1", async (request, reply) => {
   if (!env.TRACK_TELEMETRY_TOKEN) return reply.code(503).send({ error: "track telemetry disabled" });
@@ -430,6 +451,9 @@ app.post("/track/telemetry/v1", async (request, reply) => {
 });
 
 const TELEGRAM_COMMANDS = [
+  { command: "owner_enroll", description: "Enroll owner voice (3 samples)" },
+  { command: "owner_status", description: "Owner voiceprint status" },
+  { command: "owner_cancel", description: "Cancel owner enrollment" },
   { command: "track", description: "RF tracking resources" },
   { command: "track_bg", description: "RF tracking without live panel" },
   { command: "status", description: "Device status" },
@@ -845,6 +869,11 @@ const primaryModeHandlers = createPrimaryModeHandlers({
     assistantRuntime.replaceProfile(profiles[id]);
     return assistantRuntime.getPreferredProfileConfig();
   },
+  ownerVoiceprint: {
+    begin: () => speakerVerifier.beginEnrollment?.(env.NEWO_DEVICE_ID),
+    cancel: () => speakerVerifier.cancelEnrollment?.(env.NEWO_DEVICE_ID),
+    status: () => speakerVerifier.status?.(env.NEWO_DEVICE_ID),
+  },
 });
 
 if (env.TELEGRAM_BOT_TOKEN) {
@@ -897,6 +926,9 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command("track_bg", primaryModeHandlers.trackBackground);
   bot.command(["voice", "v"], primaryModeHandlers.voice);
   bot.command("vs", primaryModeHandlers.voiceStatus);
+  bot.command("owner_enroll", primaryModeHandlers.ownerEnroll);
+  bot.command("owner_status", primaryModeHandlers.ownerStatus);
+  bot.command("owner_cancel", primaryModeHandlers.ownerCancel);
   bot.command(["profile", "p"], (ctx) => primaryModeHandlers.profile(ctx));
   bot.command(["profile_lfm", "p_lfm"], (ctx) => primaryModeHandlers.profile(ctx, "lfm"));
   bot.command(["profile_qwen", "p_qwen"], (ctx) => primaryModeHandlers.profile(ctx, "qwen"));
@@ -1030,7 +1062,7 @@ async function shutdown(signal) {
   speakerRuntime.close();
   await Promise.all([...[...devices.values()].map((state) => state.ws), ...voiceWss.clients, ...speakerWss.clients].filter((ws) => ws.readyState !== WebSocket.CLOSED).map(closeDeviceSocket));
   await Promise.all([wss, voiceWss, speakerWss].map((server) => new Promise((resolve) => { try { server.close(() => resolve()); } catch { resolve(); } })));
-  await voiceAsr.close?.();
+  await Promise.all([voiceAsr.close?.(), speakerVerifier.close?.()]);
   await app.close();
   process.exitCode = 0;
 }
@@ -1043,6 +1075,9 @@ process.once("SIGTERM", () => handleShutdownSignal("SIGTERM"));
 // available, while voice requests fail cleanly instead of cold-loading PCM.
 try { await voiceAsr.prewarm?.(); }
 catch { /* WorkerAsrBackend emitted SHERPA_START_FAILED with the exact error. */ }
+try { await speakerVerifier.prewarm?.(); }
+catch (error) { app.log.error({ event: "SPEAKER_VERIFICATION_START_FAILED", error_message: error.message }, "SPEAKER_VERIFICATION_START_FAILED"); }
+await speakerVerifier.loadProfile?.(env.NEWO_DEVICE_ID);
 await app.listen({ host: env.HOST, port: env.PORT });
 const assistantStartup = await assistantRuntime.refreshHealth();
 app.log.info({
@@ -1062,6 +1097,9 @@ app.log.info({
   voice_asr_backend: env.VOICE_ASR_BACKEND,
   voice_sherpa_model: env.VOICE_ASR_BACKEND === "sherpa" ? env.VOICE_SHERPA_MODEL : null,
   voice_live_test_mode: env.VOICE_LIVE_TEST_MODE,
+  speaker_verification_enabled: env.SPEAKER_VERIFICATION_ENABLED,
+  speaker_verification_model: env.SPEAKER_VERIFICATION_ENABLED ? env.SPEAKER_VERIFICATION_MODEL : null,
+  barge_in_available: false,
   assistant_enabled: env.ASSISTANT_ENABLED,
   assistant_preferred_profile: assistantStartup.preferred_profile,
   assistant_effective_profile: assistantStartup.effective_profile,

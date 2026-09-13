@@ -178,4 +178,52 @@ export class PocketTtsBackend {
       rejectRetryWait?.(abortError("pocket_stream_cancelled"));
     } };
   }
+
+  async streamSegments(segments, format, { playbackId = null } = {}) {
+    const iterator = segments[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    if (first.done) throw new Error("Pocket received no progressive text");
+    const metrics = { requestStartedAt: null, responseHeadersAt: null, firstAudioByteAt: null,
+      conditionerFirstOutputAt: null, completedAt: null, rawFloat32Bytes: 0, conditionedPcmBytes: 0,
+      producerQueueHighWaterBytes: 0, preAudioRetries: 0, textChunks: 0 };
+    let cancelled = false;
+    let activeSource = null;
+    const backend = this;
+
+    async function* audio() {
+      let item = first;
+      try {
+        while (!item.done && !cancelled) {
+          const text = String(item.value ?? "").trim();
+          if (text) {
+            const source = await backend.stream(text, format, { playbackId });
+            activeSource = source;
+            metrics.textChunks += 1;
+            metrics.requestStartedAt ??= source.metrics.requestStartedAt;
+            for await (const pcm of source.audio) {
+              metrics.responseHeadersAt ??= source.metrics.responseHeadersAt;
+              metrics.firstAudioByteAt ??= source.metrics.firstAudioByteAt;
+              metrics.conditionerFirstOutputAt ??= source.metrics.conditionerFirstOutputAt;
+              yield pcm;
+            }
+            metrics.rawFloat32Bytes += source.metrics.rawFloat32Bytes ?? 0;
+            metrics.conditionedPcmBytes += source.metrics.conditionedPcmBytes ?? 0;
+            metrics.preAudioRetries += source.metrics.preAudioRetries ?? 0;
+            activeSource = null;
+          }
+          item = await iterator.next();
+        }
+        metrics.completedAt = performance.now();
+      } finally {
+        activeSource?.cancel?.();
+        if (cancelled) await iterator.return?.();
+      }
+    }
+
+    return { audio: audio(), metrics, streaming: true, cancel() {
+      cancelled = true;
+      activeSource?.cancel?.();
+      void iterator.return?.();
+    } };
+  }
 }

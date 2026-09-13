@@ -172,6 +172,7 @@ void NewoCloud::sendVoiceAck(const char* requestId, NewoVoiceState state, bool v
   doc["state"] = newoVoiceStateName(state);
   doc["voice_connected"] = voiceConnected;
   doc["wake_count"] = wakes;
+  doc["wake_model"] = "wn9_hiwalle_tts2";
   doc["session_count"] = sessions;
   doc["failures"] = failures;
   doc["timeouts"] = timeouts;
@@ -245,17 +246,26 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
 
   if (strcmp(type, "assistant_state") == 0) {
     const char* state = doc["state"] | "";
-    if (strcmp(state, "thinking") == 0) {
+    if (strcmp(state, "listening") == 0) {
+      assistantThinking_ = false;
+      display_.setAssistantState(NewoDisplayMode::IDLE);
+    } else if (strcmp(state, "processing") == 0) {
       assistantThinking_ = true;
-      display_.setAssistantThinking(true);
+      display_.setAssistantState(NewoDisplayMode::PROCESSING);
+    } else if (strcmp(state, "thinking") == 0) {
+      assistantThinking_ = true;
+      display_.setAssistantState(NewoDisplayMode::THINKING);
+    } else if (strcmp(state, "responding") == 0) {
+      assistantThinking_ = true;
+      display_.setAssistantState(NewoDisplayMode::RESPONDING);
     } else if (strcmp(state, "error") == 0) {
       assistantThinking_ = false;
       assistantErrorUntilMs_ = millis() + 800;
-      display_.setAssistantThinking(false);
+      display_.setAssistantState(NewoDisplayMode::IDLE);
       NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "ASSISTANT_STATE_ERROR");
     } else if (strcmp(state, "idle") == 0 || strcmp(state, "speaking") == 0) {
       assistantThinking_ = false;
-      display_.setAssistantThinking(false);
+      display_.setAssistantState(NewoDisplayMode::IDLE);
     }
     else NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "ASSISTANT_STATE_INVALID");
     return;

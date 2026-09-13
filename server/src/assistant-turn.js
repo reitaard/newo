@@ -2,15 +2,79 @@
  * Joins a finalized ASR stream to the bounded assistant and existing speaker
  * runtime. It deliberately owns no audio transport or queue.
  */
+export function createSpeechSegmenter({ maxChars = 300, minChunkChars = 24, clauseChars = 72, hardChars = 140, onSegment }) {
+  let buffer = "";
+  let accepted = 0;
+  const emit = (cut) => {
+    const text = buffer.slice(0, cut).trim();
+    buffer = buffer.slice(cut).trimStart();
+    if (text) onSegment(text);
+  };
+  const drain = () => {
+    while (buffer.length >= minChunkChars) {
+      const sentence = buffer.match(/^([\s\S]*?[.!?])(?:\s|$)/);
+      if (sentence && sentence[1].trim().length >= minChunkChars) { emit(sentence[1].length); continue; }
+      if (buffer.length >= clauseChars) {
+        const limit = Math.min(buffer.length, hardChars);
+        const clauseMatches = [...buffer.slice(0, limit).matchAll(/[,;:](?=\s)/g)];
+        const clause = clauseMatches.find((match) => match.index + 1 >= clauseChars);
+        if (clause) { emit(clause.index + 1); continue; }
+      }
+      if (buffer.length >= hardChars) {
+        const cut = buffer.slice(0, hardChars + 1).lastIndexOf(" ");
+        emit(cut >= minChunkChars ? cut : hardChars);
+        continue;
+      }
+      break;
+    }
+  };
+  return {
+    push(value) {
+      if (accepted >= maxChars) return;
+      const part = String(value ?? "").slice(0, maxChars - accepted);
+      accepted += part.length;
+      buffer += part;
+      drain();
+    },
+    finish() { if (buffer.trim()) emit(buffer.length); },
+  };
+}
+
+function createAsyncTextQueue() {
+  const values = [];
+  const waiters = [];
+  let ended = false;
+  return {
+    push(value) {
+      if (ended) return;
+      const waiter = waiters.shift();
+      if (waiter) waiter({ value, done: false });
+      else values.push(value);
+    },
+    end() {
+      ended = true;
+      while (waiters.length) waiters.shift()({ value: undefined, done: true });
+    },
+    [Symbol.asyncIterator]() { return this; },
+    next() {
+      if (values.length) return Promise.resolve({ value: values.shift(), done: false });
+      if (ended) return Promise.resolve({ value: undefined, done: true });
+      return new Promise((resolve) => waiters.push(resolve));
+    },
+    return() { this.end(); return Promise.resolve({ value: undefined, done: true }); },
+  };
+}
+
 export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersistentSpeakerEnabled, maxReplyChars, logger, setAssistantState = () => {} }) {
   const active = new Map();
+  const generations = new Map();
   let closing = false;
-  let latest = { result: "n/a", llmMs: null, llmFirstRawTokenMs: null, llmFirstTokenMs: null, streamId: null, at: null, ttsQueuedMs: null, totalMs: null, asrFinalMs: null };
+  let latest = { result: "n/a", llmMs: null, llmFirstRawTokenMs: null, llmFirstTokenMs: null, llmFirstTtsChunkMs: null, llmFirstAudioMs: null, streamId: null, at: null, ttsQueuedMs: null, totalMs: null, asrFinalMs: null };
 
   function record(result, turn, fields = {}) {
     latest = {
       result, streamId: turn?.streamId ?? null, at: Date.now(), llmMs: null, llmFirstRawTokenMs: null, llmFirstTokenMs: null,
-      ttsQueuedMs: null, totalMs: null, asrFinalMs: turn?.asrFinalMs ?? null, ...fields,
+      llmFirstTtsChunkMs: null, llmFirstAudioMs: null, ttsQueuedMs: null, totalMs: null, asrFinalMs: turn?.asrFinalMs ?? null, ...fields,
     };
   }
 
@@ -32,25 +96,72 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
       return { kind: "busy" };
     }
     const finalAt = performance.now();
+    const generationId = (generations.get(turn.deviceId) ?? 0) + 1;
+    generations.set(turn.deviceId, generationId);
     record("busy", turn);
     setAssistantState(turn.deviceId, "thinking");
+    let speech = null;
+    let textQueue = null;
     const completion = (async () => {
       const llmStartedAt = performance.now();
-      const answer = await assistant.respond(turn);
+      let firstTtsChunkAt = null;
+      let respondingSent = false;
+      const markResponding = () => {
+        if (respondingSent || generations.get(turn.deviceId) !== generationId) return;
+        respondingSent = true;
+        setAssistantState(turn.deviceId, "responding");
+      };
+      let segmenter = null;
+      const createSegmenter = (chunking = {}, profileMaxReplyChars = maxReplyChars) => createSpeechSegmenter({ maxChars: profileMaxReplyChars,
+        minChunkChars: chunking.minChars, clauseChars: chunking.clauseChars, hardChars: chunking.hardChars, onSegment: (segment) => {
+        if (generations.get(turn.deviceId) !== generationId) return;
+        firstTtsChunkAt ??= performance.now();
+        if (!textQueue) {
+          textQueue = createAsyncTextQueue();
+          speech = speakerRuntime.speakProgressive?.(textQueue, {
+            temporary: !isPersistentSpeakerEnabled(), replyReadyAt: firstTtsChunkAt,
+            metadata: { assistant_turn: true, progressive: true, voice_stream_id: turn.streamId,
+              generation_id: generationId, final_at: finalAt, llm_started_at: llmStartedAt, first_tts_chunk_at: firstTtsChunkAt },
+          });
+          if (speech?.kind !== "queued") {
+            textQueue.end();
+            textQueue = null;
+            speech = null;
+            firstTtsChunkAt = null;
+          }
+        }
+        if (speech?.kind === "queued") textQueue.push(segment);
+      } });
+      const answer = await assistant.respond({ ...turn, generationId, onFirstToken: markResponding, onSpeakableText: (text, policy) => {
+        if (generations.get(turn.deviceId) !== generationId) return;
+        segmenter ??= createSegmenter(policy?.chunking, policy?.maxReplyChars);
+        segmenter.push(text);
+      } });
+      if (generations.get(turn.deviceId) !== generationId) {
+        textQueue?.end();
+        speech?.cancel?.();
+        return { kind: "cancelled", generationId };
+      }
+      if (answer.kind === "response") segmenter?.finish();
+      textQueue?.end();
       const timingFields = {
         llmMs: answer.timings?.llm_request_ms ?? null,
         llmFirstRawTokenMs: answer.timings?.llm_first_raw_token_ms ?? null,
         llmFirstTokenMs: answer.timings?.llm_first_token_ms ?? null,
+        llmFirstTtsChunkMs: firstTtsChunkAt == null ? null : Math.round(firstTtsChunkAt - llmStartedAt),
       };
       if (answer.kind !== "response") {
+        speech?.cancel?.();
         record(answer.kind, turn, timingFields);
         logger.info({ device_id: turn.deviceId, stream_id: turn.streamId, result: answer.kind }, "Assistant turn settled without speech");
         return answer;
       }
+      markResponding();
       const replyReadyAt = performance.now();
-      const ttsQueuedMs = Math.round(replyReadyAt - finalAt);
+      const ttsQueuedAt = firstTtsChunkAt ?? replyReadyAt;
+      const ttsQueuedMs = Math.round(ttsQueuedAt - finalAt);
       const finalToFirstTokenMs = answer.timings?.llm_first_token_ms == null ? null : Math.round(llmStartedAt - finalAt + answer.timings.llm_first_token_ms);
-      const speech = speakerRuntime.speak(answer.text, {
+      speech ??= speakerRuntime.speak(answer.text, {
         // The assistant runtime already applied the active profile's reply
         // budget. Do not clip a longer profile back to the legacy turn limit.
         maxChars: Math.max(maxReplyChars ?? 0, answer.text.length),
@@ -58,7 +169,8 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
         // temporary receiver path is used when persistent playback is off.
         temporary: !isPersistentSpeakerEnabled(),
         replyReadyAt,
-        metadata: { assistant_turn: true, voice_stream_id: turn.streamId, final_at: finalAt },
+        metadata: { assistant_turn: true, progressive: false, voice_stream_id: turn.streamId, final_at: finalAt,
+          generation_id: generationId, llm_started_at: llmStartedAt, first_tts_chunk_at: replyReadyAt },
       });
       if (speech.kind !== "queued") {
         record("speaker_unavailable", turn, { ...timingFields, ttsQueuedMs });
@@ -68,11 +180,12 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
       record("playing", turn, { ...timingFields, ttsQueuedMs });
       logger.info({ device_id: turn.deviceId, stream_id: turn.streamId, playback_id: speech.playbackId,
         final_asr_to_first_llm_token_ms: finalToFirstTokenMs, final_asr_to_llm_complete_ms: Math.round(replyReadyAt - finalAt),
-        final_asr_to_tts_queued_ms: ttsQueuedMs, final_to_tts_start_ms: ttsQueuedMs, ...answer.timings }, "Assistant TTS queued");
+        final_asr_to_tts_queued_ms: ttsQueuedMs, final_to_tts_start_ms: ttsQueuedMs,
+        llm_start_to_first_tts_chunk_ms: timingFields.llmFirstTtsChunkMs, progressive: Boolean(textQueue), ...answer.timings }, "Assistant TTS queued");
       try {
         const result = await speech.completion;
         const totalMs = Math.round(performance.now() - finalAt);
-        record("complete", turn, { ...timingFields, ttsQueuedMs, totalMs });
+        record("complete", turn, { ...timingFields, llmFirstAudioMs: result?.llmStartToFirstAudioMs ?? null, ttsQueuedMs, totalMs });
         logger.info({ device_id: turn.deviceId, stream_id: turn.streamId, playback_id: speech.playbackId,
           total_final_to_playback_complete_ms: totalMs }, "Assistant turn complete");
         return { kind: "complete", result };
@@ -85,21 +198,41 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
         return { kind: "speaker_failed", error: errorCode };
       }
     })();
-    active.set(turn.deviceId, completion);
+    const state = { generationId, completion, cancel: () => {
+      textQueue?.end();
+      speech?.cancel?.();
+    } };
+    active.set(turn.deviceId, state);
     completion.then((result) => {
-      if (["timeout", "error", "speaker_failed", "speaker_unavailable", "unavailable"].includes(result?.kind))
+      if (generations.get(turn.deviceId) === generationId &&
+          ["timeout", "error", "speaker_failed", "speaker_unavailable", "unavailable"].includes(result?.kind))
         setAssistantState(turn.deviceId, "error");
-    }).catch(() => setAssistantState(turn.deviceId, "error"));
+    }).catch(() => {
+      if (generations.get(turn.deviceId) === generationId) setAssistantState(turn.deviceId, "error");
+    });
     completion.finally(() => {
-      if (active.get(turn.deviceId) === completion) active.delete(turn.deviceId);
+      if (active.get(turn.deviceId)?.completion === completion) active.delete(turn.deviceId);
       // Every terminal assistant path clears this state. Local speaker playback
       // independently outranks it on the ESP while it is physically active.
-      setAssistantState(turn.deviceId, "idle");
+      if (generations.get(turn.deviceId) === generationId) setAssistantState(turn.deviceId, "idle");
     }).catch(() => {});
     return { kind: "started", completion };
   }
 
-  function abortDevice(deviceId) { assistant.abortDevice(deviceId); }
+  function interruptDevice(deviceId, reason = "speech_start") {
+    const generationId = (generations.get(deviceId) ?? 0) + 1;
+    generations.set(deviceId, generationId);
+    const current = active.get(deviceId);
+    (assistant.cancelDevice ?? assistant.abortDevice)(deviceId);
+    current?.cancel();
+    if (current) active.delete(deviceId);
+    setAssistantState(deviceId, "listening");
+    logger.info({ device_id: deviceId, interrupted_generation_id: current?.generationId ?? null,
+      generation_id: generationId, reason }, "Assistant turn interrupted");
+    return generationId;
+  }
+  function abortDevice(deviceId) { interruptDevice(deviceId, "device_disconnect"); }
   function close() { closing = true; assistant.close(); }
-  return { handleFinalTranscript, abortDevice, close, getTelemetry, isActive: (deviceId) => active.has(deviceId) };
+  return { handleFinalTranscript, interruptDevice, abortDevice, close, getTelemetry, isActive: (deviceId) => active.has(deviceId),
+    generationId: (deviceId) => generations.get(deviceId) ?? 0 };
 }

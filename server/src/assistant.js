@@ -246,7 +246,7 @@ function rawLfmPrompt(messages) {
   return `<|startoftext|><|im_start|>system\n${systemText}\n<|im_end|>\n${turns}\n<|im_start|>assistant\n<think>\nNo unnecessary reasoning. Close thinking and answer immediately.\n</think>\n`;
 }
 
-async function readOllamaStream(response, { onFirstRawToken, onFirstSpeakableToken }) {
+async function readOllamaStream(response, { onFirstRawToken, onFirstSpeakableToken, onSpeakableText }) {
   if (!response.body) throw assistantError("assistant_invalid_response");
   const decoder = new TextDecoder();
   const thinkFilter = new ThinkFilter();
@@ -262,6 +262,7 @@ async function readOllamaStream(response, { onFirstRawToken, onFirstSpeakableTok
       onFirstRawToken();
       const visible = thinkFilter.push(payload.response);
       if (/\S/.test(visible)) onFirstSpeakableToken();
+      if (visible) onSpeakableText?.(visible);
       answer += visible;
     }
   };
@@ -275,7 +276,39 @@ async function readOllamaStream(response, { onFirstRawToken, onFirstSpeakableTok
   if (pending.trim()) consume(pending);
   const tail = thinkFilter.push("", true);
   if (/\S/.test(tail)) onFirstSpeakableToken();
+  if (tail) onSpeakableText?.(tail);
   return answer + tail;
+}
+
+async function readOpenAiStream(response, { onFirstRawToken, onFirstSpeakableToken, onSpeakableText }) {
+  if (!response.body) throw assistantError("assistant_invalid_response");
+  const decoder = new TextDecoder();
+  let pending = "";
+  let answer = "";
+  const consume = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed || !trimmed.startsWith("data:")) return;
+    const data = trimmed.slice(5).trim();
+    if (!data || data === "[DONE]") return;
+    let payload;
+    try { payload = JSON.parse(data); } catch { throw assistantError("assistant_invalid_response"); }
+    if (payload.error) throw assistantError("assistant_request_failed", String(payload.error?.message ?? payload.error));
+    const text = payload?.choices?.[0]?.delta?.content;
+    if (typeof text !== "string" || !text.length) return;
+    onFirstRawToken();
+    if (/\S/.test(text)) onFirstSpeakableToken();
+    onSpeakableText?.(text);
+    answer += text;
+  };
+  for await (const chunk of response.body) {
+    pending += decoder.decode(chunk, { stream: true });
+    const lines = pending.split(/\r?\n/);
+    pending = lines.pop() ?? "";
+    for (const line of lines) consume(line);
+  }
+  pending += decoder.decode();
+  if (pending.trim()) consume(pending);
+  return answer;
 }
 
 function createOllamaTransport() {
@@ -458,13 +491,15 @@ export function createAssistantRuntime({
     return { id: preferredId, ...profileTuning(profile) };
   }
 
-  async function requestProfile(profile, { deviceId, streamId, transcript, previousExchanges, historyAvailable }) {
+  async function requestProfile(profile, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, onSpeakableText }) {
     const endpoint = endpointFor(profile);
     if (!profile?.enabled || !endpoint || !profile.model) return { kind: "unavailable", error: "assistant_unavailable", availabilityFailure: true };
     const controller = new AbortController();
     const startedAt = performance.now();
+    let firstRawTokenAt = null;
+    let firstTokenAt = null;
     const timer = setTimeout(() => controller.abort(assistantError("assistant_timeout")), profile.timeoutMs);
-    active.set(deviceId, controller);
+    active.set(deviceId, { controller, generationId });
 
     try {
       const usedExchanges = profile.contextPolicy.selectiveHistory && shouldUseHistory(transcript)
@@ -516,19 +551,37 @@ export function createAssistantRuntime({
       if (!response.ok) throw assistantError("assistant_http_error", String(response.status));
 
       let payload = null;
-      let firstRawTokenAt = null;
-      let firstTokenAt = null;
       let rawAnswer;
       if (profile.provider === "ollama_raw") {
         rawAnswer = await readOllamaStream(response, {
           onFirstRawToken: () => { firstRawTokenAt ??= performance.now(); },
-          onFirstSpeakableToken: () => { firstTokenAt ??= performance.now(); },
+          onFirstSpeakableToken: () => {
+            if (firstTokenAt == null) {
+              firstTokenAt = performance.now();
+              onFirstToken?.();
+            }
+          },
+          onSpeakableText,
+        });
+      } else if (profile.requestOptions.stream && response.headers?.get?.("content-type")?.toLowerCase().includes("text/event-stream")) {
+        rawAnswer = await readOpenAiStream(response, {
+          onFirstRawToken: () => { firstRawTokenAt ??= performance.now(); },
+          onFirstSpeakableToken: () => {
+            if (firstTokenAt == null) {
+              firstTokenAt = performance.now();
+              onFirstToken?.();
+            }
+          },
+          onSpeakableText,
         });
       } else {
         try { payload = await response.json(); }
         catch { throw assistantError("assistant_invalid_response"); }
         rawAnswer = payload?.choices?.[0]?.message?.content;
-        if (String(rawAnswer ?? "").length > 0) firstRawTokenAt = firstTokenAt = performance.now();
+        if (String(rawAnswer ?? "").length > 0) {
+          firstRawTokenAt = firstTokenAt = performance.now();
+          onFirstToken?.();
+        }
       }
       const answer = boundedText(rawAnswer, profile.maxReplyChars);
       if (!answer) return { kind: "empty", availabilityFailure: false };
@@ -552,7 +605,9 @@ export function createAssistantRuntime({
       return { kind: "response", text: answer, timings, profileId: profile.id, availabilityFailure: false };
     } catch (error) {
       const code = controller.signal.aborted ? controller.signal.reason?.code ?? "assistant_cancelled" : error?.code ?? "assistant_request_failed";
-      const availabilityFailure = ["assistant_timeout", "assistant_http_error", "assistant_request_failed"].includes(code);
+      // Once useful streamed text has started, changing profiles would splice two
+      // different answers into one spoken turn. Fallback is only safe pre-output.
+      const availabilityFailure = firstTokenAt == null && ["assistant_timeout", "assistant_http_error", "assistant_request_failed"].includes(code);
       if (availabilityFailure) health.set(profile.id, "offline");
       logger?.warn({ device_id: deviceId, stream_id: streamId, preferred_profile: preferredId,
         effective_profile: profile.id, provider: profile.provider, model: profile.model, error_code: code },
@@ -560,16 +615,20 @@ export function createAssistantRuntime({
       return { kind: code === "assistant_timeout" ? "timeout" : "error", error: code, availabilityFailure };
     } finally {
       clearTimeout(timer);
-      if (active.get(deviceId) === controller) active.delete(deviceId);
+      if (active.get(deviceId)?.controller === controller) active.delete(deviceId);
     }
   }
 
-  async function respond({ deviceId, streamId, text }) {
+  async function respond({ deviceId, streamId, text, generationId = 0, onFirstToken, onSpeakableText }) {
     const transcript = boundedText(text, 800);
 
     if (!enabled || closing) return { kind: "disabled" };
     if (!transcript) return { kind: "empty" };
-    if (active.has(deviceId)) return { kind: "busy" };
+    const previousActive = active.get(deviceId);
+    if (previousActive) {
+      if (generationId > previousActive.generationId) previousActive.controller.abort(assistantError("assistant_cancelled"));
+      else return { kind: "busy" };
+    }
 
     const previousExchanges = history.get(deviceId) ?? [];
     const historyAvailable = previousExchanges.length;
@@ -609,6 +668,7 @@ export function createAssistantRuntime({
         ...timings,
       }, "Assistant text ready");
 
+      onFirstToken?.();
       return { kind: "response", text: answer, timings };
     }
 
@@ -617,7 +677,8 @@ export function createAssistantRuntime({
       else lastFallbackAt = Date.now();
     }
     let selected = profileById(effectiveId);
-    let result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable });
+    let result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken,
+      onSpeakableText: selected.progressiveTts ? (text) => onSpeakableText?.(text, { profileId: selected.id, maxReplyChars: selected.maxReplyChars, chunking: selected.chunking }) : null });
     const fallbackId = selected?.fallbackProfile;
     if (result.availabilityFailure && fallbackId && fallbackId !== selected.id && profileById(fallbackId)?.enabled) {
       fallbackReason = result.error;
@@ -626,15 +687,20 @@ export function createAssistantRuntime({
       logger?.warn({ preferred_profile: preferredId, failed_profile: selected.id, effective_profile: fallbackId,
         fallback_reason: fallbackReason }, "Assistant profile fallback activated");
       selected = profileById(fallbackId);
-      result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable });
+      result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken,
+        onSpeakableText: selected.progressiveTts ? (text) => onSpeakableText?.(text, { profileId: selected.id, maxReplyChars: selected.maxReplyChars, chunking: selected.chunking }) : null });
     }
     if (result.kind === "response") storeExchange(deviceId, transcript, result.text);
     const { availabilityFailure: _availabilityFailure, profileId: _profileId, ...publicResult } = result;
     return publicResult;
   }
 
+  function cancelDevice(deviceId) {
+    active.get(deviceId)?.controller.abort(assistantError("assistant_cancelled"));
+  }
+
   function abortDevice(deviceId) {
-    active.get(deviceId)?.abort(assistantError("assistant_cancelled"));
+    cancelDevice(deviceId);
     history.delete(deviceId);
   }
 
@@ -657,6 +723,7 @@ export function createAssistantRuntime({
     replaceProfile,
     getPreferredProfileConfig,
     getTelemetry,
+    cancelDevice,
     abortDevice,
     close,
     isActive: (deviceId) => active.has(deviceId),

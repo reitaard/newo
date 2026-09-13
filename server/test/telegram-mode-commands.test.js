@@ -30,6 +30,7 @@ function createHarness(sendDeviceRequest, overrides = {}) {
     setAssistantTuningPreset: overrides.setAssistantTuningPreset,
     setAssistantTuningValue: overrides.setAssistantTuningValue,
     setAssistantSystemPrompt: overrides.setAssistantSystemPrompt,
+    ownerVoiceprint: overrides.ownerVoiceprint,
     getTrackDesired: () => trackDesired,
     persistTrackDesired: async (enabled) => { trackDesired = enabled; return enabled; },
     renderTrackSnapshot: ({ debug, transient } = {}) => debug ? "DEBUG PANEL" : transient ? "STARTING PANEL" : "STATUS PANEL",
@@ -95,6 +96,21 @@ test("/v sends manual_toggle and returns a terse silent start reply", async () =
   assert.equal(harness.replies[0].text, "Listening.");
   assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
   assert.doesNotMatch(harness.replies[0].text, /Voice:|Trigger:|Sessions:/);
+});
+
+test("owner enrollment exposes real three-sample state and cancellation", async () => {
+  let active = false;
+  const ownerVoiceprint = {
+    begin() { active = true; return { enabled: true, enrolled: false, enrollment_active: true, enrollment_samples: 0, enrollment_required: 3, threshold: 0.65 }; },
+    status() { return { enabled: true, enrolled: false, enrollment_active: active, enrollment_samples: 0, enrollment_required: 3, threshold: 0.65 }; },
+    cancel() { const changed = active; active = false; return changed; },
+  };
+  const harness = createHarness(() => ({ kind: "offline" }), { ownerVoiceprint });
+  await harness.handlers.ownerEnroll({});
+  assert.match(harness.replies[0].text, /0\/3/);
+  assert.match(harness.replies[0].text, /Hi Wall-E/);
+  await harness.handlers.ownerCancel({});
+  assert.equal(harness.replies[1].text, "Owner enrollment cancelled.");
 });
 
 test("/v returns a terse silent cancel reply", async () => {

@@ -4,7 +4,7 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { ASSISTANT_HISTORY_MAX_CHARS_PER_MESSAGE, ASSISTANT_SYSTEM_PROMPT, createAssistantRuntime, directClockShortcut } from "../src/assistant.js";
 import { createAssistantProfiles, LFM_PROFILE_ID, LFM_SYSTEM_PROMPT, QWEN_PROFILE_ID } from "../src/assistant-profiles.js";
-import { createAssistantTurnRuntime } from "../src/assistant-turn.js";
+import { createAssistantTurnRuntime, createSpeechSegmenter } from "../src/assistant-turn.js";
 
 const turn = { deviceId: "newo-01", streamId: "stream-1", text: "hello Newo" };
 const quietLogger = { info() {}, warn() {} };
@@ -57,6 +57,7 @@ test("assistant sends one bounded OpenAI-compatible quick-chat request", async (
   assert.equal(request.top_k, 20);
   assert.equal(request.min_p, 0);
   assert.equal(request.max_tokens, 72);
+  assert.equal(request.stream, true);
   assert.equal(Object.hasOwn(request, "reasoning_effort"), false);
   assert.equal(result.timings.history_used, 0);
   assert.equal(runtime.getTelemetry().provider, "openai_chat");
@@ -565,7 +566,8 @@ test("assistant telemetry retains only the latest turn and exposes timeout state
   };
   const speakerRuntime = { speak() { return { kind: "queued", playbackId: "p", completion: Promise.resolve() }; } };
   const turns = createAssistantTurnRuntime({ assistant, speakerRuntime, isPersistentSpeakerEnabled: () => true, maxReplyChars: 240, logger: quietLogger });
-  assert.deepEqual(turns.getTelemetry().latest, { result: "n/a", llmMs: null, llmFirstRawTokenMs: null, llmFirstTokenMs: null, streamId: null, at: null, ttsQueuedMs: null, totalMs: null, asrFinalMs: null });
+  assert.deepEqual(turns.getTelemetry().latest, { result: "n/a", llmMs: null, llmFirstRawTokenMs: null, llmFirstTokenMs: null,
+    llmFirstTtsChunkMs: null, llmFirstAudioMs: null, streamId: null, at: null, ttsQueuedMs: null, totalMs: null, asrFinalMs: null });
   await turns.handleFinalTranscript({ ...turn, streamId: "first", asrFinalMs: 321 }).completion;
   assert.deepEqual(turns.getTelemetry().latest.result, "complete");
   assert.equal(turns.getTelemetry().latest.llmMs, 17);
@@ -586,4 +588,124 @@ test("a valid answer reaches speaker once and speaker failure settles the turn",
   assert.equal((await started.completion).kind, "speaker_failed");
   assert.equal(options.temporary, true);
   assert.equal(options.metadata.voice_stream_id, "stream-1");
+});
+
+test("progressive chunking waits for useful sentence or clause boundaries", () => {
+  const chunks = [];
+  const segmenter = createSpeechSegmenter({ onSegment: (text) => chunks.push(text) });
+  for (const part of ["Here is a short", " opening. Now a longer clause", ", with useful detail that keeps", " speech natural."])
+    segmenter.push(part);
+  segmenter.finish();
+  assert.deepEqual(chunks, ["Here is a short opening.", "Now a longer clause, with useful detail that keeps speech natural."]);
+});
+
+test("LFM progressive speech keeps the selected 450-character profile budget", async () => {
+  const spoken = [];
+  const longReply = `${"A".repeat(149)}. ${"B".repeat(149)}. ${"C".repeat(149)}.`;
+  const runtime = createAssistantTurnRuntime({
+    assistant: { getTelemetry: () => ({ enabled: true }), async respond({ onSpeakableText }) {
+      onSpeakableText(longReply, { profileId: "lfm2.5:8b", maxReplyChars: 450, chunking: { minChars: 24, clauseChars: 72, hardChars: 160 } });
+      return { kind: "response", text: longReply, timings: {} };
+    } },
+    speakerRuntime: {
+      speakProgressive(segments) { void (async () => { for await (const text of segments) spoken.push(text); })(); return { kind: "queued", playbackId: "p", completion: Promise.resolve({}) }; },
+      speak() { throw new Error("progressive path expected"); },
+    },
+    isPersistentSpeakerEnabled: () => true, maxReplyChars: 300, logger: { info() {}, warn() {} },
+  });
+  const turn = runtime.handleFinalTranscript({ deviceId: "d", streamId: "s", text: "long answer", asrFinalMs: 1 });
+  await turn.completion;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(spoken.join(" ").length, 450);
+});
+
+test("OpenAI-compatible SSE and Ollama deltas use the same progressive turn pipeline", async () => {
+  for (const profile of ["qwen", "lfm"]) {
+    const profiles = testProfiles();
+    const encoder = new TextEncoder();
+    const runtime = createAssistantRuntime({ enabled: true, profiles, preferredProfile: profile, logger: quietLogger,
+      fetchImpl: async (_url, options) => profile === "lfm"
+        ? ndjsonResponse([encoder.encode('{"response":"A useful opening. "}\n{"response":"More helpful detail follows."}\n')], options.signal)
+        : new Response(new ReadableStream({ start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"A useful opening. "}}]}\n\n'));
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"More helpful detail follows."}}]}\n\ndata: [DONE]\n\n'));
+          controller.close();
+        } }), { headers: { "content-type": "text/event-stream" } }) });
+    const spoken = [];
+    const speaker = {
+      speak() { throw new Error("complete-response TTS path must not be used"); },
+      speakProgressive(segments) {
+        const completion = (async () => { for await (const text of segments) spoken.push(text); return { kind: "complete" }; })();
+        return { kind: "queued", playbackId: `${profile}-p`, completion };
+      },
+    };
+    const turns = createAssistantTurnRuntime({ assistant: runtime, speakerRuntime: speaker,
+      isPersistentSpeakerEnabled: () => true, maxReplyChars: 300, logger: quietLogger });
+    assert.equal((await turns.handleFinalTranscript(turn).completion).kind, "complete");
+    assert.deepEqual(spoken, ["A useful opening. More helpful detail follows."]);
+    assert.equal(typeof turns.getTelemetry().latest.llmFirstTtsChunkMs, "number");
+  }
+});
+
+test("assistant turn state follows LLM start, first useful token, and completion", async () => {
+  const states = [];
+  let finishPlayback;
+  const playback = new Promise((resolve) => { finishPlayback = resolve; });
+  const assistant = {
+    async respond(request) {
+      request.onFirstToken();
+      return { kind: "response", text: "Hello.", timings: { llm_request_ms: 2, llm_first_token_ms: 1 } };
+    },
+    abortDevice() {}, close() {},
+  };
+  const speaker = { speak() { return { kind: "queued", playbackId: "p", completion: playback }; } };
+  const turns = createAssistantTurnRuntime({ assistant, speakerRuntime: speaker,
+    isPersistentSpeakerEnabled: () => true, maxReplyChars: 240, logger: quietLogger,
+    setAssistantState: (_deviceId, state) => states.push(state) });
+  const started = turns.handleFinalTranscript(turn);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(states, ["thinking", "responding"]);
+  finishPlayback({ kind: "complete" });
+  await started.completion;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(states, ["thinking", "responding", "idle"]);
+});
+
+test("reachable new voice streams invalidate stale generation callbacks and permit a rapid next turn", async () => {
+  const requests = [];
+  const cancelled = [];
+  const assistant = {
+    respond(request) { return new Promise((resolve) => requests.push({ request, resolve })); },
+    cancelDevice(deviceId) { cancelled.push(deviceId); }, abortDevice() {}, close() {},
+  };
+  const spoken = [];
+  const speaker = {
+    speakProgressive(segments, options) {
+      const state = { cancelled: false, options };
+      spoken.push(state);
+      const completion = (async () => { for await (const _text of segments) {} return { kind: "complete" }; })();
+      return { kind: "queued", playbackId: `p-${spoken.length}`, completion, cancel() { state.cancelled = true; } };
+    },
+    speak() { throw new Error("unexpected complete TTS"); },
+  };
+  const states = [];
+  const turns = createAssistantTurnRuntime({ assistant, speakerRuntime: speaker,
+    isPersistentSpeakerEnabled: () => true, maxReplyChars: 300, logger: quietLogger,
+    setAssistantState: (_deviceId, state) => states.push(state) });
+  const first = turns.handleFinalTranscript({ ...turn, streamId: "first" });
+  requests[0].request.onSpeakableText("This first response is already speaking. ", { chunking: {} });
+  turns.interruptDevice(turn.deviceId);
+  requests[0].request.onSpeakableText("Stale text must never be queued.", { chunking: {} });
+  requests[0].resolve({ kind: "response", text: "stale", timings: {} });
+  assert.equal((await first.completion).kind, "cancelled");
+  assert.equal(spoken[0].cancelled, true);
+
+  const second = turns.handleFinalTranscript({ ...turn, streamId: "second" });
+  requests[1].request.onSpeakableText("The second response is current and useful.", { chunking: {} });
+  requests[1].resolve({ kind: "response", text: "The second response is current and useful.", timings: {} });
+  assert.equal((await second.completion).kind, "complete");
+  assert.equal(spoken.length, 2);
+  assert.ok(spoken[1].options.metadata.generation_id > spoken[0].options.metadata.generation_id);
+  assert.deepEqual(cancelled, [turn.deviceId]);
+  assert.equal(states.includes("listening"), true);
 });

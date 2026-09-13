@@ -57,6 +57,7 @@ class NewoSpeaker {
 
   struct Request {
     char playbackId[40];
+    uint32_t generationId;
     uint32_t sampleRate;
     uint32_t bytes;
     uint32_t maxBytes;
@@ -113,6 +114,7 @@ class NewoSpeaker {
   QueueHandle_t opusFreeQueue_ = nullptr;
   uint8_t* opusPacketStorage_ = nullptr;
   Request request_ = {};
+  uint32_t lastCancelledGenerationId_ = 0;
   Result result_ = {};
   volatile bool connected_ = false;
   bool started_ = false;

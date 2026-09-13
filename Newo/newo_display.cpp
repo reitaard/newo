@@ -36,7 +36,9 @@ constexpr uint8_t kForceLongBlink = 2;
 NewoAutonomyEngagement autonomyEngagementFor(NewoDisplayMode mode) {
   switch (mode) {
     case NewoDisplayMode::LISTENING: return NewoAutonomyEngagement::LISTENING;
+    case NewoDisplayMode::PROCESSING:
     case NewoDisplayMode::THINKING: return NewoAutonomyEngagement::THINKING;
+    case NewoDisplayMode::RESPONDING:
     case NewoDisplayMode::SPEAKING: return NewoAutonomyEngagement::SPEAKING;
     default: return NewoAutonomyEngagement::IDLE;
   }
@@ -111,8 +113,14 @@ void NewoDisplay::setListeningActive(bool active) {
 }
 
 void NewoDisplay::setAssistantThinking(bool active) {
-  if (active == assistantThinking_) return;
-  assistantThinking_ = active;
+  setAssistantState(active ? NewoDisplayMode::THINKING : NewoDisplayMode::IDLE);
+}
+
+void NewoDisplay::setAssistantState(NewoDisplayMode mode) {
+  if (mode != NewoDisplayMode::IDLE && mode != NewoDisplayMode::PROCESSING &&
+      mode != NewoDisplayMode::THINKING && mode != NewoDisplayMode::RESPONDING) return;
+  if (mode == assistantState_) return;
+  assistantState_ = mode;
   syncEffectiveMode(millis());
 }
 
@@ -218,7 +226,9 @@ void NewoDisplay::loop() {
 const char* NewoDisplay::statusFor(NewoDisplayMode mode) {
   switch (mode) {
     case NewoDisplayMode::LISTENING: return "LISTENING";
+    case NewoDisplayMode::PROCESSING: return "PROCESSING";
     case NewoDisplayMode::THINKING: return "THINKING";
+    case NewoDisplayMode::RESPONDING: return "RESPONDING";
     case NewoDisplayMode::SPEAKING: return "SPEAKING";
     case NewoDisplayMode::ERROR: return "ERROR";
     default: return "";
@@ -332,7 +342,9 @@ NewoDisplayMode NewoDisplay::effectiveMode(uint32_t now) const {
       (errorActive_ && static_cast<int32_t>(now - errorUntilMs_) < 0)) return NewoDisplayMode::ERROR;
   if (listeningActive_ || mode_ == NewoDisplayMode::LISTENING) return NewoDisplayMode::LISTENING;
   if (speakerActive_ || mode_ == NewoDisplayMode::SPEAKING) return NewoDisplayMode::SPEAKING;
-  if (assistantThinking_ || mode_ == NewoDisplayMode::THINKING) return NewoDisplayMode::THINKING;
+  if (assistantState_ != NewoDisplayMode::IDLE) return assistantState_;
+  if (mode_ == NewoDisplayMode::PROCESSING || mode_ == NewoDisplayMode::THINKING ||
+      mode_ == NewoDisplayMode::RESPONDING) return mode_;
   return NewoDisplayMode::IDLE;
 }
 
@@ -347,7 +359,9 @@ void NewoDisplay::syncEffectiveMode(uint32_t now) {
   modeStartedMs_ = now;
   switch (next) {
     case NewoDisplayMode::LISTENING: noteInteraction(now, 5, 10, 12); break;
+    case NewoDisplayMode::PROCESSING:
     case NewoDisplayMode::THINKING: noteInteraction(now, 2, 4, 5); break;
+    case NewoDisplayMode::RESPONDING:
     case NewoDisplayMode::SPEAKING: noteInteraction(now, 4, 5, 10); break;
     default: break;
   }
@@ -854,10 +868,20 @@ void NewoDisplay::updateGaze(uint32_t now) {
         gazeTargetY_ = static_cast<int16_t>(random(-3, 4));
         nextGazeMs_ = now + static_cast<uint32_t>(random(900, 1'601));
         break;
+      case NewoDisplayMode::PROCESSING:
+        gazeTargetX_ = 0;
+        gazeTargetY_ = static_cast<int16_t>(random(-2, 3));
+        nextGazeMs_ = now + static_cast<uint32_t>(random(700, 1'101));
+        break;
       case NewoDisplayMode::THINKING:
         gazeTargetX_ = random(0, 2) ? static_cast<int16_t>(random(8, 17)) : static_cast<int16_t>(random(-16, -7));
         gazeTargetY_ = static_cast<int16_t>(random(-9, -3));
         nextGazeMs_ = now + static_cast<uint32_t>(random(1'100, 2'401));
+        break;
+      case NewoDisplayMode::RESPONDING:
+        gazeTargetX_ = static_cast<int16_t>(random(-4, 5));
+        gazeTargetY_ = static_cast<int16_t>(random(-2, 3));
+        nextGazeMs_ = now + static_cast<uint32_t>(random(500, 901));
         break;
       case NewoDisplayMode::SPEAKING:
         gazeTargetX_ = static_cast<int16_t>(random(-8, 9));
@@ -1023,10 +1047,19 @@ void NewoDisplay::drawStateAnimation(uint32_t now) {
       const int16_t height = 5 + static_cast<int16_t>((sinf(phase * 2.0f + i * 0.8f) + 1.0f) * 5.5f);
       activityCanvas_.fillRect(12 + i * 12, 16 - height, 5, height, 1);
     }
+  } else if (activeMode == NewoDisplayMode::PROCESSING) {
+    const int16_t sweep = static_cast<int16_t>((now % 1200) * 72 / 1200);
+    activityCanvas_.drawFastHLine(12, 12, 72, 1);
+    activityCanvas_.fillCircle(12 + sweep, 12, 3, 1);
   } else if (activeMode == NewoDisplayMode::THINKING) {
     for (int8_t i = 0; i < 3; ++i) {
       const int16_t rise = static_cast<int16_t>((sinf(phase * 1.5f + i * 1.4f) + 1.0f) * 3.0f);
       activityCanvas_.fillCircle(36 + i * 12, 15 - rise, 2, 1);
+    }
+  } else if (activeMode == NewoDisplayMode::RESPONDING) {
+    for (int8_t i = 0; i < 5; ++i) {
+      const int16_t pulse = 3 + static_cast<int16_t>((sinf(phase * 2.0f + i * 0.9f) + 1.0f) * 3.0f);
+      activityCanvas_.fillCircle(24 + i * 12, 12, pulse / 2, 1);
     }
   } else if (activeMode == NewoDisplayMode::SPEAKING) {
     int16_t lastY = 172;

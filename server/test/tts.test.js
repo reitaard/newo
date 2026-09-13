@@ -132,6 +132,32 @@ test("Pocket backend streams unsegmented natural text and converts before respon
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
 
+test("Pocket backend joins progressive text chunks into one PCM source", async () => {
+  const inputs = [];
+  const sample = Buffer.alloc(4); sample.writeFloatLE(0.25, 0);
+  const server = createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      inputs.push(JSON.parse(Buffer.concat(chunks).toString("utf8")).input);
+      response.writeHead(200, { "content-type": "application/octet-stream", "x-audio-sample-rate": "24000",
+        "x-audio-channels": "1", "x-audio-format": "pcm_f32le" });
+      response.end(sample);
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const backend = new PocketTtsBackend({ baseUrl: `http://127.0.0.1:${server.address().port}` });
+  try {
+    const segments = (async function* () { yield "First useful sentence."; yield "Second useful sentence."; })();
+    const source = await backend.streamSegments(segments, { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
+    const pcm = [];
+    for await (const chunk of source.audio) pcm.push(chunk);
+    assert.deepEqual(inputs, ["First useful sentence.", "Second useful sentence."]);
+    assert.equal(Buffer.concat(pcm).length, 4);
+    assert.equal(source.metrics.textChunks, 2);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+
 test("Pocket backend reports service failure and cancellation closes its HTTP stream", async () => {
   const unavailable = new PocketTtsBackend({ baseUrl: "http://127.0.0.1:1", requestTimeoutMs: 1_000 });
   await assert.rejects(unavailable.stream("test", { sampleRate: 24_000, channels: 1, bitsPerSample: 16 }), /Pocket unavailable/);
@@ -486,6 +512,34 @@ test("streaming speaker framing emits PCM before synthesis ends", async () => {
   await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
   runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 17_536 });
   await queued.completion;
+  runtime.close();
+});
+
+test("speaker cancellation stops its source and sends a generation-scoped flush", async () => {
+  const ws = fakeSocket();
+  let sourceCancelled = false;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const backend = { name: "pocket", gainDb: 0, limiter: 1, async stream() {
+    const metrics = {};
+    return { metrics, audio: (async function* () { yield Buffer.alloc(13_440, 1); await gate; yield Buffer.alloc(4_096, 2); })(),
+      cancel() { sourceCancelled = true; release(); } };
+  } };
+  const runtime = createSpeakerRuntime({ logger: logger(), enabled: true, backend, getDevice: () => ({}), sendControl: () => true });
+  runtime.handleConnection(ws, "newo-01");
+  const queued = runtime.speak("interrupt me", { metadata: { generation_id: 41 } });
+  await waitFor(() => binaryFrames(ws).length > 0);
+  queued.cancel();
+  await waitFor(() => ws.frames.some((frame) => !Buffer.isBuffer(frame) && String(frame).includes("speaker_cancel")));
+  const cancellation = ws.frames.map((frame) => Buffer.isBuffer(frame) ? null : JSON.parse(String(frame)))
+    .find((message) => message?.type === "speaker_cancel");
+  assert.deepEqual(cancellation, { type: "speaker_cancel", playback_id: queued.playbackId, generation_id: 41 });
+  assert.equal(sourceCancelled, true);
+  const sentAtCancel = binaryFrames(ws).length;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(binaryFrames(ws).length, sentAtCancel);
+  runtime.handleResult("newo-01", { type: "speaker_error", playback_id: queued.playbackId, bytes: 0, error: "cancelled" });
+  await assert.rejects(queued.completion, /cancelled/);
   runtime.close();
 });
 

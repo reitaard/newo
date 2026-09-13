@@ -52,9 +52,7 @@ void NewoAudio::releaseI2s() {
 bool NewoAudio::startWakeNet() {
   if (!enabled_ || playbackSuppressed_ || wakeNetRunning_) return wakeNetRunning_;
   if (!configureI2s()) return false;
-  ESP_SR.onEvent(srEvent);
-  // Empty commands keep Newo in SR_MODE_WAKEWORD; it never enters command mode.
-  if (!ESP_SR.begin(i2s_, nullptr, 0, SR_CHANNELS_STEREO, SR_MODE_WAKEWORD, "MN")) {
+  if (!wakeEngine_.start(i2s_, srEvent)) {
     NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::AUDIO, "WAKENET_START_FAILED");
     releaseI2s();
     return false;
@@ -69,7 +67,7 @@ void NewoAudio::stopWakeNet() {
   if (!wakeNetRunning_) return;
   // end waits for ESP_SR feed/detect tasks to stop, so I2S is not concurrently
   // read when the streaming task is created.
-  ESP_SR.end();
+  wakeEngine_.stop();
   wakeNetRunning_ = false;
   releaseI2s();
 }

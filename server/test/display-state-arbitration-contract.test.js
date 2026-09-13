@@ -14,11 +14,12 @@ test("display activity signals are propagated and listening waits for voice conn
   ]);
 
   assert.match(header, /setListeningActive\(bool active\)/);
-  assert.match(header, /setAssistantThinking\(bool active\)/);
+  assert.match(header, /setAssistantState\(NewoDisplayMode mode\)/);
+  assert.match(header, /IDLE, LISTENING, PROCESSING, THINKING, RESPONDING, SPEAKING/);
 
   assert.match(
     display,
-    /if \(mode_ == NewoDisplayMode::ERROR[\s\S]*if \(listeningActive_ \|\|[\s\S]*if \(speakerActive_ \|\|[\s\S]*if \(assistantThinking_ \|\|/,
+    /if \(mode_ == NewoDisplayMode::ERROR[\s\S]*if \(listeningActive_ \|\|[\s\S]*if \(speakerActive_ \|\|[\s\S]*if \(assistantState_ != NewoDisplayMode::IDLE/,
   );
 
   assert.doesNotMatch(audio, /display_\.setListeningActive\(true\)/);
@@ -37,6 +38,11 @@ test("display activity signals are propagated and listening waits for voice conn
 
   assert.equal(gates.length, 2);
 
-  assert.match(cloud, /display_\.setAssistantThinking\(true\)/);
-  assert.match(cloud, /display_\.setAssistantThinking\(false\)/);
+  assert.match(cloud, /"processing"[\s\S]*setAssistantState\(NewoDisplayMode::PROCESSING\)/);
+  assert.match(cloud, /"listening"[\s\S]*setAssistantState\(NewoDisplayMode::IDLE\)/);
+  assert.match(cloud, /"thinking"[\s\S]*setAssistantState\(NewoDisplayMode::THINKING\)/);
+  assert.match(cloud, /"responding"[\s\S]*setAssistantState\(NewoDisplayMode::RESPONDING\)/);
+  assert.match(cloud, /"idle"[\s\S]*setAssistantState\(NewoDisplayMode::IDLE\)/);
+  assert.match(display, /NewoDisplayMode::PROCESSING[\s\S]*drawFastHLine/);
+  assert.match(display, /NewoDisplayMode::RESPONDING[\s\S]*fillCircle/);
 });

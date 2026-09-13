@@ -32,8 +32,8 @@ export function formatVoiceStatus(voice, assistant = {}) {
   const latest = assistant.latest ?? {};
   return message("voice", [
     `Voice: ${bold(state)}`,
-    `Trigger: ${bold("Manual (/v)")}`,
-    `Wake word: ${bold("Deferred")}`,
+    `Trigger: ${bold("Hi Wall-E or /v")}`,
+    `Wake: ${bold(`${voice.wake_model ?? "wn9_hiwalle_tts2"} ${state === "ARMED" ? "READY" : "SUPPRESSED"}`)}`,
     `Assistant: ${bold(String(assistant.status ?? "disabled").toUpperCase())}`,
     `Provider: ${bold(assistant.provider ?? "n/a")}`,
     `LLM: ${bold(assistant.model ?? "n/a")}`,
@@ -46,6 +46,7 @@ export function formatVoiceStatus(voice, assistant = {}) {
     `Speaker: ${bold(assistant.speakerEnabled ? "ON" : "OFF")}`,
     `Cloud voice: ${bold(voice.voice_connected ? "Connected" : "Disconnected")}`,
     `Wake count: ${bold(voice.wake_count ?? 0)}`,
+    `Barge-in: ${bold("DISABLED (mic/I2S exclusive)")}`,
     `Sessions: ${bold(voice.session_count ?? 0)}`,
     `Failures: ${bold(voice.failures ?? "Unavailable")}`,
     `Timeouts: ${bold(voice.timeouts ?? "Unavailable")}`,
@@ -157,6 +158,7 @@ export function createPrimaryModeHandlers({
   setAssistantTuningPreset = null,
   setAssistantTuningValue = null,
   setAssistantSystemPrompt = null,
+  ownerVoiceprint = null,
   getTrackDesired = () => false,
   persistTrackDesired = async () => false,
   handleTrackCommandResult = () => {},
@@ -197,6 +199,30 @@ export function createPrimaryModeHandlers({
     const result = await request.promise;
     if (result.kind === "response") return commandReply(ctx, formatVoiceStatus(result.message, getAssistantInfo()), "response", request.requestId, { newoSpeak: false });
     return commandReply(ctx, unavailable("voice", result.kind === "timeout" ? "No reply" : "offline"), result.kind, request.requestId, { newoSpeak: false });
+  }
+
+  function formatOwnerStatus(status = {}) {
+    return message("owner voice", [
+      `Verification: ${bold(status.enabled ? "ON" : "OFF")}`,
+      `Voiceprint: ${bold(status.enrolled ? "ENROLLED" : "NOT ENROLLED")}`,
+      `Enrollment: ${bold(status.enrollment_active ? `${status.enrollment_samples}/${status.enrollment_required}` : "IDLE")}`,
+      `Threshold: ${bold(status.threshold ?? "n/a")}`,
+    ]);
+  }
+
+  async function ownerEnroll(ctx) {
+    const status = ownerVoiceprint?.begin?.();
+    if (!status?.enabled) return commandReply(ctx, unavailable("owner voice", "Disabled"), "unavailable", null, { newoSpeak: false });
+    return commandReply(ctx, `${formatOwnerStatus(status)}\n${italic("Use /v, say “Hi Wall-E”, and repeat for all 3 samples.")}`, "response", null, { newoSpeak: false });
+  }
+
+  async function ownerStatus(ctx) {
+    return commandReply(ctx, formatOwnerStatus(ownerVoiceprint?.status?.() ?? {}), "response", null, { newoSpeak: false });
+  }
+
+  async function ownerCancel(ctx) {
+    const cancelled = ownerVoiceprint?.cancel?.();
+    return commandReply(ctx, cancelled ? "Owner enrollment cancelled." : "No owner enrollment is active.", "response", null, { newoSpeak: false });
   }
 
   async function profile(ctx, forcedProfile = null) {
@@ -429,5 +455,5 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, formatMuteStatus(status.device), status.device.applied === false ? "device_error" : "response", status.request.requestId, { newoSpeak: false });
   }
 
-  return { voice, voiceStatus, profile, profileTune, profilePromptInput, cancelProfilePrompt, speaker, eco, clock, track, trackBackground, volume, mute };
+  return { voice, voiceStatus, ownerEnroll, ownerStatus, ownerCancel, profile, profileTune, profilePromptInput, cancelProfilePrompt, speaker, eco, clock, track, trackBackground, volume, mute };
 }

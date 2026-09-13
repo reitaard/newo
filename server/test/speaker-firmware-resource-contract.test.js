@@ -5,6 +5,9 @@ import test from "node:test";
 const speakerPath = new URL("../../Newo/newo_speaker.cpp", import.meta.url);
 const speakerHeaderPath = new URL("../../Newo/newo_speaker.h", import.meta.url);
 const speakerConfigPath = new URL("../../Newo/newo_config.h", import.meta.url);
+const audioPath = new URL("../../Newo/newo_audio.cpp", import.meta.url);
+const wakeEnginePath = new URL("../../Newo/newo_wake_engine.cpp", import.meta.url);
+const serverIndexPath = new URL("../src/index.js", import.meta.url);
 
 test("Opus decoder uses a bounded PSRAM task stack with matching deletion", async () => {
   const speaker = await readFile(speakerPath, "utf8");
@@ -64,4 +67,41 @@ test("Opus continuity diagnostics sample only active playback and preserve fixed
   assert.match(config, /SPEAKER_OPUS_QUEUE_DEPTH\s*=\s*32/);
   assert.match(config, /SPEAKER_OPUS_STARTUP_PACKETS\s*=\s*25/);
   assert.match(config, /SPEAKER_BUFFER_BYTES\s*=\s*24'576/);
+});
+
+test("speaker cancellation is generation-scoped and drops late audio", async () => {
+  const [speaker, header] = await Promise.all([
+    readFile(speakerPath, "utf8"),
+    readFile(speakerHeaderPath, "utf8"),
+  ]);
+  assert.match(header, /uint32_t generationId;/);
+  assert.match(header, /uint32_t lastCancelledGenerationId_/);
+  assert.match(speaker, /strcmp\(type, "speaker_cancel"\)/);
+  assert.match(speaker, /generationId <= lastCancelledGenerationId_/);
+  assert.match(speaker, /decoderAbort_ = true;[\s\S]*?fail\("cancelled"\)/);
+  assert.match(speaker, /if \(taskFinished_ \|\| failed_\) return;/);
+});
+
+test("a fresh speaker WebSocket resets the server-local cancellation generation", async () => {
+  const speaker = await readFile(speakerPath, "utf8");
+  const connected = speaker.slice(speaker.indexOf("if (type == WStype_CONNECTED)"), speaker.indexOf("if (type == WStype_BIN)"));
+  assert.match(connected, /lastCancelledGenerationId_\s*=\s*0/);
+  assert.match(connected, /new ordering epoch/);
+});
+
+test("physical barge-in is truthfully disabled while playback suppresses the microphone", async () => {
+  const audio = await readFile(audioPath, "utf8");
+  const index = await readFile(serverIndexPath, "utf8");
+  assert.match(audio, /if \(state_ == NewoVoiceState::STREAMING\) return false/);
+  assert.match(audio, /VOICE_MANUAL_BUSY/);
+  assert.match(index, /barge_in_available:\s*false/);
+});
+
+test("WakeNet is isolated behind the minimal WakeEngine boundary", async () => {
+  const audio = await readFile(audioPath, "utf8");
+  const wake = await readFile(wakeEnginePath, "utf8");
+  assert.match(audio, /wakeEngine_\.start\(i2s_, srEvent\)/);
+  assert.match(audio, /wakeEngine_\.stop\(\)/);
+  assert.match(wake, /ESP_SR\.begin/);
+  assert.doesNotMatch(audio, /ESP_SR\.begin/);
 });

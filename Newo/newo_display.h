@@ -9,7 +9,7 @@
 #include "newo_log.h"
 #include "newo_presentation.h"
 
-enum class NewoDisplayMode : uint8_t { IDLE, LISTENING, THINKING, SPEAKING, ERROR, MESSAGE, ECO };
+enum class NewoDisplayMode : uint8_t { IDLE, LISTENING, PROCESSING, THINKING, RESPONDING, SPEAKING, ERROR, MESSAGE, ECO };
 enum class NewoFaceStyle : uint8_t { NEUTRAL, HAPPY, ANGRY, TIRED, CURIOUS, CONFUSED, LAUGH, SWEAT, CYCLOPS, CLOSED, WINK_LEFT, WINK_RIGHT, LOOK_LEFT, LOOK_RIGHT, LOOK_UP, LOOK_DOWN, LOOK_UP_LEFT, LOOK_UP_RIGHT, LOOK_DOWN_LEFT, LOOK_DOWN_RIGHT, SURPRISED, SLEEPY, DETACHED, SLEEPING, UNIMPRESSED, SKEPTICAL };
 
 class NewoDisplay {
@@ -25,6 +25,7 @@ class NewoDisplay {
   // Runtime signals are arbitrated independently of the persistent display mode.
   void setListeningActive(bool active);
   void setAssistantThinking(bool active);
+  void setAssistantState(NewoDisplayMode mode);
   void setSpeakerActive(bool active);
   void noteSystemError();
   void toggleEco();
@@ -138,7 +139,7 @@ class NewoDisplay {
   uint32_t nextFaceFrameMs_ = 0;
   uint32_t modeStartedMs_ = 0;
   bool listeningActive_ = false;
-  bool assistantThinking_ = false;
+  NewoDisplayMode assistantState_ = NewoDisplayMode::IDLE;
   bool errorActive_ = false;
   uint32_t errorUntilMs_ = 0;
   enum class BlinkPhase : uint8_t { OPEN, HALF_CLOSED, CLOSED, HALF_OPEN };
