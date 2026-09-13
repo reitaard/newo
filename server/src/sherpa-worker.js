@@ -7,10 +7,31 @@ let nextSessionId = 1;
 
 function respond(requestId, payload = {}) { parentPort.postMessage({ requestId, ...payload }); }
 
+function positiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const asrOptions = {
+  ...workerData,
+  endpointRule1MinTrailingSilence: positiveNumber(
+    process.env.VOICE_ASR_ENDPOINT_RULE1_S,
+    workerData.endpointRule1MinTrailingSilence ?? 2.0,
+  ),
+  endpointRule2MinTrailingSilence: positiveNumber(
+    process.env.VOICE_ASR_ENDPOINT_RULE2_S,
+    workerData.endpointRule2MinTrailingSilence ?? 1.0,
+  ),
+  endpointRule3MinUtteranceLength: positiveNumber(
+    process.env.VOICE_ASR_ENDPOINT_RULE3_S,
+    workerData.endpointRule3MinUtteranceLength ?? 20,
+  ),
+};
+
 try {
   // Native module loading, recognizer ownership, Float32 conversion, and every
   // synchronous decode occur in this worker, never in Fastify's main thread.
-  backend = new SherpaAsrBackend(workerData);
+  backend = new SherpaAsrBackend(asrOptions);
   await backend.prewarm();
   parentPort.postMessage({ type: "ready" });
 } catch (error) {
