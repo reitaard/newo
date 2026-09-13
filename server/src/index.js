@@ -849,6 +849,7 @@ const primaryModeHandlers = createPrimaryModeHandlers({
 
 if (env.TELEGRAM_BOT_TOKEN) {
   bot = new Bot(env.TELEGRAM_BOT_TOKEN);
+  await bot.init();
   bot.use(async (ctx, next) => {
     const text = ctx.message?.text;
     const command = typeof text === "string" ? text.match(/^\/([a-z0-9_]+)/i)?.[1]?.toLowerCase() ?? null : null;
@@ -896,10 +897,10 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command("track_bg", primaryModeHandlers.trackBackground);
   bot.command(["voice", "v"], primaryModeHandlers.voice);
   bot.command("vs", primaryModeHandlers.voiceStatus);
-  bot.command(["profile", "p"], primaryModeHandlers.profile);
+  bot.command(["profile", "p"], (ctx) => primaryModeHandlers.profile(ctx));
   bot.command(["profile_lfm", "p_lfm"], (ctx) => primaryModeHandlers.profile(ctx, "lfm"));
   bot.command(["profile_qwen", "p_qwen"], (ctx) => primaryModeHandlers.profile(ctx, "qwen"));
-  bot.command(["profile_tune", "pt"], primaryModeHandlers.profileTune);
+  bot.command(["profile_tune", "pt"], (ctx) => primaryModeHandlers.profileTune(ctx));
   bot.command("p_conf", (ctx) => primaryModeHandlers.profileTune(ctx, ""));
   bot.command("p_reset", (ctx) => primaryModeHandlers.profileTune(ctx, "reset"));
   bot.command("cancel", primaryModeHandlers.cancelProfilePrompt);

@@ -57,10 +57,11 @@ test("Telegram menu exposes core controls, semantic faces, and composed reaction
   assert.match(server, /for \(const effect of SECONDARY_EFFECTS\) bot\.command\(`effect_\$\{effect\}`/);
   assert.match(server, /for \(const caption of FACE_CAPTIONS\) bot\.command\(`caption_\$\{caption\}`/);
   assert.match(server, /bot\.command\(\["reaction", "rx"\], handleReactionCommand\)/);
-  assert.match(server, /bot\.command\(\["profile", "p"\], primaryModeHandlers\.profile\)/);
   assert.match(server, /bot\.command\(\["profile_lfm", "p_lfm"\]/);
   assert.match(server, /bot\.command\(\["profile_qwen", "p_qwen"\]/);
-  assert.match(server, /bot\.command\(\["profile_tune", "pt"\], primaryModeHandlers\.profileTune\)/);
+  assert.match(server, /bot\s*=\s*new Bot\(env\.TELEGRAM_BOT_TOKEN\);\s*await bot\.init\(\);/);
+  assert.match(server, /bot\.command\(\["profile", "p"\], \(ctx\) => primaryModeHandlers\.profile\(ctx\)\)/);
+  assert.match(server, /bot\.command\(\["profile_tune", "pt"\], \(ctx\) => primaryModeHandlers\.profileTune\(ctx\)\)/);
   assert.match(server, /bot\.command\("p_conf",/);
   assert.match(server, /bot\.command\("p_reset",/);
   assert.match(server, /bot\.command\("cancel", primaryModeHandlers\.cancelProfilePrompt\)/);
