@@ -7,7 +7,7 @@
 - ArduinoJson 7.4.3
 - WebSockets 2.7.2
 
-The official Arduino-ESP32 `WiFi`, `WiFiProv`, and `Preferences` libraries provide networking, BLE provisioning, and NVS storage. No third-party Wi-Fi manager or web server is used.
+The official Arduino-ESP32 `WiFi`, `WebServer`, `DNSServer`, and `Preferences` libraries provide networking, browser provisioning, captive DNS, and NVS storage. No third-party Wi-Fi manager is used.
 
 ## Board configuration
 
@@ -28,25 +28,23 @@ Open the existing `Newo/Newo.ino` sketch directory; do not move the `.ino` away 
 
 1. Compile and upload the sketch.
 2. Open Serial Monitor at 115200.
-3. With no reachable saved network, Newo advertises BLE service `PROV_NEWO`.
-4. Open Espressif **ESP BLE Provisioning** on Android/iOS.
-5. Select the device, Security 1, and leave proof of possession empty.
-6. Choose a 2.4 GHz Wi-Fi network and submit its credential.
-7. Newo saves the credential only after the provisioning framework reports connection success.
-8. BLE is stopped and Newo reboots; the next boot scans and connects automatically.
+3. With no reachable saved network, connect the phone to `newo@wifi`.
+4. Use the captive page that opens, or browse to `http://192.168.4.1`.
+5. Choose a 2.4 GHz Wi-Fi network, enter its password, and select **Save and connect**.
+6. Newo adds or updates that credential transactionally and reboots.
+7. The next boot scans and connects automatically.
 
 Representative output:
 
 ```text
 [storage] Loaded 0 saved network(s)
-[wifi] No saved networks; opening BLE provisioning
-[prov] BLE provisioning started: PROV_NEWO (timeout 300 s)
-[prov] Wi-Fi credentials received; waiting for connection success
-[prov] Wi-Fi credentials accepted
-[prov] Wi-Fi network saved; rebooting Newo
+[wifi] No saved networks; opening browser provisioning
+[prov] PROV_STARTED — ssid=newo@wifi ip=192.168.4.1
+[prov] PORTAL_READY
+[prov] PROV_SAVED
 ```
 
-Provisioning stops after five minutes. Reboot to open another attempt. Hardware BLE execution remains pending while the board is disconnected. USB Serial continues to show important application events; firmware also keeps a fixed 64-entry volatile RAM event buffer for authenticated remote `/health`, `/logs`, and `/errors` requests. It is deliberately erased on reboot and never persisted to NVS or a filesystem. `0.3.1-dev` physical diagnostics testing exposed a `loopTask` stack-canary panic; `0.3.2-dev` fixes exports without enlarging the task stack. BLE physical provisioning remains unvalidated.
+Provisioning stops after five minutes. Reboot to open another attempt. USB Serial continues to show important application events; firmware also keeps a fixed 64-entry volatile RAM event buffer for authenticated remote `/health`, `/logs`, and `/errors` requests. It is deliberately erased on reboot and never persisted to NVS or a filesystem.
 
 ## Saved-network behavior
 
@@ -56,7 +54,7 @@ Provisioning updates an existing SSID or appends a new one without deleting unre
 
 ## Security note
 
-Security 1 provides X25519 key exchange and encrypted provisioning messages. Null PoP is an explicit prototype convenience, not production authentication. A later display/label flow should provide per-device PoP and QR data, while a physical action should gate provisioning/reset.
+The setup AP is open for captive-browser compatibility. Use it only in a trusted location; a later physical action should gate provisioning and production firmware should authenticate setup access.
 
 ## Verified build
 

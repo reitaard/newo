@@ -104,6 +104,8 @@ class NewoSpeaker {
   NewoSpeakerOutput i2s_;
   WebSocketsClient webSocket_;
   StreamBufferHandle_t buffer_ = nullptr;
+  StaticStreamBuffer_t bufferControl_ = {};
+  uint8_t* bufferStorage_ = nullptr;
   TaskHandle_t task_ = nullptr;
   TaskHandle_t decoderTask_ = nullptr;
   struct OpusPacketRef { uint8_t slot; uint16_t length; uint16_t sequence; uint16_t validPcmBytes; };
@@ -144,6 +146,9 @@ class NewoSpeaker {
   uint32_t lastFlowSentReceivedBytes_ = 0;
   uint32_t lastFlowSentConsumedBytes_ = 0;
   uint32_t lastFlowReportMs_ = 0;
+  uint32_t receiptPendingSinceMs_ = 0;
+  uint32_t maximumReceiptReportDelayMs_ = 0;
+  bool receiptReportPending_ = false;
   uint32_t flowReportCount_ = 0;
   uint32_t receivedFlowReportCount_ = 0;
   uint32_t i2sDrainMs_ = 0;

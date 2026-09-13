@@ -112,7 +112,7 @@ The server correlates device requests by unique `request_id` values. Each pendin
 
 `/status` requests fresh telemetry whenever the device is online. If that request times out, a concise cached snapshot is clearly labelled. `/reboot` sends `reboot`; firmware sends `reboot_ack`, allows the WSS frame to drain, and only then schedules restart. The server replies “Restarting Newo.” and tracks that chat/message/device in memory for 60 seconds. On authenticated reconnect it best-effort deletes that message and sends “Newo is back online.” A timeout edits the existing message, and intentional reboot disconnects do not emit generic offline/online notifications.
 
-Wi-Fi provisioning is BLE-only and cannot be initiated or receive credentials through Telegram. Commands for camera/audio capture or OTA should be added only after authorization and transport are hardware-tested.
+Wi-Fi provisioning uses the local `newo@wifi` captive portal and cannot receive credentials through Telegram. Commands for camera/audio capture or OTA should be added only after authorization and transport are hardware-tested.
 
 The Telegram command menu contains only `status` and `reboot`.
 

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <esp_wifi.h>
 
 #include "newo_config.h"
 #include "newo_log.h"
@@ -36,7 +37,8 @@ void NewoWiFi::begin() {
   WiFi.mode(WIFI_STA);
 
   if (storage_.count() == 0) {
-    Serial.println("[wifi] No saved networks; opening SoftAP provisioning");
+    if (recoverLegacyNetwork()) return;
+    Serial.println("[wifi] No saved networks; opening browser provisioning");
     startProvisioning();
     return;
   }
@@ -48,8 +50,29 @@ void NewoWiFi::begin() {
     return;
   }
 
-  Serial.println("[wifi] No saved network is reachable; opening SoftAP provisioning");
+  Serial.println("[wifi] No saved network is reachable; opening browser provisioning");
   startProvisioning();
+}
+
+bool NewoWiFi::recoverLegacyNetwork() {
+  wifi_config_t legacy = {};
+  if (esp_wifi_get_config(WIFI_IF_STA, &legacy) != ESP_OK || legacy.sta.ssid[0] == '\0') return false;
+
+  const String ssid(reinterpret_cast<const char*>(legacy.sta.ssid),
+                    strnlen(reinterpret_cast<const char*>(legacy.sta.ssid), sizeof(legacy.sta.ssid)));
+  const String password(reinterpret_cast<const char*>(legacy.sta.password),
+                        strnlen(reinterpret_cast<const char*>(legacy.sta.password), sizeof(legacy.sta.password)));
+  if (ssid.length() > 32 || password.length() > 63) return false;
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::WIFI, "WIFI_LEGACY_RECOVERY_TRY");
+  const NewoWifiCredential candidate{ssid, password};
+  if (!connectToSavedNetwork(candidate, NewoConfig::WIFI_CONNECT_ATTEMPT_TIMEOUT_MS)) return false;
+  if (!storage_.addOrUpdateNetwork(ssid, password)) {
+    NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::STORAGE, "WIFI_LEGACY_RECOVERY_SAVE_FAILED");
+    return true;
+  }
+  hasConnected_ = true;
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::STORAGE, "WIFI_LEGACY_RECOVERED");
+  return true;
 }
 
 bool NewoWiFi::connectSavedNetworks(uint32_t windowMs) {
@@ -172,7 +195,7 @@ bool NewoWiFi::connectToSavedNetwork(const NewoWifiCredential& network, uint32_t
 }
 
 void NewoWiFi::startProvisioning() {
-  if (provisioningAttempted_ || rebootAtMs_ != 0) {
+  if (provisioningAttempted_) {
     return;
   }
 
@@ -180,23 +203,16 @@ void NewoWiFi::startProvisioning() {
   provisioningStartedAtMs_ = millis();
   provisioningActive_ = true;
 
-  // Arduino-ESP32 3.3.7 through at least 3.3.11 has a confirmed ESP32-S3
-  // BLE-controller startup regression that can LoadProhibited immediately
-  // after the controller's MAGIC/version banner. Newo is pinned to 3.3.10,
-  // so use the same provisioning manager over SoftAP instead of entering the
-  // broken BLE path. Security 1 still encrypts the provisioning exchange; a
-  // null PoP is intentional for this prototype and is supported by Security 1.
-  Serial.println("[prov] ESP32-S3 core 3.3.10 BLE workaround: using SoftAP");
-  WiFiProv.beginProvision(
-      NETWORK_PROV_SCHEME_SOFTAP,
-      NETWORK_PROV_SCHEME_HANDLER_NONE,
-      NETWORK_PROV_SECURITY_1,
-      nullptr,
-      NewoConfig::PROVISIONING_DEVICE_NAME,
-      nullptr,
-      nullptr,
-      true);
-  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_STARTED", "transport=softap");
+  WiFi.mode(WIFI_AP_STA);
+  if (!WiFi.softAP(NewoConfig::PROVISIONING_DEVICE_NAME)) {
+    provisioningActive_ = false;
+    NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::PROV, "PROV_AP_FAILED");
+    return;
+  }
+  char detail[64];
+  snprintf(detail, sizeof(detail), "ssid=%s ip=%s", NewoConfig::PROVISIONING_DEVICE_NAME,
+           WiFi.softAPIP().toString().c_str());
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_STARTED", detail);
 }
 
 void NewoWiFi::stopProvisioning() {
@@ -204,7 +220,7 @@ void NewoWiFi::stopProvisioning() {
     return;
   }
 
-  WiFiProv.endProvision();
+  WiFi.softAPdisconnect(true);
   provisioningActive_ = false;
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_STOPPED");
 }
@@ -221,85 +237,9 @@ void NewoWiFi::handleWiFiEvent(arduino_event_id_t eventId, const arduino_event_i
       break;
     }
 
-    case ARDUINO_EVENT_PROV_START:
-      NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_READY");
-      break;
-
-    case ARDUINO_EVENT_PROV_CRED_RECV:
-      portENTER_CRITICAL(&provisioningMux_);
-      copyProvisioningField(
-          pendingProvisioningSsid_, sizeof(pendingProvisioningSsid_),
-          info.prov_cred_recv.ssid,
-          sizeof(info.prov_cred_recv.ssid));
-      copyProvisioningField(
-          pendingProvisioningPassword_, sizeof(pendingProvisioningPassword_),
-          info.prov_cred_recv.password,
-          sizeof(info.prov_cred_recv.password));
-      provisioningCredentialsPending_ = true;
-      provisioningCredentialsSucceeded_ = false;
-      portEXIT_CRITICAL(&provisioningMux_);
-      NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_CREDENTIALS_RECEIVED");
-      break;
-
-    case ARDUINO_EVENT_PROV_CRED_SUCCESS:
-      portENTER_CRITICAL(&provisioningMux_);
-      provisioningCredentialsSucceeded_ = true;
-      pendingLedEvent_ = LedEvent::ACCEPTED;
-      portEXIT_CRITICAL(&provisioningMux_);
-      NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_CREDENTIALS_ACCEPTED");
-      break;
-
-    case ARDUINO_EVENT_PROV_CRED_FAIL:
-      portENTER_CRITICAL(&provisioningMux_);
-      provisioningCredentialsPending_ = false;
-      pendingLedEvent_ = LedEvent::REJECTED;
-      provisioningCredentialsSucceeded_ = false;
-      portEXIT_CRITICAL(&provisioningMux_);
-      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::PROV, "PROV_CREDENTIALS_REJECTED");
-      break;
-
-    case ARDUINO_EVENT_PROV_END:
-      Serial.println("[prov] Provisioning service ended");
-      break;
-
     default:
       break;
   }
-}
-
-void NewoWiFi::processProvisioningHandoff() {
-  char ssid[sizeof(pendingProvisioningSsid_)] = {};
-  char password[sizeof(pendingProvisioningPassword_)] = {};
-  bool commit = false;
-
-  portENTER_CRITICAL(&provisioningMux_);
-  if (provisioningCredentialsPending_ && provisioningCredentialsSucceeded_) {
-    memcpy(ssid, pendingProvisioningSsid_, sizeof(ssid));
-    memcpy(password, pendingProvisioningPassword_, sizeof(password));
-    provisioningCredentialsPending_ = false;
-    provisioningCredentialsSucceeded_ = false;
-    commit = true;
-  }
-  portEXIT_CRITICAL(&provisioningMux_);
-
-  if (!commit) {
-    return;
-  }
-
-  if (!storage_.addOrUpdateNetwork(String(ssid), String(password))) {
-    // The provisioning framework has already accepted the network. Preserve
-    // the old transactional list, close provisioning, and reboot instead of
-    // remaining in an ambiguous successful-but-unsaved session.
-    NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::PROV, "PROV_SAVE_FAILED");
-    stopProvisioning();
-    scheduleReboot();
-    return;
-  }
-
-  stopProvisioning();
-  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::PROV, "PROV_SAVED");
-  pendingLedEvent_ = LedEvent::SAVED;
-  scheduleReboot();
 }
 
 bool NewoWiFi::provisioningTimedOut() const {
@@ -308,39 +248,11 @@ bool NewoWiFi::provisioningTimedOut() const {
              NewoConfig::BLE_PROVISIONING_TIMEOUT_MS;
 }
 
-void NewoWiFi::scheduleReboot() {
-  rebootAtMs_ = millis() + NewoConfig::PROVISIONING_REBOOT_DELAY_MS;
-}
-
 bool NewoWiFi::deadlineReached(uint32_t deadlineMs) {
   return static_cast<int32_t>(millis() - deadlineMs) >= 0;
 }
 
-void NewoWiFi::copyProvisioningField(char* destination, size_t destinationSize,
-                                      const uint8_t* source, size_t sourceSize) {
-  if (!destination || destinationSize == 0 || !source) {
-    return;
-  }
-
-  size_t length = 0;
-  while (length + 1 < destinationSize && length < sourceSize && source[length] != '\0') {
-    destination[length] = static_cast<char>(source[length]);
-    ++length;
-  }
-  destination[length] = '\0';
-}
-
 void NewoWiFi::loop() {
-  processProvisioningHandoff();
-
-  if (rebootAtMs_ != 0) {
-    if (deadlineReached(rebootAtMs_)) {
-      Serial.println("[prov] Restarting Newo...");
-      ESP.restart();
-    }
-    return;
-  }
-
   if (provisioningActive_) {
     if (provisioningTimedOut()) {
       NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::PROV, "PROV_TIMEOUT");

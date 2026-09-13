@@ -142,7 +142,6 @@ bool NewoAudio::beginStreaming(bool rearmAfterStream) {
   if (!configureI2s()) { ++failures_; return false; }
   rearmAfterStream_ = rearmAfterStream;
   if (!rearmAfterStream_) enabled_ = false;
-  display_.setListeningActive(true);
   state_ = NewoVoiceState::STREAMING;
   transitionPending_ = true;
   streamFinished_ = false;
@@ -180,6 +179,27 @@ bool NewoAudio::manualToggle() {
   // ARMED is preserved for future WakeNet work, but a manual turn takes the
   // microphone directly and always settles back to OFF.
   return beginStreaming(false);
+}
+
+bool NewoAudio::startPhysicalVoiceTrigger() {
+  if (state_ == NewoVoiceState::STREAMING || streamTask_) {
+    NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO,
+                 "PHYSICAL_TRIGGER_REJECTED", "reason=voice_active");
+    return false;
+  }
+  if (playbackSuppressed_) {
+    NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO,
+                 "PHYSICAL_TRIGGER_REJECTED", "reason=speaker_busy");
+    return false;
+  }
+  if (!beginStreaming(false)) {
+    NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO,
+                 "PHYSICAL_TRIGGER_REJECTED", "reason=unavailable");
+    return false;
+  }
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO,
+               "PHYSICAL_TRIGGER_ACCEPTED");
+  return true;
 }
 
 void NewoAudio::streamTaskEntry(void* context) { static_cast<NewoAudio*>(context)->streamTask(); }
@@ -303,6 +323,7 @@ void NewoAudio::handleVoiceEvent(WStype_t type, uint8_t* payload, size_t length)
 }
 
 void NewoAudio::loop() {
+  display_.setListeningActive(state_ == NewoVoiceState::STREAMING && voiceConnected_);
   if (state_ == NewoVoiceState::ARMED && wakePending_) {
     wakePending_ = false;
     if (beginStreaming(true)) ++wakeCount_;

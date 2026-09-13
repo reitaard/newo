@@ -76,6 +76,10 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
       }
     })();
     active.set(turn.deviceId, completion);
+    completion.then((result) => {
+      if (["timeout", "error", "speaker_failed", "speaker_unavailable", "unavailable"].includes(result?.kind))
+        setAssistantState(turn.deviceId, "error");
+    }).catch(() => setAssistantState(turn.deviceId, "error"));
     completion.finally(() => {
       if (active.get(turn.deviceId) === completion) active.delete(turn.deviceId);
       // Every terminal assistant path clears this state. Local speaker playback

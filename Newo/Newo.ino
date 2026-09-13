@@ -7,6 +7,8 @@
 #include "newo_display.h"
 #include "newo_log.h"
 #include "newo_led.h"
+#include "newo_physical_voice.h"
+#include "newo_portal.h"
 #include "newo_speaker.h"
 #include "newo_storage.h"
 #include "newo_usb_audio.h"
@@ -18,11 +20,42 @@
 NewoStorage newoStorage;
 NewoUsbStorage newoUsbStorage;
 NewoWiFi newoWiFi(newoStorage);
+NewoPortal newoPortal(newoStorage, newoWiFi);
 NewoLed newoLed;
 NewoDisplay newoDisplay;
 NewoCloud newoCloud(newoWiFi, newoDisplay, newoStorage);
 NewoAudio newoAudio(newoWiFi, newoDisplay);
 NewoSpeaker newoSpeaker(newoWiFi, newoDisplay, newoAudio, newoStorage);
+
+namespace {
+using NewoPhysicalVoice::LedState;
+
+LedState nanoLedDesired = LedState::IDLE;
+LedState nanoLedSent = LedState::IDLE;
+bool nanoLedSentValid = false;
+uint32_t nanoLedHandshake = 0;
+uint32_t nanoLedRetryAfterMs = 0;
+uint32_t nanoLedErrorUntilMs = 0;
+NewoPhysicalVoice::TriggerGate physicalTriggerGate;
+
+void serviceNanoLed() {
+  if (!newoArduinoNode.ready()) return;
+  const uint32_t handshake = newoArduinoNode.handshakeGeneration();
+  if (handshake != nanoLedHandshake) {
+    nanoLedHandshake = handshake;
+    nanoLedSentValid = false;
+  }
+  if ((nanoLedSentValid && nanoLedSent == nanoLedDesired) ||
+      static_cast<int32_t>(millis() - nanoLedRetryAfterMs) < 0) return;
+  if (newoArduinoNode.request("led", NewoPhysicalVoice::ledPayload(nanoLedDesired)) != 0) {
+    nanoLedSent = nanoLedDesired;
+    nanoLedSentValid = true;
+    Serial.printf("[arduino] LED_STATE %s\n", NewoPhysicalVoice::ledName(nanoLedDesired));
+  } else {
+    nanoLedRetryAfterMs = millis() + 250;
+  }
+}
+}  // namespace
 
 void printHardwareInfo() {
   Serial.println();
@@ -57,6 +90,7 @@ void setup() {
   }
 
   newoWiFi.begin();
+  newoPortal.begin();
   newoCloud.begin();
   newoAudio.begin();
   newoSpeaker.begin();
@@ -100,6 +134,7 @@ void loop() {
   NewoSpeaker::PlaybackStarted speakerStarted;
   NewoSpeaker::Result speakerResult;
   newoWiFi.loop();
+  newoPortal.loop();
   newoCloud.loop();
   newoLed.setProvisioning(newoWiFi.provisioningActive());
   newoLed.setConnectivity(newoWiFi.connected() && newoCloud.connected());
@@ -130,6 +165,31 @@ void loop() {
       VoiceAck& pending = pendingVoiceAcks[pendingVoiceAckCount++];
       strlcpy(pending.requestId, voiceRequest.requestId, sizeof(pending.requestId));
       pending.applied = applied;
+    }
+  }
+  NewoArduinoNode::Event arduinoEvent;
+  while (newoArduinoNode.receiveEvent(arduinoEvent)) {
+    if (strcmp(arduinoEvent.name, "voice_trigger") != 0 || strcmp(arduinoEvent.payload, "reset") != 0) continue;
+    Serial.println("[arduino] EVENT voice_trigger reset");
+    const char* rejection = nullptr;
+    const bool offline = !newoWiFi.connected();
+    const bool cloudUnavailable = !offline && !newoCloud.ready();
+    const bool assistantBusy = !offline && !cloudUnavailable && newoCloud.assistantThinking();
+    const auto decision = physicalTriggerGate.decide(newoArduinoNode.handshakeGeneration(),
+        newoAudio.state() == NewoVoiceState::STREAMING, newoSpeaker.playing());
+    if (decision == NewoPhysicalVoice::TriggerDecision::DUPLICATE) rejection = "duplicate";
+    else if (offline) rejection = "offline";
+    else if (cloudUnavailable) rejection = "cloud_unavailable";
+    else if (decision == NewoPhysicalVoice::TriggerDecision::VOICE_ACTIVE) rejection = "voice_active";
+    else if (assistantBusy) rejection = "assistant_busy";
+    else if (decision == NewoPhysicalVoice::TriggerDecision::SPEAKER_BUSY) rejection = "speaker_busy";
+    if (rejection == nullptr && newoAudio.startPhysicalVoiceTrigger()) {
+      Serial.println("[voice] PHYSICAL_TRIGGER_ACCEPTED");
+      nanoLedErrorUntilMs = 0;
+    } else {
+      if (rejection == nullptr) rejection = "unavailable";
+      Serial.printf("[voice] PHYSICAL_TRIGGER_REJECTED reason=%s\n", rejection);
+      nanoLedErrorUntilMs = millis() + 800;
     }
   }
   while (newoCloud.consumeSpeakerControlRequest(speakerControlRequest)) {
@@ -202,6 +262,11 @@ void loop() {
     newoCloud.sendSpeakerResult(speakerResult.playbackId, speakerResult.success,
                                 speakerResult.bytes, speakerResult.error);
   }
+  NewoArduinoNode::Acknowledgement arduinoAck;
+  while (newoArduinoNode.receiveAcknowledgement(arduinoAck)) {
+    if (!arduinoAck.success)
+      Serial.printf("[arduino] REQUEST_REJECTED id=%lu\n", static_cast<unsigned long>(arduinoAck.requestId));
+  }
   newoCloud.updateVoiceTelemetry(newoAudio.state(), newoAudio.voiceConnected(), newoAudio.wakeCount(),
                                   newoAudio.sessionCount(), newoAudio.failures(), newoAudio.timeouts());
   if (!newoAudio.transitionPending()) {
@@ -213,9 +278,15 @@ void loop() {
     pendingVoiceAckCount = 0;
   }
   if (newoSpeaker.audiblePlaybackActive()) newoLed.setState(NewoLed::State::SPEAKING);
-  else if (newoAudio.state() == NewoVoiceState::STREAMING) newoLed.setState(NewoLed::State::LISTENING);
+  else if (newoAudio.state() == NewoVoiceState::STREAMING && newoAudio.voiceConnected()) newoLed.setState(NewoLed::State::LISTENING);
   else if (newoCloud.assistantThinking()) newoLed.setState(NewoLed::State::THINKING);
   else newoLed.setState(NewoLed::State::IDLE);
+  if (static_cast<int32_t>(nanoLedErrorUntilMs - millis()) > 0 || newoCloud.assistantError()) nanoLedDesired = LedState::ERROR;
+  else if (newoSpeaker.audiblePlaybackActive()) nanoLedDesired = LedState::SPEAKING;
+  else if (newoAudio.state() == NewoVoiceState::STREAMING && newoAudio.voiceConnected()) nanoLedDesired = LedState::LISTENING;
+  else if (newoCloud.assistantThinking()) nanoLedDesired = LedState::THINKING;
+  else nanoLedDesired = LedState::IDLE;
+  serviceNanoLed();
   newoLed.loop();
   newoDisplay.updateTelemetry(newoWiFi.connected(), newoWiFi.rssi(), newoCloud.connected(), millis(),
                               ESP.getFreeHeap(), ESP.getFreePsram(), NewoLog::stats());

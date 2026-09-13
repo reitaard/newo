@@ -42,6 +42,7 @@ function fakeSocket({ autoFlow = true, autoStart = true } = {}) {
     binarySentAt: [],
     closeCount: 0,
     deliveredBytes: 0,
+    bufferedAmount: 0,
     on(name, callback) { listeners.set(name, callback); },
     send(data, options, callback) {
       this.frames.push(data);
@@ -144,6 +145,46 @@ test("Pocket backend reports service failure and cancellation closes its HTTP st
     await iterator.next();
     source.cancel(); await iterator.return();
     await waitFor(() => closed);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+
+test("Pocket retries one failed stream only before emitting audio", async () => {
+  let requests = 0;
+  const raw = Buffer.alloc(4); raw.writeFloatLE(0.25, 0);
+  const server = createServer((_request, response) => {
+    requests += 1;
+    response.writeHead(200, { "content-type": "application/octet-stream", "x-audio-sample-rate": "24000", "x-audio-channels": "1", "x-audio-format": "pcm_f32le" });
+    response.end(requests === 1 ? undefined : raw);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const backend = new PocketTtsBackend({ baseUrl: `http://127.0.0.1:${server.address().port}`, preAudioRetryDelayMs: 1 });
+  try {
+    const source = await backend.stream("retry", { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
+    const chunks = [];
+    for await (const chunk of source.audio) chunks.push(chunk);
+    assert.equal(requests, 2);
+    assert.equal(source.metrics.preAudioRetries, 1);
+    assert.equal(Buffer.concat(chunks).length, 2);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+
+test("Pocket never retries after emitting any PCM", async () => {
+  let requests = 0;
+  const raw = Buffer.alloc(4); raw.writeFloatLE(0.25, 0);
+  const server = createServer((_request, response) => {
+    requests += 1;
+    response.writeHead(200, { "content-type": "application/octet-stream", "x-audio-sample-rate": "24000", "x-audio-channels": "1", "x-audio-format": "pcm_f32le" });
+    response.write(raw);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const backend = new PocketTtsBackend({ baseUrl: `http://127.0.0.1:${server.address().port}`, streamNoProgressMs: 20, preAudioRetryDelayMs: 1 });
+  try {
+    const source = await backend.stream("partial", { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
+    const iterator = source.audio[Symbol.asyncIterator]();
+    assert.equal((await iterator.next()).done, false);
+    await assert.rejects(iterator.next(), /pocket_stream_timeout|aborted/);
+    assert.equal(requests, 1);
+    assert.equal(source.metrics.preAudioRetries, 0);
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
 
@@ -435,28 +476,99 @@ test("streaming speaker framing emits PCM before synthesis ends", async () => {
   runtime.close();
 });
 
-test("realtime media pacer sends a seven-frame prompt then 40 ms PCM quanta despite stale flow", async () => {
+
+test("realtime media pacer respects delivery credit after the seven-frame startup prompt", async () => {
   const events = [];
-  const capturedLogger = { info(value) { events.push(value); }, warn(value) { events.push(value); } };
+  const capturedLogger = {
+    info(value) { events.push(value); },
+    warn(value) { events.push(value); },
+  };
+
   const ws = fakeSocket({ autoFlow: false });
-  const backend = { name: "pocket", gainDb: 0, limiter: 1, async stream() {
-    return { metrics: {}, audio: (async function* () { yield Buffer.alloc(38_400, 1); })() };
-  } };
-  const runtime = createSpeakerRuntime({ logger: capturedLogger, enabled: true, backend, getDevice: () => ({}), sendControl: () => true });
+
+  const backend = {
+    name: "pocket",
+    gainDb: 0,
+    limiter: 1,
+    async stream() {
+      return {
+        metrics: {},
+        audio: (async function* () {
+          yield Buffer.alloc(38_400, 1);
+        })(),
+      };
+    },
+  };
+
+  const runtime = createSpeakerRuntime({
+    logger: capturedLogger,
+    enabled: true,
+    backend,
+    getDevice: () => ({}),
+    sendControl: () => true,
+  });
+
   runtime.handleConnection(ws, "newo-01");
   const queued = runtime.speak("media clock");
-  // No speaker_flow for more than 500 ms: stale low reports must not stop media.
+
+  // Startup may send 13,440 bytes without flow credit. After that the paced
+  // sender may use only the remaining delivery window and must stop rather
+  // than accumulating unbounded network in-flight PCM.
   await new Promise((resolve) => setTimeout(resolve, 550));
-  await waitFor(() => ws.frames.some((frame) => String(frame).includes("speaker_end")));
+
+  assert.equal(
+    binaryFrames(ws).length,
+    11,
+    "sender must stop before exceeding the delivery window when flow is stale",
+  );
+
+  assert.equal(
+    ws.frames.some((frame) => String(frame).includes("speaker_end")),
+    false,
+  );
+
+  // A real receiver report replenishes delivery credit.
+  ws.emitMessage({
+    type: "speaker_flow",
+    playback_id: queued.playbackId,
+    received_bytes: 21_120,
+    consumed_bytes: 21_120,
+    buffered_bytes: 0,
+    capacity_bytes: 24_576,
+    report_interval_ms: 19,
+    receipt_report_delay_ms: 17,
+  });
+
+  await waitFor(() =>
+    ws.frames.some((frame) => String(frame).includes("speaker_end"))
+  );
+
   assert.equal(binaryFrames(ws).length, 20);
-  assert.ok(ws.binarySentAt[7] - ws.binarySentAt[6] >= 25, "first paced frame must not join the prompt burst");
-  assert.ok(ws.binarySentAt[8] - ws.binarySentAt[7] >= 25, "paced PCM must not burst while flow is stale");
+
+  runtime.handleResult("newo-01", {
+    type: "speaker_complete",
+    playback_id: queued.playbackId,
+    bytes: 38_400,
+  });
+
+  await queued.completion;
+
+  const continuity =
+    events.find((event) => event.event === "SPEAKER_CONTINUITY");
+
+  assert.ok(
+    continuity.flow_wait_count >= 1,
+    "stale delivery credit must produce a flow wait",
+  );
+
   const pacer = events.find((event) => event.event === "SPEAKER_PACER");
   assert.equal(pacer.initial_pcm_bytes, 13_440);
   assert.equal(pacer.frames_sent, 20);
-  runtime.handleResult("newo-01", { type: "speaker_complete", playback_id: queued.playbackId, bytes: 38_400 });
-  await queued.completion;
-  assert.equal(events.find((event) => event.event === "SPEAKER_CONTINUITY").flow_wait_count, 0);
+  const stream = events.find((event) => event.pacing === "delivery_aware_receiver_credit");
+  assert.equal(stream.max_flow_report_interval_ms, 19);
+  assert.equal(stream.max_receipt_report_delay_ms, 17);
+  assert.equal(stream.max_websocket_buffered_amount, 0);
+
   runtime.close();
 });
 

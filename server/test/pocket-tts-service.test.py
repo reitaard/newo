@@ -66,5 +66,13 @@ with redirect_stdout(continuity_log):
 line = continuity_log.getvalue()
 assert "POCKET_NATIVE_CONTINUITY playback_id=native-gap outcome=completed chunks=2" in line
 assert "over_80=1" in line
+service.note_generation("watchdog-test")
+with service.generation_state_lock:
+    service.generation_progress_at = 10.0
+assert service.stalled_generation(24.9, 15.0) is None
+assert service.stalled_generation(25.1, 15.0) == ("watchdog-test", 15.100000000000001)
+service.clear_generation()
+assert service.stalled_generation(100.0, 15.0) is None
 print("PASS: cancelled client stream drains before exclusive model ownership is released")
 print("PASS: native Pocket continuity aggregates delayed tensor gaps")
+print("PASS: stalled native generation is detected for supervised recovery")
