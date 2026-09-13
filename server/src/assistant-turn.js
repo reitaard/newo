@@ -51,7 +51,9 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
       const ttsQueuedMs = Math.round(replyReadyAt - finalAt);
       const finalToFirstTokenMs = answer.timings?.llm_first_token_ms == null ? null : Math.round(llmStartedAt - finalAt + answer.timings.llm_first_token_ms);
       const speech = speakerRuntime.speak(answer.text, {
-        maxChars: maxReplyChars,
+        // The assistant runtime already applied the active profile's reply
+        // budget. Do not clip a longer profile back to the legacy turn limit.
+        maxChars: Math.max(maxReplyChars ?? 0, answer.text.length),
         // Preserve the user's persistent speaker preference. The established
         // temporary receiver path is used when persistent playback is off.
         temporary: !isPersistentSpeakerEnabled(),
