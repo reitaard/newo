@@ -43,6 +43,7 @@ test("search returns provider-neutral evidence without generated answer", async 
   assert.equal(received.maxResults, 3);
   assert.equal(received.depth, "advanced");
   assert.equal(body.result_count, 1);
+  assert.equal(body.provider_elapsed_ms, null);
   assert.equal("answer" in body, false);
   assert.equal(body.results[0].published_at, "2026-01-01");
   assert.equal("publishedAt" in body.results[0], false);

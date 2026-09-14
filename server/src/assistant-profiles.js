@@ -100,6 +100,7 @@ export function createAssistantProfiles({ qwenApiKey = null, overrides = {} } = 
       health: Object.freeze({ method: "ollama_tags", endpoint: "/api/tags", implicitLatestTag: true, timeoutMs: 3_000 }),
       contextPolicy: sharedContextPolicy,
       requestOptions: Object.freeze({ raw: true, stream: true }),
+      toolPolicy: Object.freeze({ web: true, maxSearches: 2, maxReads: 2, maxRounds: 5 }),
       fallbackProfile: QWEN_PROFILE_ID,
     }),
     [QWEN_PROFILE_ID]: Object.freeze({
@@ -125,6 +126,7 @@ export function createAssistantProfiles({ qwenApiKey = null, overrides = {} } = 
       health: Object.freeze({ method: "openai_models", endpoint: "/v1/models", implicitLatestTag: false, timeoutMs: 1_000 }),
       contextPolicy: sharedContextPolicy,
       requestOptions: Object.freeze({ stream: true }),
+      toolPolicy: Object.freeze({ web: false, maxSearches: 0, maxReads: 0, maxRounds: 1 }),
       fallbackProfile: null,
     }),
   };

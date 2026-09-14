@@ -47,7 +47,7 @@ export class TavilyProvider {
       include_images: false,
       auto_parameters: false,
     }, signal);
-    return (data.results || []).map((result) => ({
+    const results = (data.results || []).map((result) => ({
       title: result.title || null,
       url: result.url,
       snippet: result.content || "",
@@ -55,6 +55,7 @@ export class TavilyProvider {
       score: Number.isFinite(result.score) ? result.score : null,
       publishedAt: result.published_date || null,
     }));
+    return { results, providerElapsedMs: Number.isFinite(data.response_time) ? Math.round(data.response_time * 1_000) : null };
   }
 
   async read(input, signal) {
@@ -68,6 +69,7 @@ export class TavilyProvider {
     }, signal);
     const result = data.results?.[0];
     if (!result) throw new ServiceError(502, "read_failed", "The provider could not read this URL");
-    return { url: result.url || input.url, title: result.title || null, content: result.raw_content || "", publishedAt: result.published_date || null };
+    return { url: result.url || input.url, title: result.title || null, content: result.raw_content || "", publishedAt: result.published_date || null,
+      providerElapsedMs: Number.isFinite(data.response_time) ? Math.round(data.response_time * 1_000) : null };
   }
 }

@@ -108,9 +108,12 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
     let progressSpeech = null;
     const routing = assistant.routeRequest?.({ text: turn.text, deviceId: turn.deviceId }) ??
       { route: "FAST", reasons: ["router_unavailable"], activity: "conversation" };
-    const progressText = progressFeedbackEnabled ? progressFeedbackFor({ ...routing, variation: generationId }) : null;
+    const progressText = progressFeedbackEnabled && !routing.webTools ? progressFeedbackFor({ ...routing, variation: generationId }) : null;
     let progressFeedbackFired = false, progressFeedbackStartedAt = null, progressFeedbackFinishedAt = null;
+    let progressFeedbackCancelled = false;
     let progressTimer = null;
+    let toolProgressTimer = null;
+    let toolProgressUsed = false;
     const completion = (async () => {
       const llmStartedAt = performance.now();
       let firstTtsChunkAt = null;
@@ -158,6 +161,33 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
         if (generations.get(turn.deviceId) !== generationId) return;
         segmenter ??= createSegmenter(policy?.chunking, policy?.maxReplyChars);
         segmenter.push(text);
+      }, onToolStart: async ({ name }) => {
+        clearTimeout(progressTimer);
+        if (!progressFeedbackEnabled || toolProgressUsed || generations.get(turn.deviceId) !== generationId) return;
+        toolProgressUsed = true;
+        const phrase = name === "web_read" ? "Reading the source." : "Checking current sources.";
+        toolProgressTimer = setTimeout(() => {
+          if (generations.get(turn.deviceId) !== generationId) return;
+          progressFeedbackStartedAt = performance.now();
+          progressSpeech = speakerRuntime.speak(phrase, { temporary: !isPersistentSpeakerEnabled(),
+            replyReadyAt: progressFeedbackStartedAt, metadata: { assistant_turn: true, progress_feedback: true,
+              web_tool: name, generation_id: generationId, voice_stream_id: turn.streamId,
+              final_at: finalAt, llm_started_at: llmStartedAt } });
+          progressFeedbackFired = progressSpeech?.kind === "queued";
+          if (progressFeedbackFired) progressSpeech.completion.then(() => { progressFeedbackFinishedAt = performance.now(); }).catch(() => {
+            progressFeedbackFinishedAt = performance.now();
+          });
+        }, 800);
+        toolProgressTimer.unref?.();
+      }, onToolEnd: async () => {
+        if (toolProgressTimer) {
+          clearTimeout(toolProgressTimer);
+          toolProgressTimer = null;
+          if (!progressFeedbackFired) progressFeedbackCancelled = true;
+        }
+        if (progressFeedbackFired) {
+          try { await progressSpeech.completion; } catch {}
+        }
       } });
       if (generations.get(turn.deviceId) !== generationId) {
         textQueue?.end();
@@ -175,7 +205,14 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
         routingReasons: answer.timings?.routing_reasons ?? routing.reasons,
         activity: answer.timings?.activity ?? routing.activity,
         reasoningTokens: answer.timings?.reasoning_tokens ?? null,
+        llmRounds: answer.timings?.llm_rounds ?? null,
+        llmRoundTimings: answer.timings?.llm_round_timings ?? null,
+        toolSelected: answer.timings?.tool_selected ?? [],
+        toolEvents: answer.timings?.tool_events ?? [],
+        agentToolsLatencyMs: answer.timings?.agent_tools_latency_ms ?? null,
+        providerLatencyMs: answer.timings?.provider_latency_ms ?? null,
         progressFeedbackFired,
+        progressFeedbackCancelled,
         progressFeedbackStartedMs: progressFeedbackStartedAt == null ? null : Math.round(progressFeedbackStartedAt - llmStartedAt),
         progressFeedbackFinishedMs: progressFeedbackFinishedAt == null ? null : Math.round(progressFeedbackFinishedAt - llmStartedAt),
       };
@@ -220,6 +257,7 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
           llmFirstAudioMs: result?.llmStartToFirstAudioMs ?? null, ttsQueuedMs, totalMs });
         logger.info({ device_id: turn.deviceId, stream_id: turn.streamId, playback_id: speech.playbackId,
           total_final_to_playback_complete_ms: totalMs, progress_feedback_fired: progressFeedbackFired,
+          progress_feedback_cancelled: progressFeedbackCancelled,
           progress_feedback_started_ms: timingFields.progressFeedbackStartedMs,
           progress_feedback_finished_ms: progressFeedbackFinishedAt == null ? null : Math.round(progressFeedbackFinishedAt - llmStartedAt) }, "Assistant turn complete");
         return { kind: "complete", result };
@@ -234,6 +272,7 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
     })();
     const state = { generationId, completion, cancel: () => {
       clearTimeout(progressTimer);
+      clearTimeout(toolProgressTimer);
       progressSpeech?.cancel?.();
       textQueue?.end();
       speech?.cancel?.();

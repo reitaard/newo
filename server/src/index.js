@@ -7,6 +7,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 
 import { createAssistantRuntime } from "./assistant.js";
+import { createAssistantWebTools, readAgentToolsToken } from "./assistant-web-tools.js";
 import { createAssistantProfiles, normalizeProfileTuning, PROFILE_TUNING_PRESETS, QWEN_PROFILE_ID, resolveAssistantProfile } from "./assistant-profiles.js";
 import { createAssistantTurnRuntime } from "./assistant-turn.js";
 import { createRuntimeStateStore } from "./runtime-state.js";
@@ -76,6 +77,10 @@ const EnvSchema = z.object({
   ASSISTANT_MAX_OUTPUT_TOKENS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(8).max(128).default(72)),
   ASSISTANT_MAX_REPLY_CHARS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(40).max(500).default(300)),
   ASSISTANT_PROGRESS_FEEDBACK_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
+  ASSISTANT_WEB_TOOLS_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
+  AGENT_TOOLS_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://127.0.0.1:8790")),
+  AGENT_TOOLS_TOKEN_FILE: z.preprocess(emptyToUndefined, z.string().default("/srv/agent-tools/.env")),
+  AGENT_TOOLS_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(20_000).default(12_000)),
   TTS_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
   SPEAKER_CODEC: z.preprocess(emptyToUndefined, z.enum(["opus", "pcm"]).default("opus")),
   TTS_BACKEND: z.preprocess(emptyToUndefined, z.enum(["pocket", "kokoro", "espeak"]).default("pocket")),
@@ -162,6 +167,13 @@ let automaticSpeakerEnabled = runtimeState.speakerEnabled;
 let desiredTrackEnabled = runtimeState.trackDesired;
 
 const ttsBackend = createTtsBackend(env, app.log);
+const assistantWebTools = createAssistantWebTools({
+  enabled: env.ASSISTANT_WEB_TOOLS_ENABLED,
+  baseUrl: env.AGENT_TOOLS_BASE_URL,
+  token: readAgentToolsToken({ envFile: env.AGENT_TOOLS_TOKEN_FILE }),
+  timeoutMs: env.AGENT_TOOLS_TIMEOUT_MS,
+  logger: app.log,
+});
 
 const speakerRuntime = createSpeakerRuntime({
   logger: app.log,
@@ -198,6 +210,7 @@ const assistantRuntime = createAssistantRuntime({
     };
   },
   logger: app.log,
+  webTools: assistantWebTools,
 });
 function sendAssistantState(deviceId, state) {
   const device = devices.get(deviceId);

@@ -125,7 +125,8 @@ export function createAgentToolsService({ config, provider, logger = console }) 
       if (request.method === "POST" && url.pathname === "/v1/tools/web/search") {
         tool = "web.search";
         const input = parseSearch(await readJson(request, config.bodyLimitBytes));
-        const results = await provider.search(input, controller.signal);
+        const outcome = await provider.search(input, controller.signal);
+        const results = Array.isArray(outcome) ? outcome : outcome.results;
         const body = {
           request_id: requestId,
           tool,
@@ -141,6 +142,7 @@ export function createAgentToolsService({ config, provider, logger = console }) 
             fetched_at: fetchedAt,
           })),
           result_count: results.length,
+          provider_elapsed_ms: Array.isArray(outcome) ? null : outcome.providerElapsedMs,
           elapsed_ms: Math.round(performance.now() - started),
         };
         send(response, 200, body, limitHeaders);
@@ -152,7 +154,8 @@ export function createAgentToolsService({ config, provider, logger = console }) 
         const input = parseRead(await readJson(request, config.bodyLimitBytes));
         const result = await provider.read(input, controller.signal);
         const truncated = result.content.length > input.maxChars;
-        const body = { request_id: requestId, tool, provider: provider.name, url: result.url, title: result.title, content: result.content.slice(0, input.maxChars), published_at: result.publishedAt, fetched_at: fetchedAt, truncated, elapsed_ms: Math.round(performance.now() - started) };
+        const body = { request_id: requestId, tool, provider: provider.name, url: result.url, title: result.title, content: result.content.slice(0, input.maxChars), published_at: result.publishedAt, fetched_at: fetchedAt, truncated,
+          provider_elapsed_ms: result.providerElapsedMs ?? null, elapsed_ms: Math.round(performance.now() - started) };
         send(response, 200, body, limitHeaders);
         logger.info(JSON.stringify({ event: "tool_request", request_id: requestId, tool, provider: provider.name, status: 200, elapsed_ms: body.elapsed_ms, result_count: 1, truncated }));
         return;

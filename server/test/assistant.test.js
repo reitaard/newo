@@ -26,6 +26,21 @@ function ndjsonResponse(parts, signal) {
   }), { status: 200, headers: { "content-type": "application/x-ndjson" } });
 }
 
+function ollamaText(text, signal) {
+  return ndjsonResponse([new TextEncoder().encode(`${JSON.stringify({ response: text })}\n${JSON.stringify({ done: true, eval_count: 8, prompt_eval_count: 20 })}\n`)], signal);
+}
+
+function fakeWebTools(invoke) {
+  return {
+    available: true,
+    definitions: [
+      { name: "web_search", description: "Search current sources", parameters: { type: "object", properties: { query: { type: "string" }, max_results: { type: "integer" } }, required: ["query"], additionalProperties: false } },
+      { name: "web_read", description: "Read one source", parameters: { type: "object", properties: { url: { type: "string" }, max_chars: { type: "integer" } }, required: ["url"], additionalProperties: false } },
+    ],
+    invoke,
+  };
+}
+
 test("assistant sends one bounded OpenAI-compatible quick-chat request", async () => {
   let request;
   let requestUrl;
@@ -699,6 +714,90 @@ test("assistant turn state follows LLM start, first useful token, and completion
   assert.deepEqual(states, ["thinking", "responding", "idle"]);
 });
 
+test("LFM stable facts can answer without invoking web tools", async () => {
+  let toolCalls = 0;
+  const runtime = createAssistantRuntime({ enabled: true, profiles: testProfiles(), preferredProfile: "lfm", logger: quietLogger,
+    webTools: fakeWebTools(async () => { toolCalls += 1; }),
+    fetchImpl: async (_url, options) => ollamaText("Paris is the capital of France.", options.signal) });
+  const result = await runtime.respond({ ...turn, text: "What is the capital of France?" });
+  assert.equal(result.text, "Paris is the capital of France.");
+  assert.equal(toolCalls, 0);
+  assert.equal(result.timings.llm_rounds, 1);
+});
+
+test("LFM explicit and current requests execute validated native web_search calls", async () => {
+  for (const text of ["Search the web for current Node.js news.", "What is the latest Node.js release?"]) {
+    const invoked = [];
+    let round = 0;
+    const runtime = createAssistantRuntime({ enabled: true, profiles: testProfiles(), preferredProfile: "lfm", logger: quietLogger,
+      webTools: fakeWebTools(async (name, args) => { invoked.push({ name, args }); return { value: { results: [{ url: "https://nodejs.org", fetched_at: "2026-09-14T00:00:00Z" }] }, elapsedMs: 12, providerElapsedMs: 10 }; }),
+      fetchImpl: async (_url, options) => ollamaText(++round === 1
+        ? '<|tool_call_start|>[web_search(query="latest Node.js release", max_results=3)]<|tool_call_end|>'
+        : "The current release is documented by Node.js.", options.signal) });
+    const result = await runtime.respond({ ...turn, deviceId: text, text });
+    assert.deepEqual(invoked, [{ name: "web_search", args: { query: "latest Node.js release", max_results: 3 } }]);
+    assert.equal(result.timings.tool_successes, 1);
+    assert.equal(result.timings.llm_rounds, 2);
+    assert.match(result.text, /current release/);
+  }
+});
+
+test("source-reading request completes a native search then read loop", async () => {
+  const invoked = [];
+  const outputs = [
+    '<|tool_call_start|>[web_search(query="Node.js release notes") ]<|tool_call_end|>',
+    '<|tool_call_start|>[web_read(url="https://nodejs.org/release", max_chars=4000)]<|tool_call_end|>',
+    "The release notes report the requested change.",
+  ];
+  const runtime = createAssistantRuntime({ enabled: true, profiles: testProfiles(), preferredProfile: "lfm", logger: quietLogger,
+    webTools: fakeWebTools(async (name) => { invoked.push(name); return { value: name === "web_search"
+      ? { results: [{ url: "https://nodejs.org/release", fetched_at: "2026-09-14T00:00:00Z" }] }
+      : { url: "https://nodejs.org/release", content: "release notes", fetched_at: "2026-09-14T00:00:01Z" }, elapsedMs: 5, providerElapsedMs: null }; }),
+    fetchImpl: async (_url, options) => ollamaText(outputs.shift(), options.signal) });
+  const result = await runtime.respond({ ...turn, text: "Find and read the Node.js release notes." });
+  assert.deepEqual(invoked, ["web_search", "web_read"]);
+  assert.equal(result.timings.llm_rounds, 3);
+  assert.equal(result.timings.tool_events.length, 2);
+});
+
+test("malformed native tool calls are rejected without execution", async () => {
+  let invoked = 0;
+  const runtime = createAssistantRuntime({ enabled: true, profiles: testProfiles(), preferredProfile: "lfm", logger: quietLogger,
+    webTools: fakeWebTools(async () => { invoked += 1; }),
+    fetchImpl: async (_url, options) => ollamaText('<|tool_call_start|>[web_search(query="x")', options.signal) });
+  const result = await runtime.respond({ ...turn, text: "Search for x." });
+  assert.equal(result.kind, "error");
+  assert.equal(result.error, "assistant_tool_protocol_invalid");
+  assert.equal(invoked, 0);
+});
+
+test("failed live retrieval is reported to LFM but cannot become a fabricated current answer", async () => {
+  const outputs = [
+    '<|tool_call_start|>[web_search(query="current event") ]<|tool_call_end|>',
+    "The current event definitely happened today.",
+  ];
+  const runtime = createAssistantRuntime({ enabled: true, profiles: testProfiles(), preferredProfile: "lfm", logger: quietLogger,
+    webTools: fakeWebTools(async () => { const error = new Error("timeout"); error.code = "agent_tools_timeout"; throw error; }),
+    fetchImpl: async (_url, options) => ollamaText(outputs.shift(), options.signal) });
+  const result = await runtime.respond({ ...turn, text: "What happened today?" });
+  assert.equal(result.text, "I couldn't verify that from live sources right now.");
+  assert.equal(result.timings.tool_successes, 0);
+  assert.equal(result.timings.tool_events[0].error, "agent_tools_timeout");
+});
+
+test("repeated native tool loops are bounded to two searches and five rounds", async () => {
+  let invoked = 0;
+  let rounds = 0;
+  const runtime = createAssistantRuntime({ enabled: true, profiles: testProfiles(), preferredProfile: "lfm", logger: quietLogger,
+    webTools: fakeWebTools(async () => { invoked += 1; return { value: { results: [] }, elapsedMs: 1, providerElapsedMs: null }; }),
+    fetchImpl: async (_url, options) => { rounds += 1; return ollamaText(`<|tool_call_start|>[web_search(query="loop ${rounds}")]<|tool_call_end|>`, options.signal); } });
+  const result = await runtime.respond({ ...turn, text: "Keep searching forever." });
+  assert.equal(result.kind, "error");
+  assert.equal(result.error, "assistant_tool_loop_limit");
+  assert.equal(invoked, 2);
+  assert.equal(rounds, 5);
+});
+
 test("slow THINK work gives one delayed activity acknowledgement without colliding with the answer", async () => {
   const calls = [];
   const assistant = {
@@ -736,6 +835,33 @@ test("real speakable output before the threshold suppresses progress speech", as
   assert.equal(progressCalls, 1);
   assert.equal(turns.getTelemetry().latest.progressFeedbackFired, false);
 });
+
+for (const [label, toolDelay, expectedProgress] of [["fast", 20, false], ["slow", 830, true]]) {
+  test(`${label} web search ${expectedProgress ? "fires one" : "cancels"} delayed progress phrase`, async () => {
+    const spoken = [];
+    const assistant = {
+      getTelemetry: () => ({ enabled: true, web_tools: true }),
+      routeRequest: () => ({ route: "THINK", reasons: ["open_world_tool_hint"], activity: "search", webTools: true }),
+      async respond(request) {
+        await request.onToolStart({ name: "web_search", round: 1 });
+        await new Promise((resolve) => setTimeout(resolve, toolDelay));
+        await request.onToolEnd({ name: "web_search", round: 1, event: { ok: true } });
+        request.onFirstToken();
+        return { kind: "response", text: "Verified final answer.", timings: { llm_request_ms: toolDelay + 5,
+          tool_selected: ["web_search"], tool_events: [{ tool: "web_search", ok: true }] } };
+      }, cancelDevice() {}, close() {},
+    };
+    const speaker = { speak(text) { spoken.push(text); return { kind: "queued", playbackId: `p-${spoken.length}`, completion: Promise.resolve({}) }; } };
+    const turns = createAssistantTurnRuntime({ assistant, speakerRuntime: speaker, isPersistentSpeakerEnabled: () => true,
+      maxReplyChars: 300, progressFeedbackEnabled: true, logger: quietLogger });
+    await turns.handleFinalTranscript({ ...turn, streamId: `web-${label}` }).completion;
+    assert.deepEqual(spoken, expectedProgress
+      ? ["Checking current sources.", "Verified final answer."]
+      : ["Verified final answer."]);
+    assert.equal(turns.getTelemetry().latest.progressFeedbackFired, expectedProgress);
+    assert.equal(turns.getTelemetry().latest.progressFeedbackCancelled, !expectedProgress);
+  });
+}
 
 test("reachable new voice streams invalidate stale generation callbacks and permit a rapid next turn", async () => {
   const requests = [];

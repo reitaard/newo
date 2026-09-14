@@ -10,6 +10,7 @@ import {
   resolveAssistantProfile,
 } from "./assistant-profiles.js";
 import { routeAssistantRequest } from "./assistant-routing.js";
+import { lfmToolDefinitions, parseLfmToolCalls, validateToolCall } from "./assistant-tools.js";
 
 export const ASSISTANT_SYSTEM_PROMPT = QWEN_SYSTEM_PROMPT;
 
@@ -248,7 +249,7 @@ function rawLfmPrompt(messages, reasoningRoute = "THINK", profileRouting = {}) {
   return `<|startoftext|><|im_start|>system\n${system.content}\n<|im_end|>\n${turns}\n<|im_start|>assistant\n${bridge}`;
 }
 
-async function readOllamaStream(response, { onFirstRawToken, onFirstSpeakableToken, onSpeakableText }) {
+async function readOllamaStream(response, { onFirstRawToken, onFirstSpeakableToken, onSpeakableText, detectToolCalls = false }) {
   if (!response.body) throw assistantError("assistant_invalid_response");
   const decoder = new TextDecoder();
   const thinkFilter = new ThinkFilter();
@@ -258,6 +259,29 @@ async function readOllamaStream(response, { onFirstRawToken, onFirstSpeakableTok
   let totalTokens = 0;
   let finalUsage = null;
   let speakableSeen = false;
+  let visiblePending = "";
+  let toolCallDetected = false;
+  let normalTextDetected = !detectToolCalls;
+  const emitVisible = (visible, final = false) => {
+    if (!visible && !final) return;
+    if (normalTextDetected) {
+      if (/\S/.test(visible)) { speakableSeen = true; onFirstSpeakableToken(); }
+      if (visible) onSpeakableText?.(visible);
+      return;
+    }
+    visiblePending += visible;
+    const trimmed = visiblePending.trimStart();
+    if (trimmed.startsWith("<|tool")) {
+      toolCallDetected = true;
+      return;
+    }
+    if (!final && "<|tool_call_start|>".startsWith(trimmed)) return;
+    normalTextDetected = true;
+    const ready = visiblePending;
+    visiblePending = "";
+    if (/\S/.test(ready)) { speakableSeen = true; onFirstSpeakableToken(); }
+    if (ready) onSpeakableText?.(ready);
+  };
   const consume = (line) => {
     if (!line.trim()) return;
     let payload;
@@ -268,9 +292,8 @@ async function readOllamaStream(response, { onFirstRawToken, onFirstSpeakableTok
       totalTokens += 1;
       onFirstRawToken();
       const visible = thinkFilter.push(payload.response);
-      if (/\S/.test(visible)) { speakableSeen = true; onFirstSpeakableToken(); }
-      else if (!speakableSeen) reasoningTokens += 1;
-      if (visible) onSpeakableText?.(visible);
+      if (!/\S/.test(visible) && !speakableSeen) reasoningTokens += 1;
+      emitVisible(visible);
       answer += visible;
     }
     if (payload.done) finalUsage = payload;
@@ -284,11 +307,11 @@ async function readOllamaStream(response, { onFirstRawToken, onFirstSpeakableTok
   pending += decoder.decode();
   if (pending.trim()) consume(pending);
   const tail = thinkFilter.push("", true);
-  if (/\S/.test(tail)) onFirstSpeakableToken();
-  if (tail) onSpeakableText?.(tail);
+  emitVisible(tail, true);
   return { answer: answer + tail, reasoningTokens,
     totalTokens: Number.isFinite(finalUsage?.eval_count) ? finalUsage.eval_count : totalTokens,
-    inputTokens: Number.isFinite(finalUsage?.prompt_eval_count) ? finalUsage.prompt_eval_count : null };
+    inputTokens: Number.isFinite(finalUsage?.prompt_eval_count) ? finalUsage.prompt_eval_count : null,
+    toolCallDetected };
 }
 
 async function readOpenAiStream(response, { onFirstRawToken, onFirstSpeakableToken, onSpeakableText }) {
@@ -367,7 +390,7 @@ export function createAssistantRuntime({
   enabled = false, provider = "openai_chat", baseUrl, model, apiKey, timeoutMs = 15_000, maxOutputTokens = 72,
   maxReplyChars = 300, timeZone = DEFAULT_ASSISTANT_TIME_ZONE, now = () => new Date(),
   runtimeContext = null, fetchImpl, logger = null, profiles = null, preferredProfile = null,
-  fallbackCooldownMs = 30_000,
+  fallbackCooldownMs = 30_000, webTools = null,
 } = {}) {
   assistantTimeContext(new Date(0), timeZone);
   const active = new Map();
@@ -425,6 +448,7 @@ export function createAssistantRuntime({
       online,
       profile_health: profileHealth,
       active: active.size > 0,
+      web_tools: Boolean(webTools?.available && profile?.toolPolicy?.web),
     };
   }
 
@@ -502,7 +526,8 @@ export function createAssistantRuntime({
     return { id: preferredId, ...profileTuning(profile) };
   }
 
-  async function requestProfile(profile, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, onSpeakableText, routing }) {
+  async function requestProfile(profile, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId,
+    onFirstToken, onSpeakableText, onToolStart, onToolEnd, routing }) {
     const endpoint = endpointFor(profile);
     if (!profile?.enabled || !endpoint || !profile.model) return { kind: "unavailable", error: "assistant_unavailable", availabilityFailure: true };
     const controller = new AbortController();
@@ -521,6 +546,12 @@ export function createAssistantRuntime({
       const systemParts = [profile.systemPrompt];
       if (includeTime) systemParts.push(assistantTimeContext(now(), timeZone));
       if (stateMessage) systemParts.push(stateMessage);
+      const toolEnabled = profile.provider === "ollama_raw" && profile.toolPolicy?.web && webTools?.available;
+      const toolDefinitions = toolEnabled ? webTools.definitions : [];
+      if (toolEnabled) systemParts.push(
+        lfmToolDefinitions(toolDefinitions),
+        "Use web_search for explicit web searches and information that may have changed. Use web_read only when the contents of a specific source are needed. For stable facts, answer without tools. Emit only the native tool-call envelope when calling a tool. Never invent current information when a web tool fails.",
+      );
       const messages = [
         { role: "system", content: systemParts.join(" ") },
         ...usedExchanges.flatMap((exchange) => [
@@ -540,63 +571,155 @@ export function createAssistantRuntime({
 
       const headers = { "content-type": "application/json" };
       if (profile.apiKey) headers.authorization = `Bearer ${profile.apiKey}`;
-      const requestBody = profile.provider === "ollama_raw" ? {
-        model: profile.model,
-        prompt: rawLfmPrompt(messages, routing.route, profile.routing),
-        raw: profile.requestOptions.raw,
-        stream: profile.requestOptions.stream,
-        keep_alive: profile.keepAlive,
-        options: {
-          num_predict: profile.maxOutputTokens,
-          ...profile.sampling,
-          stop: ["<|im_end|>", "<|im_start|>"],
-        },
-      } : {
-        model: profile.model,
-        messages,
-        max_tokens: profile.maxOutputTokens,
-        ...profile.sampling,
-        stream: profile.requestOptions.stream,
-      };
-      const response = await requestImpl(endpoint, { method: "POST", headers, signal: controller.signal, body: JSON.stringify(requestBody) });
-      if (!response.ok) throw assistantError("assistant_http_error", String(response.status));
-
       let payload = null;
-      let rawAnswer;
-      if (profile.provider === "ollama_raw") {
-        const streamed = await readOllamaStream(response, {
-          onFirstRawToken: () => { firstRawTokenAt ??= performance.now(); },
-          onFirstSpeakableToken: () => {
-            if (firstTokenAt == null) {
-              firstTokenAt = performance.now();
-              onFirstToken?.();
-            }
+      let rawAnswer = "";
+      let round = 0;
+      let searchCount = 0;
+      let readCount = 0;
+      let toolSuccesses = 0;
+      let toolAttempts = 0;
+      let malformedCalls = 0;
+      const toolEvents = [];
+      const roundTimings = [];
+      const maxRounds = toolEnabled ? profile.toolPolicy.maxRounds : 1;
+
+      while (round < maxRounds) {
+        round += 1;
+        const roundStartedAt = performance.now();
+        let roundFirstRawAt = null;
+        let roundFirstSpeakableAt = null;
+        logger?.info({ device_id: deviceId, stream_id: streamId, effective_profile: profile.id,
+          provider: profile.provider, model: profile.model, llm_round: round }, "Assistant LLM round started");
+        const requestBody = profile.provider === "ollama_raw" ? {
+          model: profile.model,
+          prompt: rawLfmPrompt(messages, routing.route, profile.routing),
+          raw: profile.requestOptions.raw,
+          stream: profile.requestOptions.stream,
+          keep_alive: profile.keepAlive,
+          options: {
+            num_predict: profile.maxOutputTokens,
+            ...profile.sampling,
+            stop: ["<|im_end|>", "<|im_start|>"],
           },
-          onSpeakableText,
-        });
-        rawAnswer = streamed.answer;
-        payload = { usage: { prompt_tokens: streamed.inputTokens, completion_tokens: streamed.totalTokens,
-          reasoning_tokens: streamed.reasoningTokens } };
-      } else if (profile.requestOptions.stream && response.headers?.get?.("content-type")?.toLowerCase().includes("text/event-stream")) {
-        rawAnswer = await readOpenAiStream(response, {
-          onFirstRawToken: () => { firstRawTokenAt ??= performance.now(); },
-          onFirstSpeakableToken: () => {
-            if (firstTokenAt == null) {
-              firstTokenAt = performance.now();
-              onFirstToken?.();
-            }
-          },
-          onSpeakableText,
-        });
-      } else {
-        try { payload = await response.json(); }
-        catch { throw assistantError("assistant_invalid_response"); }
-        rawAnswer = payload?.choices?.[0]?.message?.content;
-        if (String(rawAnswer ?? "").length > 0) {
-          firstRawTokenAt = firstTokenAt = performance.now();
-          onFirstToken?.();
+        } : {
+          model: profile.model,
+          messages,
+          max_tokens: profile.maxOutputTokens,
+          ...profile.sampling,
+          stream: profile.requestOptions.stream,
+        };
+        const response = await requestImpl(endpoint, { method: "POST", headers, signal: controller.signal, body: JSON.stringify(requestBody) });
+        if (!response.ok) throw assistantError("assistant_http_error", String(response.status));
+
+        let roundUsage = null;
+        let toolCallDetected = false;
+        if (profile.provider === "ollama_raw") {
+          const streamed = await readOllamaStream(response, {
+            detectToolCalls: toolEnabled,
+            onFirstRawToken: () => {
+              roundFirstRawAt ??= performance.now();
+              firstRawTokenAt ??= roundFirstRawAt;
+            },
+            onFirstSpeakableToken: () => {
+              roundFirstSpeakableAt ??= performance.now();
+              if (firstTokenAt == null) {
+                firstTokenAt = roundFirstSpeakableAt;
+                onFirstToken?.();
+              }
+            },
+            onSpeakableText,
+          });
+          rawAnswer = streamed.answer;
+          toolCallDetected = streamed.toolCallDetected;
+          roundUsage = { prompt_tokens: streamed.inputTokens, completion_tokens: streamed.totalTokens,
+            reasoning_tokens: streamed.reasoningTokens };
+        } else if (profile.requestOptions.stream && response.headers?.get?.("content-type")?.toLowerCase().includes("text/event-stream")) {
+          rawAnswer = await readOpenAiStream(response, {
+            onFirstRawToken: () => { roundFirstRawAt ??= performance.now(); firstRawTokenAt ??= roundFirstRawAt; },
+            onFirstSpeakableToken: () => {
+              roundFirstSpeakableAt ??= performance.now();
+              if (firstTokenAt == null) { firstTokenAt = roundFirstSpeakableAt; onFirstToken?.(); }
+            },
+            onSpeakableText,
+          });
+        } else {
+          try { payload = await response.json(); }
+          catch { throw assistantError("assistant_invalid_response"); }
+          rawAnswer = payload?.choices?.[0]?.message?.content;
+          if (String(rawAnswer ?? "").length > 0) {
+            roundFirstRawAt = roundFirstSpeakableAt = performance.now();
+            firstRawTokenAt ??= roundFirstRawAt;
+            if (firstTokenAt == null) { firstTokenAt = roundFirstSpeakableAt; onFirstToken?.(); }
+          }
         }
+        const roundCompletedAt = performance.now();
+        roundTimings.push({ round,
+          first_raw_token_ms: roundFirstRawAt == null ? null : Math.round(roundFirstRawAt - roundStartedAt),
+          first_speakable_token_ms: roundFirstSpeakableAt == null ? null : Math.round(roundFirstSpeakableAt - roundStartedAt),
+          request_ms: Math.round(roundCompletedAt - roundStartedAt),
+          input_tokens: roundUsage?.prompt_tokens ?? null,
+          output_tokens: roundUsage?.completion_tokens ?? null,
+          reasoning_tokens: roundUsage?.reasoning_tokens ?? null });
+        if (roundUsage) payload = { usage: roundUsage };
+
+        if (!toolEnabled) break;
+        let parsed;
+        try {
+          if (toolCallDetected || String(rawAnswer).includes("<|tool")) parsed = parseLfmToolCalls(rawAnswer);
+          else parsed = { calls: [], content: rawAnswer, protocol: null };
+        } catch {
+          malformedCalls += 1;
+          messages.push({ role: "assistant", content: String(rawAnswer) },
+            { role: "tool", content: JSON.stringify([{ ok: false, error: "invalid_tool_call", message: "The tool call was rejected. Use the exact native tool-call format and valid arguments." }]) });
+          if (malformedCalls >= 2) throw assistantError("assistant_tool_protocol_invalid");
+          continue;
+        }
+        if (!parsed.calls.length) break;
+        if (parsed.content.trim()) throw assistantError("assistant_tool_protocol_invalid");
+
+        const results = [];
+        for (const call of parsed.calls) {
+          toolAttempts += 1;
+          const validation = validateToolCall(call, toolDefinitions);
+          let error = validation.ok ? null : validation.error;
+          if (!error && call.name === "web_search" && searchCount >= profile.toolPolicy.maxSearches) error = "search_limit_reached";
+          if (!error && call.name === "web_read" && readCount >= profile.toolPolicy.maxReads) error = "read_limit_reached";
+          if (error) {
+            results.push({ tool: call.name, ok: false, error, ...(validation.argument ? { argument: validation.argument } : {}) });
+            continue;
+          }
+          if (call.name === "web_search") searchCount += 1;
+          if (call.name === "web_read") readCount += 1;
+          const toolStartedAt = performance.now();
+          const event = { tool: call.name, round, start_ms: Math.round(toolStartedAt - startedAt), end_ms: null,
+            agent_tools_latency_ms: null, provider_latency_ms: null, ok: false };
+          toolEvents.push(event);
+          logger?.info({ device_id: deviceId, stream_id: streamId, tool_name: call.name,
+            llm_round: round, tool_start_ms: event.start_ms }, "Assistant tool started");
+          await onToolStart?.({ name: call.name, round });
+          try {
+            const invoked = await webTools.invoke(call.name, call.arguments, { signal: controller.signal });
+            toolSuccesses += 1;
+            event.ok = true;
+            event.agent_tools_latency_ms = invoked.elapsedMs;
+            event.provider_latency_ms = invoked.providerElapsedMs;
+            results.push({ tool: call.name, ok: true, result: invoked.value });
+          } catch (error) {
+            event.error = error?.code ?? "agent_tools_error";
+            results.push({ tool: call.name, ok: false, error: event.error,
+              message: "Live retrieval failed. Do not invent or imply a verified current answer." });
+          } finally {
+            event.end_ms = Math.round(performance.now() - startedAt);
+            await onToolEnd?.({ name: call.name, round, event });
+            logger?.info({ device_id: deviceId, stream_id: streamId, tool_name: call.name,
+              llm_round: round, tool_end_ms: event.end_ms, agent_tools_latency_ms: event.agent_tools_latency_ms,
+              provider_latency_ms: event.provider_latency_ms, tool_ok: event.ok }, "Assistant tool finished");
+          }
+        }
+        messages.push({ role: "assistant", content: String(rawAnswer) }, { role: "tool", content: JSON.stringify(results) });
       }
+      if (toolEnabled && round >= maxRounds && String(rawAnswer).includes("<|tool_call_start|>")) throw assistantError("assistant_tool_loop_limit");
+      if (toolAttempts > 0 && toolSuccesses === 0) rawAnswer = "I couldn't verify that from live sources right now.";
       const answer = boundedText(rawAnswer, profile.maxReplyChars);
       if (!answer) return { kind: "empty", availabilityFailure: false };
       health.set(profile.id, "online");
@@ -611,6 +734,10 @@ export function createAssistantRuntime({
         fallback_reason: profile.id !== preferredId ? fallbackReason : null,
         provider: profile.provider, model: profile.model, reasoning_route: routing.route,
         routing_reasons: routing.reasons, activity: routing.activity,
+        llm_rounds: round, llm_round_timings: roundTimings, tool_selected: toolEvents.map((event) => event.tool),
+        tool_events: toolEvents, tool_attempts: toolAttempts, tool_successes: toolSuccesses,
+        agent_tools_latency_ms: toolEvents.reduce((total, event) => total + (event.agent_tools_latency_ms ?? 0), 0) || null,
+        provider_latency_ms: toolEvents.reduce((total, event) => total + (event.provider_latency_ms ?? 0), 0) || null,
       };
       if (Number.isFinite(payload?.usage?.prompt_tokens)) timings.input_tokens = payload.usage.prompt_tokens;
       if (Number.isFinite(payload?.usage?.completion_tokens)) timings.output_tokens = payload.usage.completion_tokens;
@@ -635,7 +762,7 @@ export function createAssistantRuntime({
     }
   }
 
-  async function respond({ deviceId, streamId, text, generationId = 0, onFirstToken, onSpeakableText }) {
+  async function respond({ deviceId, streamId, text, generationId = 0, onFirstToken, onSpeakableText, onToolStart, onToolEnd }) {
     const transcript = boundedText(text, 800);
 
     if (!enabled || closing) return { kind: "disabled" };
@@ -698,7 +825,7 @@ export function createAssistantRuntime({
       else lastFallbackAt = Date.now();
     }
     let selected = profileById(effectiveId);
-    let result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, routing,
+    let result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, onToolStart, onToolEnd, routing,
       onSpeakableText: selected.progressiveTts ? (text) => onSpeakableText?.(text, { profileId: selected.id, maxReplyChars: selected.maxReplyChars, chunking: selected.chunking }) : null });
     const fallbackId = selected?.fallbackProfile;
     if (result.availabilityFailure && fallbackId && fallbackId !== selected.id && profileById(fallbackId)?.enabled) {
@@ -708,7 +835,7 @@ export function createAssistantRuntime({
       logger?.warn({ preferred_profile: preferredId, failed_profile: selected.id, effective_profile: fallbackId,
         fallback_reason: fallbackReason }, "Assistant profile fallback activated");
       selected = profileById(fallbackId);
-      result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, routing,
+      result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, onToolStart, onToolEnd, routing,
         onSpeakableText: selected.progressiveTts ? (text) => onSpeakableText?.(text, { profileId: selected.id, maxReplyChars: selected.maxReplyChars, chunking: selected.chunking }) : null });
     }
     if (result.kind === "response") storeExchange(deviceId, transcript, result.text);
@@ -744,7 +871,8 @@ export function createAssistantRuntime({
       const decision = routeAssistantRequest({ ...input, context });
       const profile = profileById(effectiveId);
       return { ...decision, profileId: profile?.id ?? null,
-        reasoningMode: profile?.routing?.[decision.route.toLowerCase()] ?? profile?.reasoning ?? "model_default" };
+        reasoningMode: profile?.routing?.[decision.route.toLowerCase()] ?? profile?.reasoning ?? "model_default",
+        webTools: Boolean(webTools?.available && profile?.toolPolicy?.web) };
     },
     refreshHealth,
     refreshProfileHealth,
