@@ -1,0 +1,64 @@
+{"text":"What does that mean here?","label":"__abstain__"}
+{"text":"Can you check that?","label":"__abstain__"}
+{"text":"How is it looking?","label":"__abstain__"}
+{"text":"What happened with it?","label":"__abstain__"}
+{"text":"Is that still the case?","label":"__abstain__"}
+{"text":"What about tomorrow?","label":"__abstain__"}
+{"text":"How much is it now?","label":"__abstain__"}
+{"text":"Is it on right now?","label":"__abstain__"}
+{"text":"Did they get it?","label":"__abstain__"}
+{"text":"What is it showing?","label":"__abstain__"}
+{"text":"Can you see it?","label":"__abstain__"}
+{"text":"What is the current one?","label":"__abstain__"}
+{"text":"Check the latest one for me.","label":"__abstain__"}
+{"text":"What is happening outside there?","label":"__abstain__"}
+{"text":"And the rate now?","label":"__abstain__"}
+{"text":"Did that change?","label":"__abstain__"}
+{"text":"What did they say?","label":"__abstain__"}
+{"text":"What is it doing now?","label":"__abstain__"}
+{"text":"Is that good or bad?","label":"__abstain__"}
+{"text":"Can you tell me about that one?","label":"__abstain__"}
+{"text":"Explain why football scores can be misleading without match context.","label":"knowledge"}
+{"text":"How are sports results recorded historically?","label":"knowledge"}
+{"text":"Why do league tables use points instead of only wins?","label":"knowledge"}
+{"text":"How does conversational memory differ from computer RAM?","label":"knowledge"}
+{"text":"Explain how a memory retrieval system ranks old information.","label":"knowledge"}
+{"text":"Why can remembered context become stale?","label":"knowledge"}
+{"text":"How do weather services estimate current conditions from sensors?","label":"knowledge"}
+{"text":"Why can two weather apps disagree about the same city?","label":"knowledge"}
+{"text":"Explain the difference between current weather and a forecast.","label":"knowledge"}
+{"text":"How does a live stock quote get produced by an exchange?","label":"knowledge"}
+{"text":"Why can a market quote change several times per second?","label":"knowledge"}
+{"text":"Explain what a quoted exchange rate represents.","label":"knowledge"}
+{"text":"Why can currency rates differ slightly between providers?","label":"knowledge"}
+{"text":"How does a device report its current state to software?","label":"knowledge"}
+{"text":"What is the difference between reading a device state and changing it?","label":"knowledge"}
+{"text":"Why can a camera fail to recognize a face at an angle?","label":"knowledge"}
+{"text":"How does a camera decide exposure automatically?","label":"knowledge"}
+{"text":"Explain how motion sensors differ from cameras.","label":"knowledge"}
+{"text":"How does Wi-Fi CSI change when somebody moves nearby?","label":"knowledge"}
+{"text":"Why can RF signal strength fluctuate in an empty room?","label":"knowledge"}
+{"text":"How does a search engine decide which source is authoritative?","label":"knowledge"}
+{"text":"What makes software release information become outdated?","label":"knowledge"}
+{"text":"Explain what a sports fixture means.","label":"knowledge"}
+{"text":"How does a timezone conversion work across daylight saving changes?","label":"knowledge"}
+{"text":"What did we settle on for the local model in our earlier setup?","label":"memory.retrieve"}
+{"text":"Which camera approach did we agree to use before?","label":"memory.retrieve"}
+{"text":"Recall the latency result we measured in the previous benchmark.","label":"memory.retrieve"}
+{"text":"Continue from the tool-routing decision we made earlier.","label":"memory.retrieve"}
+{"text":"What is Newo's voice mode currently set to?","label":"device.state"}
+{"text":"Which volume level is the speaker set to right now?","label":"device.state"}
+{"text":"Tell me whether the camera service is connected at the moment.","label":"device.state"}
+{"text":"What is the present state of the cloud connection?","label":"device.state"}
+{"text":"Find whether the newest Node release is available today.","label":"web.search"}
+{"text":"Look up the most recent ESP-IDF version announced online.","label":"web.search"}
+{"text":"Check current official sources for the latest Ollama release.","label":"web.search"}
+{"text":"Find today's newest grammY release information.","label":"web.search"}
+{"text":"Who won Arsenal's most recent match?","label":"sports.score"}
+{"text":"Tell me the result of the latest Lakers game.","label":"sports.score"}
+{"text":"Is Barcelona's game finished and who won?","label":"sports.score"}
+{"text":"What was the score in Liverpool's latest match?","label":"sports.score"}
+{"text":"What is the weather in Phnom Penh at this moment?","label":"weather.current"}
+{"text":"Tell me whether it is raining in Bangkok at the moment.","label":"weather.current"}
+{"text":"How warm is Siem Reap right now?","label":"weather.current"}
+{"text":"Give me the current conditions in Singapore.","label":"weather.current"}
