@@ -1,0 +1,203 @@
+{
+  "version": 1,
+  "capabilities": [
+    {
+      "id": "knowledge",
+      "family": "model",
+      "source": "lfm",
+      "live": false,
+      "network": false,
+      "read_only": true,
+      "direct": false,
+      "required_slots": [],
+      "description": "Stable general knowledge, explanation, writing, conversation, and reasoning that does not require external state."
+    },
+    {
+      "id": "calculator",
+      "family": "local",
+      "source": "deterministic",
+      "live": false,
+      "network": false,
+      "read_only": true,
+      "direct": true,
+      "required_slots": ["expression"],
+      "description": "Arithmetic and deterministic numeric computation."
+    },
+    {
+      "id": "unit.convert",
+      "family": "local",
+      "source": "deterministic",
+      "live": false,
+      "network": false,
+      "read_only": true,
+      "direct": true,
+      "required_slots": ["value", "from_unit", "to_unit"],
+      "description": "Physical unit conversion."
+    },
+    {
+      "id": "time.current",
+      "family": "local",
+      "source": "clock",
+      "live": true,
+      "network": false,
+      "read_only": true,
+      "direct": true,
+      "required_slots": ["location_or_timezone"],
+      "description": "Current real-world time for a location or timezone."
+    },
+    {
+      "id": "time.convert",
+      "family": "local",
+      "source": "clock",
+      "live": false,
+      "network": false,
+      "read_only": true,
+      "direct": true,
+      "required_slots": ["source_time", "source_timezone", "target_timezone"],
+      "description": "Convert a supplied time between timezones."
+    },
+    {
+      "id": "currency.exchange",
+      "family": "structured_live",
+      "source": "currency",
+      "live": true,
+      "network": true,
+      "read_only": true,
+      "direct": true,
+      "required_slots": ["from_currency", "to_currency"],
+      "description": "Live or dated foreign-exchange rate and amount conversion."
+    },
+    {
+      "id": "weather.current",
+      "family": "structured_live",
+      "source": "weather",
+      "live": true,
+      "network": true,
+      "read_only": true,
+      "direct": true,
+      "required_slots": ["location"],
+      "description": "Current weather conditions."
+    },
+    {
+      "id": "weather.forecast",
+      "family": "structured_live",
+      "source": "weather",
+      "live": true,
+      "network": true,
+      "read_only": true,
+      "direct": true,
+      "required_slots": ["location", "time_window"],
+      "description": "Future weather, rain, temperature, or condition forecast."
+    },
+    {
+      "id": "sports.score",
+      "family": "structured_live",
+      "source": "sports",
+      "live": true,
+      "network": true,
+      "read_only": true,
+      "direct": true,
+      "required_slots": ["team_or_event"],
+      "description": "Live/recent score, result, or game state."
+    },
+    {
+      "id": "sports.schedule",
+      "family": "structured_live",
+      "source": "sports",
+      "live": true,
+      "network": true,
+      "read_only": true,
+      "direct": true,
+      "required_slots": ["team_or_event"],
+      "description": "Upcoming sports fixture, schedule, start time, or standings-adjacent schedule question."
+    },
+    {
+      "id": "market.quote",
+      "family": "structured_live",
+      "source": "market",
+      "live": true,
+      "network": true,
+      "read_only": true,
+      "direct": true,
+      "required_slots": ["symbol_or_asset"],
+      "description": "Current market price or quote for stocks, indices, or crypto."
+    },
+    {
+      "id": "web.search",
+      "family": "open_world",
+      "source": "web",
+      "live": true,
+      "network": true,
+      "read_only": true,
+      "direct": false,
+      "required_slots": ["query"],
+      "description": "Open-world retrieval when no specialized source covers the needed current/external information."
+    },
+    {
+      "id": "web.read",
+      "family": "open_world",
+      "source": "web",
+      "live": true,
+      "network": true,
+      "read_only": true,
+      "direct": false,
+      "required_slots": ["url"],
+      "description": "Read a specific source when snippets/search results are insufficient. Normally dependent on search or an explicit URL."
+    },
+    {
+      "id": "memory.retrieve",
+      "family": "internal",
+      "source": "memory",
+      "live": true,
+      "network": false,
+      "read_only": true,
+      "direct": false,
+      "required_slots": ["memory_query"],
+      "description": "Retrieve prior user/project context not already available in the active turn."
+    },
+    {
+      "id": "device.state",
+      "family": "internal",
+      "source": "device",
+      "live": true,
+      "network": false,
+      "read_only": true,
+      "direct": true,
+      "required_slots": ["device_or_property"],
+      "description": "Read current Newo/device runtime state."
+    },
+    {
+      "id": "device.control",
+      "family": "internal_action",
+      "source": "device",
+      "live": true,
+      "network": false,
+      "read_only": false,
+      "direct": false,
+      "required_slots": ["device", "action"],
+      "description": "Mutating device action. Routing never authorizes execution; host authorization/policy remains independent."
+    },
+    {
+      "id": "sensor.read",
+      "family": "internal",
+      "source": "sensor",
+      "live": true,
+      "network": false,
+      "read_only": true,
+      "direct": true,
+      "required_slots": ["sensor_or_signal"],
+      "description": "Read live local sensor or RF/CSI-derived state."
+    },
+    {
+      "id": "camera.inspect",
+      "family": "internal",
+      "source": "camera",
+      "live": true,
+      "network": false,
+      "read_only": true,
+      "direct": false,
+      "required_slots": ["visual_query"],
+      "description": "Inspect the Newo2 camera or a current visual scene."
+    }
+  ]
+}
