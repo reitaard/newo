@@ -36,7 +36,14 @@ test("destructive tools require independent host authorization before execution"
   assert.equal(allowed[0].ok, true); assert.equal(executed, 1);
 });
 
-test("tool definitions exclude executable functions and malformed envelopes fail closed", () => {
-  assert.doesNotMatch(lfmToolDefinitions(tools), /execute/);
+test("tool definitions include the literal native markers and exclude executable functions", () => {
+  const definition = lfmToolDefinitions(tools);
+  assert.doesNotMatch(definition, /execute/);
+  assert.match(definition, /<\|tool_call_start\|>/);
+  assert.match(definition, /<\|tool_call_end\|>/);
+  assert.match(definition, /Never omit/);
+});
+
+test("malformed native LFM envelopes fail closed", () => {
   assert.throws(() => parseLfmToolCalls("<|tool_call_start|>[weather(city='Paris')]"), /protocol_invalid/);
 });
