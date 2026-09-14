@@ -27,12 +27,28 @@ try {
   await backend.prewarm();
   parentPort.postMessage({
     type: "ready",
+    lmRequested: Boolean(asrOptions.lm?.requested), lmActive: Boolean(asrOptions.lm?.active),
+    lmType: asrOptions.lm?.type ?? null, lmPath: asrOptions.lm?.path ?? null,
+    lmScale: asrOptions.lm?.scale ?? null, lmReason: asrOptions.lm?.reason ?? null,
+    maxActivePaths: asrOptions.maxActivePaths ?? 4, rssBytes: process.memoryUsage().rss, cpuUsage: process.cpuUsage(),
     endpointRule1MinTrailingSilence: asrOptions.endpointRule1MinTrailingSilence,
     endpointRule2MinTrailingSilence: asrOptions.endpointRule2MinTrailingSilence,
     endpointRule3MinUtteranceLength: asrOptions.endpointRule3MinUtteranceLength,
   });
 } catch (error) {
-  parentPort.postMessage({ type: "fatal", error: error?.message ?? "ASR worker startup failed" });
+  if (asrOptions.lm?.active) {
+    try {
+      const fallbackLm = { ...asrOptions.lm, active: false, reason: "load_failed" };
+      backend = new SherpaAsrBackend({ ...asrOptions, lm: fallbackLm });
+      await backend.prewarm();
+      parentPort.postMessage({ type: "ready", lmRequested: true, lmActive: false, lmType: fallbackLm.type,
+        lmPath: fallbackLm.path, lmScale: fallbackLm.scale, lmReason: fallbackLm.reason,
+        maxActivePaths: asrOptions.maxActivePaths ?? 4, rssBytes: process.memoryUsage().rss, cpuUsage: process.cpuUsage(),
+        endpointRule1MinTrailingSilence: asrOptions.endpointRule1MinTrailingSilence,
+        endpointRule2MinTrailingSilence: asrOptions.endpointRule2MinTrailingSilence,
+        endpointRule3MinUtteranceLength: asrOptions.endpointRule3MinUtteranceLength });
+    } catch (fallbackError) { parentPort.postMessage({ type: "fatal", error: fallbackError?.message ?? "ASR worker startup failed" }); }
+  } else parentPort.postMessage({ type: "fatal", error: error?.message ?? "ASR worker startup failed" });
 }
 
 parentPort.on("message", async (message) => {

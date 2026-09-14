@@ -173,6 +173,21 @@ The larger BPE model supports Sherpa contextual biasing through `config/newo-hot
 
 The streaming adapter decodes every ready chunk, emits only changed partial text, finalizes/reset streams at sherpa endpoints, and finalizes remaining text on disconnect. Events retain `{ type: "partial" | "final", text }` compatibility and add `stage: "partial" | "first_pass_final"`; a future rescorer can add `rescored_final` without changing the ESP protocol. With `VOICE_LIVE_TEST_MODE=true`, logs add received duration, first-partial timing, final timing, and final transcript for controlled repeated-phrase tests; WAV capture remains disabled unless explicitly enabled.
 
+`VOICE_ASR_MAX_ACTIVE_PATHS` controls modified-beam-search width independently of an LM. Optional shallow fusion is generic and restart-swappable through `VOICE_ASR_LM_ENABLED`, `VOICE_ASR_LM_PATH`, `VOICE_ASR_LM_TYPE`, and `VOICE_ASR_LM_SCALE`. LM files remain outside Git. The configured directory must contain the ONNX file and `lm.json`:
+
+```json
+{
+  "type": "onnx_rnn",
+  "model": "model.int8.onnx",
+  "tokens_sha256": "sha256 of the active ASR tokens.txt",
+  "bpe_vocab_sha256": "sha256 of the active ASR bpe.vocab"
+}
+```
+
+Newo verifies the manifest, model path, and both vocabulary hashes before enabling the LM. Missing, malformed, or incompatible artifacts leave normal Sherpa modified-beam decoding active. A native LM load failure is retried once without the LM inside the worker. `SHERPA_READY` reports the requested/active LM state, reason, type, path, scale, active paths, RSS, and CPU counters. Adding or swapping a compatible LM requires only replacing the external directory, updating environment values, and restarting `newo-cloud`.
+
+The currently pinned released `sherpa-onnx-node` runtime does not expose online LM configuration (its LM structure is offline-only), so LM requests currently report `runtime_unsupported` and fail open. Do not mark an LM active until a released/tested Node addon exposes online shallow fusion; `maxActivePaths=8` remains independently usable now.
+
 Optional owner verification uses a second dedicated Sherpa worker and the English VoxCeleb 3D-Speaker CAM++ embedding model. PCM is submitted beside ASR, so ASR final can start the assistant without waiting for identity. `SPEAKER_IDENTITY` reports `owner` or `unknown`, cosine score, threshold, and availability; version one is informational and never blocks conversation. `/owner_enroll` collects three manual `/v` samples containing only “Hi Wall-E”, averages their normalized embeddings, and atomically stores the owner-only file under `data/voiceprints`. Enable it with the `SPEAKER_VERIFICATION_*` variables in `.env.example` after downloading the model described in `../docs/wake-word.md`.
 
 Models are intentionally gitignored. To provision the default larger model on a new VPS:

@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import path from "node:path";
 
 import { SherpaAsrBackend } from "../src/voice.js";
+import { resolveSherpaLmConfig } from "../src/sherpa-lm-config.js";
 
 const model = process.env.VOICE_SHERPA_MODEL ?? "20m";
 const modelDirectory = process.env.VOICE_ASR_MODEL_DIRECTORY
@@ -15,6 +16,10 @@ const wavFile = process.env.VOICE_ASR_TEST_WAV
 const hotwordsFile = process.env.VOICE_ASR_HOTWORDS_FILE
   ?? (model === "libri-giga" ? "config/newo-hotwords.txt" : undefined);
 const chunkBytes = Number(process.env.VOICE_ASR_CHUNK_BYTES ?? 640);
+const maxActivePaths = Number(process.env.VOICE_ASR_MAX_ACTIVE_PATHS ?? 4);
+const lm = resolveSherpaLmConfig({ enabled: process.env.VOICE_ASR_LM_ENABLED === "true",
+  lmPath: process.env.VOICE_ASR_LM_PATH, type: process.env.VOICE_ASR_LM_TYPE ?? "onnx_rnn",
+  scale: Number(process.env.VOICE_ASR_LM_SCALE ?? 0.1), modelDirectory });
 if (!Number.isInteger(chunkBytes) || chunkBytes <= 0 || chunkBytes % 2 !== 0) {
   throw new Error("VOICE_ASR_CHUNK_BYTES must be a positive even integer");
 }
@@ -47,6 +52,8 @@ const backend = new SherpaAsrBackend({
   numThreads: Number(process.env.VOICE_ASR_THREADS ?? 2),
   hotwordsFile,
   hotwordsScore: Number(process.env.VOICE_ASR_HOTWORDS_SCORE ?? 1.5),
+  maxActivePaths,
+  lm,
 });
 const memoryAfterLoadBytes = process.memoryUsage().rss;
 const pcm = readPcm16MonoWav(await readFile(wavFile));
@@ -74,6 +81,13 @@ console.log(JSON.stringify({
   model,
   model_directory: modelDirectory,
   hotwords_file: hotwordsFile ?? null,
+  max_active_paths: maxActivePaths,
+  lm_requested: lm.requested,
+  lm_enabled: lm.active,
+  lm_type: lm.type,
+  lm_path: lm.path,
+  lm_scale: lm.scale,
+  lm_reason: lm.reason,
   chunk_bytes: chunkBytes,
   wav_file: wavFile,
   audio_duration_s: Number(durationSeconds.toFixed(3)),

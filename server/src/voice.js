@@ -44,6 +44,19 @@ function pcm16leToFloat32(chunk) {
   return samples;
 }
 
+export function applySherpaDecoderConfig(recognizerConfig, { libriGiga, hotwordsFile, hotwordsScore = 1.5,
+  maxActivePaths = 4, lm = null, fileExists = existsSync }) {
+  if (!hotwordsFile && !lm?.active) return recognizerConfig;
+  if (!libriGiga) throw new Error(lm?.active ? "External LM requires a compatible BPE transducer model" :
+    "Hotwords are currently supported only with the libri-giga BPE model");
+  if (hotwordsFile && !fileExists(hotwordsFile)) throw new Error(`Configured hotwords file does not exist: ${hotwordsFile}`);
+  recognizerConfig.decodingMethod = "modified_beam_search";
+  recognizerConfig.maxActivePaths = maxActivePaths;
+  if (hotwordsFile) { recognizerConfig.hotwordsFile = hotwordsFile; recognizerConfig.hotwordsScore = hotwordsScore; }
+  if (lm?.active) recognizerConfig.lmConfig = { model: lm.model, scale: lm.scale };
+  return recognizerConfig;
+}
+
 /** Streaming sherpa-onnx adapter. One recognizer is shared, while every voice connection owns its stream. */
 export class SherpaAsrBackend {
   constructor({
@@ -53,6 +66,8 @@ export class SherpaAsrBackend {
     provider = "cpu",
     hotwordsFile,
     hotwordsScore = 1.5,
+    maxActivePaths = 4,
+    lm = null,
     endpointRule1MinTrailingSilence = 2.0,
     endpointRule2MinTrailingSilence = 1.0,
     endpointRule3MinUtteranceLength = 20,
@@ -84,14 +99,7 @@ export class SherpaAsrBackend {
       rule2MinTrailingSilence: endpointRule2MinTrailingSilence,
       rule3MinUtteranceLength: endpointRule3MinUtteranceLength,
     };
-    if (hotwordsFile) {
-      if (!libriGiga) throw new Error("Hotwords are currently supported only with the libri-giga BPE model");
-      if (!existsSync(hotwordsFile)) throw new Error(`Configured hotwords file does not exist: ${hotwordsFile}`);
-      recognizerConfig.decodingMethod = "modified_beam_search";
-      recognizerConfig.maxActivePaths = 4;
-      recognizerConfig.hotwordsFile = hotwordsFile;
-      recognizerConfig.hotwordsScore = hotwordsScore;
-    }
+    applySherpaDecoderConfig(recognizerConfig, { libriGiga, hotwordsFile, hotwordsScore, maxActivePaths, lm });
     this.recognizer = new this.sherpa.OnlineRecognizer(recognizerConfig);
   }
 
@@ -217,6 +225,16 @@ export class WorkerAsrBackend {
         endpoint_rule1_s: message.endpointRule1MinTrailingSilence ?? this.options.endpointRule1MinTrailingSilence ?? 2.0,
         endpoint_rule2_s: message.endpointRule2MinTrailingSilence ?? this.options.endpointRule2MinTrailingSilence ?? 1.0,
         endpoint_rule3_s: message.endpointRule3MinUtteranceLength ?? this.options.endpointRule3MinUtteranceLength ?? 20,
+        asr_max_active_paths: message.maxActivePaths ?? this.options.maxActivePaths ?? 4,
+        asr_lm_requested: message.lmRequested ?? Boolean(this.options.lm?.requested),
+        asr_lm_enabled: message.lmActive ?? false,
+        asr_lm_type: message.lmType ?? this.options.lm?.type ?? null,
+        asr_lm_path: message.lmPath ?? this.options.lm?.path ?? null,
+        asr_lm_scale: message.lmScale ?? this.options.lm?.scale ?? null,
+        asr_lm_reason: message.lmReason ?? this.options.lm?.reason ?? null,
+        asr_worker_rss_bytes: message.rssBytes ?? null,
+        asr_worker_cpu_user_us: message.cpuUsage?.user ?? null,
+        asr_worker_cpu_system_us: message.cpuUsage?.system ?? null,
       }, "SHERPA_READY");
       return;
     }

@@ -22,6 +22,7 @@ import { createTrackLiveManager } from "./track-live.js";
 import { createTelegramUpdateAcceptor } from "./telegram-webhook.js";
 import { createVoiceRuntime, NullAsrBackend, WorkerAsrBackend } from "./voice.js";
 import { NullSpeakerVerifier, SpeakerVerifier } from "./speaker-verification.js";
+import { resolveSherpaLmConfig } from "./sherpa-lm-config.js";
 
 try {
   loadEnvFile(".env");
@@ -59,6 +60,11 @@ const EnvSchema = z.object({
   VOICE_SHERPA_MODEL: z.preprocess(emptyToUndefined, z.enum(["20m", "libri-giga"]).default("libri-giga")),
   VOICE_ASR_MODEL_DIRECTORY: z.preprocess(emptyToUndefined, z.string().optional()),
   VOICE_ASR_THREADS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(6).default(2)),
+  VOICE_ASR_MAX_ACTIVE_PATHS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(64).default(4)),
+  VOICE_ASR_LM_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
+  VOICE_ASR_LM_PATH: z.preprocess(emptyToUndefined, z.string().optional()),
+  VOICE_ASR_LM_SCALE: z.preprocess(emptyToUndefined, z.coerce.number().min(0).max(5).default(0.1)),
+  VOICE_ASR_LM_TYPE: z.preprocess(emptyToUndefined, z.string().regex(/^[a-z0-9_.-]+$/i).default("onnx_rnn")),
   VOICE_ASR_HOTWORDS_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(true)),
   VOICE_ASR_HOTWORDS_FILE: z.preprocess(emptyToUndefined, z.string().default("config/newo-hotwords.txt")),
   VOICE_ASR_HOTWORDS_SCORE: z.preprocess(emptyToUndefined, z.coerce.number().min(0).max(5).default(1.5)),
@@ -131,6 +137,8 @@ const sherpaModelDirectories = {
   "libri-giga": "models/sherpa-onnx-streaming-zipformer-en-2023-06-21",
 };
 const voiceModelDirectory = env.VOICE_ASR_MODEL_DIRECTORY ?? sherpaModelDirectories[env.VOICE_SHERPA_MODEL];
+const voiceLm = resolveSherpaLmConfig({ enabled: env.VOICE_ASR_LM_ENABLED, lmPath: env.VOICE_ASR_LM_PATH,
+  type: env.VOICE_ASR_LM_TYPE, scale: env.VOICE_ASR_LM_SCALE, modelDirectory: voiceModelDirectory, logger: app.log });
 const voiceAsr = env.VOICE_ASR_BACKEND === "sherpa"
   ? new WorkerAsrBackend({
     modelDirectory: voiceModelDirectory,
@@ -138,6 +146,8 @@ const voiceAsr = env.VOICE_ASR_BACKEND === "sherpa"
     numThreads: env.VOICE_ASR_THREADS,
     hotwordsFile: env.VOICE_SHERPA_MODEL === "libri-giga" && env.VOICE_ASR_HOTWORDS_ENABLED ? env.VOICE_ASR_HOTWORDS_FILE : undefined,
     hotwordsScore: env.VOICE_ASR_HOTWORDS_SCORE,
+    maxActivePaths: env.VOICE_ASR_MAX_ACTIVE_PATHS,
+    lm: voiceLm,
   }, { logger: app.log })
   : new NullAsrBackend();
 const speakerVerifier = env.SPEAKER_VERIFICATION_ENABLED
@@ -1162,6 +1172,13 @@ app.log.info({
   voice_wav_capture_enabled: env.VOICE_SAVE_WAV,
   voice_asr_backend: env.VOICE_ASR_BACKEND,
   voice_sherpa_model: env.VOICE_ASR_BACKEND === "sherpa" ? env.VOICE_SHERPA_MODEL : null,
+  voice_asr_max_active_paths: env.VOICE_ASR_MAX_ACTIVE_PATHS,
+  voice_asr_lm_requested: voiceLm.requested,
+  voice_asr_lm_enabled: voiceLm.active,
+  voice_asr_lm_type: voiceLm.type,
+  voice_asr_lm_path: voiceLm.path,
+  voice_asr_lm_scale: voiceLm.scale,
+  voice_asr_lm_reason: voiceLm.reason,
   voice_live_test_mode: env.VOICE_LIVE_TEST_MODE,
   speaker_verification_enabled: env.SPEAKER_VERIFICATION_ENABLED,
   speaker_verification_model: env.SPEAKER_VERIFICATION_ENABLED ? env.SPEAKER_VERIFICATION_MODEL : null,
