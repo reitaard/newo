@@ -160,7 +160,7 @@ def benchmark_model(args, labels, registry, eval_rows):
     output_path = Path(args.output)
     with output_path.open("w", encoding="utf-8", newline="\n") as fh:
         for row in output_rows:
-            fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+            fh.write(json.dumps(row, separators=(",", ",")) + "\n")
 
     print(
         f"benchmarked rows={len(eval_rows)} device=cpu load_ms={load_ms:.1f} warmup_ms={warmup_ms:.1f} "
@@ -178,7 +178,7 @@ def main():
     parser.add_argument("--model-dir", default="setfit-minilm-router")
     parser.add_argument("--base-model", default=DEFAULT_MODEL)
     parser.add_argument("--train-device", choices=["auto", "cpu", "cuda"], default="auto")
-    parser.add_argument("--epochs", type=float, default=2.0)
+    parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--skip-train", action="store_true")
