@@ -136,6 +136,7 @@ for raw_line in sys.stdin:
             raise RuntimeError("worker is not initialized")
         request_id = message["request_id"]
         started = time.perf_counter()
+        cpu_started = time.process_time()
         if kind == "create":
             response = {"session_id": worker.create()}
         elif kind == "audio":
@@ -146,7 +147,8 @@ for raw_line in sys.stdin:
             response = {}
         else:
             raise RuntimeError("unsupported worker message")
-        send({"request_id": request_id, **response, "decode_ms": round((time.perf_counter() - started) * 1000, 3), **metrics()})
+        send({"request_id": request_id, **response, "decode_ms": round((time.perf_counter() - started) * 1000, 3),
+              "cpu_ms": round((time.process_time() - cpu_started) * 1000, 3), **metrics()})
     except Exception as exc:
         if worker is None:
             send({"type": "fatal", "error": str(exc)})

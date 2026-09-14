@@ -79,7 +79,7 @@ export class PythonSherpaAsrBackend {
     if (message.decode_ms == null) return;
     this.logger?.info?.({ event: "SHERPA_PYTHON_DECODE", asr_backend: "sherpa-python",
       asr_decode_ms: message.decode_ms, asr_worker_rss_bytes: message.rss_bytes,
-      asr_worker_cpu_seconds: message.cpu_seconds }, "SHERPA_PYTHON_DECODE");
+      asr_worker_cpu_ms: message.cpu_ms, asr_worker_cpu_seconds: message.cpu_seconds }, "SHERPA_PYTHON_DECODE");
   }
 
   fail(child, error) {

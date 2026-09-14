@@ -120,6 +120,7 @@ console.log(JSON.stringify({
   process_rss_after_model_mib: Number((memoryAfterLoadBytes / 1024 / 1024).toFixed(1)),
   worker_peak_rss_mib: workerMetrics.length ? Number((Math.max(...workerMetrics.map((item) => item.asr_worker_rss_bytes ?? 0)) / 1024 / 1024).toFixed(1)) : null,
   worker_cpu_seconds: workerMetrics.length ? Math.max(...workerMetrics.map((item) => item.asr_worker_cpu_seconds ?? 0)) : null,
+  worker_decode_cpu_ms: workerMetrics.length ? Number(workerMetrics.reduce((sum, item) => sum + (item.asr_worker_cpu_ms ?? 0), 0).toFixed(1)) : null,
   final_transcript: final?.text ?? null,
 }));
 await backend.close?.();
