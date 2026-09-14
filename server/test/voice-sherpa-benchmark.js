@@ -16,6 +16,7 @@ const wavFile = process.env.VOICE_ASR_TEST_WAV
 const hotwordsFile = process.env.VOICE_ASR_HOTWORDS_FILE
   ?? (model === "libri-giga" ? "config/newo-hotwords.txt" : undefined);
 const chunkBytes = Number(process.env.VOICE_ASR_CHUNK_BYTES ?? 640);
+const expectedText = process.env.VOICE_ASR_EXPECTED_TEXT ?? "YELLOW LAMPS";
 const maxActivePaths = Number(process.env.VOICE_ASR_MAX_ACTIVE_PATHS ?? 4);
 const lm = resolveSherpaLmConfig({ enabled: process.env.VOICE_ASR_LM_ENABLED === "true",
   lmPath: process.env.VOICE_ASR_LM_PATH, type: process.env.VOICE_ASR_LM_TYPE ?? "onnx_rnn",
@@ -76,7 +77,8 @@ const firstPartial = events.find((event) => event.type === "partial");
 const final = [...events].reverse().find((event) => event.type === "final");
 const finalAfterStop = events.find((event) => event.type === "final" && event.elapsedMs >= stopStartedAt - startedAt);
 
-if (!firstPartial || !final || !final.text.includes("YELLOW LAMPS")) throw new Error(`Streaming ASR regression: ${final?.text ?? "no final transcript"}`);
+if (!firstPartial || !final || (expectedText && !final.text.includes(expectedText)))
+  throw new Error(`Streaming ASR regression: ${final?.text ?? "no final transcript"}`);
 console.log(JSON.stringify({
   model,
   model_directory: modelDirectory,
