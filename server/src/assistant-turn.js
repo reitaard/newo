@@ -165,7 +165,20 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
         clearTimeout(progressTimer);
         if (!progressFeedbackEnabled || toolProgressUsed || generations.get(turn.deviceId) !== generationId) return;
         toolProgressUsed = true;
-        const phrase = name === "web_read" ? "Reading the source." : "Checking current sources.";
+        const phrase = ({
+          web_read: "Reading the source.",
+          web_search: "Checking current sources.",
+          "weather.current": "Checking the weather.",
+          "weather.forecast": "Checking the forecast.",
+          "currency.exchange": "Checking the exchange rate.",
+          "market.quote": "Checking the market.",
+          "sports.score": "Checking the score.",
+          "sports.schedule": "Checking the schedule.",
+          calculator: "Checking the numbers.",
+          "unit.convert": "Converting that.",
+          "time.current": "Checking the local time.",
+          "time.convert": "Converting the time.",
+        })[name] ?? "Checking that.";
         toolProgressTimer = setTimeout(() => {
           if (generations.get(turn.deviceId) !== generationId) return;
           progressFeedbackStartedAt = performance.now();
@@ -185,9 +198,9 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
           toolProgressTimer = null;
           if (!progressFeedbackFired) progressFeedbackCancelled = true;
         }
-        if (progressFeedbackFired) {
-          try { await progressSpeech.completion; } catch {}
-        }
+        // Provider completion must release the next LLM round immediately.
+        // The speaker queue serializes any already-started acknowledgement
+        // ahead of final TTS so audio cannot overlap.
       } });
       if (generations.get(turn.deviceId) !== generationId) {
         textQueue?.end();
@@ -211,6 +224,13 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
         toolEvents: answer.timings?.tool_events ?? [],
         agentToolsLatencyMs: answer.timings?.agent_tools_latency_ms ?? null,
         providerLatencyMs: answer.timings?.provider_latency_ms ?? null,
+        structuredCapabilityUsed: answer.timings?.structured_capability_used ?? false,
+        structuredTool: answer.timings?.structured_tool ?? null,
+        structuredProvider: answer.timings?.structured_provider ?? null,
+        structuredProviderMs: answer.timings?.structured_provider_ms ?? null,
+        structuredFallbackReason: answer.timings?.structured_fallback_reason ?? null,
+        capabilityPrimary: answer.timings?.capability_primary ?? null,
+        capabilityRouterMs: answer.timings?.capability_router_request_ms ?? null,
         progressFeedbackFired,
         progressFeedbackCancelled,
         progressFeedbackStartedMs: progressFeedbackStartedAt == null ? null : Math.round(progressFeedbackStartedAt - llmStartedAt),

@@ -750,6 +750,30 @@ test("capability routing runs once and restricts LFM tool definitions without ch
   }
 });
 
+test("successful structured capability data reaches one LFM round and suppresses the web loop", async () => {
+  let llmCalls = 0;
+  let prompt = "";
+  let structuredCalls = 0;
+  const runtime = createAssistantRuntime({ enabled: true, profiles: testProfiles(), preferredProfile: "lfm", logger: quietLogger,
+    capabilityRouter: { async classify() { return { primary: "weather.current", raw_primary: "weather.current", abstain: false,
+      fallback: false, source_need: "live", confidence: 0.9, margin: 0.8, latency_ms: 5, request_latency_ms: 7 }; } },
+    structuredCapabilities: { supports: () => true, async invoke() { structuredCalls += 1; return { kind: "result",
+      capability: "weather.current", tool: "weather_current", provider: "open_meteo", elapsed_ms: 40,
+      result: { location: "Phnom Penh", temperature_c: 31, condition: "partly cloudy" } }; } },
+    webTools: fakeWebTools(async () => { throw new Error("web loop must not run"); }),
+    fetchImpl: async (_url, options) => { llmCalls += 1; prompt = JSON.parse(options.body).prompt;
+      return ollamaText("It is thirty-one degrees and partly cloudy.", options.signal); } });
+  const result = await runtime.respond({ ...turn, deviceId: "structured-weather", text: "What's the weather in Phnom Penh?" });
+  assert.equal(result.kind, "response");
+  assert.equal(structuredCalls, 1);
+  assert.equal(llmCalls, 1);
+  assert.match(prompt, /Authoritative structured weather\.current data from open_meteo/);
+  assert.doesNotMatch(prompt, /\"name\":\"web_search\"/);
+  assert.equal(result.timings.structured_capability_used, true);
+  assert.equal(result.timings.structured_provider_ms, 40);
+  assert.equal(result.timings.llm_rounds, 1);
+});
+
 test("LFM explicit and current requests execute validated native web_search calls", async () => {
   for (const text of ["Search the web for current Node.js news.", "What is the latest Node.js release?"]) {
     const invoked = [];

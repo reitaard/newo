@@ -5,6 +5,8 @@ import { createAssistantRuntime } from "../src/assistant.js";
 import { createAssistantProfiles } from "../src/assistant-profiles.js";
 import { createAssistantTurnRuntime } from "../src/assistant-turn.js";
 import { createAssistantWebTools, readAgentToolsToken } from "../src/assistant-web-tools.js";
+import { createStructuredCapabilityRuntime } from "../src/assistant-capabilities.js";
+import { createCapabilityRouterClient } from "../src/capability-router.js";
 import { PocketTtsBackend } from "../src/pocket-tts.js";
 
 try { loadEnvFile(".env"); } catch (error) { if (error?.code !== "ENOENT") throw error; }
@@ -32,9 +34,22 @@ const normalTools = createAssistantWebTools({ enabled: true, baseUrl, token,
 const timeoutTools = createAssistantWebTools({ enabled: true, baseUrl, token, timeoutMs: 1 });
 const pocket = new PocketTtsBackend({ baseUrl: process.env.POCKET_BASE_URL || "http://127.0.0.1:8123",
   voice: process.env.WEB_BENCH_TTS_VOICE || "michael" });
+const capabilityRouter = createCapabilityRouterClient({ enabled: process.env.CAPABILITY_ROUTER_ENABLED === "true",
+  baseUrl: process.env.CAPABILITY_ROUTER_BASE_URL || "http://127.0.0.1:8791",
+  timeoutMs: Number.parseInt(process.env.CAPABILITY_ROUTER_TIMEOUT_MS || "75", 10) });
+const structuredCapabilities = createStructuredCapabilityRuntime({
+  enabled: process.env.CAPABILITY_FAST_PATH_ENABLED !== "false",
+  timeoutMs: Number.parseInt(process.env.CAPABILITY_PROVIDER_TIMEOUT_MS || "3000", 10),
+  timeZone: process.env.ASSISTANT_TIME_ZONE || "Asia/Phnom_Penh",
+  twelveDataApiKey: process.env.TWELVE_DATA_API_KEY || "",
+  apiSportsKey: process.env.API_SPORTS_KEY || "",
+});
 
 const cases = [
   { id: "normal_no_tool", text: "What is the capital of France?", tools: normalTools },
+  { id: "weather_structured", text: "What is the current weather in Phnom Penh?", tools: normalTools },
+  { id: "fx_structured", text: "Convert 100 US dollars to euros using the current reference rate.", tools: normalTools },
+  { id: "calculator_local", text: "Calculate (125 plus 75) divided by 4.", tools: normalTools },
   { id: "web_search", text: "Search the web for the latest stable Node.js release and cite the source.", tools: normalTools },
   { id: "web_search_read", text: "Search for the latest Node.js release notes, read the official source, and summarize the main change.", tools: normalTools },
   { id: "fast_web", text: "Search the web for today's Node.js release news.", tools: normalTools },
@@ -127,7 +142,8 @@ class BenchmarkSpeakerRuntime {
 }
 
 function createBenchRuntime(tools) {
-  const assistant = createAssistantRuntime({ enabled: true, profiles, preferredProfile: "lfm", webTools: tools, logger: quiet });
+  const assistant = createAssistantRuntime({ enabled: true, profiles, preferredProfile: "lfm", webTools: tools,
+    capabilityRouter, structuredCapabilities, logger: quiet });
   const speaker = new BenchmarkSpeakerRuntime(pocket);
   const turns = createAssistantTurnRuntime({ assistant, speakerRuntime: speaker,
     isPersistentSpeakerEnabled: () => true, maxReplyChars: 450,
@@ -174,6 +190,13 @@ for (const benchmarkCase of cases) {
       tools: latest.toolSelected ?? [],
       agent_tools_ms: latest.agentToolsLatencyMs ?? null,
       provider_ms: latest.providerLatencyMs ?? null,
+      capability: latest.capabilityPrimary ?? null,
+      capability_router_ms: latest.capabilityRouterMs ?? null,
+      structured_used: latest.structuredCapabilityUsed ?? false,
+      structured_tool: latest.structuredTool ?? null,
+      structured_provider: latest.structuredProvider ?? null,
+      structured_provider_ms: latest.structuredProviderMs ?? null,
+      structured_fallback_reason: latest.structuredFallbackReason ?? null,
       local_tool_overhead_ms: localOverhead,
       progress_fired: latest.progressFeedbackFired ?? false,
       progress_cancelled: latest.progressFeedbackCancelled ?? false,
@@ -206,6 +229,8 @@ const metrics = [
   ["round1_ms", "LFM round 1"],
   ["agent_tools_ms", "agent-tools total"],
   ["provider_ms", "provider"],
+  ["capability_router_ms", "capability router"],
+  ["structured_provider_ms", "structured provider"],
   ["local_tool_overhead_ms", "agent-tools/local overhead"],
   ["round2_ms", "LFM round 2"],
   ["first_final_audio_ms", "first final PCM"],

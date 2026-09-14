@@ -12,6 +12,7 @@ import {
 import { routeAssistantRequest } from "./assistant-routing.js";
 import { lfmToolDefinitions, parseLfmToolCalls, validateToolCall } from "./assistant-tools.js";
 import { toolsForCapability } from "./capability-router.js";
+import { structuredCapabilityContext } from "./assistant-capabilities.js";
 
 export const ASSISTANT_SYSTEM_PROMPT = QWEN_SYSTEM_PROMPT;
 
@@ -415,7 +416,7 @@ export function createAssistantRuntime({
   enabled = false, provider = "openai_chat", baseUrl, model, apiKey, timeoutMs = 15_000, maxOutputTokens = 72,
   maxReplyChars = 300, timeZone = DEFAULT_ASSISTANT_TIME_ZONE, now = () => new Date(),
   runtimeContext = null, fetchImpl, logger = null, profiles = null, preferredProfile = null,
-  fallbackCooldownMs = 30_000, webTools = null, capabilityRouter = null,
+  fallbackCooldownMs = 30_000, webTools = null, capabilityRouter = null, structuredCapabilities = null,
 } = {}) {
   assistantTimeContext(new Date(0), timeZone);
   const active = new Map();
@@ -553,7 +554,7 @@ export function createAssistantRuntime({
   }
 
   async function requestProfile(profile, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId,
-    onFirstToken, onSpeakableText, onToolStart, onToolEnd, routing, capability }) {
+    onFirstToken, onSpeakableText, onToolStart, onToolEnd, routing, capability, structured }) {
     const endpoint = endpointFor(profile);
     if (!profile?.enabled || !endpoint || !profile.model) return { kind: "unavailable", error: "assistant_unavailable", availabilityFailure: true };
     const controller = new AbortController();
@@ -572,7 +573,9 @@ export function createAssistantRuntime({
       const systemParts = [profile.systemPrompt];
       if (includeTime) systemParts.push(assistantTimeContext(now(), timeZone));
       if (stateMessage) systemParts.push(stateMessage);
-      const toolEnabled = profile.provider === "ollama_raw" && profile.toolPolicy?.web && webTools?.available;
+      const structuredContext = structuredCapabilityContext(structured);
+      if (structuredContext) systemParts.push(structuredContext);
+      const toolEnabled = !structuredContext && profile.provider === "ollama_raw" && profile.toolPolicy?.web && webTools?.available;
       const toolDefinitions = toolEnabled ? toolsForCapability(capability, webTools.definitions) : [];
       const toolsExposed = toolDefinitions.map((tool) => tool.name);
       const usableTools = toolDefinitions.length > 0;
@@ -767,10 +770,14 @@ export function createAssistantRuntime({
         fallback_reason: profile.id !== preferredId ? fallbackReason : null,
         provider: profile.provider, model: profile.model, reasoning_route: routing.route,
         routing_reasons: routing.reasons, activity: routing.activity,
-        llm_rounds: round, llm_round_timings: roundTimings, tool_selected: toolEvents.map((event) => event.tool),
-        tool_events: toolEvents, tool_attempts: toolAttempts, tool_successes: toolSuccesses,
+        llm_rounds: round, llm_round_timings: roundTimings,
+        tool_selected: [...(structuredContext ? [structured.tool] : []), ...toolEvents.map((event) => event.tool)],
+        tool_events: [...(structuredContext ? [{ tool: structured.tool, provider: structured.provider, structured: true,
+          start_ms: null, end_ms: structured.elapsed_ms, provider_latency_ms: structured.elapsed_ms, ok: true }] : []), ...toolEvents],
+        tool_attempts: toolAttempts + (structuredContext ? 1 : 0), tool_successes: toolSuccesses + (structuredContext ? 1 : 0),
         agent_tools_latency_ms: toolEvents.reduce((total, event) => total + (event.agent_tools_latency_ms ?? 0), 0) || null,
-        provider_latency_ms: toolEvents.reduce((total, event) => total + (event.provider_latency_ms ?? 0), 0) || null,
+        provider_latency_ms: (structuredContext ? structured.elapsed_ms : 0) +
+          toolEvents.reduce((total, event) => total + (event.provider_latency_ms ?? 0), 0) || null,
         capability_primary: capability?.primary ?? null,
         capability_raw_primary: capability?.raw_primary ?? null,
         capability_abstain: capability?.abstain ?? null,
@@ -782,6 +789,11 @@ export function createAssistantRuntime({
         capability_router_fallback: capability?.fallback ?? true,
         capability_router_reason: capability?.reason ?? null,
         capability_tools_exposed: toolsExposed,
+        structured_capability_used: Boolean(structuredContext),
+        structured_tool: structured?.tool ?? null,
+        structured_provider: structured?.provider ?? null,
+        structured_provider_ms: structured?.elapsed_ms ?? null,
+        structured_fallback_reason: structuredContext ? null : structured?.reason ?? null,
       };
       if (Number.isFinite(payload?.usage?.prompt_tokens)) timings.input_tokens = payload.usage.prompt_tokens;
       if (Number.isFinite(payload?.usage?.completion_tokens)) timings.output_tokens = payload.usage.completion_tokens;
@@ -877,12 +889,27 @@ export function createAssistantRuntime({
       return { kind: "response", text: answer, timings };
     }
 
+    let structured = { kind: "not_applicable" };
+    if (!capability.fallback && !capability.abstain && structuredCapabilities?.supports?.(capability.primary)) {
+      const structuredName = capability.primary;
+      const controller = new AbortController();
+      active.set(deviceId, { controller, generationId });
+      try {
+        await onToolStart?.({ name: structuredName, capability: structuredName, structured: true });
+        structured = await structuredCapabilities.invoke(structuredName, transcript, { signal: controller.signal });
+        await onToolEnd?.({ name: structuredName, capability: structuredName, structured: true, event: structured });
+      } finally {
+        if (active.get(deviceId)?.controller === controller) active.delete(deviceId);
+      }
+      if (controller.signal.aborted) return { kind: "error", error: controller.signal.reason?.code ?? "assistant_cancelled" };
+    }
+
     if (effectiveId !== preferredId && Date.now() - lastFallbackAt >= fallbackCooldownMs) {
       if (await refreshProfileHealth(preferredId) === "online") recoverPreferred("cooldown_health_check");
       else lastFallbackAt = Date.now();
     }
     let selected = profileById(effectiveId);
-    let result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, onToolStart, onToolEnd, routing, capability,
+    let result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, onToolStart, onToolEnd, routing, capability, structured,
       onSpeakableText: selected.progressiveTts ? (text) => onSpeakableText?.(text, { profileId: selected.id, maxReplyChars: selected.maxReplyChars, chunking: selected.chunking }) : null });
     const fallbackId = selected?.fallbackProfile;
     if (result.availabilityFailure && fallbackId && fallbackId !== selected.id && profileById(fallbackId)?.enabled) {
@@ -892,7 +919,7 @@ export function createAssistantRuntime({
       logger?.warn({ preferred_profile: preferredId, failed_profile: selected.id, effective_profile: fallbackId,
         fallback_reason: fallbackReason }, "Assistant profile fallback activated");
       selected = profileById(fallbackId);
-      result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, onToolStart, onToolEnd, routing, capability,
+      result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, onToolStart, onToolEnd, routing, capability, structured,
         onSpeakableText: selected.progressiveTts ? (text) => onSpeakableText?.(text, { profileId: selected.id, maxReplyChars: selected.maxReplyChars, chunking: selected.chunking }) : null });
     }
     if (result.kind === "response") storeExchange(deviceId, transcript, result.text);

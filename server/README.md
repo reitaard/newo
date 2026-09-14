@@ -78,7 +78,14 @@ CAPABILITY_ROUTER_ENABLED=true
 CAPABILITY_ROUTER_BASE_URL=http://127.0.0.1:8791
 CAPABILITY_ROUTER_TIMEOUT_MS=75
 CAPABILITY_ROUTER_MODEL_DIR=/srv/newo-models/capability-router-v2
+CAPABILITY_FAST_PATH_ENABLED=true
+CAPABILITY_PROVIDER_TIMEOUT_MS=3000
+# Optional keyed providers. Leave blank to retain the existing Tavily fallback.
+TWELVE_DATA_API_KEY=
+API_SPORTS_KEY=
 ```
+
+For a router-selected calculator, unit conversion, local time, weather, reference-FX, market, or sports request, Newo first attempts one centralized structured capability operation. Calculator/unit/time operations are deterministic local code, weather and geocoding use Open-Meteo, reference exchange rates use Frankfurter v2, and keyed live market/sports data use Twelve Data/API-Sports. Successful structured evidence is added to the selected profile's context and the model writes one final response; the existing LFM web-tool loop is not exposed for that fact. Missing slots, provider errors, and absent optional keys preserve the existing centralized Tavily fallback. Provider results never authorize device mutations, and FAST/THINK selection remains separate.
 
 If the preferred LFM profile is unavailable because of a provider, network, HTTP, or timeout failure, one turn retries once with the complete Qwen profile. The LFM preference is retained and automatically recovered after its cooldown health check succeeds. Empty or low-quality answers do not trigger fallback. Both streaming providers feed the same profile-aware progressive-TTS segmenter; Ollama calls `/api/generate` directly without another proxy.
 

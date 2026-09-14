@@ -8,6 +8,7 @@ import { z } from "zod";
 
 import { createAssistantRuntime } from "./assistant.js";
 import { createAssistantWebTools, readAgentToolsToken } from "./assistant-web-tools.js";
+import { createStructuredCapabilityRuntime } from "./assistant-capabilities.js";
 import { createCapabilityRouterClient } from "./capability-router.js";
 import { createAssistantProfiles, normalizeProfileTuning, PROFILE_TUNING_PRESETS, QWEN_PROFILE_ID, resolveAssistantProfile } from "./assistant-profiles.js";
 import { createAssistantTurnRuntime } from "./assistant-turn.js";
@@ -86,6 +87,10 @@ const EnvSchema = z.object({
   CAPABILITY_ROUTER_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://127.0.0.1:8791")),
   CAPABILITY_ROUTER_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(10).max(1_000).default(75)),
   CAPABILITY_ROUTER_MODEL_DIR: z.preprocess(emptyToUndefined, z.string().default("/srv/newo-models/capability-router-v2")),
+  CAPABILITY_FAST_PATH_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(true)),
+  CAPABILITY_PROVIDER_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(250).max(10_000).default(3_000)),
+  TWELVE_DATA_API_KEY: z.string().optional().default(""),
+  API_SPORTS_KEY: z.string().optional().default(""),
   TTS_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
   SPEAKER_CODEC: z.preprocess(emptyToUndefined, z.enum(["opus", "pcm"]).default("opus")),
   TTS_BACKEND: z.preprocess(emptyToUndefined, z.enum(["pocket", "kokoro", "espeak"]).default("pocket")),
@@ -186,6 +191,14 @@ const capabilityRouter = createCapabilityRouterClient({
   logger: app.log,
 });
 void capabilityRouter.health();
+const structuredCapabilities = createStructuredCapabilityRuntime({
+  enabled: env.CAPABILITY_FAST_PATH_ENABLED,
+  timeoutMs: env.CAPABILITY_PROVIDER_TIMEOUT_MS,
+  timeZone: env.ASSISTANT_TIME_ZONE,
+  twelveDataApiKey: env.TWELVE_DATA_API_KEY,
+  apiSportsKey: env.API_SPORTS_KEY,
+  logger: app.log,
+});
 
 const speakerRuntime = createSpeakerRuntime({
   logger: app.log,
@@ -224,6 +237,7 @@ const assistantRuntime = createAssistantRuntime({
   logger: app.log,
   webTools: assistantWebTools,
   capabilityRouter,
+  structuredCapabilities,
 });
 function sendAssistantState(deviceId, state) {
   const device = devices.get(deviceId);
