@@ -21,6 +21,7 @@ import { createTrackTelemetryCache, renderTrackPanel } from "./track-telemetry.j
 import { createTrackLiveManager } from "./track-live.js";
 import { createTelegramUpdateAcceptor } from "./telegram-webhook.js";
 import { createVoiceRuntime, NullAsrBackend, WorkerAsrBackend } from "./voice.js";
+import { LazyFallbackAsrBackend, PythonSherpaAsrBackend } from "./python-sherpa-asr.js";
 import { NullSpeakerVerifier, SpeakerVerifier } from "./speaker-verification.js";
 import { resolveSherpaLmConfig } from "./sherpa-lm-config.js";
 
@@ -56,10 +57,12 @@ const EnvSchema = z.object({
   VOICE_ASR_BATCH_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(80).max(120).default(100)),
   VOICE_SAVE_WAV: z.preprocess(stringToBoolean, z.boolean().default(false)),
   VOICE_CAPTURE_DIRECTORY: z.preprocess(emptyToUndefined, z.string().default("/tmp/newo-voice")),
-  VOICE_ASR_BACKEND: z.preprocess(emptyToUndefined, z.enum(["null", "sherpa"]).default("sherpa")),
+  VOICE_ASR_BACKEND: z.preprocess(emptyToUndefined, z.enum(["null", "sherpa", "sherpa-python"]).default("sherpa")),
   VOICE_SHERPA_MODEL: z.preprocess(emptyToUndefined, z.enum(["20m", "libri-giga"]).default("libri-giga")),
   VOICE_ASR_MODEL_DIRECTORY: z.preprocess(emptyToUndefined, z.string().optional()),
   VOICE_ASR_THREADS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(6).default(2)),
+  VOICE_ASR_PYTHON_EXECUTABLE: z.preprocess(emptyToUndefined, z.string().default("python3")),
+  VOICE_ASR_PYTHON_STARTUP_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(5_000).max(180_000).default(60_000)),
   VOICE_ASR_MAX_ACTIVE_PATHS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(64).default(4)),
   VOICE_ASR_LM_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
   VOICE_ASR_LM_PATH: z.preprocess(emptyToUndefined, z.string().optional()),
@@ -138,18 +141,25 @@ const sherpaModelDirectories = {
 };
 const voiceModelDirectory = env.VOICE_ASR_MODEL_DIRECTORY ?? sherpaModelDirectories[env.VOICE_SHERPA_MODEL];
 const voiceLm = resolveSherpaLmConfig({ enabled: env.VOICE_ASR_LM_ENABLED, lmPath: env.VOICE_ASR_LM_PATH,
-  type: env.VOICE_ASR_LM_TYPE, scale: env.VOICE_ASR_LM_SCALE, modelDirectory: voiceModelDirectory, logger: app.log });
-const voiceAsr = env.VOICE_ASR_BACKEND === "sherpa"
-  ? new WorkerAsrBackend({
+  type: env.VOICE_ASR_LM_TYPE, scale: env.VOICE_ASR_LM_SCALE, modelDirectory: voiceModelDirectory,
+  runtimeSupportsOnlineLm: env.VOICE_ASR_BACKEND === "sherpa-python", logger: app.log });
+const nodeSherpaOptions = {
     modelDirectory: voiceModelDirectory,
     model: env.VOICE_SHERPA_MODEL,
     numThreads: env.VOICE_ASR_THREADS,
     hotwordsFile: env.VOICE_SHERPA_MODEL === "libri-giga" && env.VOICE_ASR_HOTWORDS_ENABLED ? env.VOICE_ASR_HOTWORDS_FILE : undefined,
     hotwordsScore: env.VOICE_ASR_HOTWORDS_SCORE,
     maxActivePaths: env.VOICE_ASR_MAX_ACTIVE_PATHS,
-    lm: voiceLm,
-  }, { logger: app.log })
-  : new NullAsrBackend();
+    lm: env.VOICE_ASR_BACKEND === "sherpa" ? voiceLm : { ...voiceLm, active: false, reason: "python_backend_fallback" },
+};
+const pythonSherpaOptions = { ...nodeSherpaOptions, lm: voiceLm, pythonExecutable: env.VOICE_ASR_PYTHON_EXECUTABLE };
+const voiceAsr = env.VOICE_ASR_BACKEND === "sherpa"
+  ? new WorkerAsrBackend(nodeSherpaOptions, { logger: app.log })
+  : env.VOICE_ASR_BACKEND === "sherpa-python"
+    ? new LazyFallbackAsrBackend(
+      new PythonSherpaAsrBackend(pythonSherpaOptions, { logger: app.log, startupTimeoutMs: env.VOICE_ASR_PYTHON_STARTUP_TIMEOUT_MS }),
+      () => new WorkerAsrBackend(nodeSherpaOptions, { logger: app.log }), { logger: app.log })
+    : new NullAsrBackend();
 const speakerVerifier = env.SPEAKER_VERIFICATION_ENABLED
   ? new SpeakerVerifier({ modelPath: env.SPEAKER_VERIFICATION_MODEL, storageDirectory: env.SPEAKER_VOICEPRINT_DIRECTORY, threshold: env.SPEAKER_VERIFICATION_THRESHOLD, numThreads: env.SPEAKER_VERIFICATION_THREADS, logger: app.log })
   : new NullSpeakerVerifier();
@@ -493,6 +503,7 @@ app.get("/health", async () => {
   const device = getDeviceSnapshot();
   const assistant = assistantTurnRuntime.getTelemetry();
   return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), barge_in_available: false,
+    voice_asr: voiceAsr.getStatus?.() ?? { configured: env.VOICE_ASR_BACKEND, effective: env.VOICE_ASR_BACKEND, online: false, fallback_active: false },
     assistant: { status: assistant.status, preferred_profile: assistant.preferred_profile, effective_profile: assistant.effective_profile,
       fallback_active: assistant.fallback_active, provider: assistant.provider, model: assistant.model, online: assistant.online,
       profile_health: assistant.profile_health },
@@ -1171,7 +1182,7 @@ app.log.info({
   voice_format: `${env.VOICE_CHANNELS}ch ${env.VOICE_SAMPLE_RATE}Hz ${env.VOICE_BITS_PER_SAMPLE}-bit PCM LE`,
   voice_wav_capture_enabled: env.VOICE_SAVE_WAV,
   voice_asr_backend: env.VOICE_ASR_BACKEND,
-  voice_sherpa_model: env.VOICE_ASR_BACKEND === "sherpa" ? env.VOICE_SHERPA_MODEL : null,
+  voice_sherpa_model: env.VOICE_ASR_BACKEND === "null" ? null : env.VOICE_SHERPA_MODEL,
   voice_asr_max_active_paths: env.VOICE_ASR_MAX_ACTIVE_PATHS,
   voice_asr_lm_requested: voiceLm.requested,
   voice_asr_lm_enabled: voiceLm.active,

@@ -31,6 +31,7 @@ function wavHeader({ dataBytes, sampleRate, channels, bitsPerSample }) {
 /** A safe no-transcription fallback for transport and capture debugging. */
 export class NullAsrBackend {
   async prewarm() {}
+  getStatus() { return { configured: "null", effective: "null", online: true, fallback_active: false }; }
   async createStream() {
     return { async acceptAudio() {}, async stop() {} };
   }
@@ -210,6 +211,8 @@ export class WorkerAsrBackend {
     });
     return this.startPromise;
   }
+
+  getStatus() { return { configured: "sherpa", effective: "sherpa", online: Boolean(this.worker && !this.unavailableError), fallback_active: false }; }
 
   handleWorkerMessage(worker, message) {
     if (this.worker !== worker) return;

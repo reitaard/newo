@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import path from "node:path";
 
 import { SherpaAsrBackend } from "../src/voice.js";
+import { PythonSherpaAsrBackend } from "../src/python-sherpa-asr.js";
 import { resolveSherpaLmConfig } from "../src/sherpa-lm-config.js";
 
 const model = process.env.VOICE_SHERPA_MODEL ?? "20m";
@@ -18,9 +19,11 @@ const hotwordsFile = process.env.VOICE_ASR_HOTWORDS_FILE
 const chunkBytes = Number(process.env.VOICE_ASR_CHUNK_BYTES ?? 640);
 const expectedText = process.env.VOICE_ASR_EXPECTED_TEXT ?? "YELLOW LAMPS";
 const maxActivePaths = Number(process.env.VOICE_ASR_MAX_ACTIVE_PATHS ?? 4);
+const asrBackend = process.env.VOICE_ASR_BACKEND ?? "sherpa";
 const lm = resolveSherpaLmConfig({ enabled: process.env.VOICE_ASR_LM_ENABLED === "true",
   lmPath: process.env.VOICE_ASR_LM_PATH, type: process.env.VOICE_ASR_LM_TYPE ?? "onnx_rnn",
-  scale: Number(process.env.VOICE_ASR_LM_SCALE ?? 0.1), modelDirectory });
+  scale: Number(process.env.VOICE_ASR_LM_SCALE ?? 0.1), modelDirectory,
+  runtimeSupportsOnlineLm: asrBackend === "sherpa-python" });
 if (!Number.isInteger(chunkBytes) || chunkBytes <= 0 || chunkBytes % 2 !== 0) {
   throw new Error("VOICE_ASR_CHUNK_BYTES must be a positive even integer");
 }
@@ -47,7 +50,7 @@ function readPcm16MonoWav(buffer) {
 }
 
 const memoryBeforeBytes = process.memoryUsage().rss;
-const backend = new SherpaAsrBackend({
+const backendOptions = {
   modelDirectory,
   model,
   numThreads: Number(process.env.VOICE_ASR_THREADS ?? 2),
@@ -55,7 +58,13 @@ const backend = new SherpaAsrBackend({
   hotwordsScore: Number(process.env.VOICE_ASR_HOTWORDS_SCORE ?? 1.5),
   maxActivePaths,
   lm,
-});
+  pythonExecutable: process.env.VOICE_ASR_PYTHON_EXECUTABLE,
+};
+const workerMetrics = [];
+const backend = asrBackend === "sherpa-python"
+  ? new PythonSherpaAsrBackend(backendOptions, { logger: { info(fields) { workerMetrics.push(fields); }, warn() {}, error() {} } })
+  : new SherpaAsrBackend(backendOptions);
+await backend.prewarm();
 const memoryAfterLoadBytes = process.memoryUsage().rss;
 const pcm = readPcm16MonoWav(await readFile(wavFile));
 const events = [];
@@ -80,6 +89,7 @@ const finalAfterStop = events.find((event) => event.type === "final" && event.el
 if (!firstPartial || !final || (expectedText && !final.text.includes(expectedText)))
   throw new Error(`Streaming ASR regression: ${final?.text ?? "no final transcript"}`);
 console.log(JSON.stringify({
+  asr_backend: asrBackend,
   model,
   model_directory: modelDirectory,
   hotwords_file: hotwordsFile ?? null,
@@ -102,5 +112,8 @@ console.log(JSON.stringify({
   cpu_ms: Number(((cpu.user + cpu.system) / 1_000).toFixed(1)),
   process_rss_before_model_mib: Number((memoryBeforeBytes / 1024 / 1024).toFixed(1)),
   process_rss_after_model_mib: Number((memoryAfterLoadBytes / 1024 / 1024).toFixed(1)),
+  worker_peak_rss_mib: workerMetrics.length ? Number((Math.max(...workerMetrics.map((item) => item.asr_worker_rss_bytes ?? 0)) / 1024 / 1024).toFixed(1)) : null,
+  worker_cpu_seconds: workerMetrics.length ? Math.max(...workerMetrics.map((item) => item.asr_worker_cpu_seconds ?? 0)) : null,
   final_transcript: final.text,
 }));
+await backend.close?.();
