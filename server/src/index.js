@@ -75,6 +75,7 @@ const EnvSchema = z.object({
   ASSISTANT_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(30_000).default(15_000)),
   ASSISTANT_MAX_OUTPUT_TOKENS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(8).max(128).default(72)),
   ASSISTANT_MAX_REPLY_CHARS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(40).max(500).default(300)),
+  ASSISTANT_PROGRESS_FEEDBACK_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
   TTS_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
   SPEAKER_CODEC: z.preprocess(emptyToUndefined, z.enum(["opus", "pcm"]).default("opus")),
   TTS_BACKEND: z.preprocess(emptyToUndefined, z.enum(["pocket", "kokoro", "espeak"]).default("pocket")),
@@ -210,6 +211,7 @@ const assistantTurnRuntime = createAssistantTurnRuntime({
   speakerRuntime,
   isPersistentSpeakerEnabled: () => automaticSpeakerEnabled,
   maxReplyChars: env.ASSISTANT_MAX_REPLY_CHARS,
+  progressFeedbackEnabled: env.ASSISTANT_PROGRESS_FEEDBACK_ENABLED,
   logger: app.log,
   setAssistantState: sendAssistantState,
 });

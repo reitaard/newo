@@ -67,7 +67,8 @@ function createAsyncTextQueue() {
   };
 }
 
-export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersistentSpeakerEnabled, maxReplyChars, logger, setAssistantState = () => {} }) {
+export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersistentSpeakerEnabled, maxReplyChars, logger,
+  progressFeedbackEnabled = false, setAssistantState = () => {} }) {
   const active = new Map();
   const generations = new Map();
   let closing = false;
@@ -107,7 +108,7 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
     let progressSpeech = null;
     const routing = assistant.routeRequest?.({ text: turn.text, deviceId: turn.deviceId }) ??
       { route: "FAST", reasons: ["router_unavailable"], activity: "conversation" };
-    const progressText = progressFeedbackFor({ ...routing, variation: generationId });
+    const progressText = progressFeedbackEnabled ? progressFeedbackFor({ ...routing, variation: generationId }) : null;
     let progressFeedbackFired = false, progressFeedbackStartedAt = null, progressFeedbackFinishedAt = null;
     let progressTimer = null;
     const completion = (async () => {

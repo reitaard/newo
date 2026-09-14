@@ -712,7 +712,7 @@ test("slow THINK work gives one delayed activity acknowledgement without collidi
   };
   const speaker = { speak(text) { calls.push(text); return { kind: "queued", playbackId: `p${calls.length}`, completion: Promise.resolve({}) }; } };
   const turns = createAssistantTurnRuntime({ assistant, speakerRuntime: speaker, isPersistentSpeakerEnabled: () => true,
-    maxReplyChars: 300, logger: quietLogger });
+    maxReplyChars: 300, progressFeedbackEnabled: true, logger: quietLogger });
   assert.equal((await turns.handleFinalTranscript(turn).completion).kind, "complete");
   assert.deepEqual(calls, ["Checking the readings together.", "Use the second sensor."]);
   assert.equal(turns.getTelemetry().latest.progressFeedbackFired, true);
