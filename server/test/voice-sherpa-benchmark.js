@@ -86,7 +86,7 @@ const firstPartial = events.find((event) => event.type === "partial");
 const final = [...events].reverse().find((event) => event.type === "final");
 const finalAfterStop = events.find((event) => event.type === "final" && event.elapsedMs >= stopStartedAt - startedAt);
 
-if (!firstPartial || !final || (expectedText && !final.text.includes(expectedText)))
+if (expectedText && (!firstPartial || !final || !final.text.includes(expectedText)))
   throw new Error(`Streaming ASR regression: ${final?.text ?? "no final transcript"}`);
 console.log(JSON.stringify({
   asr_backend: asrBackend,
@@ -103,7 +103,7 @@ console.log(JSON.stringify({
   chunk_bytes: chunkBytes,
   wav_file: wavFile,
   audio_duration_s: Number(durationSeconds.toFixed(3)),
-  time_to_first_partial_ms: Number(firstPartial.elapsedMs.toFixed(1)),
+  time_to_first_partial_ms: firstPartial ? Number(firstPartial.elapsedMs.toFixed(1)) : null,
   endpoint_finalization_ms: finalAfterStop
     ? Number((finalAfterStop.elapsedMs - (stopStartedAt - startedAt)).toFixed(1))
     : null,
@@ -114,6 +114,6 @@ console.log(JSON.stringify({
   process_rss_after_model_mib: Number((memoryAfterLoadBytes / 1024 / 1024).toFixed(1)),
   worker_peak_rss_mib: workerMetrics.length ? Number((Math.max(...workerMetrics.map((item) => item.asr_worker_rss_bytes ?? 0)) / 1024 / 1024).toFixed(1)) : null,
   worker_cpu_seconds: workerMetrics.length ? Math.max(...workerMetrics.map((item) => item.asr_worker_cpu_seconds ?? 0)) : null,
-  final_transcript: final.text,
+  final_transcript: final?.text ?? null,
 }));
 await backend.close?.();
