@@ -34,12 +34,17 @@ test("Open-Meteo geocoding and weather produce compact structured evidence", asy
 });
 
 test("Frankfurter v2 performs reference conversion while keyed providers fail open when absent", async () => {
+  let fetches = 0;
   const runtime = createStructuredCapabilityRuntime({ fetchImpl: async (url) => {
+    fetches += 1;
     assert.match(String(url), /\/v2\/rate\/USD\/EUR$/); return ok({ date: "2026-09-14", base: "USD", quote: "EUR", rate: 0.85 });
   } });
   const fx = await runtime.invoke("currency.exchange", "Convert 20 dollars to euros");
   assert.equal(fx.kind, "result");
   assert.equal(fx.result.converted, 17);
+  const cachedFx = await runtime.invoke("currency.exchange", "Convert 40 dollars to euros");
+  assert.equal(cachedFx.result.converted, 34);
+  assert.equal(fetches, 1);
   assert.deepEqual(await runtime.invoke("market.quote", "What's AAPL trading at?"),
     { kind: "provider_unavailable", tool: "market_quote", reason: "missing_api_key" });
   const sports = await runtime.invoke("sports.score", "Arsenal score");

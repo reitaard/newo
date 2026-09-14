@@ -122,6 +122,7 @@ async function fetchJson(fetchImpl, url, { timeoutMs, signal, headers = {} }) {
 
 export function createStructuredCapabilityRuntime({ enabled = true, fetchImpl = fetch, timeoutMs = 3_000,
   timeZone = "Asia/Phnom_Penh", now = () => new Date(), twelveDataApiKey = "", apiSportsKey = "", logger = null } = {}) {
+  const fxCache = new Map();
   async function geocode(location, signal) {
     const url = new URL("https://geocoding-api.open-meteo.com/v1/search"); url.searchParams.set("name", location);
     url.searchParams.set("count", "1"); url.searchParams.set("language", "en"); url.searchParams.set("format", "json");
@@ -154,8 +155,11 @@ export function createStructuredCapabilityRuntime({ enabled = true, fetchImpl = 
           target_timezone: targetPlace.timezone, converted_time: new Intl.DateTimeFormat("en-US", { timeZone: targetPlace.timezone,
             weekday: "long", hour: "numeric", minute: "2-digit", hour12: true }).format(instant) };
       } else if (capability === "currency.exchange") { slots = extractCurrencies(text); if (!slots) return { kind: "missing_slots", tool, reason: "missing_slots" };
-        provider = "frankfurter_v2"; const payload = await fetchJson(fetchImpl,
-          `https://api.frankfurter.dev/v2/rate/${encodeURIComponent(slots.base)}/${encodeURIComponent(slots.quote)}`, { timeoutMs, signal });
+        provider = "frankfurter_v2"; const cacheKey = `${slots.base}/${slots.quote}`; const cached = fxCache.get(cacheKey);
+        const payload = cached && performance.now() - cached.at < 15 * 60_000 ? cached.payload : await fetchJson(fetchImpl,
+          `https://api.frankfurter.dev/v2/rate/${encodeURIComponent(slots.base)}/${encodeURIComponent(slots.quote)}`,
+          { timeoutMs: Math.min(timeoutMs, 1_500), signal });
+        if (!cached || payload !== cached.payload) fxCache.set(cacheKey, { at: performance.now(), payload });
         if (!Number.isFinite(payload?.rate)) throw capabilityError("structured_provider_invalid");
         result = { ...slots, date: payload.date, rate: payload.rate, converted: round(slots.amount * payload.rate, 6), reference_rate: true };
       } else if (capability === "weather.current" || capability === "weather.forecast") { const location = extractLocation(text);

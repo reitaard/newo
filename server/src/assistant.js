@@ -612,6 +612,7 @@ export function createAssistantRuntime({
       let malformedCalls = 0;
       let lastRoundToolCall = false;
       const toolEvents = [];
+      const toolCache = new Map();
       const roundTimings = [];
       const maxRounds = usableTools ? profile.toolPolicy.maxRounds : 1;
 
@@ -734,9 +735,13 @@ export function createAssistantRuntime({
             llm_round: round, tool_start_ms: event.start_ms }, "Assistant tool started");
           await onToolStart?.({ name: call.name, round });
           try {
-            const invoked = await webTools.invoke(call.name, call.arguments, { signal: controller.signal });
+            const cacheKey = `${call.name}:${JSON.stringify(call.arguments)}`;
+            const cached = toolCache.get(cacheKey);
+            const invoked = cached ?? await webTools.invoke(call.name, call.arguments, { signal: controller.signal });
+            if (!cached) toolCache.set(cacheKey, invoked);
             toolSuccesses += 1;
             event.ok = true;
+            event.cached = Boolean(cached);
             event.agent_tools_latency_ms = invoked.elapsedMs;
             event.provider_latency_ms = invoked.providerElapsedMs;
             results.push({ tool: call.name, ok: true, result: invoked.value });

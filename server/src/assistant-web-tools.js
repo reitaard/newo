@@ -8,6 +8,20 @@ function toolError(code, message = code) {
   return error;
 }
 
+function compactPayload(name, payload, args) {
+  if (!payload || typeof payload !== "object") return payload;
+  if (name === "web_search" && Array.isArray(payload.results)) {
+    return { ...payload, results: payload.results.slice(0, Math.min(args.max_results ?? 3, 5)).map((result) => ({
+      title: result.title ?? null, url: result.url, published_at: result.published_at ?? null,
+      fetched_at: result.fetched_at ?? null, score: result.score ?? null,
+      content: typeof result.content === "string" ? result.content.slice(0, 1_200) : result.content,
+    })) };
+  }
+  if (name === "web_read" && typeof payload.content === "string")
+    return { ...payload, content: payload.content.slice(0, Math.min(args.max_chars ?? 5_000, 8_000)) };
+  return payload;
+}
+
 export const WEB_TOOL_DEFINITIONS = Object.freeze([
   Object.freeze({
     name: "web_search",
@@ -68,11 +82,11 @@ export function createAssistantWebTools({
     let path;
     if (name === "web_search") {
       path = "/v1/tools/web/search";
-      args.max_results ??= 5;
+      args.max_results ??= 3;
       if (args.max_results < 1 || args.max_results > 5) throw toolError("invalid_tool_arguments");
     } else if (name === "web_read") {
       path = "/v1/tools/web/read";
-      args.max_chars ??= 8_000;
+      args.max_chars ??= 5_000;
       if (args.max_chars < 1_000 || args.max_chars > 12_000) throw toolError("invalid_tool_arguments");
     } else throw toolError("unknown_tool");
 
@@ -98,7 +112,8 @@ export function createAssistantWebTools({
       logger?.info({ tool_name: name, agent_tools_latency_ms: elapsedMs,
         provider_latency_ms: Number.isFinite(payload?.provider_elapsed_ms) ? payload.provider_elapsed_ms : null,
         result_count: payload?.result_count ?? (payload?.content ? 1 : 0) }, "Assistant web tool completed");
-      return { value: payload, elapsedMs, providerElapsedMs: Number.isFinite(payload?.provider_elapsed_ms) ? payload.provider_elapsed_ms : null };
+      return { value: compactPayload(name, payload, args), elapsedMs,
+        providerElapsedMs: Number.isFinite(payload?.provider_elapsed_ms) ? payload.provider_elapsed_ms : null };
     } catch (error) {
       if (controller.signal.aborted) throw controller.signal.reason ?? toolError("agent_tools_timeout");
       if (error?.code) throw error;

@@ -26,3 +26,17 @@ test("agent-tools client maps structured timeout errors", async () => {
     new Response(JSON.stringify({ error: { code: "provider_timeout" } }), { status: 504 }) });
   await assert.rejects(tools.invoke("web_search", { query: "test" }), (error) => error.code === "agent_tools_timeout");
 });
+
+test("web evidence defaults stay compact while preserving source metadata", async () => {
+  let body;
+  const tools = createAssistantWebTools({ enabled: true, token: "private", fetchImpl: async (_url, options) => {
+    body = JSON.parse(options.body);
+    return new Response(JSON.stringify({ result_count: 1, results: [{ title: "Source", url: "https://example.com",
+      published_at: "2026-09-14", fetched_at: "2026-09-14T00:00:00Z", content: "x".repeat(3000), extra: "drop" }] }), { status: 200 });
+  } });
+  const result = await tools.invoke("web_search", { query: "current fact" });
+  assert.equal(body.max_results, 3);
+  assert.equal(result.value.results[0].content.length, 1200);
+  assert.equal(result.value.results[0].fetched_at, "2026-09-14T00:00:00Z");
+  assert.equal(result.value.results[0].extra, undefined);
+});
