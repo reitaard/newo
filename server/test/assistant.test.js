@@ -904,9 +904,11 @@ for (const [label, toolDelay, expectedProgress] of [["fast", 20, false], ["slow"
     const turns = createAssistantTurnRuntime({ assistant, speakerRuntime: speaker, isPersistentSpeakerEnabled: () => true,
       maxReplyChars: 300, progressFeedbackEnabled: true, logger: quietLogger });
     await turns.handleFinalTranscript({ ...turn, streamId: `web-${label}` }).completion;
-    assert.deepEqual(spoken, expectedProgress
-      ? ["Checking current sources.", "Verified final answer."]
-      : ["Verified final answer."]);
+    if (expectedProgress) {
+      assert.equal(spoken.length, 2);
+      assert.match(spoken[0], /current sources/i);
+      assert.equal(spoken[1], "Verified final answer.");
+    } else assert.deepEqual(spoken, ["Verified final answer."]);
     assert.equal(turns.getTelemetry().latest.progressFeedbackFired, expectedProgress);
     assert.equal(turns.getTelemetry().latest.progressFeedbackCancelled, !expectedProgress);
   });

@@ -1,11 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { authorizeToolInvocation, classifyAssistantActivity, progressFeedbackFor, routeAssistantRequest } from "../src/assistant-routing.js";
+import { authorizeToolInvocation, classifyAssistantActivity, progressFeedbackFor, progressFeedbackForTool, routeAssistantRequest } from "../src/assistant-routing.js";
 
 test("router keeps clear low-risk requests FAST and classifies activity", () => {
   assert.deepEqual(routeAssistantRequest({ text: "Who wrote Frankenstein?" }),
     { route: "FAST", reasons: ["low_risk_single_step"], activity: "conversation" });
   assert.equal(classifyAssistantActivity("Calculate 17 percent of 80"), "calculation");
+});
+
+test("tool progress phrases are capability-aware, small, and rotating", () => {
+  for (const [tool, expectedWord] of [["weather.current", "weather"], ["currency.exchange", "rate"], ["sports.score", "sports"],
+    ["market.quote", "market"], ["web_search", "sources"], ["memory.retrieve", "memory"], ["device.state", "device"],
+    ["sensor.read", "sensor"], ["camera.inspect", "camera"]]) {
+    const word = tool === "memory.retrieve" ? "remember|memory" : expectedWord;
+    assert.match(progressFeedbackForTool(tool, 0), new RegExp(word, "i"));
+    assert.notEqual(progressFeedbackForTool(tool, 0), progressFeedbackForTool(tool, 1));
+  }
 });
 
 test("router biases structural uncertainty and tool planning toward THINK", () => {

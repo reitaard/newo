@@ -50,8 +50,35 @@ const feedback = Object.freeze({
   tool_action: Object.freeze(["Checking the requested action.", "Working through the requested action."]),
 });
 
+const toolFeedback = Object.freeze({
+  weather: Object.freeze(["Checking the weather.", "Looking at the latest weather."]),
+  currency: Object.freeze(["Checking the exchange rate.", "Looking up the reference rate."]),
+  sports: Object.freeze(["Checking the latest sports data.", "Looking up the match details."]),
+  market: Object.freeze(["Checking the market.", "Looking up the latest quote."]),
+  web_search: Object.freeze(["Checking current sources.", "Looking through current sources."]),
+  web_read: Object.freeze(["Reading the source.", "Checking the source details."]),
+  memory: Object.freeze(["Checking what I remember.", "Looking through the relevant memory."]),
+  device: Object.freeze(["Checking the device.", "Reading the device state."]),
+  sensor: Object.freeze(["Checking the sensor.", "Reading the latest sensor data."]),
+  camera: Object.freeze(["Checking the camera.", "Reviewing the camera view."]),
+  generic: Object.freeze(["Checking that.", "Working through that."]),
+});
+
 export function progressFeedbackFor({ route, activity, variation = 0 }) {
   if (route !== "THINK" || activity === "conversation") return null;
   const options = feedback[activity] ?? feedback.tool_action;
+  return options[Math.abs(Number(variation) || 0) % options.length];
+}
+
+export function progressFeedbackForTool(name, variation = 0) {
+  const value = String(name ?? "");
+  const category = value === "web_read" ? "web_read" : value === "web_search" ? "web_search" :
+    value.startsWith("weather.") ? "weather" : value.startsWith("currency.") ? "currency" :
+    value.startsWith("sports.") ? "sports" : value.startsWith("market.") ? "market" :
+    value.startsWith("memory.") || value.startsWith("memory_") ? "memory" :
+    value.startsWith("device.") || value.startsWith("device_") ? "device" :
+    value.startsWith("sensor.") || value.startsWith("sensor_") ? "sensor" :
+    value.startsWith("camera.") || value.startsWith("camera_") ? "camera" : "generic";
+  const options = toolFeedback[category];
   return options[Math.abs(Number(variation) || 0) % options.length];
 }

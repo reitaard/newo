@@ -71,6 +71,8 @@ pm2 restart newo-cloud --update-env
 pm2 save
 ```
 
+The router requirements pin the artifact's recorded SetFit, Sentence Transformers, Transformers, and PyTorch versions. PyTorch is explicitly installed from the official CPU wheel index; do not substitute the CUDA build on this VPS.
+
 Expected configuration:
 
 ```dotenv

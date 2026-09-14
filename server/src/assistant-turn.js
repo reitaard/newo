@@ -1,4 +1,4 @@
-import { progressFeedbackFor } from "./assistant-routing.js";
+import { progressFeedbackFor, progressFeedbackForTool } from "./assistant-routing.js";
 
 /**
  * Joins a finalized ASR stream to the bounded assistant and existing speaker
@@ -165,20 +165,7 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
         clearTimeout(progressTimer);
         if (!progressFeedbackEnabled || toolProgressUsed || generations.get(turn.deviceId) !== generationId) return;
         toolProgressUsed = true;
-        const phrase = ({
-          web_read: "Reading the source.",
-          web_search: "Checking current sources.",
-          "weather.current": "Checking the weather.",
-          "weather.forecast": "Checking the forecast.",
-          "currency.exchange": "Checking the exchange rate.",
-          "market.quote": "Checking the market.",
-          "sports.score": "Checking the score.",
-          "sports.schedule": "Checking the schedule.",
-          calculator: "Checking the numbers.",
-          "unit.convert": "Converting that.",
-          "time.current": "Checking the local time.",
-          "time.convert": "Converting the time.",
-        })[name] ?? "Checking that.";
+        const phrase = progressFeedbackForTool(name, generationId);
         toolProgressTimer = setTimeout(() => {
           if (generations.get(turn.deviceId) !== generationId) return;
           progressFeedbackStartedAt = performance.now();
