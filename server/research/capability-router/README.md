@@ -85,6 +85,17 @@ Each experimental router should emit one JSON object per corpus row:
 
 Only `id` is mandatory for transport; benchmark adapters can normalize model-specific outputs before scoring.
 
+## Baseline command
+
+Pass the output path directly to the baseline. This avoids Git Bash / Windows `stdout is not a tty` wrappers during redirection:
+
+```bash
+node structural-baseline.js corpus.jsonl structural-predictions.jsonl
+node score-predictions.js corpus.jsonl structural-predictions.jsonl
+```
+
+If no output path is supplied, the baseline still writes JSONL to stdout for normal Unix pipelines.
+
 ## Metrics
 
 Primary quality metrics:
