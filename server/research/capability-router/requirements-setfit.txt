@@ -1,0 +1,3 @@
+setfit==1.2.0
+datasets>=3,<5
+numpy>=1.26,<3
