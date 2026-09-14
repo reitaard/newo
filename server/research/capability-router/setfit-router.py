@@ -160,7 +160,7 @@ def benchmark_model(args, labels, registry, eval_rows):
     output_path = Path(args.output)
     with output_path.open("w", encoding="utf-8", newline="\n") as fh:
         for row in output_rows:
-            fh.write(json.dumps(row, separators=(",", ",")) + "\n")
+            fh.write(json.dumps(row, separators=(",", ":")) + "\n")
 
     print(
         f"benchmarked rows={len(eval_rows)} device=cpu load_ms={load_ms:.1f} warmup_ms={warmup_ms:.1f} "
