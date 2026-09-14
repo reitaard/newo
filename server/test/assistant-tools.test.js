@@ -15,6 +15,16 @@ test("native LFM tool envelopes parse parallel typed calls without eval", () => 
   ]);
 });
 
+test("Gaston bare LFM tool arrays parse only when explicitly enabled", () => {
+  const bare = "[weather(city='Paris', days=2)]";
+  assert.deepEqual(parseLfmToolCalls(bare).calls, []);
+  const parsed = parseLfmToolCalls(bare, { allowBare: true });
+  assert.equal(parsed.protocol, "lfm_bare");
+  assert.deepEqual(parsed.calls, [
+    { name: "weather", arguments: { city: "Paris", days: 2 } },
+  ]);
+});
+
 test("native LFM parser accepts bounded nested JSON argument values", () => {
   const parsed = parseLfmToolCalls('<|tool_call_start|>[weather(city="Paris", days=2, meta={"units":["c", "f"]})]<|tool_call_end|>');
   assert.deepEqual(parsed.calls[0].arguments.meta, { units: ["c", "f"] });

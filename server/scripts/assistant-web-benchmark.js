@@ -31,7 +31,7 @@ const normalTools = createAssistantWebTools({ enabled: true, baseUrl, token,
   timeoutMs: Number.parseInt(process.env.AGENT_TOOLS_TIMEOUT_MS || "12000", 10) });
 const timeoutTools = createAssistantWebTools({ enabled: true, baseUrl, token, timeoutMs: 1 });
 const pocket = new PocketTtsBackend({ baseUrl: process.env.POCKET_BASE_URL || "http://127.0.0.1:8123",
-  voice: process.env.TTS_VOICE || "michael" });
+  voice: process.env.WEB_BENCH_TTS_VOICE || "michael" });
 
 const cases = [
   { id: "normal_no_tool", text: "What is the capital of France?", tools: normalTools },

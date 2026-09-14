@@ -249,7 +249,25 @@ function rawLfmPrompt(messages, reasoningRoute = "THINK", profileRouting = {}) {
   return `<|startoftext|><|im_start|>system\n${system.content}\n<|im_end|>\n${turns}\n<|im_start|>assistant\n${bridge}`;
 }
 
-async function readOllamaStream(response, { onFirstRawToken, onFirstSpeakableToken, onSpeakableText, detectToolCalls = false }) {
+function bareToolPrefixState(value, toolNames = []) {
+  const trimmed = String(value ?? "").trimStart();
+  if (!trimmed.startsWith("[")) return "none";
+  const rest = trimmed.slice(1).trimStart();
+  if (!rest) return "maybe";
+  for (const name of toolNames) {
+    if (name.startsWith(rest)) return "maybe";
+    if (!rest.startsWith(name)) continue;
+    const suffix = rest.slice(name.length);
+    if (!suffix.trim()) return "maybe";
+    if (/^\s*\(/.test(suffix)) return "tool";
+  }
+  return "none";
+}
+
+async function readOllamaStream(response, {
+  onFirstRawToken, onFirstSpeakableToken, onSpeakableText,
+  detectToolCalls = false, toolNames = [],
+}) {
   if (!response.body) throw assistantError("assistant_invalid_response");
   const decoder = new TextDecoder();
   const thinkFilter = new ThinkFilter();
@@ -276,6 +294,12 @@ async function readOllamaStream(response, { onFirstRawToken, onFirstSpeakableTok
       return;
     }
     if (!final && "<|tool_call_start|>".startsWith(trimmed)) return;
+    const bareState = bareToolPrefixState(visiblePending, toolNames);
+    if (bareState === "tool") {
+      toolCallDetected = true;
+      return;
+    }
+    if (!final && bareState === "maybe") return;
     normalTextDetected = true;
     const ready = visiblePending;
     visiblePending = "";
@@ -579,12 +603,14 @@ export function createAssistantRuntime({
       let toolSuccesses = 0;
       let toolAttempts = 0;
       let malformedCalls = 0;
+      let lastRoundToolCall = false;
       const toolEvents = [];
       const roundTimings = [];
       const maxRounds = toolEnabled ? profile.toolPolicy.maxRounds : 1;
 
       while (round < maxRounds) {
         round += 1;
+        lastRoundToolCall = false;
         const roundStartedAt = performance.now();
         let roundFirstRawAt = null;
         let roundFirstSpeakableAt = null;
@@ -616,6 +642,7 @@ export function createAssistantRuntime({
         if (profile.provider === "ollama_raw") {
           const streamed = await readOllamaStream(response, {
             detectToolCalls: toolEnabled,
+            toolNames: toolDefinitions.map((tool) => tool.name),
             onFirstRawToken: () => {
               roundFirstRawAt ??= performance.now();
               firstRawTokenAt ??= roundFirstRawAt;
@@ -665,7 +692,8 @@ export function createAssistantRuntime({
         if (!toolEnabled) break;
         let parsed;
         try {
-          if (toolCallDetected || String(rawAnswer).includes("<|tool")) parsed = parseLfmToolCalls(rawAnswer);
+          if (toolCallDetected || String(rawAnswer).includes("<|tool"))
+            parsed = parseLfmToolCalls(rawAnswer, { allowBare: toolCallDetected });
           else parsed = { calls: [], content: rawAnswer, protocol: null };
         } catch {
           malformedCalls += 1;
@@ -674,6 +702,7 @@ export function createAssistantRuntime({
           if (malformedCalls >= 2) throw assistantError("assistant_tool_protocol_invalid");
           continue;
         }
+        lastRoundToolCall = parsed.calls.length > 0;
         if (!parsed.calls.length) break;
         if (parsed.content.trim()) throw assistantError("assistant_tool_protocol_invalid");
 
@@ -718,7 +747,7 @@ export function createAssistantRuntime({
         }
         messages.push({ role: "assistant", content: String(rawAnswer) }, { role: "tool", content: JSON.stringify(results) });
       }
-      if (toolEnabled && round >= maxRounds && String(rawAnswer).includes("<|tool_call_start|>")) throw assistantError("assistant_tool_loop_limit");
+      if (toolEnabled && round >= maxRounds && lastRoundToolCall) throw assistantError("assistant_tool_loop_limit");
       if (toolAttempts > 0 && toolSuccesses === 0) rawAnswer = "I couldn't verify that from live sources right now.";
       const answer = boundedText(rawAnswer, profile.maxReplyChars);
       if (!answer) return { kind: "empty", availabilityFailure: false };

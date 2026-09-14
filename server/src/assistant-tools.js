@@ -74,9 +74,15 @@ class NativeCallParser {
   }
 }
 
-export function parseLfmToolCalls(text) {
+export function parseLfmToolCalls(text, { allowBare = false } = {}) {
   const value = String(text ?? ""); const start = value.indexOf(START);
-  if (start < 0) return { calls: [], content: value, protocol: null };
+  if (start < 0) {
+    if (!allowBare) return { calls: [], content: value, protocol: null };
+    const bare = value.trim();
+    if (!bare.startsWith("[")) return { calls: [], content: value, protocol: null };
+    const calls = new NativeCallParser(bare).parse();
+    return { calls, content: "", protocol: "lfm_bare" };
+  }
   const end = value.indexOf(END, start + START.length);
   if (end < 0 || value.indexOf(START, start + START.length) >= 0) throw new Error("assistant_tool_protocol_invalid: unterminated or repeated envelope");
   const calls = new NativeCallParser(value.slice(start + START.length, end).trim()).parse();
