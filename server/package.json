@@ -9,6 +9,7 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "voice:benchmark": "node test/voice-sherpa-benchmark.js",
+    "web:benchmark": "node scripts/assistant-web-benchmark.js",
     "test": "node --test test/*.test.js"
   },
   "engines": {
