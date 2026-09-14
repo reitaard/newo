@@ -30,7 +30,7 @@ const sharedContextPolicy = Object.freeze({
 
 const TUNING_RULES = Object.freeze({
   temperature: [0, 2], top_k: [0, 200], top_p: [0, 1], repeat_penalty: [0.5, 2],
-  max_tokens: [8, 128], max_chars: [40, 500], timeout_ms: [1_000, 30_000],
+  max_tokens: [8, 2_048], max_chars: [40, 500], timeout_ms: [1_000, 30_000],
 });
 
 export const PROFILE_TUNING_PRESETS = Object.freeze({
@@ -88,13 +88,14 @@ export function createAssistantProfiles({ qwenApiKey = null, overrides = {} } = 
       apiKey: null,
       systemPrompt: LFM_SYSTEM_PROMPT,
       promptFormat: "lfm_chat_markup",
-      reasoning: "no_think_bridge",
+      reasoning: "native",
+      routing: Object.freeze({ fast: "closed_think_bridge", think: "native_reasoning" }),
       progressiveTts: true,
       chunking: Object.freeze({ mode: "sentence_clause", minChars: 24, clauseChars: 72, hardChars: 140 }),
       sampling: Object.freeze({ temperature: 0.2, top_k: 80, repeat_penalty: 1.05 }),
-      maxOutputTokens: 96,
+      maxOutputTokens: 2_048,
       maxReplyChars: 450,
-      timeoutMs: 15_000,
+      timeoutMs: 30_000,
       keepAlive: -1,
       health: Object.freeze({ method: "ollama_tags", endpoint: "/api/tags", implicitLatestTag: true }),
       contextPolicy: sharedContextPolicy,
@@ -113,6 +114,7 @@ export function createAssistantProfiles({ qwenApiKey = null, overrides = {} } = 
       systemPrompt: QWEN_SYSTEM_PROMPT,
       promptFormat: "openai_messages",
       reasoning: "model_default",
+      routing: Object.freeze({ fast: "model_default", think: "model_default" }),
       progressiveTts: true,
       chunking: Object.freeze({ mode: "sentence_clause", minChars: 24, clauseChars: 72, hardChars: 140 }),
       sampling: Object.freeze({ temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0 }),

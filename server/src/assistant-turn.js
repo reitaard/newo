@@ -1,3 +1,5 @@
+import { progressFeedbackFor } from "./assistant-routing.js";
+
 /**
  * Joins a finalized ASR stream to the bounded assistant and existing speaker
  * runtime. It deliberately owns no audio transport or queue.
@@ -69,7 +71,7 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
   const active = new Map();
   const generations = new Map();
   let closing = false;
-  let latest = { result: "n/a", llmMs: null, llmFirstRawTokenMs: null, llmFirstTokenMs: null, llmFirstTtsChunkMs: null, llmFirstAudioMs: null, streamId: null, at: null, ttsQueuedMs: null, totalMs: null, asrFinalMs: null };
+  let latest = { result: "n/a", llmMs: null, llmFirstRawTokenMs: null, llmFirstTokenMs: null, llmFirstTtsChunkMs: null, llmFirstAudioMs: null, streamId: null, at: null, ttsQueuedMs: null, totalMs: null, asrFinalMs: null, progressFeedbackFired: false, progressFeedbackStartedMs: null, progressFeedbackFinishedMs: null };
 
   function record(result, turn, fields = {}) {
     latest = {
@@ -102,15 +104,34 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
     setAssistantState(turn.deviceId, "thinking");
     let speech = null;
     let textQueue = null;
+    let progressSpeech = null;
+    const routing = assistant.routeRequest?.({ text: turn.text, deviceId: turn.deviceId }) ??
+      { route: "FAST", reasons: ["router_unavailable"], activity: "conversation" };
+    const progressText = progressFeedbackFor({ ...routing, variation: generationId });
+    let progressFeedbackFired = false, progressFeedbackStartedAt = null, progressFeedbackFinishedAt = null;
+    let progressTimer = null;
     const completion = (async () => {
       const llmStartedAt = performance.now();
       let firstTtsChunkAt = null;
       let respondingSent = false;
       const markResponding = () => {
         if (respondingSent || generations.get(turn.deviceId) !== generationId) return;
+        clearTimeout(progressTimer);
         respondingSent = true;
         setAssistantState(turn.deviceId, "responding");
       };
+      if (progressText) progressTimer = setTimeout(() => {
+        if (respondingSent || generations.get(turn.deviceId) !== generationId) return;
+        progressFeedbackStartedAt = performance.now();
+        progressSpeech = speakerRuntime.speak(progressText, { temporary: !isPersistentSpeakerEnabled(),
+          replyReadyAt: progressFeedbackStartedAt, metadata: { assistant_turn: true, progress_feedback: true,
+            generation_id: generationId, voice_stream_id: turn.streamId, final_at: finalAt, llm_started_at: llmStartedAt } });
+        progressFeedbackFired = progressSpeech?.kind === "queued";
+        if (progressFeedbackFired) progressSpeech.completion.then(() => { progressFeedbackFinishedAt = performance.now(); }).catch(() => {
+          progressFeedbackFinishedAt = performance.now();
+        });
+      }, 800);
+      progressTimer?.unref?.();
       let segmenter = null;
       const createSegmenter = (chunking = {}, profileMaxReplyChars = maxReplyChars) => createSpeechSegmenter({ maxChars: profileMaxReplyChars,
         minChunkChars: chunking.minChars, clauseChars: chunking.clauseChars, hardChars: chunking.hardChars, onSegment: (segment) => {
@@ -149,8 +170,16 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
         llmFirstRawTokenMs: answer.timings?.llm_first_raw_token_ms ?? null,
         llmFirstTokenMs: answer.timings?.llm_first_token_ms ?? null,
         llmFirstTtsChunkMs: firstTtsChunkAt == null ? null : Math.round(firstTtsChunkAt - llmStartedAt),
+        reasoningRoute: answer.timings?.reasoning_route ?? routing.route,
+        routingReasons: answer.timings?.routing_reasons ?? routing.reasons,
+        activity: answer.timings?.activity ?? routing.activity,
+        reasoningTokens: answer.timings?.reasoning_tokens ?? null,
+        progressFeedbackFired,
+        progressFeedbackStartedMs: progressFeedbackStartedAt == null ? null : Math.round(progressFeedbackStartedAt - llmStartedAt),
+        progressFeedbackFinishedMs: progressFeedbackFinishedAt == null ? null : Math.round(progressFeedbackFinishedAt - llmStartedAt),
       };
       if (answer.kind !== "response") {
+        progressSpeech?.cancel?.();
         speech?.cancel?.();
         record(answer.kind, turn, timingFields);
         logger.info({ device_id: turn.deviceId, stream_id: turn.streamId, result: answer.kind }, "Assistant turn settled without speech");
@@ -185,9 +214,13 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
       try {
         const result = await speech.completion;
         const totalMs = Math.round(performance.now() - finalAt);
-        record("complete", turn, { ...timingFields, llmFirstAudioMs: result?.llmStartToFirstAudioMs ?? null, ttsQueuedMs, totalMs });
+        record("complete", turn, { ...timingFields,
+          progressFeedbackFinishedMs: progressFeedbackFinishedAt == null ? null : Math.round(progressFeedbackFinishedAt - llmStartedAt),
+          llmFirstAudioMs: result?.llmStartToFirstAudioMs ?? null, ttsQueuedMs, totalMs });
         logger.info({ device_id: turn.deviceId, stream_id: turn.streamId, playback_id: speech.playbackId,
-          total_final_to_playback_complete_ms: totalMs }, "Assistant turn complete");
+          total_final_to_playback_complete_ms: totalMs, progress_feedback_fired: progressFeedbackFired,
+          progress_feedback_started_ms: timingFields.progressFeedbackStartedMs,
+          progress_feedback_finished_ms: progressFeedbackFinishedAt == null ? null : Math.round(progressFeedbackFinishedAt - llmStartedAt) }, "Assistant turn complete");
         return { kind: "complete", result };
       } catch (error) {
         const totalMs = Math.round(performance.now() - finalAt);
@@ -199,6 +232,8 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
       }
     })();
     const state = { generationId, completion, cancel: () => {
+      clearTimeout(progressTimer);
+      progressSpeech?.cancel?.();
       textQueue?.end();
       speech?.cancel?.();
     } };
@@ -211,6 +246,7 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
       if (generations.get(turn.deviceId) === generationId) setAssistantState(turn.deviceId, "error");
     });
     completion.finally(() => {
+      clearTimeout(progressTimer);
       if (active.get(turn.deviceId)?.completion === completion) active.delete(turn.deviceId);
       // Every terminal assistant path clears this state. Local speaker playback
       // independently outranks it on the ESP while it is physically active.

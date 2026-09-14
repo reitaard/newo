@@ -152,7 +152,7 @@ test("fallback recovers to the preferred profile after cooldown health succeeds"
   assert.equal(runtime.getTelemetry().fallback_active, false);
 });
 
-test("ollama_raw sends the exact no-think request and parses arbitrary NDJSON and UTF-8 splits", async () => {
+test("ollama_raw FAST uses the closed-think bridge and parses arbitrary NDJSON and UTF-8 splits", async () => {
   let request;
   let requestUrl;
   const encoder = new TextEncoder();
@@ -174,11 +174,38 @@ test("ollama_raw sends the exact no-think request and parses arbitrary NDJSON an
   assert.equal(typeof result.timings.llm_first_token_ms, "number");
   assert.deepEqual(request, {
     model: "newo-main",
-    prompt: `<|startoftext|><|im_start|>system\n${LFM_SYSTEM_PROMPT}\n\nNO-THINK MODE IS ACTIVE.\nDo not produce chain-of-thought, hidden analysis, plans, drafts, or self-talk.\nIf thinking begins, close it immediately.\nPut only the useful response after </think>.\n<|im_end|>\n<|im_start|>user\n${turn.text}\n<|im_end|>\n<|im_start|>assistant\n<think>\nNo unnecessary reasoning. Close thinking and answer immediately.\n</think>\n`,
+    prompt: `<|startoftext|><|im_start|>system\n${LFM_SYSTEM_PROMPT}\n<|im_end|>\n<|im_start|>user\n${turn.text}\n<|im_end|>\n<|im_start|>assistant\n<think>\nNo unnecessary reasoning. Close thinking and answer immediately.\n</think>\n`,
     raw: true, stream: true, keep_alive: -1,
     options: { num_predict: 48, temperature: 0.2, top_k: 80, repeat_penalty: 1.05, stop: ["<|im_end|>", "<|im_start|>"] },
   });
   assert.equal("num_ctx" in request.options, false);
+  assert.doesNotMatch(request.prompt, /NO-THINK MODE/i);
+  assert.match(request.prompt, /<think>[\s\S]*No unnecessary reasoning[\s\S]*<\/think>/);
+});
+
+test("ollama_raw THINK preserves native reasoning while Qwen keeps its own template", async () => {
+  const requests = [];
+  const profiles = testProfiles();
+  const runtime = createAssistantRuntime({ enabled: true, profiles, preferredProfile: "lfm", logger: quietLogger,
+    fetchImpl: async (url, options) => {
+      requests.push({ url, body: JSON.parse(options.body) });
+      return ndjsonResponse([new TextEncoder().encode('{"response":"<think>compare"}\n{"response":"</think>Use the safer reading."}\n{"done":true,"eval_count":9}')], options.signal);
+    } });
+  const result = await runtime.respond({ ...turn, text: "Sensor A says safe, but sensor B says unsafe." });
+  assert.equal(result.timings.reasoning_route, "THINK");
+  assert.equal(result.timings.reasoning_tokens, 1);
+  assert.doesNotMatch(requests[0].body.prompt, /No unnecessary reasoning/);
+
+  await runtime.setPreferredProfile("qwen");
+  const qwenRuntime = createAssistantRuntime({ enabled: true, profiles, preferredProfile: "qwen", logger: quietLogger,
+    fetchImpl: async (_url, options) => { requests.push({ url: _url, body: JSON.parse(options.body) });
+      return jsonResponse({ choices: [{ message: { content: "Qwen answer." } }] }); } });
+  const qwen = await qwenRuntime.respond({ ...turn, text: "Sensor A says safe, but sensor B says unsafe." });
+  const body = requests.at(-1).body;
+  assert.equal(qwen.timings.reasoning_route, "THINK");
+  assert.ok(Array.isArray(body.messages));
+  assert.equal("prompt" in body, false);
+  assert.equal(body.temperature, profiles[QWEN_PROFILE_ID].sampling.temperature);
 });
 
 test("first raw token precedes the first speakable token hidden by think filtering", async () => {
@@ -567,7 +594,8 @@ test("assistant telemetry retains only the latest turn and exposes timeout state
   const speakerRuntime = { speak() { return { kind: "queued", playbackId: "p", completion: Promise.resolve() }; } };
   const turns = createAssistantTurnRuntime({ assistant, speakerRuntime, isPersistentSpeakerEnabled: () => true, maxReplyChars: 240, logger: quietLogger });
   assert.deepEqual(turns.getTelemetry().latest, { result: "n/a", llmMs: null, llmFirstRawTokenMs: null, llmFirstTokenMs: null,
-    llmFirstTtsChunkMs: null, llmFirstAudioMs: null, streamId: null, at: null, ttsQueuedMs: null, totalMs: null, asrFinalMs: null });
+    llmFirstTtsChunkMs: null, llmFirstAudioMs: null, streamId: null, at: null, ttsQueuedMs: null, totalMs: null, asrFinalMs: null,
+    progressFeedbackFired: false, progressFeedbackStartedMs: null, progressFeedbackFinishedMs: null });
   await turns.handleFinalTranscript({ ...turn, streamId: "first", asrFinalMs: 321 }).completion;
   assert.deepEqual(turns.getTelemetry().latest.result, "complete");
   assert.equal(turns.getTelemetry().latest.llmMs, 17);
@@ -669,6 +697,44 @@ test("assistant turn state follows LLM start, first useful token, and completion
   await started.completion;
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(states, ["thinking", "responding", "idle"]);
+});
+
+test("slow THINK work gives one delayed activity acknowledgement without colliding with the answer", async () => {
+  const calls = [];
+  const assistant = {
+    routeRequest() { return { route: "THINK", reasons: ["conflicting_evidence"], activity: "sensor_fusion" }; },
+    async respond(request) {
+      await new Promise((resolve) => setTimeout(resolve, 825));
+      request.onFirstToken();
+      return { kind: "response", text: "Use the second sensor.", timings: { llm_request_ms: 825,
+        reasoning_route: "THINK", routing_reasons: ["conflicting_evidence"], activity: "sensor_fusion", reasoning_tokens: 12 } };
+    }, abortDevice() {}, close() {}, getTelemetry() { return { enabled: true }; },
+  };
+  const speaker = { speak(text) { calls.push(text); return { kind: "queued", playbackId: `p${calls.length}`, completion: Promise.resolve({}) }; } };
+  const turns = createAssistantTurnRuntime({ assistant, speakerRuntime: speaker, isPersistentSpeakerEnabled: () => true,
+    maxReplyChars: 300, logger: quietLogger });
+  assert.equal((await turns.handleFinalTranscript(turn).completion).kind, "complete");
+  assert.deepEqual(calls, ["Checking the readings together.", "Use the second sensor."]);
+  assert.equal(turns.getTelemetry().latest.progressFeedbackFired, true);
+  assert.ok(turns.getTelemetry().latest.progressFeedbackStartedMs >= 790);
+  assert.equal(turns.getTelemetry().latest.reasoningRoute, "THINK");
+  assert.equal(turns.getTelemetry().latest.reasoningTokens, 12);
+});
+
+test("real speakable output before the threshold suppresses progress speech", async () => {
+  let progressCalls = 0;
+  const assistant = {
+    routeRequest() { return { route: "THINK", reasons: ["multi_step_structure"], activity: "search" }; },
+    async respond(request) { request.onFirstToken(); return { kind: "response", text: "Ready.", timings: {} }; },
+    abortDevice() {}, close() {}, getTelemetry() { return { enabled: true }; },
+  };
+  const speaker = { speak() { progressCalls += 1; return { kind: "queued", playbackId: "p", completion: Promise.resolve({}) }; } };
+  const turns = createAssistantTurnRuntime({ assistant, speakerRuntime: speaker, isPersistentSpeakerEnabled: () => true,
+    maxReplyChars: 300, logger: quietLogger });
+  await turns.handleFinalTranscript(turn).completion;
+  await new Promise((resolve) => setTimeout(resolve, 810));
+  assert.equal(progressCalls, 1);
+  assert.equal(turns.getTelemetry().latest.progressFeedbackFired, false);
 });
 
 test("reachable new voice streams invalidate stale generation callbacks and permit a rapid next turn", async () => {

@@ -15,7 +15,8 @@ test("hands-free WakeNet stays released through the complete assistant turn", as
   assert.doesNotMatch(finish[0], /rearmAfterStream_ && enabled_ && startWakeNet/);
   assert.match(finish[0], /WAKENET_REARM_DEFERRED/);
   assert.match(audio, /!playbackSuppressed_ && !awaitingAssistantCompletion_\) startWakeNet\(\);/);
-  assert.match(audio, /if \(awaitingAssistantCompletion_\) \{[\s\S]*completeAssistantTurn\(\);/);
+  assert.match(audio, /if \(awaitingAssistantCompletion_\) \{[\s\S]*progress acknowledgement[\s\S]*assistant_state=idle/);
+  assert.doesNotMatch(audio.match(/bool NewoAudio::setPlaybackActive[\s\S]*?\n}\n\nvoid NewoAudio::completeAssistantTurn/)[0], /completeAssistantTurn\(\);/);
   assert.match(audio, /state_ == NewoVoiceState::STREAMING && rearmAfterStream_[\s\S]*assistantTerminalSeen_ = true/);
   assert.match(audio, /rearmAfterStream_ = rearmAfterStream;\n  assistantTerminalSeen_ = false;/);
   assert.match(finish[0], /successfulHandsFreeFinal && !assistantTerminalSeen_/);

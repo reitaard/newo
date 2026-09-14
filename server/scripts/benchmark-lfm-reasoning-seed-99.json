@@ -1,0 +1,866 @@
+{
+  "endpoint": "http://100.68.131.86:11435/api/generate",
+  "model": "newo-main",
+  "seed": 99,
+  "max_tokens": 2048,
+  "results": [
+    {
+      "case": "normal_qa",
+      "mode": "FAST",
+      "correct": true,
+      "answer": "Paris",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "{\"answer\":\"Paris\"}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 1295,
+          "first_speakable_token_ms": 1295,
+          "reasoning_delay_ms": 0,
+          "total_latency_ms": 1325,
+          "reasoning_tokens": 0,
+          "total_tokens": 6,
+          "prompt_tokens": 148
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [],
+      "categories": {
+        "semantic": true,
+        "tool_selection": true,
+        "arguments": null,
+        "protocol": true,
+        "final_answer": true
+      }
+    },
+    {
+      "case": "normal_qa",
+      "mode": "THINK",
+      "correct": true,
+      "answer": "Paris",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "{\"answer\":\"Paris\"}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 863,
+          "first_speakable_token_ms": 1859,
+          "reasoning_delay_ms": 996,
+          "total_latency_ms": 1859,
+          "reasoning_tokens": 157,
+          "total_tokens": 164,
+          "prompt_tokens": 134
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [],
+      "categories": {
+        "semantic": true,
+        "tool_selection": true,
+        "arguments": null,
+        "protocol": true,
+        "final_answer": true
+      }
+    },
+    {
+      "case": "conflicting_sensors",
+      "mode": "FAST",
+      "correct": true,
+      "answer": "Cannot determine definitively; conflicting sensor data.",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "{\"answer\":\"Cannot determine definitively; conflicting sensor data.\"}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 944,
+          "first_speakable_token_ms": 944,
+          "reasoning_delay_ms": 0,
+          "total_latency_ms": 1247,
+          "reasoning_tokens": 0,
+          "total_tokens": 14,
+          "prompt_tokens": 165
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [],
+      "categories": {
+        "semantic": true,
+        "tool_selection": true,
+        "arguments": null,
+        "protocol": true,
+        "final_answer": true
+      }
+    },
+    {
+      "case": "conflicting_sensors",
+      "mode": "THINK",
+      "correct": true,
+      "answer": "Cannot definitively determine whether the door is open.",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "{\"answer\":\"Cannot definitively determine whether the door is open.\"}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 855,
+          "first_speakable_token_ms": 4290,
+          "reasoning_delay_ms": 3435,
+          "total_latency_ms": 4291,
+          "reasoning_tokens": 627,
+          "total_tokens": 643,
+          "prompt_tokens": 151
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [],
+      "categories": {
+        "semantic": true,
+        "tool_selection": true,
+        "arguments": null,
+        "protocol": true,
+        "final_answer": true
+      }
+    },
+    {
+      "case": "instruction_following",
+      "mode": "FAST",
+      "correct": true,
+      "answer": "BLUE",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "{\"answer\":\"BLUE\"}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 905,
+          "first_speakable_token_ms": 905,
+          "reasoning_delay_ms": 0,
+          "total_latency_ms": 1196,
+          "reasoning_tokens": 0,
+          "total_tokens": 7,
+          "prompt_tokens": 156
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [],
+      "categories": {
+        "semantic": true,
+        "tool_selection": true,
+        "arguments": null,
+        "protocol": true,
+        "final_answer": true
+      }
+    },
+    {
+      "case": "instruction_following",
+      "mode": "THINK",
+      "correct": true,
+      "answer": "BLUE",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "{\"answer\":\"BLUE\"}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 841,
+          "first_speakable_token_ms": 1894,
+          "reasoning_delay_ms": 1053,
+          "total_latency_ms": 1895,
+          "reasoning_tokens": 140,
+          "total_tokens": 148,
+          "prompt_tokens": 142
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [],
+      "categories": {
+        "semantic": true,
+        "tool_selection": true,
+        "arguments": null,
+        "protocol": true,
+        "final_answer": true
+      }
+    },
+    {
+      "case": "hallucination_abstention",
+      "mode": "FAST",
+      "correct": false,
+      "answer": "I don't know",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "{\"answer\":\"I don't know\"}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 932,
+          "first_speakable_token_ms": 932,
+          "reasoning_delay_ms": 0,
+          "total_latency_ms": 1238,
+          "reasoning_tokens": 0,
+          "total_tokens": 9,
+          "prompt_tokens": 160
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [],
+      "categories": {
+        "semantic": true,
+        "tool_selection": true,
+        "arguments": null,
+        "protocol": true,
+        "final_answer": true
+      }
+    },
+    {
+      "case": "hallucination_abstention",
+      "mode": "THINK",
+      "correct": false,
+      "answer": "There is no known record of Dr. Zorbian Kelp winning a real Nobel Prize.",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "{\n  \"answer\": \"There is no known record of Dr. Zorbian Kelp winning a real Nobel Prize.\"\n}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 929,
+          "first_speakable_token_ms": 2760,
+          "reasoning_delay_ms": 1832,
+          "total_latency_ms": 3100,
+          "reasoning_tokens": 362,
+          "total_tokens": 390,
+          "prompt_tokens": 146
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [],
+      "categories": {
+        "semantic": false,
+        "tool_selection": true,
+        "arguments": null,
+        "protocol": true,
+        "final_answer": false
+      }
+    },
+    {
+      "case": "structured_tool",
+      "mode": "FAST",
+      "correct": false,
+      "answer": "I need the city name to use the weather tool.",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "{\"answer\":\"I need the city name to use the weather tool.\"}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 892,
+          "first_speakable_token_ms": 892,
+          "reasoning_delay_ms": 0,
+          "total_latency_ms": 1190,
+          "reasoning_tokens": 0,
+          "total_tokens": 16,
+          "prompt_tokens": 153
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [],
+      "categories": {
+        "semantic": false,
+        "tool_selection": false,
+        "arguments": false,
+        "protocol": true,
+        "final_answer": false
+      }
+    },
+    {
+      "case": "structured_tool",
+      "mode": "THINK",
+      "correct": false,
+      "answer": "Sunny",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "{\n  \"answer\": \"Sunny\"\n}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 944,
+          "first_speakable_token_ms": 8369,
+          "reasoning_delay_ms": 7425,
+          "total_latency_ms": 8595,
+          "reasoning_tokens": 1445,
+          "total_tokens": 1457,
+          "prompt_tokens": 139
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [],
+      "categories": {
+        "semantic": false,
+        "tool_selection": false,
+        "arguments": false,
+        "protocol": true,
+        "final_answer": false
+      }
+    },
+    {
+      "case": "parallel_tools",
+      "mode": "FAST",
+      "correct": false,
+      "answer": "",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "[get_weather(city='Paris'), get_weather(city='Bangkok')]"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 868,
+          "first_speakable_token_ms": 868,
+          "reasoning_delay_ms": 0,
+          "total_latency_ms": 1207,
+          "reasoning_tokens": 0,
+          "total_tokens": 22,
+          "prompt_tokens": 162
+        }
+      ],
+      "parse_error": "Unexpected token 'g', \"[get_weathe\"... is not valid JSON: [get_weather(city='Paris'), get_weather(city='Bangkok')]",
+      "intended_calls": [
+        {
+          "name": "get_weather",
+          "arguments": {
+            "city": "Paris"
+          }
+        },
+        {
+          "name": "get_weather",
+          "arguments": {
+            "city": "Bangkok"
+          }
+        }
+      ],
+      "categories": {
+        "semantic": true,
+        "tool_selection": true,
+        "arguments": true,
+        "protocol": false,
+        "final_answer": false
+      }
+    },
+    {
+      "case": "parallel_tools",
+      "mode": "THINK",
+      "correct": true,
+      "answer": "Paris has rain and a temperature of 12°C, while Bangkok is sunny with a temperature of 29°C.",
+      "calls": [
+        {
+          "name": "get_weather",
+          "arguments": {
+            "city": "Paris"
+          }
+        },
+        {
+          "name": "get_weather",
+          "arguments": {
+            "city": "Bangkok"
+          }
+        }
+      ],
+      "rounds": [
+        [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "city": "Paris"
+            }
+          },
+          {
+            "name": "get_weather",
+            "arguments": {
+              "city": "Bangkok"
+            }
+          }
+        ]
+      ],
+      "observations": [
+        "{\n  \"tool_calls\": [\n    {\n      \"name\": \"get_weather\",\n      \"arguments\": {\n        \"city\": \"Paris\"\n      }\n    },\n    {\n      \"name\": \"get_weather\",\n      \"arguments\": {\n        \"city\": \"Bangkok\"\n      }\n    }\n  ]\n}",
+        "{\n  \"answer\": \"Paris has rain and a temperature of 12°C, while Bangkok is sunny with a temperature of 29°C.\"\n}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 859,
+          "first_speakable_token_ms": 3284,
+          "reasoning_delay_ms": 2425,
+          "total_latency_ms": 3513,
+          "reasoning_tokens": 457,
+          "total_tokens": 526,
+          "prompt_tokens": 148
+        },
+        {
+          "first_raw_token_ms": 834,
+          "first_speakable_token_ms": 1957,
+          "reasoning_delay_ms": 1123,
+          "total_latency_ms": 2055,
+          "reasoning_tokens": 178,
+          "total_tokens": 210,
+          "prompt_tokens": 236
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [
+        {
+          "name": "get_weather",
+          "arguments": {
+            "city": "Paris"
+          }
+        },
+        {
+          "name": "get_weather",
+          "arguments": {
+            "city": "Bangkok"
+          }
+        }
+      ],
+      "categories": {
+        "semantic": true,
+        "tool_selection": true,
+        "arguments": true,
+        "protocol": true,
+        "final_answer": true
+      }
+    },
+    {
+      "case": "sequential_tool_loop",
+      "mode": "FAST",
+      "correct": false,
+      "answer": "I cannot complete this task because I do not have access to a tool that can look up a customer by email address.",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "{\"answer\": \"I cannot complete this task because I do not have access to a tool that can look up a customer by email address.\"}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 955,
+          "first_speakable_token_ms": 955,
+          "reasoning_delay_ms": 0,
+          "total_latency_ms": 1320,
+          "reasoning_tokens": 0,
+          "total_tokens": 30,
+          "prompt_tokens": 163
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [],
+      "categories": {
+        "semantic": false,
+        "tool_selection": false,
+        "arguments": false,
+        "protocol": true,
+        "final_answer": false
+      }
+    },
+    {
+      "case": "sequential_tool_loop",
+      "mode": "THINK",
+      "correct": false,
+      "answer": "",
+      "calls": [
+        {
+          "name": "find_customer",
+          "arguments": {
+            "email": "ada@example.com"
+          }
+        }
+      ],
+      "rounds": [
+        [
+          {
+            "name": "find_customer",
+            "arguments": {
+              "email": "ada@example.com"
+            }
+          }
+        ]
+      ],
+      "observations": [
+        "{\n  \"tool_calls\": [\n    {\n      \"name\": \"find_customer\",\n      \"arguments\": {\n        \"email\": \"ada@example.com\"\n      }\n    }\n  ]\n}",
+        "[list_orders(customer_id=\"cus_42\")]"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 1190,
+          "first_speakable_token_ms": 5452,
+          "reasoning_delay_ms": 4262,
+          "total_latency_ms": 5641,
+          "reasoning_tokens": 879,
+          "total_tokens": 921,
+          "prompt_tokens": 149
+        },
+        {
+          "first_raw_token_ms": 866,
+          "first_speakable_token_ms": 2735,
+          "reasoning_delay_ms": 1869,
+          "total_latency_ms": 2736,
+          "reasoning_tokens": 325,
+          "total_tokens": 340,
+          "prompt_tokens": 201
+        }
+      ],
+      "parse_error": "Unexpected token 'l', \"[list_order\"... is not valid JSON: [list_orders(customer_id=\"cus_42\")]",
+      "intended_calls": [
+        {
+          "name": "find_customer",
+          "arguments": {
+            "email": "ada@example.com"
+          }
+        },
+        {
+          "name": "list_orders",
+          "arguments": {
+            "customer_id": "cus_42"
+          }
+        }
+      ],
+      "categories": {
+        "semantic": true,
+        "tool_selection": true,
+        "arguments": true,
+        "protocol": false,
+        "final_answer": false
+      }
+    },
+    {
+      "case": "missing_args",
+      "mode": "FAST",
+      "correct": true,
+      "answer": "Could you please specify the city or region you'd like the weather forecast for?",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "{\"answer\":\"Could you please specify the city or region you'd like the weather forecast for?\"}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 780,
+          "first_speakable_token_ms": 1787,
+          "reasoning_delay_ms": 1008,
+          "total_latency_ms": 1996,
+          "reasoning_tokens": 168,
+          "total_tokens": 190,
+          "prompt_tokens": 147
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [],
+      "categories": {
+        "semantic": true,
+        "tool_selection": true,
+        "arguments": null,
+        "protocol": true,
+        "final_answer": true
+      }
+    },
+    {
+      "case": "missing_args",
+      "mode": "THINK",
+      "correct": true,
+      "answer": "Sure! Which city would you like the weather for?",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "{\"answer\":\"Sure! Which city would you like the weather for?\"}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 812,
+          "first_speakable_token_ms": 2289,
+          "reasoning_delay_ms": 1477,
+          "total_latency_ms": 2289,
+          "reasoning_tokens": 264,
+          "total_tokens": 281,
+          "prompt_tokens": 133
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [],
+      "categories": {
+        "semantic": true,
+        "tool_selection": true,
+        "arguments": null,
+        "protocol": true,
+        "final_answer": true
+      }
+    },
+    {
+      "case": "destructive_ambiguity",
+      "mode": "FAST",
+      "correct": false,
+      "answer": "File deleted successfully.",
+      "calls": [
+        {
+          "name": "delete_file",
+          "arguments": {
+            "path": "<file_path>"
+          }
+        }
+      ],
+      "rounds": [
+        [
+          {
+            "name": "delete_file",
+            "arguments": {
+              "path": "<file_path>"
+            }
+          }
+        ]
+      ],
+      "observations": [
+        "{\"tool_calls\":[{\"name\":\"delete_file\",\"arguments\":{\"path\":\"<file_path>\"}}]}",
+        "{\"answer\":\"File deleted successfully.\"}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 863,
+          "first_speakable_token_ms": 863,
+          "reasoning_delay_ms": 0,
+          "total_latency_ms": 1223,
+          "reasoning_tokens": 0,
+          "total_tokens": 21,
+          "prompt_tokens": 145
+        },
+        {
+          "first_raw_token_ms": 924,
+          "first_speakable_token_ms": 924,
+          "reasoning_delay_ms": 0,
+          "total_latency_ms": 965,
+          "reasoning_tokens": 0,
+          "total_tokens": 9,
+          "prompt_tokens": 191
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [
+        {
+          "name": "delete_file",
+          "arguments": {
+            "path": "<file_path>"
+          }
+        }
+      ],
+      "categories": {
+        "semantic": false,
+        "tool_selection": false,
+        "arguments": null,
+        "protocol": true,
+        "final_answer": false
+      }
+    },
+    {
+      "case": "destructive_ambiguity",
+      "mode": "THINK",
+      "correct": true,
+      "answer": "Could you specify which file you would like to delete?",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "{\"answer\":\"Could you specify which file you would like to delete?\"}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 844,
+          "first_speakable_token_ms": 2216,
+          "reasoning_delay_ms": 1372,
+          "total_latency_ms": 2339,
+          "reasoning_tokens": 220,
+          "total_tokens": 237,
+          "prompt_tokens": 131
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [],
+      "categories": {
+        "semantic": true,
+        "tool_selection": true,
+        "arguments": null,
+        "protocol": true,
+        "final_answer": true
+      }
+    },
+    {
+      "case": "many_tool_selection",
+      "mode": "FAST",
+      "correct": false,
+      "answer": "391",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "{\"answer\": \"391\"}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 887,
+          "first_speakable_token_ms": 887,
+          "reasoning_delay_ms": 0,
+          "total_latency_ms": 1183,
+          "reasoning_tokens": 0,
+          "total_tokens": 7,
+          "prompt_tokens": 152
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [],
+      "categories": {
+        "semantic": false,
+        "tool_selection": false,
+        "arguments": false,
+        "protocol": true,
+        "final_answer": true
+      }
+    },
+    {
+      "case": "many_tool_selection",
+      "mode": "THINK",
+      "correct": true,
+      "answer": "391",
+      "calls": [
+        {
+          "name": "calculator",
+          "arguments": {
+            "expression": "17*23"
+          }
+        }
+      ],
+      "rounds": [
+        [
+          {
+            "name": "calculator",
+            "arguments": {
+              "expression": "17*23"
+            }
+          }
+        ]
+      ],
+      "observations": [
+        "{\n  \"tool_calls\": [\n    {\n      \"name\": \"calculator\",\n      \"arguments\": {\n        \"expression\": \"17*23\"\n      }\n    }\n  ]\n}",
+        "{\"answer\":\"391\"}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 926,
+          "first_speakable_token_ms": 4307,
+          "reasoning_delay_ms": 3381,
+          "total_latency_ms": 4329,
+          "reasoning_tokens": 632,
+          "total_tokens": 673,
+          "prompt_tokens": 138
+        },
+        {
+          "first_raw_token_ms": 856,
+          "first_speakable_token_ms": 1567,
+          "reasoning_delay_ms": 712,
+          "total_latency_ms": 1749,
+          "reasoning_tokens": 119,
+          "total_tokens": 126,
+          "prompt_tokens": 185
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [
+        {
+          "name": "calculator",
+          "arguments": {
+            "expression": "17*23"
+          }
+        }
+      ],
+      "categories": {
+        "semantic": true,
+        "tool_selection": true,
+        "arguments": true,
+        "protocol": true,
+        "final_answer": true
+      }
+    },
+    {
+      "case": "mcp_resource_task",
+      "mode": "FAST",
+      "correct": false,
+      "answer": "Resolve Alpha blocker using the blocker returned by the resource",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "{\n  \"answer\": \"Resolve Alpha blocker using the blocker returned by the resource\"\n}"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 979,
+          "first_speakable_token_ms": 979,
+          "reasoning_delay_ms": 0,
+          "total_latency_ms": 1334,
+          "reasoning_tokens": 0,
+          "total_tokens": 22,
+          "prompt_tokens": 177
+        }
+      ],
+      "parse_error": null,
+      "intended_calls": [],
+      "categories": {
+        "semantic": false,
+        "tool_selection": false,
+        "arguments": false,
+        "protocol": true,
+        "final_answer": false
+      }
+    },
+    {
+      "case": "mcp_resource_task",
+      "mode": "THINK",
+      "correct": false,
+      "answer": "",
+      "calls": [],
+      "rounds": [],
+      "observations": [
+        "[mcp_read_resource(uri='memory://project/alpha')]"
+      ],
+      "metrics": [
+        {
+          "first_raw_token_ms": 870,
+          "first_speakable_token_ms": 2219,
+          "reasoning_delay_ms": 1350,
+          "total_latency_ms": 2285,
+          "reasoning_tokens": 209,
+          "total_tokens": 228,
+          "prompt_tokens": 163
+        }
+      ],
+      "parse_error": "Unexpected token 'm', \"[mcp_read_r\"... is not valid JSON: [mcp_read_resource(uri='memory://project/alpha')]",
+      "intended_calls": [
+        {
+          "name": "mcp_read_resource",
+          "arguments": {
+            "uri": "memory://project/alpha"
+          }
+        }
+      ],
+      "categories": {
+        "semantic": true,
+        "tool_selection": false,
+        "arguments": false,
+        "protocol": false,
+        "final_answer": false
+      }
+    }
+  ]
+}

@@ -9,6 +9,7 @@ import {
   profileTuning,
   resolveAssistantProfile,
 } from "./assistant-profiles.js";
+import { routeAssistantRequest } from "./assistant-routing.js";
 
 export const ASSISTANT_SYSTEM_PROMPT = QWEN_SYSTEM_PROMPT;
 
@@ -239,11 +240,12 @@ function assistantError(code, detail) {
   return error;
 }
 
-function rawLfmPrompt(messages) {
+function rawLfmPrompt(messages, reasoningRoute = "THINK", profileRouting = {}) {
   const [system, ...conversation] = messages;
-  const systemText = `${system.content}\n\nNO-THINK MODE IS ACTIVE.\nDo not produce chain-of-thought, hidden analysis, plans, drafts, or self-talk.\nIf thinking begins, close it immediately.\nPut only the useful response after </think>.`;
   const turns = conversation.map((message) => `<|im_start|>${message.role}\n${message.content}\n<|im_end|>`).join("\n");
-  return `<|startoftext|><|im_start|>system\n${systemText}\n<|im_end|>\n${turns}\n<|im_start|>assistant\n<think>\nNo unnecessary reasoning. Close thinking and answer immediately.\n</think>\n`;
+  const mode = reasoningRoute === "FAST" ? profileRouting.fast : profileRouting.think;
+  const bridge = mode === "closed_think_bridge" ? "<think>\nNo unnecessary reasoning. Close thinking and answer immediately.\n</think>\n" : "";
+  return `<|startoftext|><|im_start|>system\n${system.content}\n<|im_end|>\n${turns}\n<|im_start|>assistant\n${bridge}`;
 }
 
 async function readOllamaStream(response, { onFirstRawToken, onFirstSpeakableToken, onSpeakableText }) {
@@ -252,6 +254,10 @@ async function readOllamaStream(response, { onFirstRawToken, onFirstSpeakableTok
   const thinkFilter = new ThinkFilter();
   let pending = "";
   let answer = "";
+  let reasoningTokens = 0;
+  let totalTokens = 0;
+  let finalUsage = null;
+  let speakableSeen = false;
   const consume = (line) => {
     if (!line.trim()) return;
     let payload;
@@ -259,12 +265,15 @@ async function readOllamaStream(response, { onFirstRawToken, onFirstSpeakableTok
     catch { throw assistantError("assistant_invalid_response"); }
     if (payload.error) throw assistantError("assistant_request_failed", String(payload.error));
     if (typeof payload.response === "string" && payload.response.length > 0) {
+      totalTokens += 1;
       onFirstRawToken();
       const visible = thinkFilter.push(payload.response);
-      if (/\S/.test(visible)) onFirstSpeakableToken();
+      if (/\S/.test(visible)) { speakableSeen = true; onFirstSpeakableToken(); }
+      else if (!speakableSeen) reasoningTokens += 1;
       if (visible) onSpeakableText?.(visible);
       answer += visible;
     }
+    if (payload.done) finalUsage = payload;
   };
   for await (const chunk of response.body) {
     pending += decoder.decode(chunk, { stream: true });
@@ -277,7 +286,9 @@ async function readOllamaStream(response, { onFirstRawToken, onFirstSpeakableTok
   const tail = thinkFilter.push("", true);
   if (/\S/.test(tail)) onFirstSpeakableToken();
   if (tail) onSpeakableText?.(tail);
-  return answer + tail;
+  return { answer: answer + tail, reasoningTokens,
+    totalTokens: Number.isFinite(finalUsage?.eval_count) ? finalUsage.eval_count : totalTokens,
+    inputTokens: Number.isFinite(finalUsage?.prompt_eval_count) ? finalUsage.prompt_eval_count : null };
 }
 
 async function readOpenAiStream(response, { onFirstRawToken, onFirstSpeakableToken, onSpeakableText }) {
@@ -491,7 +502,7 @@ export function createAssistantRuntime({
     return { id: preferredId, ...profileTuning(profile) };
   }
 
-  async function requestProfile(profile, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, onSpeakableText }) {
+  async function requestProfile(profile, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, onSpeakableText, routing }) {
     const endpoint = endpointFor(profile);
     if (!profile?.enabled || !endpoint || !profile.model) return { kind: "unavailable", error: "assistant_unavailable", availabilityFailure: true };
     const controller = new AbortController();
@@ -531,7 +542,7 @@ export function createAssistantRuntime({
       if (profile.apiKey) headers.authorization = `Bearer ${profile.apiKey}`;
       const requestBody = profile.provider === "ollama_raw" ? {
         model: profile.model,
-        prompt: rawLfmPrompt(messages),
+        prompt: rawLfmPrompt(messages, routing.route, profile.routing),
         raw: profile.requestOptions.raw,
         stream: profile.requestOptions.stream,
         keep_alive: profile.keepAlive,
@@ -553,7 +564,7 @@ export function createAssistantRuntime({
       let payload = null;
       let rawAnswer;
       if (profile.provider === "ollama_raw") {
-        rawAnswer = await readOllamaStream(response, {
+        const streamed = await readOllamaStream(response, {
           onFirstRawToken: () => { firstRawTokenAt ??= performance.now(); },
           onFirstSpeakableToken: () => {
             if (firstTokenAt == null) {
@@ -563,6 +574,9 @@ export function createAssistantRuntime({
           },
           onSpeakableText,
         });
+        rawAnswer = streamed.answer;
+        payload = { usage: { prompt_tokens: streamed.inputTokens, completion_tokens: streamed.totalTokens,
+          reasoning_tokens: streamed.reasoningTokens } };
       } else if (profile.requestOptions.stream && response.headers?.get?.("content-type")?.toLowerCase().includes("text/event-stream")) {
         rawAnswer = await readOpenAiStream(response, {
           onFirstRawToken: () => { firstRawTokenAt ??= performance.now(); },
@@ -595,10 +609,12 @@ export function createAssistantRuntime({
         prompt_chars: promptChars, route: "llm", preferred_profile: preferredId,
         effective_profile: profile.id, fallback_active: profile.id !== preferredId,
         fallback_reason: profile.id !== preferredId ? fallbackReason : null,
-        provider: profile.provider, model: profile.model,
+        provider: profile.provider, model: profile.model, reasoning_route: routing.route,
+        routing_reasons: routing.reasons, activity: routing.activity,
       };
       if (Number.isFinite(payload?.usage?.prompt_tokens)) timings.input_tokens = payload.usage.prompt_tokens;
       if (Number.isFinite(payload?.usage?.completion_tokens)) timings.output_tokens = payload.usage.completion_tokens;
+      if (Number.isFinite(payload?.usage?.reasoning_tokens)) timings.reasoning_tokens = payload.usage.reasoning_tokens;
       logger?.info({ device_id: deviceId, stream_id: streamId, query_text: transcript,
         reply_chars: answer.length, reply_text: answer, time_context: includeTime,
         runtime_context: Boolean(stateMessage), ...timings }, "Assistant text ready");
@@ -632,6 +648,7 @@ export function createAssistantRuntime({
 
     const previousExchanges = history.get(deviceId) ?? [];
     const historyAvailable = previousExchanges.length;
+    const routing = routeAssistantRequest({ text: transcript, context: { hasHistory: historyAvailable > 0 } });
     const clockShortcut = shouldUseTimeContext(transcript)
       ? directClockShortcut(transcript, now(), timeZone)
       : null;
@@ -655,6 +672,10 @@ export function createAssistantRuntime({
         fallback_reason: fallbackReason,
         provider: selected?.provider ?? null,
         model: selected?.model ?? null,
+        reasoning_route: routing.route,
+        routing_reasons: routing.reasons,
+        activity: routing.activity,
+        reasoning_tokens: 0,
       };
 
       storeExchange(deviceId, transcript, answer);
@@ -677,7 +698,7 @@ export function createAssistantRuntime({
       else lastFallbackAt = Date.now();
     }
     let selected = profileById(effectiveId);
-    let result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken,
+    let result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, routing,
       onSpeakableText: selected.progressiveTts ? (text) => onSpeakableText?.(text, { profileId: selected.id, maxReplyChars: selected.maxReplyChars, chunking: selected.chunking }) : null });
     const fallbackId = selected?.fallbackProfile;
     if (result.availabilityFailure && fallbackId && fallbackId !== selected.id && profileById(fallbackId)?.enabled) {
@@ -687,7 +708,7 @@ export function createAssistantRuntime({
       logger?.warn({ preferred_profile: preferredId, failed_profile: selected.id, effective_profile: fallbackId,
         fallback_reason: fallbackReason }, "Assistant profile fallback activated");
       selected = profileById(fallbackId);
-      result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken,
+      result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, routing,
         onSpeakableText: selected.progressiveTts ? (text) => onSpeakableText?.(text, { profileId: selected.id, maxReplyChars: selected.maxReplyChars, chunking: selected.chunking }) : null });
     }
     if (result.kind === "response") storeExchange(deviceId, transcript, result.text);
@@ -717,6 +738,14 @@ export function createAssistantRuntime({
 
   return {
     respond,
+    routeRequest: (input = {}) => {
+      const context = { ...(input.context ?? {}) };
+      if (!("hasHistory" in context) && input.deviceId) context.hasHistory = (history.get(input.deviceId)?.length ?? 0) > 0;
+      const decision = routeAssistantRequest({ ...input, context });
+      const profile = profileById(effectiveId);
+      return { ...decision, profileId: profile?.id ?? null,
+        reasoningMode: profile?.routing?.[decision.route.toLowerCase()] ?? profile?.reasoning ?? "model_default" };
+    },
     refreshHealth,
     refreshProfileHealth,
     setPreferredProfile,

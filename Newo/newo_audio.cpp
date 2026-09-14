@@ -150,9 +150,9 @@ bool NewoAudio::setPlaybackActive(bool active) {
   if (!playbackSuppressed_) return true;
   playbackSuppressed_ = false;
   if (awaitingAssistantCompletion_) {
-    // Physical speaker teardown is itself an authoritative terminal boundary;
-    // do not wait for the matching cloud idle message to make a round trip.
-    completeAssistantTurn();
+    // One assistant turn may contain a progress acknowledgement followed by
+    // the real answer. Keep WakeNet released between physical speaker clips;
+    // the server's assistant_state=idle event is the terminal boundary.
   } else if (enabled_ && state_ != NewoVoiceState::STREAMING) {
     state_ = NewoVoiceState::ARMED;
     if (!startWakeNet()) state_ = NewoVoiceState::OFF;
