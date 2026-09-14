@@ -126,7 +126,23 @@ export function createAgentToolsService({ config, provider, logger = console }) 
         tool = "web.search";
         const input = parseSearch(await readJson(request, config.bodyLimitBytes));
         const results = await provider.search(input, controller.signal);
-        const body = { request_id: requestId, tool, provider: provider.name, query: input.query, results: results.map((item) => ({ ...item, fetched_at: fetchedAt })), result_count: results.length, elapsed_ms: Math.round(performance.now() - started) };
+        const body = {
+          request_id: requestId,
+          tool,
+          provider: provider.name,
+          query: input.query,
+          results: results.map((item) => ({
+            title: item.title,
+            url: item.url,
+            snippet: item.snippet,
+            ...(item.content !== undefined ? { content: item.content } : {}),
+            score: item.score,
+            published_at: item.publishedAt,
+            fetched_at: fetchedAt,
+          })),
+          result_count: results.length,
+          elapsed_ms: Math.round(performance.now() - started),
+        };
         send(response, 200, body, limitHeaders);
         logger.info(JSON.stringify({ event: "tool_request", request_id: requestId, tool, provider: provider.name, status: 200, elapsed_ms: body.elapsed_ms, result_count: results.length }));
         return;
