@@ -69,6 +69,10 @@ class Worker:
         while self.recognizer.is_ready(stream):
             self.recognizer.decode_stream(stream)
 
+    def _text(self, stream):
+        result = self.recognizer.get_result(stream)
+        return ((result if isinstance(result, str) else result.text) or "").strip()
+
     def create(self):
         sid = self.next_session
         self.next_session += 1
@@ -77,7 +81,7 @@ class Worker:
 
     def emit_result(self, sid, allow_endpoint=True):
         session = self.sessions[sid]
-        text = (self.recognizer.get_result(session["stream"]).text or "").strip()
+        text = self._text(session["stream"])
         if text and text != session["partial"]:
             session["partial"] = text
             send({"type": "event", "session_id": sid, "event": {"type": "partial", "stage": "partial", "text": text}})
@@ -107,7 +111,7 @@ class Worker:
         stream.input_finished()
         self._decode(stream)
         self.emit_result(sid, False)
-        text = (self.recognizer.get_result(stream).text or "").strip()
+        text = self._text(stream)
         if text and text != session["final"]:
             send({"type": "event", "session_id": sid, "event": {"type": "final", "stage": "first_pass_final", "text": text}})
         del self.sessions[sid]
