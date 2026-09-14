@@ -130,10 +130,11 @@ export class PythonSherpaAsrBackend {
     if (!child) return;
     try { child.stdin.write(`${JSON.stringify({ type: "shutdown" })}\n`); } catch {}
     const exited = new Promise((resolve) => {
-      child.once("exit", resolve);
-      setTimeout(resolve, 2_000).unref?.();
+      if (child.exitCode !== null || child.signalCode !== null) { resolve(); return; }
+      const timer = setTimeout(resolve, 2_000);
+      child.once("exit", () => { clearTimeout(timer); resolve(); });
     });
-    child.kill();
+    if (child.exitCode === null && child.signalCode === null) child.kill();
     await exited;
   }
 }

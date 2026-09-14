@@ -178,13 +178,16 @@ The streaming adapter decodes every ready chunk, emits only changed partial text
 ```json
 {
   "type": "onnx_rnn",
+  "interface": "online_rnn_stateful_v1",
   "model": "model.int8.onnx",
   "tokens_sha256": "sha256 of the active ASR tokens.txt",
   "bpe_vocab_sha256": "sha256 of the active ASR bpe.vocab"
 }
 ```
 
-Newo verifies the manifest, model path, and both vocabulary hashes before enabling the LM. Missing, malformed, or incompatible artifacts leave normal Sherpa modified-beam decoding active. A native LM load failure is retried once without the LM inside the worker. `SHERPA_READY` reports the requested/active LM state, reason, type, path, scale, active paths, RSS, and CPU counters. Adding or swapping a compatible LM requires only replacing the external directory, updating environment values, and restarting `newo-cloud`.
+`online_rnn_stateful_v1` is the token-by-token shallow-fusion interface: the ONNX graph must accept token IDs plus LSTM `h`/`c` state, return vocabulary scores plus next `h`/`c`, and declare `num_layers`, `hidden_size`, and `sos_id` metadata. Icefall's similarly named `no-state-*.onnx` files score complete sequences and are not compatible with Sherpa online shallow fusion.
+
+Newo verifies the manifest interface, model path, and both vocabulary hashes before enabling the LM. Missing, malformed, or incompatible artifacts leave normal Sherpa modified-beam decoding active. A Python/native LM startup failure closes that worker before the existing Node Sherpa fallback is loaded. `SHERPA_READY` reports the requested/active LM state, reason, type, path, scale, active paths, RSS, and CPU counters. Adding or swapping a compatible LM requires only replacing the external directory, updating environment values, and restarting `newo-cloud`.
 
 The released Node addon does not expose online LM configuration, so `VOICE_ASR_BACKEND=sherpa` reports an LM request as `runtime_unsupported`. The optional Python backend uses `OnlineRecognizer.from_transducer`, `modified_beam_search`, and `lm_shallow_fusion=true`. Install its isolated runtime with `python3 -m venv /srv/newo-asr-python/.venv && /srv/newo-asr-python/.venv/bin/pip install -r requirements-sherpa-python.txt`, then set `VOICE_ASR_PYTHON_EXECUTABLE` to that venv interpreter. `SHERPA_READY` and `SHERPA_PYTHON_DECODE` report worker RSS, CPU time, decode latency, active paths, and effective LM state. The existing voice telemetry continues to report batching/backpressure, first partial, and final latency.
 

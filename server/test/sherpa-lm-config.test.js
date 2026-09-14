@@ -13,7 +13,7 @@ test("external LM requires exact active token and BPE hashes", () => {
   const root = mkdtempSync(path.join(tmpdir(), "newo-lm-")); const asr = path.join(root, "asr"); const lm = path.join(root, "lm");
   mkdirSync(asr); mkdirSync(lm); writeFileSync(path.join(asr, "tokens.txt"), "tokens"); writeFileSync(path.join(asr, "bpe.vocab"), "bpe");
   writeFileSync(path.join(lm, "model.int8.onnx"), "onnx");
-  writeFileSync(path.join(lm, "lm.json"), JSON.stringify({ type: "onnx_rnn", model: "model.int8.onnx",
+  writeFileSync(path.join(lm, "lm.json"), JSON.stringify({ type: "onnx_rnn", interface: "online_rnn_stateful_v1", model: "model.int8.onnx",
     tokens_sha256: hash("tokens"), bpe_vocab_sha256: hash("bpe") }));
   const valid = resolveSherpaLmConfig({ enabled: true, lmPath: lm, modelDirectory: asr, scale: 0.2, runtimeSupportsOnlineLm: true });
   assert.equal(valid.active, true); assert.equal(valid.scale, 0.2);
@@ -24,10 +24,18 @@ test("external LM requires exact active token and BPE hashes", () => {
 test("released Node runtime cannot silently claim online LM support", () => {
   const root = mkdtempSync(path.join(tmpdir(), "newo-lm-runtime-")); const asr = path.join(root, "asr"); const lm = path.join(root, "lm");
   mkdirSync(asr); mkdirSync(lm); writeFileSync(path.join(asr, "tokens.txt"), "tokens"); writeFileSync(path.join(asr, "bpe.vocab"), "bpe");
-  writeFileSync(path.join(lm, "model.onnx"), "onnx"); writeFileSync(path.join(lm, "lm.json"), JSON.stringify({ type: "onnx_rnn",
+  writeFileSync(path.join(lm, "model.onnx"), "onnx"); writeFileSync(path.join(lm, "lm.json"), JSON.stringify({ type: "onnx_rnn", interface: "online_rnn_stateful_v1",
     model: "model.onnx", tokens_sha256: hash("tokens"), bpe_vocab_sha256: hash("bpe") }));
   const result = resolveSherpaLmConfig({ enabled: true, lmPath: lm, modelDirectory: asr });
   assert.equal(result.active, false); assert.equal(result.reason, "runtime_unsupported");
+});
+
+test("external LM rejects offline no-state manifests before starting a runtime", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "newo-lm-interface-")); const asr = path.join(root, "asr"); const lm = path.join(root, "lm");
+  mkdirSync(asr); mkdirSync(lm); writeFileSync(path.join(asr, "tokens.txt"), "tokens"); writeFileSync(path.join(asr, "bpe.vocab"), "bpe");
+  writeFileSync(path.join(lm, "no-state.onnx"), "onnx"); writeFileSync(path.join(lm, "lm.json"), JSON.stringify({ type: "onnx_rnn",
+    model: "no-state.onnx", tokens_sha256: hash("tokens"), bpe_vocab_sha256: hash("bpe") }));
+  assert.equal(resolveSherpaLmConfig({ enabled: true, lmPath: lm, modelDirectory: asr, runtimeSupportsOnlineLm: true }).reason, "manifest_incompatible");
 });
 
 test("missing or disabled LM fails open and beam width 8 remains configurable", () => {

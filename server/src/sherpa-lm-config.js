@@ -15,7 +15,8 @@ export function resolveSherpaLmConfig({ enabled = false, lmPath = "", type = "on
     const manifestPath = path.join(directory, "lm.json");
     if (!existsSync(manifestPath)) return inactive("manifest_missing");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    if (manifest.type !== type || typeof manifest.model !== "string") return inactive("manifest_incompatible");
+    if (manifest.type !== type || manifest.interface !== "online_rnn_stateful_v1" || typeof manifest.model !== "string")
+      return inactive("manifest_incompatible");
     const model = path.resolve(directory, manifest.model);
     if (!model.startsWith(`${directory}${path.sep}`) || !existsSync(model)) return inactive("model_missing");
     const tokens = path.resolve(modelDirectory, "tokens.txt");

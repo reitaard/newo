@@ -11,6 +11,8 @@ class FakePython extends EventEmitter {
     this.stdout = new PassThrough();
     this.stderr = new PassThrough();
     this.killed = false;
+    this.exitCode = null;
+    this.signalCode = null;
     this.stdin = new PassThrough();
     let input = "";
     this.stdin.on("data", (chunk) => {
@@ -31,7 +33,7 @@ class FakePython extends EventEmitter {
     });
   }
   reply(message) { setImmediate(() => this.stdout.write(`${JSON.stringify(message)}\n`)); }
-  kill() { this.killed = true; this.emit("exit", 0, null); }
+  kill() { this.killed = true; this.exitCode = 0; this.emit("exit", 0, null); }
 }
 
 test("Python Sherpa proxy preserves streaming partial and final semantics", async () => {
@@ -69,4 +71,15 @@ test("Python proxy rejects incompatible PCM before starting a worker", async () 
   const backend = new PythonSherpaAsrBackend({}, { spawnProcess: () => { spawned = true; return new FakePython(); } });
   await assert.rejects(backend.createStream({ format: { sampleRate: 8000, channels: 1, bitsPerSample: 16 }, onEvent() {} }), /mono 16 kHz/);
   assert.equal(spawned, false);
+});
+
+test("Python proxy closes promptly after the worker already exited", async () => {
+  const child = new FakePython();
+  child.exitCode = 134;
+  const backend = new PythonSherpaAsrBackend({}, { spawnProcess: () => child, logger: { info() {}, warn() {}, error() {} } });
+  backend.child = child;
+  const started = Date.now();
+  await backend.close();
+  assert.ok(Date.now() - started < 100, "close should not wait for an exit event that already happened");
+  assert.equal(child.killed, false);
 });
