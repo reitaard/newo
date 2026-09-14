@@ -1,0 +1,20 @@
+module.exports = {
+  apps: [{
+    name: "agent-tools",
+    cwd: "/srv/agent-tools",
+    script: "src/index.js",
+    interpreter: "node",
+    node_args: "--env-file=/srv/agent-tools/.env",
+    exec_mode: "fork",
+    instances: 1,
+    autorestart: true,
+    watch: false,
+    max_memory_restart: "256M",
+    min_uptime: "10s",
+    restart_delay: 3000,
+    out_file: "/var/log/agent-tools-out.log",
+    error_file: "/var/log/agent-tools-error.log",
+    merge_logs: true,
+    time: true,
+  }],
+};
