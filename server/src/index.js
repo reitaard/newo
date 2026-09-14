@@ -439,7 +439,12 @@ function scheduleOfflineNotification(deviceId, state, ws) {
 app.get("/", async () => ({ service: "newo-cloud", status: "ok" }));
 app.get("/health", async () => {
   const device = getDeviceSnapshot();
-  return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), barge_in_available: false, track_reconciliation: trackReconciler.status(), device: { connected: device.connected, id: device.id, connected_at: device.connected_at, last_seen: device.last_seen, firmware: device.hello?.firmware ?? null, autonomy_revision: device.hello?.autonomy_revision ?? null, chip: device.hello?.chip ?? null } };
+  const assistant = assistantTurnRuntime.getTelemetry();
+  return { status: "ok", service: "newo-cloud", uptime_s: Math.floor(process.uptime()), telegram_enabled: Boolean(env.TELEGRAM_BOT_TOKEN), barge_in_available: false,
+    assistant: { status: assistant.status, preferred_profile: assistant.preferred_profile, effective_profile: assistant.effective_profile,
+      fallback_active: assistant.fallback_active, provider: assistant.provider, model: assistant.model, online: assistant.online,
+      profile_health: assistant.profile_health },
+    track_reconciliation: trackReconciler.status(), device: { connected: device.connected, id: device.id, connected_at: device.connected_at, last_seen: device.last_seen, firmware: device.hello?.firmware ?? null, autonomy_revision: device.hello?.autonomy_revision ?? null, chip: device.hello?.chip ?? null } };
 });
 app.post("/track/telemetry/v1", async (request, reply) => {
   if (!env.TRACK_TELEMETRY_TOKEN) return reply.code(503).send({ error: "track telemetry disabled" });

@@ -444,7 +444,7 @@ export function createAssistantRuntime({
       return health.get(id);
     }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), Math.min(profile.timeoutMs, 1_000));
+    const timer = setTimeout(() => controller.abort(), Math.min(profile.timeoutMs, profile.health.timeoutMs ?? 1_000));
     try {
       const headers = profile.apiKey ? { authorization: `Bearer ${profile.apiKey}` } : undefined;
       const response = await requestImpl(endpointFor(profile, true), { headers, signal: controller.signal });

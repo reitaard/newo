@@ -33,6 +33,7 @@ test("built-in profiles keep prompts, settings, and fallbacks isolated", () => {
   assert.deepEqual(lfm.routing, { fast: "closed_think_bridge", think: "native_reasoning" });
   assert.equal(lfm.maxOutputTokens, 2_048);
   assert.equal(lfm.timeoutMs, 30_000);
+  assert.equal(lfm.health.timeoutMs, 3_000);
   assert.equal(lfm.maxReplyChars, 450);
   assert.equal(lfm.fallbackProfile, QWEN_PROFILE_ID);
   assert.deepEqual(qwen.sampling, { temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0 });
@@ -41,6 +42,7 @@ test("built-in profiles keep prompts, settings, and fallbacks isolated", () => {
   assert.deepEqual(qwen.routing, { fast: "model_default", think: "model_default" });
   assert.equal(qwen.apiKey, "secret");
   assert.equal(qwen.fallbackProfile, null);
+  assert.equal(qwen.health.timeoutMs, 1_000);
   assert.equal(Object.hasOwn(qwen, "keep_alive"), false);
 });
 
