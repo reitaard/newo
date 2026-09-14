@@ -333,7 +333,8 @@ class WavCapture {
   async close() {
     if (!this.handle) return;
     await this.writeChain;
-    await this.handle.write(wavHeader({ ...this.format, dataBytes: this.bytes }), 0);
+    const header = wavHeader({ ...this.format, dataBytes: this.bytes });
+    await this.handle.write(header, 0, header.length, 0);
     await this.handle.close();
     this.handle = null;
   }

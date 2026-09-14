@@ -40,7 +40,13 @@ function readPcm16MonoWav(buffer) {
     const size = buffer.readUInt32LE(offset + 4);
     const dataStart = offset + 8;
     if (id === "fmt ") format = { encoding: buffer.readUInt16LE(dataStart), channels: buffer.readUInt16LE(dataStart + 2), sampleRate: buffer.readUInt32LE(dataStart + 4), bitsPerSample: buffer.readUInt16LE(dataStart + 14) };
-    if (id === "data") pcm = buffer.subarray(dataStart, dataStart + size);
+    if (id === "data") {
+      // Older development captures appended their finalized header instead of
+      // rewriting byte zero. Recover their PCM while keeping new WAVs strict.
+      const appendedHeader = size === 0 && buffer.toString("ascii", buffer.length - 44, buffer.length - 40) === "RIFF" ? 44 : 0;
+      const dataSize = size || Math.max(0, buffer.length - dataStart - appendedHeader);
+      pcm = buffer.subarray(dataStart, dataStart + dataSize);
+    }
     offset = dataStart + size + (size % 2);
   }
   if (!format || !pcm || format.encoding !== 1 || format.channels !== 1 || format.sampleRate !== 16_000 || format.bitsPerSample !== 16) {
