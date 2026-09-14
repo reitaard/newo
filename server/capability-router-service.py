@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -46,10 +47,16 @@ def normalize_prediction(vector, labels, abstain_label, source_needs, latency_ms
 class RouterRuntime:
     def __init__(self, model_path, registry_path):
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        os.environ.setdefault("OMP_NUM_THREADS", "1")
+        os.environ.setdefault("MKL_NUM_THREADS", "1")
         import numpy as np
+        import torch
         from setfit import SetFitModel
 
         self.np = np
+        torch.set_num_threads(1)
+        torch.set_num_interop_threads(1)
+        self.inference_lock = threading.Lock()
         self.abstain_label, capability_labels, self.source_needs = load_registry(registry_path)
         self.model_path = str(Path(model_path).resolve())
         started = time.perf_counter()
@@ -65,7 +72,8 @@ class RouterRuntime:
 
     def route(self, text):
         started = time.perf_counter()
-        values = self.model.predict_proba([text], as_numpy=True, show_progress_bar=False)
+        with self.inference_lock:
+            values = self.model.predict_proba([text], as_numpy=True, show_progress_bar=False)
         latency_ms = (time.perf_counter() - started) * 1000
         vector = values if self.np.asarray(values).ndim == 1 else values[0]
         return normalize_prediction(vector, self.labels, self.abstain_label, self.source_needs, latency_ms)

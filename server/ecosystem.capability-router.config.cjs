@@ -7,6 +7,7 @@ module.exports = {
     script: "capability-router-service.py",
     interpreter: "/srv/newo-capability-router/.venv/bin/python",
     args: `--model-path ${modelDir} --registry config/capability-router.json`,
+    env: { CUDA_VISIBLE_DEVICES: "", OMP_NUM_THREADS: "1", MKL_NUM_THREADS: "1" },
     exec_mode: "fork",
     instances: 1,
     autorestart: true,
