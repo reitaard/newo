@@ -52,6 +52,34 @@ The built-in `qwen3:0.6b` (`qwen`) profile preserves the private OpenAI-chat-com
 
 When `ASSISTANT_WEB_TOOLS_ENABLED=true`, only the LFM profile receives the native `web_search` and `web_read` definitions. Newo validates the model's native LFM tool-call envelope, permits at most two searches and two reads in one bounded turn, and returns tool failures explicitly before producing the final answer. The separate bearer token stays in `/srv/agent-tools/.env`; Newo reads only its `AGENT_TOOLS_TOKEN` value through `AGENT_TOOLS_TOKEN_FILE` and never adds it to prompts, schemas, telemetry, or repository configuration.
 
+### Capability router
+
+The optional frozen MiniLM + SetFit v2 router runs as the separate, persistent CPU-only `newo-capability-router` PM2 process. Newo calls it exactly once for each accepted final transcript before LFM generation. Its trained `__abstain__` class is authoritative; confidence and margin are diagnostics only. Capability selection controls only which already-available tools are exposed and never authorizes an action. FAST/THINK selection remains independent.
+
+Model weights are an external runtime artifact and must exist at `CAPABILITY_ROUTER_MODEL_DIR` (normally `/srv/newo-models/capability-router-v2`). When the model or service is unavailable, Newo logs a structured fallback and preserves the prior LFM tool exposure instead of failing the turn.
+
+VPS preparation after the frozen artifact has arrived:
+
+```bash
+python3 -m venv /srv/newo-capability-router/.venv
+/srv/newo-capability-router/.venv/bin/pip install -r /opt/newo/server/requirements-capability-router.txt
+cd /opt/newo/server
+set -a && source .env && set +a
+pm2 start ecosystem.capability-router.config.cjs --only newo-capability-router
+curl -fsS http://127.0.0.1:8791/healthz
+pm2 restart newo-cloud --update-env
+pm2 save
+```
+
+Expected configuration:
+
+```dotenv
+CAPABILITY_ROUTER_ENABLED=true
+CAPABILITY_ROUTER_BASE_URL=http://127.0.0.1:8791
+CAPABILITY_ROUTER_TIMEOUT_MS=75
+CAPABILITY_ROUTER_MODEL_DIR=/srv/newo-models/capability-router-v2
+```
+
 If the preferred LFM profile is unavailable because of a provider, network, HTTP, or timeout failure, one turn retries once with the complete Qwen profile. The LFM preference is retained and automatically recovered after its cooldown health check succeeds. Empty or low-quality answers do not trigger fallback. Both streaming providers feed the same profile-aware progressive-TTS segmenter; Ollama calls `/api/generate` directly without another proxy.
 
 ### Speaker TTS

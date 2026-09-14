@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "abstain_label": "__abstain__",
+  "capabilities": [
+    { "id": "knowledge", "source_need": "stable", "tool_policy": "none" },
+    { "id": "calculator", "source_need": "stable", "tool_policy": "none" },
+    { "id": "unit.convert", "source_need": "stable", "tool_policy": "none" },
+    { "id": "time.current", "source_need": "live", "tool_policy": "none" },
+    { "id": "time.convert", "source_need": "stable", "tool_policy": "none" },
+    { "id": "currency.exchange", "source_need": "live", "tool_policy": "web_fallback" },
+    { "id": "weather.current", "source_need": "live", "tool_policy": "web_fallback" },
+    { "id": "weather.forecast", "source_need": "live", "tool_policy": "web_fallback" },
+    { "id": "sports.score", "source_need": "live", "tool_policy": "web_fallback" },
+    { "id": "sports.schedule", "source_need": "live", "tool_policy": "web_fallback" },
+    { "id": "market.quote", "source_need": "live", "tool_policy": "web_fallback" },
+    { "id": "web.search", "source_need": "live", "tool_policy": "web_search" },
+    { "id": "web.read", "source_need": "live", "tool_policy": "web_read" },
+    { "id": "memory.retrieve", "source_need": "internal", "tool_policy": "memory" },
+    { "id": "device.state", "source_need": "internal", "tool_policy": "device" },
+    { "id": "device.control", "source_need": "internal", "tool_policy": "device" },
+    { "id": "sensor.read", "source_need": "internal", "tool_policy": "sensor" },
+    { "id": "camera.inspect", "source_need": "internal", "tool_policy": "camera" }
+  ]
+}

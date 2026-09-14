@@ -725,6 +725,31 @@ test("LFM stable facts can answer without invoking web tools", async () => {
   assert.equal(result.timings.llm_rounds, 1);
 });
 
+test("capability routing runs once and restricts LFM tool definitions without changing reasoning route", async () => {
+  const decisions = [
+    { primary: "knowledge", raw_primary: "knowledge", abstain: false, fallback: false, source_need: "stable", confidence: 0.9, margin: 0.8, latency_ms: 5, request_latency_ms: 7 },
+    { primary: "web.search", raw_primary: "web.search", abstain: false, fallback: false, source_need: "live", confidence: 0.8, margin: 0.6, latency_ms: 5, request_latency_ms: 7 },
+    { primary: "weather.current", raw_primary: "weather.current", abstain: false, fallback: false, source_need: "live", confidence: 0.85, margin: 0.7, latency_ms: 5, request_latency_ms: 7 },
+    { primary: null, raw_primary: "__abstain__", abstain: true, fallback: false, source_need: "unknown", confidence: 0.7, margin: 0.4, latency_ms: 5, request_latency_ms: 7 },
+    { fallback: true, reason: "capability_router_timeout", latency_ms: null, request_latency_ms: 75 },
+  ];
+  const expected = [[], ["web_search"], ["web_search", "web_read"], ["web_search", "web_read"], ["web_search", "web_read"]];
+  for (let index = 0; index < decisions.length; index += 1) {
+    let inferenceCalls = 0;
+    let prompt = "";
+    const capabilityRouter = { async classify() { inferenceCalls += 1; return decisions[index]; } };
+    const runtime = createAssistantRuntime({ enabled: true, profiles: testProfiles(), preferredProfile: "lfm", logger: quietLogger,
+      capabilityRouter, webTools: fakeWebTools(async () => { throw new Error("not expected"); }),
+      fetchImpl: async (_url, options) => { prompt = JSON.parse(options.body).prompt; return ollamaText("A direct answer.", options.signal); } });
+    const result = await runtime.respond({ ...turn, deviceId: `cap-${index}`, text: "Explain the topic clearly." });
+    assert.equal(inferenceCalls, 1);
+    assert.equal(result.timings.reasoning_route, "FAST");
+    const exposed = ["web_search", "web_read"].filter((name) => prompt.includes(`\"name\":\"${name}\"`));
+    assert.deepEqual(exposed, expected[index]);
+    assert.equal(result.timings.capability_router_fallback, Boolean(decisions[index].fallback));
+  }
+});
+
 test("LFM explicit and current requests execute validated native web_search calls", async () => {
   for (const text of ["Search the web for current Node.js news.", "What is the latest Node.js release?"]) {
     const invoked = [];

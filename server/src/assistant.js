@@ -11,6 +11,7 @@ import {
 } from "./assistant-profiles.js";
 import { routeAssistantRequest } from "./assistant-routing.js";
 import { lfmToolDefinitions, parseLfmToolCalls, validateToolCall } from "./assistant-tools.js";
+import { toolsForCapability } from "./capability-router.js";
 
 export const ASSISTANT_SYSTEM_PROMPT = QWEN_SYSTEM_PROMPT;
 
@@ -414,7 +415,7 @@ export function createAssistantRuntime({
   enabled = false, provider = "openai_chat", baseUrl, model, apiKey, timeoutMs = 15_000, maxOutputTokens = 72,
   maxReplyChars = 300, timeZone = DEFAULT_ASSISTANT_TIME_ZONE, now = () => new Date(),
   runtimeContext = null, fetchImpl, logger = null, profiles = null, preferredProfile = null,
-  fallbackCooldownMs = 30_000, webTools = null,
+  fallbackCooldownMs = 30_000, webTools = null, capabilityRouter = null,
 } = {}) {
   assistantTimeContext(new Date(0), timeZone);
   const active = new Map();
@@ -473,6 +474,7 @@ export function createAssistantRuntime({
       profile_health: profileHealth,
       active: active.size > 0,
       web_tools: Boolean(webTools?.available && profile?.toolPolicy?.web),
+      capability_router: capabilityRouter?.getTelemetry?.() ?? { enabled: false, status: "unconfigured" },
     };
   }
 
@@ -551,7 +553,7 @@ export function createAssistantRuntime({
   }
 
   async function requestProfile(profile, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId,
-    onFirstToken, onSpeakableText, onToolStart, onToolEnd, routing }) {
+    onFirstToken, onSpeakableText, onToolStart, onToolEnd, routing, capability }) {
     const endpoint = endpointFor(profile);
     if (!profile?.enabled || !endpoint || !profile.model) return { kind: "unavailable", error: "assistant_unavailable", availabilityFailure: true };
     const controller = new AbortController();
@@ -571,8 +573,10 @@ export function createAssistantRuntime({
       if (includeTime) systemParts.push(assistantTimeContext(now(), timeZone));
       if (stateMessage) systemParts.push(stateMessage);
       const toolEnabled = profile.provider === "ollama_raw" && profile.toolPolicy?.web && webTools?.available;
-      const toolDefinitions = toolEnabled ? webTools.definitions : [];
-      if (toolEnabled) systemParts.push(
+      const toolDefinitions = toolEnabled ? toolsForCapability(capability, webTools.definitions) : [];
+      const toolsExposed = toolDefinitions.map((tool) => tool.name);
+      const usableTools = toolDefinitions.length > 0;
+      if (usableTools) systemParts.push(
         lfmToolDefinitions(toolDefinitions),
         "Use web_search for explicit web searches and information that may have changed. Use web_read only when the contents of a specific source are needed. For stable facts, answer without tools. Emit only the native tool-call envelope when calling a tool. Never invent current information when a web tool fails.",
       );
@@ -606,7 +610,7 @@ export function createAssistantRuntime({
       let lastRoundToolCall = false;
       const toolEvents = [];
       const roundTimings = [];
-      const maxRounds = toolEnabled ? profile.toolPolicy.maxRounds : 1;
+      const maxRounds = usableTools ? profile.toolPolicy.maxRounds : 1;
 
       while (round < maxRounds) {
         round += 1;
@@ -641,7 +645,7 @@ export function createAssistantRuntime({
         let toolCallDetected = false;
         if (profile.provider === "ollama_raw") {
           const streamed = await readOllamaStream(response, {
-            detectToolCalls: toolEnabled,
+            detectToolCalls: usableTools,
             toolNames: toolDefinitions.map((tool) => tool.name),
             onFirstRawToken: () => {
               roundFirstRawAt ??= performance.now();
@@ -689,7 +693,7 @@ export function createAssistantRuntime({
           reasoning_tokens: roundUsage?.reasoning_tokens ?? null });
         if (roundUsage) payload = { usage: roundUsage };
 
-        if (!toolEnabled) break;
+        if (!usableTools) break;
         let parsed;
         try {
           if (toolCallDetected || String(rawAnswer).includes("<|tool"))
@@ -747,7 +751,7 @@ export function createAssistantRuntime({
         }
         messages.push({ role: "assistant", content: String(rawAnswer) }, { role: "tool", content: JSON.stringify(results) });
       }
-      if (toolEnabled && round >= maxRounds && lastRoundToolCall) throw assistantError("assistant_tool_loop_limit");
+      if (usableTools && round >= maxRounds && lastRoundToolCall) throw assistantError("assistant_tool_loop_limit");
       if (toolAttempts > 0 && toolSuccesses === 0) rawAnswer = "I couldn't verify that from live sources right now.";
       const answer = boundedText(rawAnswer, profile.maxReplyChars);
       if (!answer) return { kind: "empty", availabilityFailure: false };
@@ -767,6 +771,17 @@ export function createAssistantRuntime({
         tool_events: toolEvents, tool_attempts: toolAttempts, tool_successes: toolSuccesses,
         agent_tools_latency_ms: toolEvents.reduce((total, event) => total + (event.agent_tools_latency_ms ?? 0), 0) || null,
         provider_latency_ms: toolEvents.reduce((total, event) => total + (event.provider_latency_ms ?? 0), 0) || null,
+        capability_primary: capability?.primary ?? null,
+        capability_raw_primary: capability?.raw_primary ?? null,
+        capability_abstain: capability?.abstain ?? null,
+        capability_confidence: capability?.confidence ?? null,
+        capability_margin: capability?.margin ?? null,
+        capability_source_need: capability?.source_need ?? null,
+        capability_router_latency_ms: capability?.latency_ms ?? null,
+        capability_router_request_ms: capability?.request_latency_ms ?? null,
+        capability_router_fallback: capability?.fallback ?? true,
+        capability_router_reason: capability?.reason ?? null,
+        capability_tools_exposed: toolsExposed,
       };
       if (Number.isFinite(payload?.usage?.prompt_tokens)) timings.input_tokens = payload.usage.prompt_tokens;
       if (Number.isFinite(payload?.usage?.completion_tokens)) timings.output_tokens = payload.usage.completion_tokens;
@@ -804,6 +819,9 @@ export function createAssistantRuntime({
 
     const previousExchanges = history.get(deviceId) ?? [];
     const historyAvailable = previousExchanges.length;
+    const capability = capabilityRouter?.classify
+      ? await capabilityRouter.classify(transcript)
+      : { enabled: false, fallback: true, reason: "unconfigured", latency_ms: null, request_latency_ms: null };
     const routing = routeAssistantRequest({ text: transcript, context: { hasHistory: historyAvailable > 0 } });
     const clockShortcut = shouldUseTimeContext(transcript)
       ? directClockShortcut(transcript, now(), timeZone)
@@ -832,6 +850,16 @@ export function createAssistantRuntime({
         routing_reasons: routing.reasons,
         activity: routing.activity,
         reasoning_tokens: 0,
+        capability_primary: capability.primary ?? null,
+        capability_raw_primary: capability.raw_primary ?? null,
+        capability_abstain: capability.abstain ?? null,
+        capability_confidence: capability.confidence ?? null,
+        capability_margin: capability.margin ?? null,
+        capability_source_need: capability.source_need ?? null,
+        capability_router_latency_ms: capability.latency_ms ?? null,
+        capability_router_request_ms: capability.request_latency_ms ?? null,
+        capability_router_fallback: capability.fallback ?? true,
+        capability_router_reason: capability.reason ?? null,
       };
 
       storeExchange(deviceId, transcript, answer);
@@ -854,7 +882,7 @@ export function createAssistantRuntime({
       else lastFallbackAt = Date.now();
     }
     let selected = profileById(effectiveId);
-    let result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, onToolStart, onToolEnd, routing,
+    let result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, onToolStart, onToolEnd, routing, capability,
       onSpeakableText: selected.progressiveTts ? (text) => onSpeakableText?.(text, { profileId: selected.id, maxReplyChars: selected.maxReplyChars, chunking: selected.chunking }) : null });
     const fallbackId = selected?.fallbackProfile;
     if (result.availabilityFailure && fallbackId && fallbackId !== selected.id && profileById(fallbackId)?.enabled) {
@@ -864,7 +892,7 @@ export function createAssistantRuntime({
       logger?.warn({ preferred_profile: preferredId, failed_profile: selected.id, effective_profile: fallbackId,
         fallback_reason: fallbackReason }, "Assistant profile fallback activated");
       selected = profileById(fallbackId);
-      result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, onToolStart, onToolEnd, routing,
+      result = await requestProfile(selected, { deviceId, streamId, transcript, previousExchanges, historyAvailable, generationId, onFirstToken, onToolStart, onToolEnd, routing, capability,
         onSpeakableText: selected.progressiveTts ? (text) => onSpeakableText?.(text, { profileId: selected.id, maxReplyChars: selected.maxReplyChars, chunking: selected.chunking }) : null });
     }
     if (result.kind === "response") storeExchange(deviceId, transcript, result.text);
