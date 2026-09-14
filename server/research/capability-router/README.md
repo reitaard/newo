@@ -96,6 +96,24 @@ node score-predictions.js corpus.jsonl structural-predictions.jsonl
 
 If no output path is supplied, the baseline still writes JSONL to stdout for normal Unix pipelines.
 
+## Prototype embedding command
+
+The first semantic experiment intentionally does no training and does not reuse corpus rows as prototypes. `prototype-exemplars.jsonl` contains separate natural-language examples for each capability. FastEmbed 0.8.0 runs `all-MiniLM-L6-v2` through ONNX so this experiment stays much lighter than installing PyTorch just to test a prototype router.
+
+On Windows Git Bash:
+
+```bash
+py -3 -m venv .venv
+source .venv/Scripts/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-prototype.txt
+
+python prototype-embedding.py corpus.jsonl prototype-predictions.jsonl
+node score-predictions.js corpus.jsonl prototype-predictions.jsonl
+```
+
+The model is downloaded on the first run. The script reports one-time model load/prototype/warmup timings separately on stderr; per-row `latency_ms` measures only a warmed single-utterance embedding plus centroid comparison. No abstention threshold is tuned in this first pass so we can see the raw retrieval quality before calibration.
+
 ## Metrics
 
 Primary quality metrics:
