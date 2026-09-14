@@ -40,6 +40,7 @@ class NewoAudio {
   // Release a deferred hands-free re-arm only after the server's complete
   // assistant/speaker turn reaches a terminal boundary.
   void completeAssistantTurn();
+  bool wakeNetRearmPending() const { return awaitingAssistantCompletion_; }
   NewoVoiceState state() const { return state_; }
   uint32_t wakeCount() const { return wakeCount_; }
   uint32_t sessionCount() const { return sessionCount_; }

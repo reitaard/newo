@@ -75,7 +75,7 @@ void NewoCloud::begin() {
 
 void NewoCloud::startConnection() {
 #if NEWO_HAS_LOCAL_SECRETS
-  if (!configured_ || started_ || !wifi_.connected()) {
+  if (!configured_ || started_ || !wifi_.connected() || wakeNetRearmHold_) {
     return;
   }
 
@@ -94,6 +94,25 @@ void NewoCloud::startConnection() {
   started_ = true;
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::CLOUD, "CLOUD_CONNECTING");
 #endif
+}
+
+void NewoCloud::releaseForWakeNetRearm() {
+  wakeNetRearmHold_ = true;
+  plannedWakeNetDisconnect_ = started_;
+  NewoMemoryDiagnostics::log("BEFORE_CLOUD_RELEASE_FOR_WAKENET_REARM");
+  if (started_) webSocket_.disconnect();
+  started_ = false;
+  connected_ = false;
+  authenticated_ = false;
+  NewoMemoryDiagnostics::log("AFTER_CLOUD_RELEASE_FOR_WAKENET_REARM");
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::CLOUD,
+               "CLOUD_RELEASED_FOR_WAKENET_REARM");
+}
+
+void NewoCloud::resumeAfterWakeNetRearm() {
+  wakeNetRearmHold_ = false;
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::CLOUD,
+               "CLOUD_RESUME_AFTER_WAKENET_REARM");
 }
 
 void NewoCloud::loop() {
@@ -268,6 +287,9 @@ void NewoCloud::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
       sendStatus();
       break;
     case WStype_DISCONNECTED:
+      {
+      const bool plannedWakeNetDisconnect = plannedWakeNetDisconnect_;
+      plannedWakeNetDisconnect_ = false;
       NewoMemoryDiagnostics::log("CLOUD_WSTYPE_DISCONNECTED");
       logWebSocketDetail("WStype_DISCONNECTED", payload, length);
       if (connected_) {
@@ -277,10 +299,11 @@ void NewoCloud::handleEvent(WStype_t type, uint8_t* payload, size_t length) {
       connected_ = false;
       authenticated_ = false;
       assistantThinking_ = false;
-      assistantTurnTerminalPending_ = true;
+      if (!plannedWakeNetDisconnect) assistantTurnTerminalPending_ = true;
       display_.setAssistantThinking(false);
       started_ = false;
       break;
+      }
     case WStype_TEXT:
       handleTextMessage(payload, length);
       break;

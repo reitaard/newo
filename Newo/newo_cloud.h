@@ -50,6 +50,10 @@ class NewoCloud {
     assistantTurnTerminalPending_ = false;
     return pending;
   }
+  // Reproduce the proven boot allocation order for an ESP-SR reconstruction:
+  // release cloud TLS, start WakeNet, then permit cloud reconnect.
+  void releaseForWakeNetRearm();
+  void resumeAfterWakeNetRearm();
   bool assistantError() const { return static_cast<int32_t>(assistantErrorUntilMs_ - millis()) > 0; }
   void sendSpeakerStarted(const char* playbackId, uint32_t firstPcmToPlayMs);
   void sendSpeakerResult(const char* playbackId, bool success, uint32_t bytes, const char* error = nullptr);
@@ -113,6 +117,8 @@ class NewoCloud {
   uint32_t minimumLoopStackBytes_ = UINT32_MAX;
   bool assistantThinking_ = false;
   bool assistantTurnTerminalPending_ = false;
+  bool wakeNetRearmHold_ = false;
+  bool plannedWakeNetDisconnect_ = false;
   uint32_t assistantErrorUntilMs_ = 0;
   LedEvent pendingLedEvent_ = LedEvent::NONE;
 };

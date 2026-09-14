@@ -112,6 +112,8 @@ constexpr uint32_t PROVISIONING_REBOOT_DELAY_MS = 1'000;
 constexpr uint32_t REMOTE_REBOOT_DELAY_MS = 1'000;
 
 constexpr uint32_t CLOUD_RECONNECT_INTERVAL_MS = 5'000;
+// Let WebSocketsClient/TLS release internal heap before reconstructing ESP-SR.
+constexpr uint32_t WAKENET_REARM_CLOUD_RELEASE_MS = 50;
 constexpr uint32_t CLOUD_STATUS_INTERVAL_MS = 30'000;
 constexpr uint32_t CLOUD_WS_PING_INTERVAL_MS = 15'000;
 constexpr uint32_t CLOUD_WS_PONG_TIMEOUT_MS = 3'000;

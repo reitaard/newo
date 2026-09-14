@@ -38,6 +38,8 @@ uint32_t nanoLedHandshake = 0;
 uint32_t nanoLedRetryAfterMs = 0;
 uint32_t nanoLedErrorUntilMs = 0;
 NewoPhysicalVoice::TriggerGate physicalTriggerGate;
+bool wakeNetCloudRearmPending = false;
+uint32_t wakeNetCloudReleasedAtMs = 0;
 
 void serviceNanoLed() {
   if (!newoArduinoNode.ready()) return;
@@ -153,7 +155,22 @@ void loop() {
   newoWiFi.loop();
   newoPortal.loop();
   newoCloud.loop();
-  if (newoCloud.consumeAssistantTurnTerminal()) newoAudio.completeAssistantTurn();
+  if (wakeNetCloudRearmPending &&
+      static_cast<int32_t>(millis() - wakeNetCloudReleasedAtMs) >=
+          static_cast<int32_t>(NewoConfig::WAKENET_REARM_CLOUD_RELEASE_MS)) {
+    newoAudio.completeAssistantTurn();
+    newoCloud.resumeAfterWakeNetRearm();
+    wakeNetCloudRearmPending = false;
+  }
+  if (newoCloud.consumeAssistantTurnTerminal()) {
+    if (newoAudio.wakeNetRearmPending() && !wakeNetCloudRearmPending) {
+      newoCloud.releaseForWakeNetRearm();
+      wakeNetCloudReleasedAtMs = millis();
+      wakeNetCloudRearmPending = true;
+    } else if (!wakeNetCloudRearmPending) {
+      newoAudio.completeAssistantTurn();
+    }
+  }
   if (newoStorage.usbTrialPending()) {
     if (newoCloud.ready()) {
       newoStorage.setUsbTrialPending(false);
