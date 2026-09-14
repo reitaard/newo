@@ -135,15 +135,15 @@ export function createStructuredCapabilityRuntime({ enabled = true, fetchImpl = 
     if (!enabled || !FAST_CAPABILITIES.has(capability)) return { kind: "not_applicable" };
     const startedAt = performance.now(); const tool = toolFor(capability); let provider = "local"; let slots = null; let result = null;
     try {
-      if (capability === "calculator") { slots = arithmetic(text); if (!slots) return { kind: "missing_slots", tool };
+      if (capability === "calculator") { slots = arithmetic(text); if (!slots) return { kind: "missing_slots", tool, reason: "missing_slots" };
         result = { expression: slots.expression, value: round(slots.value, 8) }; }
-      else if (capability === "unit.convert") { slots = extractUnit(text); if (!slots) return { kind: "missing_slots", tool };
+      else if (capability === "unit.convert") { slots = extractUnit(text); if (!slots) return { kind: "missing_slots", tool, reason: "missing_slots" };
         result = { ...slots, result: round(slots.result, 8) }; }
       else if (capability === "time.current") {
         const location = extractLocation(text); const place = location ? await geocode(location, signal) : { name: null, timezone: timeZone };
         slots = { location, timezone: place.timezone }; result = { location: place.name, timezone: place.timezone,
           local_time: new Intl.DateTimeFormat("en-US", { timeZone: place.timezone, dateStyle: "full", timeStyle: "short" }).format(now()) };
-      } else if (capability === "time.convert") { slots = extractTimeConversion(text); if (!slots) return { kind: "missing_slots", tool };
+      } else if (capability === "time.convert") { slots = extractTimeConversion(text); if (!slots) return { kind: "missing_slots", tool, reason: "missing_slots" };
         const sourcePlace = slots.source.includes("/") ? { name: slots.source, timezone: slots.source } : await geocode(slots.source, signal);
         const targetPlace = slots.target.includes("/") ? { name: slots.target, timezone: slots.target } : await geocode(slots.target, signal);
         const sourceDate = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: sourcePlace.timezone,
@@ -153,13 +153,13 @@ export function createStructuredCapabilityRuntime({ enabled = true, fetchImpl = 
         result = { source: sourcePlace.name, source_timezone: sourcePlace.timezone, target: targetPlace.name,
           target_timezone: targetPlace.timezone, converted_time: new Intl.DateTimeFormat("en-US", { timeZone: targetPlace.timezone,
             weekday: "long", hour: "numeric", minute: "2-digit", hour12: true }).format(instant) };
-      } else if (capability === "currency.exchange") { slots = extractCurrencies(text); if (!slots) return { kind: "missing_slots", tool };
+      } else if (capability === "currency.exchange") { slots = extractCurrencies(text); if (!slots) return { kind: "missing_slots", tool, reason: "missing_slots" };
         provider = "frankfurter_v2"; const payload = await fetchJson(fetchImpl,
           `https://api.frankfurter.dev/v2/rate/${encodeURIComponent(slots.base)}/${encodeURIComponent(slots.quote)}`, { timeoutMs, signal });
         if (!Number.isFinite(payload?.rate)) throw capabilityError("structured_provider_invalid");
         result = { ...slots, date: payload.date, rate: payload.rate, converted: round(slots.amount * payload.rate, 6), reference_rate: true };
       } else if (capability === "weather.current" || capability === "weather.forecast") { const location = extractLocation(text);
-        if (!location) return { kind: "missing_slots", tool }; slots = { location }; provider = "open_meteo"; const place = await geocode(location, signal);
+        if (!location) return { kind: "missing_slots", tool, reason: "missing_slots" }; slots = { location }; provider = "open_meteo"; const place = await geocode(location, signal);
         const url = new URL("https://api.open-meteo.com/v1/forecast"); url.searchParams.set("latitude", String(place.latitude));
         url.searchParams.set("longitude", String(place.longitude)); url.searchParams.set("timezone", place.timezone || "auto");
         if (capability === "weather.current") url.searchParams.set("current", "temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m");
@@ -172,7 +172,7 @@ export function createStructuredCapabilityRuntime({ enabled = true, fetchImpl = 
             condition: WEATHER_CODES[payload.daily.weather_code[index]] ?? `code ${payload.daily.weather_code[index]}`,
             min_c: payload.daily.temperature_2m_min[index], max_c: payload.daily.temperature_2m_max[index],
             precipitation_probability_percent: payload.daily.precipitation_probability_max[index] })) };
-      } else if (capability === "market.quote") { const symbol = extractMarketSymbol(text); if (!symbol) return { kind: "missing_slots", tool };
+      } else if (capability === "market.quote") { const symbol = extractMarketSymbol(text); if (!symbol) return { kind: "missing_slots", tool, reason: "missing_slots" };
         if (!twelveDataApiKey) return { kind: "provider_unavailable", tool, reason: "missing_api_key" }; slots = { symbol }; provider = "twelve_data";
         const url = new URL("https://api.twelvedata.com/quote"); url.searchParams.set("symbol", symbol); url.searchParams.set("apikey", twelveDataApiKey);
         const payload = await fetchJson(fetchImpl, url, { timeoutMs, signal }); if (payload?.status === "error") throw capabilityError("structured_provider_error");
