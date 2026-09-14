@@ -1,0 +1,54 @@
+{"capability":"knowledge","text":"Explain a technical concept using general knowledge."}
+{"capability":"knowledge","text":"Why does this system behave that way? Give me an explanation, not live data."}
+{"capability":"knowledge","text":"Tell me a stable fact or help me understand an idea."}
+{"capability":"calculator","text":"Work out this arithmetic expression and return the numeric result."}
+{"capability":"calculator","text":"Calculate a percentage, sum, product, division, or square root."}
+{"capability":"calculator","text":"Do this deterministic math for me."}
+{"capability":"unit.convert","text":"Convert a physical measurement from one unit into another."}
+{"capability":"unit.convert","text":"How many of one measurement unit equals this amount in another unit?"}
+{"capability":"unit.convert","text":"Change a distance, mass, volume, temperature, or speed into different units."}
+{"capability":"time.current","text":"Tell me the current clock time in a place or timezone."}
+{"capability":"time.current","text":"What time is it right now at this location?"}
+{"capability":"time.current","text":"Give me the live local time for a city."}
+{"capability":"time.convert","text":"Convert a supplied clock time from one timezone to another."}
+{"capability":"time.convert","text":"If it is this time in one place, what time is that somewhere else?"}
+{"capability":"time.convert","text":"Translate a UTC or local timestamp into another timezone."}
+{"capability":"currency.exchange","text":"Convert money between two currencies using a live or dated exchange rate."}
+{"capability":"currency.exchange","text":"How much money in one currency is worth in another currency?"}
+{"capability":"currency.exchange","text":"Look up a foreign exchange rate or convert an amount of money."}
+{"capability":"weather.current","text":"Tell me the current weather conditions at a location."}
+{"capability":"weather.current","text":"What is happening outside now: temperature, rain, wind, or conditions?"}
+{"capability":"weather.current","text":"Check the live weather right now for this place."}
+{"capability":"weather.forecast","text":"Tell me what the weather will be later or on a future day."}
+{"capability":"weather.forecast","text":"Will rain, heat, cold, or other conditions happen during a future time window?"}
+{"capability":"weather.forecast","text":"Give me the forecast so I can decide what to do later."}
+{"capability":"sports.score","text":"Give me the live or recent result or score of a sports game."}
+{"capability":"sports.score","text":"Did this team win, lose, or what is the score?"}
+{"capability":"sports.score","text":"Check the current or most recent game result for a team or event."}
+{"capability":"sports.schedule","text":"Tell me when a team plays next or show upcoming fixtures."}
+{"capability":"sports.schedule","text":"What is the upcoming sports schedule or start time?"}
+{"capability":"sports.schedule","text":"Find the next match or game for this team."}
+{"capability":"market.quote","text":"Give me the current price or quote for a stock, index, or cryptocurrency."}
+{"capability":"market.quote","text":"What is this financial asset trading at right now?"}
+{"capability":"market.quote","text":"Check the live market value or today's price movement."}
+{"capability":"web.search","text":"Search the open web for current external information that has no dedicated structured source."}
+{"capability":"web.search","text":"Find the latest information online or discover sources about this topic."}
+{"capability":"web.search","text":"Use web search to look up a recent release, announcement, news item, or changing fact."}
+{"capability":"web.read","text":"Read a specific web page or source and extract information from its contents."}
+{"capability":"web.read","text":"Open this URL and summarize or inspect the actual page."}
+{"capability":"web.read","text":"Read the chosen source after search because the page contents are needed."}
+{"capability":"memory.retrieve","text":"Retrieve something the user or project said, chose, or discussed previously."}
+{"capability":"memory.retrieve","text":"Look up relevant prior conversation or remembered project context."}
+{"capability":"memory.retrieve","text":"Recall an earlier decision, preference, plan, or fact from memory."}
+{"capability":"device.state","text":"Read the current state of a Newo device or runtime property without changing it."}
+{"capability":"device.state","text":"Check whether a device feature is on, connected, muted, or what its current value is."}
+{"capability":"device.state","text":"Inspect live device status only; do not modify anything."}
+{"capability":"device.control","text":"Change a device setting or perform a mutating device action."}
+{"capability":"device.control","text":"Turn a device feature on or off, or set its value."}
+{"capability":"device.control","text":"Control Newo hardware or change speaker, voice, or runtime state."}
+{"capability":"sensor.read","text":"Read current local sensor, RF, CSI, motion, distance, or signal data."}
+{"capability":"sensor.read","text":"What is this sensor detecting right now?"}
+{"capability":"sensor.read","text":"Inspect a live hardware sensing measurement or signal state."}
+{"capability":"camera.inspect","text":"Inspect the current camera view and answer a visual question about the scene."}
+{"capability":"camera.inspect","text":"Look through Newo2's camera and tell me what is visible now."}
+{"capability":"camera.inspect","text":"Use the live camera to identify or describe what I am showing you."}
