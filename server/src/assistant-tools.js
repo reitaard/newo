@@ -5,7 +5,8 @@ const END = "<|tool_call_end|>";
 
 export function lfmToolDefinitions(tools = []) {
   if (!tools.length) return null;
-  return `List of tools: ${JSON.stringify(tools.map(({ name, description, parameters }) => ({ name, description, parameters })))}`;
+  const definitions = JSON.stringify(tools.map(({ name, description, parameters }) => ({ name, description, parameters })));
+  return `List of tools: ${definitions} Tool-call syntax uses these literal markers: ${START}[function_name(argument_name="value")]${END}. Never omit the start or end marker when calling a tool.`;
 }
 
 class NativeCallParser {
