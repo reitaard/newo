@@ -1,0 +1,266 @@
+{"text":"Explain why exchange rates move even when nobody is converting money.","label":"knowledge"}
+{"text":"How do meteorologists estimate the probability of rain?","label":"knowledge"}
+{"text":"What does offside mean in football?","label":"knowledge"}
+{"text":"Why can stock prices jump after an earnings report?","label":"knowledge"}
+{"text":"Explain what a rolling shutter is in a camera.","label":"knowledge"}
+{"text":"What does Wi-Fi CSI represent in radio sensing?","label":"knowledge"}
+{"text":"Why does speaker volume use a decibel scale?","label":"knowledge"}
+{"text":"How do time zones and daylight saving rules work?","label":"knowledge"}
+{"text":"Why can unit conversions introduce rounding error?","label":"knowledge"}
+{"text":"What is a URL and how is it different from a domain name?","label":"knowledge"}
+{"text":"How does conversational memory retrieval usually work?","label":"knowledge"}
+{"text":"Explain the difference between a sensor reading and an inference.","label":"knowledge"}
+{"text":"Why do sports leagues use standings tables?","label":"knowledge"}
+{"text":"How does a foreign exchange market operate?","label":"knowledge"}
+{"text":"What makes a weather forecast uncertain?","label":"knowledge"}
+{"text":"Explain why current stock prices can differ across exchanges.","label":"knowledge"}
+{"text":"What does camera exposure compensation do?","label":"knowledge"}
+{"text":"Why can RF signals change when a person walks through a room?","label":"knowledge"}
+{"text":"How does a calculator evaluate operator precedence?","label":"knowledge"}
+{"text":"Explain what GMT and UTC are.","label":"knowledge"}
+{"text":"Why are historical exchange rates useful?","label":"knowledge"}
+{"text":"What is the difference between a sports fixture and a live score?","label":"knowledge"}
+{"text":"How does a search engine discover web pages?","label":"knowledge"}
+{"text":"Explain how device state differs from a device command.","label":"knowledge"}
+{"text":"What does it mean for information to be live versus stable?","label":"knowledge"}
+{"text":"Why do APIs often return structured JSON?","label":"knowledge"}
+{"text":"Explain what a currency pair like USD/KHR means.","label":"knowledge"}
+{"text":"How does a camera sensor turn light into an image.","label":"knowledge"}
+{"text":"Work out 37 multiplied by 24.","label":"calculator"}
+{"text":"What is 18 percent of 725?","label":"calculator"}
+{"text":"Divide 945 by 9.","label":"calculator"}
+{"text":"Add 124.6 and 87.35.","label":"calculator"}
+{"text":"Subtract 18 percent from 460.","label":"calculator"}
+{"text":"What is the square root of 625?","label":"calculator"}
+{"text":"If 8 people split 1760 evenly, what does each person get?","label":"calculator"}
+{"text":"Calculate 12.5 times 64.","label":"calculator"}
+{"text":"What is 3 plus 7 times 11?","label":"calculator"}
+{"text":"Take 15 percent off 899.","label":"calculator"}
+{"text":"Compute 1440 divided by 32.","label":"calculator"}
+{"text":"Add 16, 28, 45, and 93.","label":"calculator"}
+{"text":"What is 11 squared plus 7?","label":"calculator"}
+{"text":"If I buy 6 items at 14.50 each, what is the total?","label":"calculator"}
+{"text":"Convert 3 miles into kilometers.","label":"unit.convert"}
+{"text":"How many milliliters are in 2.5 liters?","label":"unit.convert"}
+{"text":"Change 68 Fahrenheit to Celsius.","label":"unit.convert"}
+{"text":"Convert 90 kilometers per hour into miles per hour.","label":"unit.convert"}
+{"text":"How many centimeters are 7.5 feet?","label":"unit.convert"}
+{"text":"Turn 450 grams into kilograms.","label":"unit.convert"}
+{"text":"Convert 12 inches to centimeters.","label":"unit.convert"}
+{"text":"How many cups is 750 milliliters?","label":"unit.convert"}
+{"text":"Change 5 meters per second to kilometers per hour.","label":"unit.convert"}
+{"text":"Convert 22 pounds to kilograms.","label":"unit.convert"}
+{"text":"How many feet are in 2 kilometers?","label":"unit.convert"}
+{"text":"Turn 1.75 liters into milliliters.","label":"unit.convert"}
+{"text":"Convert 30 Celsius into Fahrenheit.","label":"unit.convert"}
+{"text":"How many yards are 500 meters?","label":"unit.convert"}
+{"text":"What time is it right now in Seoul?","label":"time.current"}
+{"text":"Tell me the current clock time in Berlin.","label":"time.current"}
+{"text":"What is the local time in Sydney now?","label":"time.current"}
+{"text":"Give me the time in Los Angeles at this moment.","label":"time.current"}
+{"text":"What time is it here right now?","label":"time.current"}
+{"text":"Current time in Singapore please.","label":"time.current"}
+{"text":"What's the clock showing in Dubai now?","label":"time.current"}
+{"text":"Tell me what time it is in Paris.","label":"time.current"}
+{"text":"What is the time in New Delhi right now?","label":"time.current"}
+{"text":"Give me the current local time for Bangkok.","label":"time.current"}
+{"text":"What time is it in Toronto at the moment?","label":"time.current"}
+{"text":"Tell me the live time in Tokyo.","label":"time.current"}
+{"text":"What's the current hour in London?","label":"time.current"}
+{"text":"What is the local clock time in Phnom Penh now?","label":"time.current"}
+{"text":"If it is 8 AM in Tokyo, what time is that in London?","label":"time.convert"}
+{"text":"Convert 16:00 UTC into Bangkok time.","label":"time.convert"}
+{"text":"What would 7:30 PM in New York be in Phnom Penh?","label":"time.convert"}
+{"text":"Change 09:15 GMT to Singapore time.","label":"time.convert"}
+{"text":"If a meeting is at noon in Paris, what time is that in Seoul?","label":"time.convert"}
+{"text":"Convert 22:00 in Berlin to Los Angeles time.","label":"time.convert"}
+{"text":"What is 6 AM Sydney time in Tokyo?","label":"time.convert"}
+{"text":"Translate 13:45 UTC into Cambodia time.","label":"time.convert"}
+{"text":"If it is 5 PM in London, what time is it in Dubai?","label":"time.convert"}
+{"text":"Convert 10:30 AM Toronto time to Paris time.","label":"time.convert"}
+{"text":"What time is 21:00 Singapore in New York?","label":"time.convert"}
+{"text":"Turn 03:00 UTC into local time in Bangkok.","label":"time.convert"}
+{"text":"If it is midnight in Seoul, what time is that in Phnom Penh?","label":"time.convert"}
+{"text":"Convert 18:20 Tokyo time to London time.","label":"time.convert"}
+{"text":"Convert 250 USD into EUR using the current rate.","label":"currency.exchange"}
+{"text":"How much is 900000 Cambodian riel in US dollars?","label":"currency.exchange"}
+{"text":"What is 75 euros worth in Japanese yen today?","label":"currency.exchange"}
+{"text":"Give me the current GBP to USD exchange rate.","label":"currency.exchange"}
+{"text":"Convert 120 Canadian dollars to Singapore dollars.","label":"currency.exchange"}
+{"text":"How much would 50 pounds be in Thai baht now?","label":"currency.exchange"}
+{"text":"What is one US dollar worth in Cambodian riel today?","label":"currency.exchange"}
+{"text":"Convert 300 Australian dollars into euros.","label":"currency.exchange"}
+{"text":"How many yen would I get for 600 dollars at the current rate?","label":"currency.exchange"}
+{"text":"What was the EUR to USD rate on 2024-12-01?","label":"currency.exchange"}
+{"text":"Convert 1000 Thai baht to Cambodian riel.","label":"currency.exchange"}
+{"text":"How much is 80 Singapore dollars in Korean won?","label":"currency.exchange"}
+{"text":"What is the current CNY to USD rate?","label":"currency.exchange"}
+{"text":"Convert 45 euros into British pounds using today's rate.","label":"currency.exchange"}
+{"text":"What is the temperature outside in Bangkok right now?","label":"weather.current"}
+{"text":"Is it raining in Singapore at the moment?","label":"weather.current"}
+{"text":"Tell me the current weather in Tokyo.","label":"weather.current"}
+{"text":"How humid is it in Phnom Penh now?","label":"weather.current"}
+{"text":"What are the conditions outside in Siem Reap right now?","label":"weather.current"}
+{"text":"Is it windy in Seoul at the moment?","label":"weather.current"}
+{"text":"Current temperature in Paris please.","label":"weather.current"}
+{"text":"Is there rain in London right now?","label":"weather.current"}
+{"text":"How hot is Dubai currently?","label":"weather.current"}
+{"text":"What's the weather like in New York at this moment?","label":"weather.current"}
+{"text":"Tell me the live conditions in Sydney.","label":"weather.current"}
+{"text":"What is the current temperature and rain status in Bangkok?","label":"weather.current"}
+{"text":"Is it cloudy in Phnom Penh now?","label":"weather.current"}
+{"text":"Give me the current weather for Singapore.","label":"weather.current"}
+{"text":"Will it rain in Bangkok later tonight?","label":"weather.forecast"}
+{"text":"How warm will Phnom Penh be tomorrow afternoon?","label":"weather.forecast"}
+{"text":"Do I need a jacket in Seoul tomorrow morning?","label":"weather.forecast"}
+{"text":"Will Singapore stay dry this evening?","label":"weather.forecast"}
+{"text":"What is the forecast for Paris on Friday?","label":"weather.forecast"}
+{"text":"How hot will Dubai get this weekend?","label":"weather.forecast"}
+{"text":"Is rain expected in Siem Reap tomorrow?","label":"weather.forecast"}
+{"text":"Can I plan an outdoor dinner in Bangkok tonight without rain?","label":"weather.forecast"}
+{"text":"What will the temperature be in Tokyo tomorrow evening?","label":"weather.forecast"}
+{"text":"Will it be windy in London on Saturday?","label":"weather.forecast"}
+{"text":"Should I carry an umbrella in Phnom Penh later today?","label":"weather.forecast"}
+{"text":"What's expected weather in Sydney tomorrow morning?","label":"weather.forecast"}
+{"text":"Will New York be cold tomorrow night?","label":"weather.forecast"}
+{"text":"Is Sunday likely to be dry in Singapore?","label":"weather.forecast"}
+{"text":"What is the live score in the Liverpool match?","label":"sports.score"}
+{"text":"Did Arsenal win their game yesterday?","label":"sports.score"}
+{"text":"Who won the Lakers game last night?","label":"sports.score"}
+{"text":"What was the result of Barcelona's latest match?","label":"sports.score"}
+{"text":"Is the Warriors game over and who won?","label":"sports.score"}
+{"text":"What's the current score for Manchester City?","label":"sports.score"}
+{"text":"Did Real Madrid win today?","label":"sports.score"}
+{"text":"What is the latest score in the Celtics game?","label":"sports.score"}
+{"text":"Who won the most recent Arsenal match?","label":"sports.score"}
+{"text":"Tell me the result of the Liverpool game tonight.","label":"sports.score"}
+{"text":"What's happening in the Lakers game right now?","label":"sports.score"}
+{"text":"Did Barcelona beat their opponent today?","label":"sports.score"}
+{"text":"Give me the score from the latest Warriors game.","label":"sports.score"}
+{"text":"Who is leading in the current Arsenal match?","label":"sports.score"}
+{"text":"When is Arsenal's next match?","label":"sports.schedule"}
+{"text":"Show me Liverpool's upcoming fixtures.","label":"sports.schedule"}
+{"text":"What time do the Lakers play next?","label":"sports.schedule"}
+{"text":"When is Barcelona playing again?","label":"sports.schedule"}
+{"text":"Give me the Warriors schedule for this week.","label":"sports.schedule"}
+{"text":"What are Arsenal's matches this weekend?","label":"sports.schedule"}
+{"text":"When does Real Madrid play next?","label":"sports.schedule"}
+{"text":"What's the next Celtics game time?","label":"sports.schedule"}
+{"text":"List Liverpool's next two fixtures.","label":"sports.schedule"}
+{"text":"What time is the next Barcelona match?","label":"sports.schedule"}
+{"text":"Show me the Lakers schedule for the coming week.","label":"sports.schedule"}
+{"text":"When is the Warriors' next home game?","label":"sports.schedule"}
+{"text":"Which day does Arsenal play next?","label":"sports.schedule"}
+{"text":"Give me the next match date for Manchester City.","label":"sports.schedule"}
+{"text":"What is Bitcoin priced at right now?","label":"market.quote"}
+{"text":"Give me NVIDIA's current stock price.","label":"market.quote"}
+{"text":"What's ETH trading at today?","label":"market.quote"}
+{"text":"How much is the S&P 500 up or down right now?","label":"market.quote"}
+{"text":"Current Tesla share price please.","label":"market.quote"}
+{"text":"What is BTC worth at the moment?","label":"market.quote"}
+{"text":"Give me the live price of Apple stock.","label":"market.quote"}
+{"text":"What's the current Ethereum quote?","label":"market.quote"}
+{"text":"How is NVIDIA trading today?","label":"market.quote"}
+{"text":"Tell me the latest price for Microsoft shares.","label":"market.quote"}
+{"text":"What is the current level of the S&P 500?","label":"market.quote"}
+{"text":"How much is Solana worth right now?","label":"market.quote"}
+{"text":"Give me the live quote for Amazon stock.","label":"market.quote"}
+{"text":"What's Bitcoin's current market price?","label":"market.quote"}
+{"text":"Search online for the newest Docker release.","label":"web.search"}
+{"text":"Find the latest official ESP-IDF announcement on the web.","label":"web.search"}
+{"text":"Look up whether a new Ollama version shipped this week.","label":"web.search"}
+{"text":"Search the web for today's major AI infrastructure news.","label":"web.search"}
+{"text":"Find the current release notes for Node.js online.","label":"web.search"}
+{"text":"Check online for the newest grammY changelog.","label":"web.search"}
+{"text":"Search for the latest Cloudflare Workers platform update.","label":"web.search"}
+{"text":"Find a recent official article about n8n changes.","label":"web.search"}
+{"text":"Look online for the newest Python release announcement.","label":"web.search"}
+{"text":"Search the web for a current comparison of two recent SDK versions.","label":"web.search"}
+{"text":"Find the latest public documentation update for a software package.","label":"web.search"}
+{"text":"Check whether a newly announced developer feature is available yet.","label":"web.search"}
+{"text":"Search online for the most recent GitHub Actions change.","label":"web.search"}
+{"text":"Find current sources about a newly released open-source tool.","label":"web.search"}
+{"text":"Open https://example.com/article and summarize what it says.","label":"web.read"}
+{"text":"Read the page at https://example.org/docs and extract the main points.","label":"web.read"}
+{"text":"Inspect this URL and tell me the conclusion: https://example.com/report.","label":"web.read"}
+{"text":"Open https://example.net/changelog and summarize the latest entry.","label":"web.read"}
+{"text":"Read https://example.com/guide and tell me the important steps.","label":"web.read"}
+{"text":"Look at the contents of https://example.org/post and explain the result.","label":"web.read"}
+{"text":"Read this specific source and extract the key number: https://example.com/data.","label":"web.read"}
+{"text":"Open https://example.net/news and tell me what the article claims.","label":"web.read"}
+{"text":"Read https://example.com/release and summarize the changes.","label":"web.read"}
+{"text":"Inspect https://example.org/page and answer based on that page.","label":"web.read"}
+{"text":"Open the source at https://example.com/reference and give me the relevant section.","label":"web.read"}
+{"text":"Read https://example.net/report and tell me its main finding.","label":"web.read"}
+{"text":"Use the contents of https://example.org/document to answer my question.","label":"web.read"}
+{"text":"Open https://example.com/blog and summarize the actual page.","label":"web.read"}
+{"text":"What did we decide about the wake word setup earlier?","label":"memory.retrieve"}
+{"text":"Remind me which local model we chose previously.","label":"memory.retrieve"}
+{"text":"What was the plan we made for Newo2 last time?","label":"memory.retrieve"}
+{"text":"Which port did we use for the local assistant service?","label":"memory.retrieve"}
+{"text":"What did I say I preferred for the voice profile?","label":"memory.retrieve"}
+{"text":"Recall the architecture we agreed on yesterday.","label":"memory.retrieve"}
+{"text":"What was our previous decision about CSI sensing?","label":"memory.retrieve"}
+{"text":"Which benchmark result did we get earlier?","label":"memory.retrieve"}
+{"text":"Remind me what we changed in the last session.","label":"memory.retrieve"}
+{"text":"What did we call the camera unit before?","label":"memory.retrieve"}
+{"text":"Which model alias did we settle on previously?","label":"memory.retrieve"}
+{"text":"What was the earlier plan for the USB host feature?","label":"memory.retrieve"}
+{"text":"Can you recall the setting we picked for keep alive?","label":"memory.retrieve"}
+{"text":"What did I ask you to remember about the router project?","label":"memory.retrieve"}
+{"text":"Is voice mode currently enabled on Newo?","label":"device.state"}
+{"text":"What is the speaker volume right now?","label":"device.state"}
+{"text":"Is the Newo cloud connection up?","label":"device.state"}
+{"text":"Tell me whether the microphone is muted.","label":"device.state"}
+{"text":"What is the current device profile?","label":"device.state"}
+{"text":"Is the camera unit connected right now?","label":"device.state"}
+{"text":"Check the current playback volume without changing it.","label":"device.state"}
+{"text":"Is Newo online at the moment?","label":"device.state"}
+{"text":"What mode is the assistant currently in?","label":"device.state"}
+{"text":"Tell me the current status of the speaker.","label":"device.state"}
+{"text":"Is the local model service reachable right now?","label":"device.state"}
+{"text":"What is the current value of the voice toggle?","label":"device.state"}
+{"text":"Check whether the device is connected.","label":"device.state"}
+{"text":"Is the assistant audio output muted now?","label":"device.state"}
+{"text":"Turn voice mode on.","label":"device.control"}
+{"text":"Set the speaker volume to 35 percent.","label":"device.control"}
+{"text":"Mute Newo.","label":"device.control"}
+{"text":"Unmute the speaker.","label":"device.control"}
+{"text":"Turn the assistant voice feature off.","label":"device.control"}
+{"text":"Increase the volume a little.","label":"device.control"}
+{"text":"Reduce speaker volume to 20 percent.","label":"device.control"}
+{"text":"Reset the device audio setting.","label":"device.control"}
+{"text":"Switch voice mode off now.","label":"device.control"}
+{"text":"Set Newo's volume to 50.","label":"device.control"}
+{"text":"Turn the speaker output on.","label":"device.control"}
+{"text":"Lower the playback volume by ten percent.","label":"device.control"}
+{"text":"Enable the voice feature.","label":"device.control"}
+{"text":"Change the device profile to quiet mode.","label":"device.control"}
+{"text":"What is the CSI signal showing right now?","label":"sensor.read"}
+{"text":"Check the current motion sensor reading.","label":"sensor.read"}
+{"text":"How strong is the RF signal at the moment?","label":"sensor.read"}
+{"text":"What is the distance sensor measuring now?","label":"sensor.read"}
+{"text":"Tell me what the room sensor detects right now.","label":"sensor.read"}
+{"text":"Read the current CSI activity level.","label":"sensor.read"}
+{"text":"Is the motion sensor detecting movement now?","label":"sensor.read"}
+{"text":"Give me the latest local sensor reading.","label":"sensor.read"}
+{"text":"What is the current RF sensing state?","label":"sensor.read"}
+{"text":"Check whether the proximity sensor sees anything.","label":"sensor.read"}
+{"text":"How much movement is the CSI system detecting right now?","label":"sensor.read"}
+{"text":"Read the live signal strength from the sensor.","label":"sensor.read"}
+{"text":"What does the current motion channel show?","label":"sensor.read"}
+{"text":"Give me the present sensor value.","label":"sensor.read"}
+{"text":"Look through Newo2 and tell me what is on the desk.","label":"camera.inspect"}
+{"text":"Use the camera and describe what I am holding.","label":"camera.inspect"}
+{"text":"Can you see whether anyone is standing near the door?","label":"camera.inspect"}
+{"text":"Check the camera view and tell me what is in front of it.","label":"camera.inspect"}
+{"text":"Look through the camera and identify the object I am showing.","label":"camera.inspect"}
+{"text":"Tell me what Newo2 can see right now.","label":"camera.inspect"}
+{"text":"Use the live camera to describe the room.","label":"camera.inspect"}
+{"text":"Check whether a person is visible in the camera feed.","label":"camera.inspect"}
+{"text":"Look at the current camera scene and describe it.","label":"camera.inspect"}
+{"text":"Can the camera see a cup on the table?","label":"camera.inspect"}
+{"text":"Use Newo2 to tell me what is beside the monitor.","label":"camera.inspect"}
+{"text":"Inspect the camera feed and say what is happening.","label":"camera.inspect"}
+{"text":"Look through the camera and tell me where I am standing.","label":"camera.inspect"}
+{"text":"Describe the object visible in front of Newo2 right now.","label":"camera.inspect"}
