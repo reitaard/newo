@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "purpose": "Research-only source and mapping plan for a provenance-preserving Newo capability-router corpus.",
+  "sources": [
+    {
+      "id": "massive_agents",
+      "name": "MASSIVE-Agents",
+      "priority": 1,
+      "url": "https://huggingface.co/datasets/AmazonScience/massive-agents",
+      "paper": "https://www.amazon.science/publications/massive-agents-a-benchmark-for-multilingual-function-calling-in-52-languages",
+      "license": "CC-BY-4.0",
+      "role": "primary_function_call_anchor",
+      "notes": "Use English first; retain original sample/function/argument provenance."
+    },
+    {
+      "id": "massive",
+      "name": "MASSIVE",
+      "priority": 2,
+      "url": "https://huggingface.co/datasets/AmazonScience/massive",
+      "paper": "https://www.amazon.science/publications/massive-a-1m-example-multilingual-natural-language-understanding-dataset-with-51-typologically-diverse-languages",
+      "license": "CC-BY-4.0",
+      "role": "voice_assistant_intent_slot_anchor",
+      "notes": "Use English first and use slots to avoid ambiguous target mappings."
+    },
+    {
+      "id": "hwu64",
+      "name": "HWU64",
+      "priority": 3,
+      "url": "https://huggingface.co/datasets/DeepPavlov/hwu64",
+      "paper": "https://aclanthology.org/2021.naacl-industry.38.pdf",
+      "license": "CC-BY-SA-3.0",
+      "role": "home_robot_device_boundary_anchor",
+      "notes": "High value for device state/control and natural home-assistant phrasing."
+    },
+    {
+      "id": "clinc150",
+      "name": "CLINC150 / OOS",
+      "priority": 4,
+      "url": "https://github.com/clinc/oos-eval",
+      "paper": "https://aclanthology.org/D19-1131/",
+      "license": "CC-BY-3.0",
+      "role": "knowledge_and_abstention_boundary_anchor",
+      "notes": "Preserve official splits; use OOS to evaluate/train unsupported-intent handling without assuming every utterance is a tool request."
+    },
+    {
+      "id": "bfcl",
+      "name": "Berkeley Function Calling Leaderboard",
+      "priority": 5,
+      "url": "https://github.com/EnlightenedAI/BFCL",
+      "paper": "https://gorilla.cs.berkeley.edu/leaderboard",
+      "license": "Apache-2.0",
+      "role": "external_evaluation",
+      "notes": "Prefer holding relevant function-relevance/chatting/web/memory cases out of training to retain an independent external check."
+    }
+  ],
+  "initial_high_confidence_mappings": [
+    {"source": "massive", "source_label": "qa_maths", "target": "calculator", "mode": "direct"},
+    {"source": "massive", "source_label": "datetime_convert", "target": "time.convert", "mode": "direct"},
+    {"source": "massive", "source_label": "qa_factoid", "target": "knowledge", "mode": "direct"},
+    {"source": "massive", "source_label": "qa_definition", "target": "knowledge", "mode": "direct"},
+    {"source": "massive", "source_label": "news_query", "target": "web.search", "mode": "direct"},
+    {"source": "massive", "source_label": "qa_currency", "target": "currency.exchange", "mode": "filtered", "filter": "only exchange/conversion requests"},
+    {"source": "massive", "source_label": "qa_stock", "target": "market.quote", "mode": "filtered", "filter": "only current price/quote requests"},
+    {"source": "massive", "source_label": "weather_query", "target": ["weather.current", "weather.forecast"], "mode": "slot_or_temporal_split"},
+    {"source": "massive", "source_label": "iot_*", "target": "device.control", "mode": "filtered", "filter": "only mutating/action requests"}
+  ],
+  "newo_specific_only_or_weak_public_coverage": [
+    "memory.retrieve",
+    "sensor.read",
+    "camera.inspect",
+    "web.read"
+  ],
+  "boundary_slices": [
+    "geographic_knowledge_vs_weather",
+    "sports_knowledge_vs_live_score_schedule",
+    "fx_explanation_vs_live_exchange",
+    "company_knowledge_vs_market_quote",
+    "historical_news_vs_current_web",
+    "device_description_vs_state_vs_control",
+    "general_visual_knowledge_vs_camera_inspection",
+    "conversation_reference_vs_general_memory_knowledge"
+  ]
+}
