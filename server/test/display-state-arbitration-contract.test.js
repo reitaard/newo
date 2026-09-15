@@ -42,6 +42,7 @@ test("display activity signals are propagated and listening waits for voice conn
   assert.match(cloud, /"listening"[\s\S]*setAssistantState\(NewoDisplayMode::IDLE\)/);
   assert.match(cloud, /"thinking"[\s\S]*setAssistantState\(NewoDisplayMode::THINKING\)/);
   assert.match(cloud, /"responding"[\s\S]*setAssistantState\(NewoDisplayMode::RESPONDING\)/);
+  assert.match(cloud, /doc\["error_code"\][\s\S]*ASSISTANT_STATE_ERROR[\s\S]*errorCode/);
   assert.match(cloud, /"idle"[\s\S]*setAssistantState\(NewoDisplayMode::IDLE\)/);
   assert.match(display, /NewoDisplayMode::PROCESSING[\s\S]*drawFastHLine/);
   assert.match(display, /NewoDisplayMode::RESPONDING[\s\S]*fillCircle/);

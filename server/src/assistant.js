@@ -814,7 +814,8 @@ export function createAssistantRuntime({
       const availabilityFailure = firstTokenAt == null && ["assistant_timeout", "assistant_http_error", "assistant_request_failed"].includes(code);
       if (availabilityFailure) health.set(profile.id, "offline");
       logger?.warn({ device_id: deviceId, stream_id: streamId, preferred_profile: preferredId,
-        effective_profile: profile.id, provider: profile.provider, model: profile.model, error_code: code },
+        effective_profile: profile.id, provider: profile.provider, model: profile.model, error_code: code,
+        error_message: String(error?.message ?? code).slice(0, 500) },
       "Assistant LLM request failed");
       return { kind: code === "assistant_timeout" ? "timeout" : "error", error: code, availabilityFailure };
     } finally {

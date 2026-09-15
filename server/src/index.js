@@ -259,10 +259,11 @@ const assistantRuntime = createAssistantRuntime({
   capabilityRouter,
   structuredCapabilities,
 });
-function sendAssistantState(deviceId, state) {
+function sendAssistantState(deviceId, state, errorCode = null) {
   const device = devices.get(deviceId);
   if (!device || device.ws.readyState !== WebSocket.OPEN) return false;
-  try { device.ws.send(JSON.stringify({ type: "assistant_state", state })); return true; }
+  const safeErrorCode = typeof errorCode === "string" && /^[a-z0-9_.:-]{1,64}$/i.test(errorCode) ? errorCode : null;
+  try { device.ws.send(JSON.stringify({ type: "assistant_state", state, ...(safeErrorCode ? { error_code: safeErrorCode } : {}) })); return true; }
   catch { return false; }
 }
 
@@ -1175,6 +1176,7 @@ app.log.info({
   speaker_websocket_path: "/speaker",
   speaker_format: `${speakerRuntime.format.channels}ch ${speakerRuntime.format.sampleRate}Hz ${speakerRuntime.format.bitsPerSample}-bit PCM LE`,
   tts_enabled: env.TTS_ENABLED,
+  speaker_enabled: automaticSpeakerEnabled,
   tts_backend: env.TTS_BACKEND,
   tts_voice: ttsBackend.voice ?? env.TTS_VOICE ?? null,
   tts_speed: env.TTS_SPEED,

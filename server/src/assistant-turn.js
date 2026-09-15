@@ -227,7 +227,9 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
         progressSpeech?.cancel?.();
         speech?.cancel?.();
         record(answer.kind, turn, timingFields);
-        logger.info({ device_id: turn.deviceId, stream_id: turn.streamId, result: answer.kind }, "Assistant turn settled without speech");
+        logger.info({ device_id: turn.deviceId, stream_id: turn.streamId, result: answer.kind,
+          error_code: answer.error ?? answer.kind, availability_failure: answer.availabilityFailure ?? false },
+        "Assistant turn settled without speech");
         return answer;
       }
       markResponding();
@@ -288,9 +290,9 @@ export function createAssistantTurnRuntime({ assistant, speakerRuntime, isPersis
     completion.then((result) => {
       if (generations.get(turn.deviceId) === generationId &&
           ["timeout", "error", "speaker_failed", "speaker_unavailable", "unavailable"].includes(result?.kind))
-        setAssistantState(turn.deviceId, "error");
+        setAssistantState(turn.deviceId, "error", result?.error ?? result?.speaker ?? result?.kind);
     }).catch(() => {
-      if (generations.get(turn.deviceId) === generationId) setAssistantState(turn.deviceId, "error");
+      if (generations.get(turn.deviceId) === generationId) setAssistantState(turn.deviceId, "error", "assistant_turn_rejected");
     });
     completion.finally(() => {
       clearTimeout(progressTimer);

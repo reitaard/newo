@@ -360,7 +360,8 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
       assistantThinking_ = false;
       assistantErrorUntilMs_ = millis() + 800;
       display_.setAssistantState(NewoDisplayMode::IDLE);
-      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "ASSISTANT_STATE_ERROR");
+      const char* errorCode = doc["error_code"] | "unspecified";
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "ASSISTANT_STATE_ERROR", errorCode);
     } else if (strcmp(state, "idle") == 0 || strcmp(state, "speaking") == 0) {
       assistantThinking_ = false;
       display_.setAssistantState(NewoDisplayMode::IDLE);

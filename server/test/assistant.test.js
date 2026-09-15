@@ -714,6 +714,20 @@ test("assistant turn state follows LLM start, first useful token, and completion
   assert.deepEqual(states, ["thinking", "responding", "idle"]);
 });
 
+test("assistant turn exposes the terminal error cause to the device state", async () => {
+  const states = [];
+  const assistant = {
+    async respond() { return { kind: "timeout", error: "assistant_timeout", availabilityFailure: true }; },
+    abortDevice() {}, close() {},
+  };
+  const turns = createAssistantTurnRuntime({ assistant, speakerRuntime: { speak() { throw new Error("unexpected TTS"); } },
+    isPersistentSpeakerEnabled: () => true, maxReplyChars: 240, logger: quietLogger,
+    setAssistantState: (_deviceId, state, errorCode) => states.push([state, errorCode ?? null]) });
+  assert.equal((await turns.handleFinalTranscript(turn).completion).kind, "timeout");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(states, [["thinking", null], ["error", "assistant_timeout"], ["idle", null]]);
+});
+
 test("LFM stable facts can answer without invoking web tools", async () => {
   let toolCalls = 0;
   const runtime = createAssistantRuntime({ enabled: true, profiles: testProfiles(), preferredProfile: "lfm", logger: quietLogger,
