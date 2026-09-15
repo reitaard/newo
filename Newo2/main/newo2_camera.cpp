@@ -69,10 +69,9 @@ bool ensure_rgb565(size_t required) {
 bool switch_profile_while_guarded(framesize_t profile) {
     if (g_profile == profile) return true;
 
-    // One framebuffer + WHEN_EMPTY means checking out the current frame stops
-    // the camera driver from starting another capture while OV3660 registers
-    // are changed. This is intentionally the same safety pattern proven by
-    // MomentScraper for detection/photo mode transitions.
+    // With one framebuffer + WHEN_EMPTY, checking out the current frame keeps
+    // the camera driver from starting a new capture while OV3660 registers are
+    // changed. This is the same safe transition pattern used by MomentScraper.
     camera_fb_t *guard = esp_camera_fb_get();
     if (!guard) {
         ESP_LOGW(TAG, "could not guard camera before profile switch");
@@ -195,8 +194,13 @@ bool begin() {
 }
 
 bool set_enabled(bool enabled) {
-    if (!g_initialized) return false;
+    if (!g_initialized || !g_mutex) return false;
+    // This mutex is also the ON/OFF contract. An OFF ACK is not sent until any
+    // in-flight capture has returned its framebuffer; captures re-check state
+    // after acquiring this same mutex, so none can begin after the barrier.
+    if (xSemaphoreTake(g_mutex, pdMS_TO_TICKS(2500)) != pdTRUE) return false;
     g_enabled = enabled;
+    xSemaphoreGive(g_mutex);
     ESP_LOGI(TAG, "logical camera %s", enabled ? "ON" : "OFF");
     return true;
 }
@@ -207,6 +211,11 @@ uint16_t sensor_pid() { return g_sensor_pid; }
 bool capture_motion_luma(uint8_t *out, size_t out_len) {
     if (!g_initialized || !g_enabled || !out || out_len < kMotionPixels) return false;
     if (xSemaphoreTake(g_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    if (!g_enabled) {
+        xSemaphoreGive(g_mutex);
+        return false;
+    }
+
     bool ok = false;
     if (switch_profile_while_guarded(kMotionFrameSize)) {
         camera_fb_t *fb = esp_camera_fb_get();
@@ -224,6 +233,10 @@ bool capture_snapshot(Snapshot &snapshot) {
     snapshot = {};
     if (!g_initialized || !g_enabled) return false;
     if (xSemaphoreTake(g_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) return false;
+    if (!g_enabled) {
+        xSemaphoreGive(g_mutex);
+        return false;
+    }
 
     bool ok = false;
     if (switch_profile_while_guarded(kSnapshotFrameSize)) {
