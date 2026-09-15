@@ -25,7 +25,7 @@ test("serial monitor page uses same-origin websocket and bounded display history
     read("../public/smonitor.html"), read("../public/smonitor.js"), read("../public/smonitor.css"), read("../src/index.js"),
   ]);
   assert.match(html, /Newo Serial Monitor/);
-  assert.match(browser, /location\.host.*smonitor\/ws/);
+  assert.match(browser, /location\.host.*monitorBase.*\/ws/);
   assert.match(browser, /1_000_000/);
   assert.match(browser, /console bytes dropped/);
   assert.match(html, /role="toolbar"/);
@@ -39,8 +39,8 @@ test("serial monitor page uses same-origin websocket and bounded display history
   assert.match(styles, /@keyframes status-dots/);
   assert.match(styles, /header \.brand span \{ color: #8fa398; \}/);
   assert.match(styles, /width: 12ch; min-width: 12ch/);
-  assert.match(html, /rel="icon" href="\/smonitor\/favicon\.svg"/);
-  assert.match(html, /rel="manifest" href="\/smonitor\/site\.webmanifest"/);
-  assert.match(server, /smonitor\/favicon\.ico/);
-  assert.match(server, /smonitor\/site\.webmanifest/);
+  assert.match(html, /rel="icon" href="\.\/favicon\.svg"/);
+  assert.match(html, /rel="manifest" href="\.\/site\.webmanifest"/);
+  assert.match(server, /smonitor1\/favicon\.ico/);
+  assert.match(server, /smonitor1\/site\.webmanifest/);
 });

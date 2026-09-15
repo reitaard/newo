@@ -44,4 +44,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: npm ci --prefix server
       - run: node --check server/src/newo2-bridge.js
+      - run: node --test server/test/newo2-bridge.test.js

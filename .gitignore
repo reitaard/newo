@@ -12,6 +12,9 @@ build/
 secrets.h
 Newo/newo_secrets.h
 Newo2/main/newo2_secrets.h
+Newo2/build*/
+Newo2/managed_components/
+Newo2/sdkconfig
 *.pem
 *.key
 .env

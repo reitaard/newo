@@ -5,6 +5,8 @@ const metrics = document.querySelector("#metrics");
 const autoscroll = document.querySelector("#autoscroll");
 const copy = document.querySelector("#copy");
 const decoder = new TextDecoder();
+const monitorBase = location.pathname.startsWith("/smonitor2") ? "/smonitor2" : "/smonitor1";
+const frameMagic = monitorBase === "/smonitor2" ? "NSM2" : "NSM1";
 let receivedBytes = 0;
 let lastSequence = 0;
 let rawLog = "";
@@ -82,7 +84,7 @@ function setStatus(state) {
 
 function connect() {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(`${protocol}//${location.host}/smonitor/ws`);
+  const socket = new WebSocket(`${protocol}//${location.host}${monitorBase}/ws`);
   socket.binaryType = "arraybuffer";
   socket.addEventListener("open", () => setStatus("connecting"));
   socket.addEventListener("message", (event) => {
@@ -95,7 +97,7 @@ function connect() {
       return;
     }
     const frame = new Uint8Array(event.data);
-    if (frame.length < 12 || String.fromCharCode(...frame.subarray(0, 4)) !== "NSM1") return;
+    if (frame.length < 12 || String.fromCharCode(...frame.subarray(0, 4)) !== frameMagic) return;
     const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
     const sequence = view.getUint32(4, true);
     const dropped = view.getUint32(8, true);

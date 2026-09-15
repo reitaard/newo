@@ -3,10 +3,6 @@
 #include <cstdint>
 
 namespace Newo2Camera {
-constexpr int kMotionWidth = 160;
-constexpr int kMotionHeight = 120;
-constexpr size_t kMotionPixels = kMotionWidth * kMotionHeight;
-
 struct Snapshot {
     uint8_t *jpeg = nullptr;
     size_t len = 0;
@@ -15,11 +11,21 @@ struct Snapshot {
     uint32_t sequence = 0;
 };
 
+struct Settings {
+    const char *photo_resolution;
+    const char *video_resolution;
+    uint8_t photo_quality;
+    uint8_t video_quality;
+};
+
 bool begin();
 bool set_enabled(bool enabled);
 bool enabled();
-bool capture_motion_luma(uint8_t *out, size_t out_len);
 bool capture_snapshot(Snapshot &snapshot);
+bool capture_video_frame(Snapshot &frame);
+Settings settings();
+bool set_resolution(const char *target, const char *resolution);
+bool set_quality(const char *target, uint8_t quality);
 void release_snapshot(Snapshot &snapshot);
 uint16_t sensor_pid();
 }  // namespace Newo2Camera

@@ -1,0 +1,84 @@
+{"text":"hello newo how are you","label":"conversation.general"}
+{"text":"tell me something funny","label":"conversation.general"}
+{"text":"let us just chat","label":"conversation.general"}
+{"text":"what do you think about this idea","label":"conversation.general"}
+{"text":"search the web for the newest ESP32 camera release","label":"web.search"}
+{"text":"look this up online and give me sources","label":"web.search"}
+{"text":"find current news about robotics","label":"web.search"}
+{"text":"browse for up to date information","label":"web.search"}
+{"text":"will it rain here tomorrow","label":"weather.forecast"}
+{"text":"what is the weather in Bangkok","label":"weather.forecast"}
+{"text":"do I need an umbrella this afternoon","label":"weather.forecast"}
+{"text":"give me the seven day forecast","label":"weather.forecast"}
+{"text":"what time is it in Germany","label":"time.lookup"}
+{"text":"convert 9 pm Bangkok time to Berlin","label":"time.lookup"}
+{"text":"what day is next Friday","label":"time.lookup"}
+{"text":"tell me the local date and time","label":"time.lookup"}
+{"text":"calculate 18 percent of 430","label":"calculation"}
+{"text":"convert 25 celsius to fahrenheit","label":"calculation"}
+{"text":"how many gigabytes is 8000 megabytes","label":"calculation"}
+{"text":"solve 48 divided by 1.6","label":"calculation"}
+{"text":"remember that I prefer short replies","label":"memory.write"}
+{"text":"save my camera preference","label":"memory.write"}
+{"text":"keep this detail for later","label":"memory.write"}
+{"text":"do not forget my usual volume","label":"memory.write"}
+{"text":"what did I tell you about the camera","label":"memory.read"}
+{"text":"recall my preferred settings","label":"memory.read"}
+{"text":"do you remember our earlier plan","label":"memory.read"}
+{"text":"show what you know about my preferences","label":"memory.read"}
+{"text":"take a picture","label":"camera.photo"}
+{"text":"click a photo and send it to me","label":"camera.photo"}
+{"text":"capture what the camera sees","label":"camera.photo"}
+{"text":"snap an image with newo2","label":"camera.photo"}
+{"text":"record a thirty second video","label":"camera.record"}
+{"text":"start recording until I stop it","label":"camera.record"}
+{"text":"make a short camera clip","label":"camera.record"}
+{"text":"stop the video recording","label":"camera.record"}
+{"text":"start the live camera stream","label":"camera.stream"}
+{"text":"give me the private stream link","label":"camera.stream"}
+{"text":"turn off live video","label":"camera.stream"}
+{"text":"show newo2 camera in the browser","label":"camera.stream"}
+{"text":"set photo resolution to xga","label":"camera.settings"}
+{"text":"make video jpeg quality 12","label":"camera.settings"}
+{"text":"turn the camera off","label":"camera.settings"}
+{"text":"what is the camera status","label":"camera.settings"}
+{"text":"what objects are visible in this picture","label":"vision.inspect"}
+{"text":"ask the vision model what newo sees","label":"vision.inspect"}
+{"text":"describe the scene through the camera","label":"vision.inspect"}
+{"text":"is there a red cup in view","label":"vision.inspect"}
+{"text":"show a happy face on the display","label":"display.control"}
+{"text":"put the clock on screen","label":"display.control"}
+{"text":"dim the display","label":"display.control"}
+{"text":"clear the caption from the face","label":"display.control"}
+{"text":"listen for my voice","label":"voice.control"}
+{"text":"disable the microphone","label":"voice.control"}
+{"text":"use stronger noise suppression","label":"voice.control"}
+{"text":"stop listening now","label":"voice.control"}
+{"text":"say good morning out loud","label":"speaker.control"}
+{"text":"turn the volume down","label":"speaker.control"}
+{"text":"mute the speaker","label":"speaker.control"}
+{"text":"read this response to me","label":"speaker.control"}
+{"text":"is newo online","label":"device.status"}
+{"text":"show device health and battery","label":"device.status"}
+{"text":"check the latest error logs","label":"device.status"}
+{"text":"measure the connection latency","label":"device.status"}
+{"text":"reboot newo","label":"device.control"}
+{"text":"enable usb storage mode","label":"device.control"}
+{"text":"switch to the qwen profile","label":"device.control"}
+{"text":"cancel the current operation","label":"device.control"}
+{"text":"remind me to charge newo tomorrow","label":"reminder.manage"}
+{"text":"set an alarm for seven","label":"reminder.manage"}
+{"text":"cancel my afternoon reminder","label":"reminder.manage"}
+{"text":"what reminders do I have","label":"reminder.manage"}
+{"text":"send this message to my family","label":"message.send"}
+{"text":"read my newest telegram message","label":"message.send"}
+{"text":"reply that I will arrive soon","label":"message.send"}
+{"text":"notify me when the task completes","label":"message.send"}
+{"text":"start presence sensing","label":"sensing.future"}
+{"text":"track movement using csi","label":"sensing.future"}
+{"text":"tell me when someone enters the room","label":"sensing.future"}
+{"text":"detect a change in the room","label":"sensing.future"}
+{"text":"follow me around the house","label":"navigation.future"}
+{"text":"drive to the kitchen","label":"navigation.future"}
+{"text":"avoid the chair and come here","label":"navigation.future"}
+{"text":"return to the charging dock","label":"navigation.future"}

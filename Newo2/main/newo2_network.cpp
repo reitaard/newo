@@ -7,14 +7,18 @@
 #include "esp_crt_bundle.h"
 #include "esp_event.h"
 #include "esp_http_client.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_websocket_client.h"
 #include "esp_wifi.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "newo2_event.h"
+#include "newo2_console.h"
+#include "newo2_camera.h"
 
 #if __has_include("newo2_secrets.h")
 #include "newo2_secrets.h"
@@ -39,6 +43,23 @@ esp_websocket_client_handle_t g_ws = nullptr;
 volatile bool g_cloud_connected = false;
 char g_ws_uri[192] = {};
 char g_ws_headers[256] = {};
+uint32_t g_serial_sequence = 0;
+
+void drain_serial_monitor() {
+    if (!g_ws || !g_cloud_connected || !Newo2Console::remote_enabled()) return;
+    static uint8_t frame[12 + 1024];
+    uint32_t dropped = 0;
+    const size_t bytes = Newo2Console::read_remote(frame + 12, sizeof(frame) - 12, &dropped);
+    if (!bytes && !dropped) return;
+    frame[0] = 'N'; frame[1] = 'S'; frame[2] = 'M'; frame[3] = '2';
+    const uint32_t sequence = ++g_serial_sequence;
+    for (uint8_t i = 0; i < 4; ++i) {
+        frame[4 + i] = static_cast<uint8_t>(sequence >> (i * 8));
+        frame[8 + i] = static_cast<uint8_t>(dropped >> (i * 8));
+    }
+    const int sent = esp_websocket_client_send_bin(g_ws, reinterpret_cast<const char *>(frame), bytes + 12, pdMS_TO_TICKS(100));
+    if (sent < 0) Newo2Console::note_remote_drop(bytes);
+}
 
 void send_json(cJSON *root) {
     if (!root || !g_ws || !g_cloud_connected) return;
@@ -79,6 +100,45 @@ void handle_command(const char *data, int len) {
         event.type = Newo2Events::Type::STATUS_REQUEST;
         strlcpy(event.source, "vps", sizeof(event.source));
         Newo2Events::publish(event, 20);
+    } else if (strcmp(kind, "stream_control") == 0 && event.request_id[0]) {
+        const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(root, "enabled");
+        if (cJSON_IsBool(enabled)) {
+            event.type = Newo2Events::Type::STREAM_SET;
+            event.enabled = cJSON_IsTrue(enabled);
+            strlcpy(event.source, "vps", sizeof(event.source));
+            Newo2Events::publish(event, 20);
+        }
+    } else if (strcmp(kind, "record_start") == 0 && event.request_id[0]) {
+        const cJSON *duration = cJSON_GetObjectItemCaseSensitive(root, "duration_seconds");
+        event.type = Newo2Events::Type::RECORD_START;
+        event.duration_seconds = cJSON_IsNumber(duration) && duration->valuedouble >= 0
+            ? static_cast<uint32_t>(duration->valuedouble) : 30;
+        strlcpy(event.source, "vps", sizeof(event.source));
+        Newo2Events::publish(event, 20);
+    } else if (strcmp(kind, "record_stop") == 0 && event.request_id[0]) {
+        event.type = Newo2Events::Type::RECORD_STOP;
+        strlcpy(event.source, "vps", sizeof(event.source));
+        Newo2Events::publish(event, 20);
+    } else if (strcmp(kind, "settings_control") == 0 && event.request_id[0]) {
+        const cJSON *setting = cJSON_GetObjectItemCaseSensitive(root, "setting");
+        const cJSON *target = cJSON_GetObjectItemCaseSensitive(root, "target");
+        const cJSON *value = cJSON_GetObjectItemCaseSensitive(root, "value");
+        if (cJSON_IsString(setting) && cJSON_IsString(target) && (cJSON_IsString(value) || cJSON_IsNumber(value))) {
+            event.type = Newo2Events::Type::SETTINGS_SET;
+            copy_string(event.setting, sizeof(event.setting), setting);
+            copy_string(event.source, sizeof(event.source), target);
+            if (cJSON_IsString(value)) copy_string(event.value, sizeof(event.value), value);
+            else snprintf(event.value, sizeof(event.value), "%d", value->valueint);
+            Newo2Events::publish(event, 20);
+        }
+    } else if (strcmp(kind, "settings_request") == 0 && event.request_id[0]) {
+        send_camera_settings(event.request_id, true);
+    } else if (strcmp(kind, "serial_monitor_control") == 0 && event.request_id[0]) {
+        const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(root, "enabled");
+        if (cJSON_IsBool(enabled)) {
+            const bool applied = Newo2Console::set_remote_enabled(cJSON_IsTrue(enabled));
+            send_serial_monitor_ack(event.request_id, Newo2Console::remote_enabled(), applied);
+        }
     }
     cJSON_Delete(root);
 }
@@ -138,7 +198,10 @@ void cloud_task(void *) {
     }
     esp_websocket_register_events(g_ws, WEBSOCKET_EVENT_ANY, ws_event, nullptr);
     esp_websocket_client_start(g_ws);
-    for (;;) vTaskDelay(pdMS_TO_TICKS(10000));
+    for (;;) {
+        drain_serial_monitor();
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
 }
 }  // namespace
 
@@ -147,8 +210,8 @@ bool begin() {
     ESP_LOGW(TAG, "newo2_secrets.h missing; cloud/Wi-Fi disabled");
     return false;
 #else
-    if (!Newo2Secrets::WIFI_SSID[0] || strlen(Newo2Secrets::DEVICE_SECRET) < 24) {
-        ESP_LOGW(TAG, "Wi-Fi/device credentials incomplete; cloud disabled");
+    if (strlen(Newo2Secrets::DEVICE_SECRET) < 24) {
+        ESP_LOGW(TAG, "device credential incomplete; cloud disabled");
         return false;
     }
     g_wifi_events = xEventGroupCreate();
@@ -161,14 +224,24 @@ bool begin() {
     ESP_ERROR_CHECK(esp_wifi_init(&init));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, nullptr));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, nullptr));
-    wifi_config_t wifi = {};
-    strlcpy(reinterpret_cast<char *>(wifi.sta.ssid), Newo2Secrets::WIFI_SSID, sizeof(wifi.sta.ssid));
-    strlcpy(reinterpret_cast<char *>(wifi.sta.password), Newo2Secrets::WIFI_PASSWORD, sizeof(wifi.sta.password));
-    wifi.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
-    wifi.sta.pmf_cfg.capable = true;
-    wifi.sta.pmf_cfg.required = false;
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi));
+    if (Newo2Secrets::WIFI_SSID[0]) {
+        wifi_config_t wifi = {};
+        strlcpy(reinterpret_cast<char *>(wifi.sta.ssid), Newo2Secrets::WIFI_SSID, sizeof(wifi.sta.ssid));
+        strlcpy(reinterpret_cast<char *>(wifi.sta.password), Newo2Secrets::WIFI_PASSWORD, sizeof(wifi.sta.password));
+        wifi.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+        wifi.sta.pmf_cfg.capable = true;
+        wifi.sta.pmf_cfg.required = false;
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi));
+    } else {
+        wifi_config_t saved = {};
+        ESP_ERROR_CHECK(esp_wifi_get_config(WIFI_IF_STA, &saved));
+        if (!saved.sta.ssid[0]) {
+            ESP_LOGW(TAG, "no compiled or saved Wi-Fi credentials; cloud disabled");
+            return false;
+        }
+        ESP_LOGI(TAG, "using Wi-Fi credentials already saved in NVS");
+    }
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_wifi_start());
     xTaskCreate(cloud_task, "newo2_cloud", 6144, nullptr, 4, nullptr);
@@ -207,6 +280,82 @@ void send_motion_detected(uint32_t sequence, float confidence) {
     cJSON_AddNumberToObject(root, "confidence", confidence);
     send_json(root);
     cJSON_Delete(root);
+}
+
+void send_serial_monitor_ack(const char *request_id, bool enabled, bool applied) {
+    if (!request_id || !request_id[0]) return;
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "serial_monitor_ack");
+    cJSON_AddStringToObject(root, "request_id", request_id);
+    cJSON_AddBoolToObject(root, "enabled", enabled);
+    cJSON_AddBoolToObject(root, "applied", applied);
+    cJSON_AddNumberToObject(root, "capacity_bytes", Newo2Console::remote_capacity());
+    send_json(root);
+    cJSON_Delete(root);
+}
+
+void send_media_ack(const char *request_id, const char *target, bool enabled, bool applied, uint8_t fps) {
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "media_ack");
+    cJSON_AddStringToObject(root, "request_id", request_id ? request_id : "");
+    cJSON_AddStringToObject(root, "target", target ? target : "media");
+    cJSON_AddBoolToObject(root, "enabled", enabled);
+    cJSON_AddBoolToObject(root, "applied", applied);
+    cJSON_AddNumberToObject(root, "fps", fps);
+    send_json(root);
+    cJSON_Delete(root);
+}
+
+void send_camera_settings(const char *request_id, bool applied) {
+    if (!request_id || !request_id[0]) return;
+    const Newo2Camera::Settings settings = Newo2Camera::settings();
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "settings_ack");
+    cJSON_AddStringToObject(root, "request_id", request_id);
+    cJSON_AddBoolToObject(root, "applied", applied);
+    cJSON_AddStringToObject(root, "photo_resolution", settings.photo_resolution);
+    cJSON_AddStringToObject(root, "video_resolution", settings.video_resolution);
+    cJSON_AddNumberToObject(root, "photo_quality", settings.photo_quality);
+    cJSON_AddNumberToObject(root, "video_quality", settings.video_quality);
+    send_json(root);
+    cJSON_Delete(root);
+}
+
+void send_record_result(const char *request_id, bool success, uint32_t frames, uint32_t dropped,
+                        size_t bytes, uint32_t duration_ms, const char *reason) {
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "record_complete");
+    cJSON_AddStringToObject(root, "request_id", request_id ? request_id : "");
+    cJSON_AddBoolToObject(root, "success", success);
+    cJSON_AddNumberToObject(root, "frames", frames);
+    cJSON_AddNumberToObject(root, "dropped", dropped);
+    cJSON_AddNumberToObject(root, "bytes", static_cast<double>(bytes));
+    cJSON_AddNumberToObject(root, "duration_ms", duration_ms);
+    cJSON_AddStringToObject(root, "reason", reason ? reason : "unknown");
+    send_json(root);
+    cJSON_Delete(root);
+}
+
+bool send_video_frame(const uint8_t *jpeg, size_t len, uint16_t width, uint16_t height,
+                      uint32_t sequence, uint8_t fps, bool streaming, bool recording) {
+    if (!jpeg || !len || !g_ws || !g_cloud_connected || len > 256 * 1024) return false;
+    uint8_t *packet = static_cast<uint8_t *>(heap_caps_malloc(24 + len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!packet) return false;
+    packet[0] = 'N'; packet[1] = '2'; packet[2] = 'J'; packet[3] = 'F';
+    packet[4] = (streaming ? 1 : 0) | (recording ? 2 : 0); packet[5] = 0;
+    packet[6] = width & 0xff; packet[7] = width >> 8;
+    packet[8] = height & 0xff; packet[9] = height >> 8;
+    packet[10] = fps; packet[11] = 0;
+    const uint32_t timestamp_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    for (uint8_t i = 0; i < 4; ++i) {
+        packet[12 + i] = static_cast<uint8_t>(sequence >> (i * 8));
+        packet[16 + i] = static_cast<uint8_t>(timestamp_ms >> (i * 8));
+        packet[20 + i] = static_cast<uint8_t>(len >> (i * 8));
+    }
+    memcpy(packet + 24, jpeg, len);
+    const int sent = esp_websocket_client_send_bin(g_ws, reinterpret_cast<const char *>(packet), 24 + len, pdMS_TO_TICKS(100));
+    heap_caps_free(packet);
+    return sent == static_cast<int>(24 + len);
 }
 
 void send_snapshot_result(const char *request_id, const char *source, uint32_t sequence,

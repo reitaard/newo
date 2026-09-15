@@ -25,6 +25,7 @@ import { createVoiceRuntime, NullAsrBackend, WorkerAsrBackend } from "./voice.js
 import { LazyFallbackAsrBackend, PythonSherpaAsrBackend } from "./python-sherpa-asr.js";
 import { NullSpeakerVerifier, SpeakerVerifier } from "./speaker-verification.js";
 import { resolveSherpaLmConfig } from "./sherpa-lm-config.js";
+import { createNewo2CameraClient } from "./newo2-camera-client.js";
 
 try {
   loadEnvFile(".env");
@@ -49,6 +50,9 @@ const EnvSchema = z.object({
   TELEGRAM_ALLOWED_CHAT_IDS: z.preprocess(emptyToUndefined, z.string().optional()),
   NEWO_DEVICE_ID: z.preprocess(emptyToUndefined, z.string().min(1).default("newo-01")),
   NEWO_DEVICE_SECRET: z.preprocess(emptyToUndefined, z.string().min(24).optional()),
+  NEWO2_ADMIN_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://127.0.0.1:8792")),
+  NEWO2_ADMIN_SECRET: z.preprocess(emptyToUndefined, z.string().min(24).optional()),
+  NEWO2_VISION_URL: z.preprocess(emptyToUndefined, z.string().url().default("https://smonitor.reitaard.de/vision")),
   VOICE_SAMPLE_RATE: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(16_000)),
   VOICE_CHANNELS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(2).default(1)),
   VOICE_BITS_PER_SAMPLE: z.preprocess(emptyToUndefined, z.coerce.number().int().refine((value) => [8, 16, 24, 32].includes(value)).default(16)),
@@ -133,6 +137,7 @@ const allowedUserIds = parseIdSet(env.TELEGRAM_ALLOWED_USER_IDS);
 const allowedChatIds = parseIdSet(env.TELEGRAM_ALLOWED_CHAT_IDS);
 
 const app = Fastify({ logger: true, trustProxy: true, bodyLimit: 256 * 1024 });
+const newo2Camera = createNewo2CameraClient({ baseUrl: env.NEWO2_ADMIN_BASE_URL, adminSecret: env.NEWO2_ADMIN_SECRET });
 const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 64 * 1024 });
 const voiceWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: env.VOICE_MAX_CHUNK_BYTES });
 const speakerWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 4 * 1024 });
@@ -504,17 +509,17 @@ function scheduleOfflineNotification(deviceId, state, ws) {
 
 app.get("/", async () => ({ service: "newo-cloud", status: "ok" }));
 const serialMonitorAssets = new Map([
-  ["/smonitor", ["../public/smonitor.html", "text/html; charset=utf-8"]],
-  ["/smonitor/", ["../public/smonitor.html", "text/html; charset=utf-8"]],
-  ["/smonitor/smonitor.css", ["../public/smonitor.css", "text/css; charset=utf-8"]],
-  ["/smonitor/smonitor.js", ["../public/smonitor.js", "text/javascript; charset=utf-8"]],
-  ["/smonitor/favicon.ico", ["../public/smonitor-favicon/favicon.ico", "image/x-icon"]],
-  ["/smonitor/favicon.svg", ["../public/smonitor-favicon/favicon.svg", "image/svg+xml"]],
-  ["/smonitor/favicon-96x96.png", ["../public/smonitor-favicon/favicon-96x96.png", "image/png"]],
-  ["/smonitor/apple-touch-icon.png", ["../public/smonitor-favicon/apple-touch-icon.png", "image/png"]],
-  ["/smonitor/web-app-manifest-192x192.png", ["../public/smonitor-favicon/web-app-manifest-192x192.png", "image/png"]],
-  ["/smonitor/web-app-manifest-512x512.png", ["../public/smonitor-favicon/web-app-manifest-512x512.png", "image/png"]],
-  ["/smonitor/site.webmanifest", ["../public/smonitor-favicon/site.webmanifest", "application/manifest+json"]],
+  ["/smonitor1", ["../public/smonitor.html", "text/html; charset=utf-8"]],
+  ["/smonitor1/", ["../public/smonitor.html", "text/html; charset=utf-8"]],
+  ["/smonitor1/smonitor.css", ["../public/smonitor.css", "text/css; charset=utf-8"]],
+  ["/smonitor1/smonitor.js", ["../public/smonitor.js", "text/javascript; charset=utf-8"]],
+  ["/smonitor1/favicon.ico", ["../public/smonitor-favicon/favicon.ico", "image/x-icon"]],
+  ["/smonitor1/favicon.svg", ["../public/smonitor-favicon/favicon.svg", "image/svg+xml"]],
+  ["/smonitor1/favicon-96x96.png", ["../public/smonitor-favicon/favicon-96x96.png", "image/png"]],
+  ["/smonitor1/apple-touch-icon.png", ["../public/smonitor-favicon/apple-touch-icon.png", "image/png"]],
+  ["/smonitor1/web-app-manifest-192x192.png", ["../public/smonitor-favicon/web-app-manifest-192x192.png", "image/png"]],
+  ["/smonitor1/web-app-manifest-512x512.png", ["../public/smonitor-favicon/web-app-manifest-512x512.png", "image/png"]],
+  ["/smonitor1/site.webmanifest", ["../public/smonitor-favicon/site.webmanifest", "application/manifest+json"]],
 ]);
 for (const [path, [relativePath, contentType]] of serialMonitorAssets) {
   app.get(path, async (_request, reply) => {
@@ -551,6 +556,17 @@ const TELEGRAM_COMMANDS = [
   { command: "track_bg", description: "RF tracking without live panel" },
   { command: "status", description: "Device status" },
   { command: "health", description: "System health" },
+  { command: "cam_on", description: "Turn Newo2 camera on" },
+  { command: "cam_off", description: "Turn Newo2 camera off" },
+  { command: "photo", description: "Capture and send a photo" },
+  { command: "record", description: "Record video (default 30 seconds)" },
+  { command: "record_stop", description: "Stop a manual recording" },
+  { command: "stream", description: "Start the private camera stream" },
+  { command: "stream_stop", description: "Stop the camera stream" },
+  { command: "cam_status", description: "Newo2 camera status" },
+  { command: "cam_resolution", description: "Set photo or video resolution" },
+  { command: "cam_quality", description: "Set photo or video JPEG quality" },
+  { command: "vision", description: "Ask Newo2 vision about a photo" },
   { command: "face", description: "Choose a display face" },
   { command: "face_default", description: "Enable autonomous face" },
   { command: "face_closed", description: "Closed eyelids" },
@@ -624,6 +640,58 @@ async function handleNewoCommand(ctx) {
   const input = String(ctx.match ?? "").trim();
   if (input) return commandReply(ctx, commandMessage("newo", [quote(["Reserved for the Newo agent. Use /face for display styles."])]), "reserved");
   return commandReply(ctx, commandMessage("newo", [quote(["Reserved for the Newo agent."])]), "reserved");
+}
+
+function cameraArgument(ctx) { return typeof ctx.match === "string" ? ctx.match.trim() : ""; }
+
+async function runCameraCommand(ctx, name, operation, success) {
+  try {
+    const result = await operation();
+    await commandReply(ctx, commandMessage(name, [quote([success(result)])]), "response");
+  } catch (error) {
+    await commandReply(ctx, commandMessage(name, [quote([`Status: ${bold("failed")}`, `Reason: ${escapeHtml(error?.message || "unknown")}`])]), "error");
+  }
+}
+
+async function handleCameraPower(ctx, enabled) {
+  return runCameraCommand(ctx, enabled ? "camera on" : "camera off", () => newo2Camera.camera(enabled),
+    (result) => `Status: ${bold(result.applied ? (result.enabled ? "on" : "off") : "rejected")}`);
+}
+
+async function handleCameraPhoto(ctx, vision = false) {
+  const question = vision ? cameraArgument(ctx) || "Describe what the Newo2 camera can see." : "";
+  return runCameraCommand(ctx, vision ? "vision" : "photo", () => newo2Camera.photo(ctx.chat.id, question),
+    (result) => `Status: ${bold(result.captured ? "captured" : "failed")} · Telegram delivery queued`);
+}
+
+async function handleCameraRecord(ctx) {
+  const raw = cameraArgument(ctx);
+  const duration = raw ? Number(raw) : 30;
+  if (!Number.isSafeInteger(duration) || duration < 0 || duration > 0xffffffff) {
+    return commandReply(ctx, statusMessage("record", "use /record [seconds], or 0 for manual stop"), "invalid");
+  }
+  return runCameraCommand(ctx, "record", () => newo2Camera.record(ctx.chat.id, duration),
+    (result) => `Status: ${bold("recording")} · ${duration === 0 ? "until /record_stop" : `${duration} seconds`} · ${result.fps || 20} FPS target`);
+}
+
+async function handleCameraStream(ctx, enabled) {
+  return runCameraCommand(ctx, enabled ? "stream" : "stream stop", () => newo2Camera.stream(enabled),
+    () => enabled ? `Status: ${bold("streaming")}\n${env.NEWO2_VISION_URL}` : `Status: ${bold("stopped")}`);
+}
+
+async function handleCameraStatus(ctx) {
+  return runCameraCommand(ctx, "camera status", () => newo2Camera.status(), (result) => [
+    `Device: ${bold(result.connected ? "online" : "offline")}`,
+    `Camera: ${bold(result.status?.camera_enabled ? "on" : "off")}`,
+    `Recording: ${bold(result.recording ? "yes" : "no")}`,
+    `Stream FPS: ${bold(result.latest_frame?.fps ?? "idle")}`,
+  ].join("\n"));
+}
+
+async function handleCameraSetting(ctx, kind) {
+  const value = cameraArgument(ctx);
+  return runCameraCommand(ctx, `camera ${kind}`, () => newo2Camera.settings(value ? { [kind]: value } : {}),
+    (result) => `Photo: ${bold(`${result.photo_resolution}/q${result.photo_quality}`)}\nVideo: ${bold(`${result.video_resolution}/q${result.video_quality}`)}`);
 }
 
 function faceStyleCommand(style) { return `/face_${style}`; }
@@ -1007,6 +1075,17 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["ping", "pi"], handlePingCommand);
   bot.command(["reboot", "r"], handleRebootCommand);
   bot.command(["newo", "n"], handleNewoCommand);
+  bot.command(["cam_on", "c_on"], (ctx) => handleCameraPower(ctx, true));
+  bot.command(["cam_off", "c_off"], (ctx) => handleCameraPower(ctx, false));
+  bot.command(["photo", "ph"], (ctx) => handleCameraPhoto(ctx));
+  bot.command(["record", "rec"], handleCameraRecord);
+  bot.command(["record_stop", "rec_stop"], (ctx) => runCameraCommand(ctx, "record stop", () => newo2Camera.stopRecording(), () => `Status: ${bold("stopped")}`));
+  bot.command(["stream", "str"], (ctx) => handleCameraStream(ctx, true));
+  bot.command(["stream_stop", "str_stop"], (ctx) => handleCameraStream(ctx, false));
+  bot.command(["cam_status", "cs"], handleCameraStatus);
+  bot.command(["cam_resolution", "cres"], (ctx) => handleCameraSetting(ctx, "resolution"));
+  bot.command(["cam_quality", "cq"], (ctx) => handleCameraSetting(ctx, "quality"));
+  bot.command(["vision", "vis"], (ctx) => handleCameraPhoto(ctx, true));
   bot.command(["face", "f"], handleFaceCommand);
   for (const style of FACE_STYLES) bot.command(`face_${style}`, (ctx) => handleFaceCommand(ctx, style));
   bot.command(["effect", "fx"], handleEffectCommand);
@@ -1070,7 +1149,7 @@ if (env.TELEGRAM_BOT_TOKEN) {
 app.server.on("upgrade", (request, socket, head) => {
   let pathname;
   try { pathname = new URL(request.url ?? "/", "http://localhost").pathname; } catch { rejectUpgrade(socket, 400, "Bad Request"); return; }
-  if (pathname === "/smonitor/ws") {
+  if (pathname === "/smonitor1/ws") {
     serialMonitorWss.handleUpgrade(request, socket, head, (ws) => serialMonitorWss.emit("connection", ws, request));
     return;
   }

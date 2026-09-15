@@ -5,9 +5,8 @@
 
 #include "esp_camera.h"
 #include "esp_heap_caps.h"
-#include "esp_jpeg_common.h"
-#include "esp_jpeg_dec.h"
 #include "esp_log.h"
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -15,10 +14,11 @@
 namespace Newo2Camera {
 namespace {
 constexpr const char *TAG = "newo2_camera";
-constexpr uint8_t kJpegQuality = 12;
+constexpr uint8_t kDefaultVideoJpegQuality = 12;
+constexpr uint8_t kDefaultPhotoJpegQuality = 10;
 constexpr size_t kJpegEoiScanBytes = 4096;
-constexpr framesize_t kMotionFrameSize = FRAMESIZE_QVGA;
-constexpr framesize_t kSnapshotFrameSize = FRAMESIZE_SVGA;
+constexpr framesize_t kDefaultVideoFrameSize = FRAMESIZE_VGA;
+constexpr framesize_t kDefaultSnapshotFrameSize = FRAMESIZE_SVGA;
 constexpr int CAM_PIN_PWDN = -1;
 constexpr int CAM_PIN_RESET = -1;
 constexpr int CAM_PIN_XCLK = 15;
@@ -40,10 +40,11 @@ SemaphoreHandle_t g_mutex = nullptr;
 bool g_initialized = false;
 volatile bool g_enabled = false;
 uint16_t g_sensor_pid = 0;
-jpeg_dec_handle_t g_decoder = nullptr;
-uint8_t *g_rgb565 = nullptr;
-size_t g_rgb565_capacity = 0;
-framesize_t g_profile = kMotionFrameSize;
+framesize_t g_video_frame_size = kDefaultVideoFrameSize;
+framesize_t g_photo_frame_size = kDefaultSnapshotFrameSize;
+uint8_t g_video_quality = kDefaultVideoJpegQuality;
+uint8_t g_photo_quality = kDefaultPhotoJpegQuality;
+framesize_t g_profile = kDefaultVideoFrameSize;
 uint32_t g_snapshot_sequence = 0;
 
 size_t sanitized_jpeg_len(const uint8_t *data, size_t len) {
@@ -55,80 +56,92 @@ size_t sanitized_jpeg_len(const uint8_t *data, size_t len) {
     return 0;
 }
 
-bool ensure_rgb565(size_t required) {
-    if (g_rgb565 && g_rgb565_capacity >= required) return true;
-    uint8_t *next = static_cast<uint8_t *>(
-        heap_caps_aligned_alloc(16, required, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!next) return false;
-    if (g_rgb565) heap_caps_free(g_rgb565);
-    g_rgb565 = next;
-    g_rgb565_capacity = required;
-    return true;
-}
-
-bool switch_profile_while_guarded(framesize_t profile) {
+bool switch_profile_while_guarded(framesize_t profile, uint8_t quality) {
     if (g_profile == profile) return true;
-
-    // With one framebuffer + WHEN_EMPTY, checking out the current frame keeps
-    // the camera driver from starting a new capture while OV3660 registers are
-    // changed. This is the same safe transition pattern used by MomentScraper.
-    camera_fb_t *guard = esp_camera_fb_get();
-    if (!guard) {
-        ESP_LOGW(TAG, "could not guard camera before profile switch");
-        return false;
-    }
-
     sensor_t *sensor = esp_camera_sensor_get();
     const bool switched = sensor && sensor->set_framesize(sensor, profile) == 0;
     if (switched) {
-        sensor->set_quality(sensor, kJpegQuality);
+        sensor->set_quality(sensor, quality);
         g_profile = profile;
     }
-    esp_camera_fb_return(guard);
-
     if (!switched) ESP_LOGW(TAG, "OV3660 frame-size switch failed profile=%d", static_cast<int>(profile));
-    return switched;
-}
-
-bool restore_motion_profile_before_return(camera_fb_t *held_snapshot) {
-    sensor_t *sensor = esp_camera_sensor_get();
-    const bool switched = sensor && sensor->set_framesize(sensor, kMotionFrameSize) == 0;
     if (switched) {
-        sensor->set_quality(sensor, kJpegQuality);
-        g_profile = kMotionFrameSize;
-    } else {
-        ESP_LOGW(TAG, "failed to restore motion profile while photo framebuffer held");
+        // Discard the first frame after an OV3660 mode change. With the v6
+        // double-buffer/latest-frame setup it may still belong to the previous
+        // profile.
+        camera_fb_t *stale = esp_camera_fb_get();
+        if (stale) esp_camera_fb_return(stale);
     }
-
-    // Keep the photo checked out until after the sensor is back in QVGA. The
-    // first capture after this return is therefore generated in motion mode.
-    if (held_snapshot) esp_camera_fb_return(held_snapshot);
     return switched;
 }
 
-bool decode_motion(const uint8_t *jpeg, size_t len, uint8_t *out, size_t out_len) {
-    if (!g_decoder || !jpeg || out_len < kMotionPixels) return false;
-    jpeg_dec_io_t io = {};
-    io.inbuf = const_cast<uint8_t *>(jpeg);
-    io.inbuf_len = static_cast<int>(len);
-    jpeg_dec_header_info_t info = {};
-    if (jpeg_dec_parse_header(g_decoder, &io, &info) != JPEG_ERR_OK) return false;
-    int decoded_len = 0;
-    if (jpeg_dec_get_outbuf_len(g_decoder, &decoded_len) != JPEG_ERR_OK || decoded_len <= 0) return false;
-    if (!ensure_rgb565(static_cast<size_t>(decoded_len))) return false;
-    io.outbuf = g_rgb565;
-    if (jpeg_dec_process(g_decoder, &io) != JPEG_ERR_OK) return false;
-
-    const size_t pixels = std::min(kMotionPixels, static_cast<size_t>(decoded_len) / 2);
-    for (size_t i = 0; i < pixels; ++i) {
-        const uint16_t p = (static_cast<uint16_t>(g_rgb565[i * 2]) << 8) | g_rgb565[i * 2 + 1];
-        const uint32_t r = ((p >> 11) & 0x1F) * 255 / 31;
-        const uint32_t g = ((p >> 5) & 0x3F) * 255 / 63;
-        const uint32_t b = (p & 0x1F) * 255 / 31;
-        out[i] = static_cast<uint8_t>((77 * r + 150 * g + 29 * b) >> 8);
+const char *frame_size_name(framesize_t size) {
+    switch (size) {
+        case FRAMESIZE_QVGA: return "qvga";
+        case FRAMESIZE_VGA: return "vga";
+        case FRAMESIZE_SVGA: return "svga";
+        case FRAMESIZE_XGA: return "xga";
+        default: return "unknown";
     }
-    return pixels == kMotionPixels;
 }
+
+bool parse_frame_size(const char *target, const char *name, framesize_t &size) {
+    if (!target || !name) return false;
+    if (strcmp(target, "video") == 0) {
+        if (strcmp(name, "qvga") == 0) size = FRAMESIZE_QVGA;
+        else if (strcmp(name, "vga") == 0) size = FRAMESIZE_VGA;
+        else return false;
+    } else if (strcmp(target, "photo") == 0) {
+        if (strcmp(name, "vga") == 0) size = FRAMESIZE_VGA;
+        else if (strcmp(name, "svga") == 0) size = FRAMESIZE_SVGA;
+        else if (strcmp(name, "xga") == 0) size = FRAMESIZE_XGA;
+        else return false;
+    } else return false;
+    return true;
+}
+
+void persist_settings() {
+    nvs_handle_t handle = 0;
+    if (nvs_open("newo2cam", NVS_READWRITE, &handle) != ESP_OK) return;
+    nvs_set_u8(handle, "photo_res", static_cast<uint8_t>(g_photo_frame_size));
+    nvs_set_u8(handle, "video_res", static_cast<uint8_t>(g_video_frame_size));
+    nvs_set_u8(handle, "photo_q", g_photo_quality);
+    nvs_set_u8(handle, "video_q", g_video_quality);
+    nvs_commit(handle);
+    nvs_close(handle);
+}
+
+void load_settings() {
+    nvs_handle_t handle = 0;
+    if (nvs_open("newo2cam", NVS_READONLY, &handle) != ESP_OK) return;
+    uint8_t value = 0;
+    if (nvs_get_u8(handle, "photo_res", &value) == ESP_OK &&
+        (value == FRAMESIZE_VGA || value == FRAMESIZE_SVGA || value == FRAMESIZE_XGA)) g_photo_frame_size = static_cast<framesize_t>(value);
+    if (nvs_get_u8(handle, "video_res", &value) == ESP_OK &&
+        (value == FRAMESIZE_QVGA || value == FRAMESIZE_VGA)) g_video_frame_size = static_cast<framesize_t>(value);
+    if (nvs_get_u8(handle, "photo_q", &value) == ESP_OK && value >= 4 && value <= 32) g_photo_quality = value;
+    if (nvs_get_u8(handle, "video_q", &value) == ESP_OK && value >= 4 && value <= 32) g_video_quality = value;
+    nvs_close(handle);
+}
+
+bool restore_video_profile_before_return(camera_fb_t *held_snapshot) {
+    sensor_t *sensor = esp_camera_sensor_get();
+    const bool switched = sensor && sensor->set_framesize(sensor, g_video_frame_size) == 0;
+    if (switched) {
+        sensor->set_quality(sensor, g_video_quality);
+        g_profile = g_video_frame_size;
+    } else {
+        ESP_LOGW(TAG, "failed to restore video profile while photo framebuffer held");
+    }
+
+    if (held_snapshot) esp_camera_fb_return(held_snapshot);
+    if (switched) {
+        camera_fb_t *stale = esp_camera_fb_get();
+        if (stale) esp_camera_fb_return(stale);
+    }
+    return switched;
+}
+
 }  // namespace
 
 bool begin() {
@@ -136,6 +149,7 @@ bool begin() {
     g_mutex = xSemaphoreCreateMutex();
     if (!g_mutex) return false;
 
+    load_settings();
     camera_config_t config = {};
     config.pin_pwdn = CAM_PIN_PWDN;
     config.pin_reset = CAM_PIN_RESET;
@@ -157,11 +171,11 @@ bool begin() {
     config.ledc_timer = LEDC_TIMER_0;
     config.ledc_channel = LEDC_CHANNEL_0;
     config.pixel_format = PIXFORMAT_JPEG;
-    config.frame_size = kMotionFrameSize;
-    config.jpeg_quality = kJpegQuality;
-    config.fb_count = 1;
+    config.frame_size = g_video_frame_size;
+    config.jpeg_quality = g_video_quality;
+    config.fb_count = 2;
     config.fb_location = CAMERA_FB_IN_PSRAM;
-    config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+    config.grab_mode = CAMERA_GRAB_LATEST;
     config.sccb_i2c_port = 0;
 
     const esp_err_t err = esp_camera_init(&config);
@@ -172,24 +186,16 @@ bool begin() {
     sensor_t *sensor = esp_camera_sensor_get();
     if (sensor) {
         g_sensor_pid = sensor->id.PID;
-        sensor->set_quality(sensor, kJpegQuality);
+        sensor->set_quality(sensor, g_video_quality);
     }
     if (g_sensor_pid != 0x3660) {
         ESP_LOGW(TAG, "unexpected sensor PID=0x%04x", g_sensor_pid);
     }
 
-    jpeg_dec_config_t decoder_config = DEFAULT_JPEG_DEC_CONFIG();
-    decoder_config.output_type = JPEG_PIXEL_FORMAT_RGB565_BE;
-    decoder_config.scale.width = kMotionWidth;
-    decoder_config.scale.height = kMotionHeight;
-    if (jpeg_dec_open(&decoder_config, &g_decoder) != JPEG_ERR_OK || !g_decoder) {
-        ESP_LOGE(TAG, "JPEG decoder init failed");
-        return false;
-    }
     g_initialized = true;
     g_enabled = false;  // privacy-safe logical boot state; hardware stays warm.
-    ESP_LOGI(TAG, "ready PID=0x%04x native JPEG q=%u 1FB PSRAM DMA OFF; logical camera OFF",
-             g_sensor_pid, static_cast<unsigned>(kJpegQuality));
+    ESP_LOGI(TAG, "ready PID=0x%04x native JPEG VGA q=%u 2FB LATEST PSRAM DMA OFF; logical camera OFF",
+             g_sensor_pid, static_cast<unsigned>(g_video_quality));
     return true;
 }
 
@@ -208,27 +214,6 @@ bool set_enabled(bool enabled) {
 bool enabled() { return g_enabled; }
 uint16_t sensor_pid() { return g_sensor_pid; }
 
-bool capture_motion_luma(uint8_t *out, size_t out_len) {
-    if (!g_initialized || !g_enabled || !out || out_len < kMotionPixels) return false;
-    if (xSemaphoreTake(g_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
-    if (!g_enabled) {
-        xSemaphoreGive(g_mutex);
-        return false;
-    }
-
-    bool ok = false;
-    if (switch_profile_while_guarded(kMotionFrameSize)) {
-        camera_fb_t *fb = esp_camera_fb_get();
-        if (fb) {
-            const size_t clean_len = fb->format == PIXFORMAT_JPEG ? sanitized_jpeg_len(fb->buf, fb->len) : 0;
-            ok = clean_len && decode_motion(fb->buf, clean_len, out, out_len);
-            esp_camera_fb_return(fb);
-        }
-    }
-    xSemaphoreGive(g_mutex);
-    return ok;
-}
-
 bool capture_snapshot(Snapshot &snapshot) {
     snapshot = {};
     if (!g_initialized || !g_enabled) return false;
@@ -239,7 +224,7 @@ bool capture_snapshot(Snapshot &snapshot) {
     }
 
     bool ok = false;
-    if (switch_profile_while_guarded(kSnapshotFrameSize)) {
+    if (switch_profile_while_guarded(g_photo_frame_size, g_photo_quality)) {
         camera_fb_t *fb = esp_camera_fb_get();
         if (fb) {
             const size_t clean_len = fb->format == PIXFORMAT_JPEG ? sanitized_jpeg_len(fb->buf, fb->len) : 0;
@@ -256,11 +241,11 @@ bool capture_snapshot(Snapshot &snapshot) {
                     ok = true;
                 }
             }
-            if (!restore_motion_profile_before_return(fb)) ok = false;
+            if (!restore_video_profile_before_return(fb)) ok = false;
         } else {
             ESP_LOGW(TAG, "snapshot framebuffer unavailable");
-            // No frame is held, so use the guarded transition back to QVGA.
-            switch_profile_while_guarded(kMotionFrameSize);
+            // No frame is held, so use the guarded transition back to VGA.
+            switch_profile_while_guarded(g_video_frame_size, g_video_quality);
         }
     }
 
@@ -274,8 +259,64 @@ bool capture_snapshot(Snapshot &snapshot) {
     return ok;
 }
 
+bool capture_video_frame(Snapshot &frame) {
+    frame = {};
+    if (!g_initialized || !g_enabled) return false;
+    if (xSemaphoreTake(g_mutex, pdMS_TO_TICKS(250)) != pdTRUE) return false;
+    if (!g_enabled) { xSemaphoreGive(g_mutex); return false; }
+
+    bool ok = false;
+    if (switch_profile_while_guarded(g_video_frame_size, g_video_quality)) {
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (fb) {
+            const size_t clean_len = fb->format == PIXFORMAT_JPEG ? sanitized_jpeg_len(fb->buf, fb->len) : 0;
+            if (clean_len) {
+                uint8_t *copy = static_cast<uint8_t *>(heap_caps_malloc(clean_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                if (copy) {
+                    memcpy(copy, fb->buf, clean_len);
+                    frame.jpeg = copy;
+                    frame.len = clean_len;
+                    frame.width = fb->width;
+                    frame.height = fb->height;
+                    frame.sequence = ++g_snapshot_sequence;
+                    ok = true;
+                }
+            }
+            esp_camera_fb_return(fb);
+        }
+    }
+    xSemaphoreGive(g_mutex);
+    return ok;
+}
+
 void release_snapshot(Snapshot &snapshot) {
     if (snapshot.jpeg) heap_caps_free(snapshot.jpeg);
     snapshot = {};
+}
+
+Settings settings() {
+    return {frame_size_name(g_photo_frame_size), frame_size_name(g_video_frame_size), g_photo_quality, g_video_quality};
+}
+
+bool set_resolution(const char *target, const char *resolution) {
+    framesize_t next = FRAMESIZE_INVALID;
+    if (!parse_frame_size(target, resolution, next) || !g_mutex) return false;
+    if (xSemaphoreTake(g_mutex, pdMS_TO_TICKS(2500)) != pdTRUE) return false;
+    if (strcmp(target, "photo") == 0) g_photo_frame_size = next; else g_video_frame_size = next;
+    const bool applied = strcmp(target, "photo") == 0 || switch_profile_while_guarded(g_video_frame_size, g_video_quality);
+    if (applied) persist_settings();
+    xSemaphoreGive(g_mutex);
+    return applied;
+}
+
+bool set_quality(const char *target, uint8_t quality) {
+    if (!g_mutex || quality < 4 || quality > 32 || (strcmp(target, "photo") != 0 && strcmp(target, "video") != 0)) return false;
+    if (xSemaphoreTake(g_mutex, pdMS_TO_TICKS(2500)) != pdTRUE) return false;
+    if (strcmp(target, "photo") == 0) g_photo_quality = quality; else g_video_quality = quality;
+    sensor_t *sensor = esp_camera_sensor_get();
+    const bool applied = strcmp(target, "photo") == 0 || (sensor && sensor->set_quality(sensor, g_video_quality) == 0);
+    if (applied) persist_settings();
+    xSemaphoreGive(g_mutex);
+    return applied;
 }
 }  // namespace Newo2Camera

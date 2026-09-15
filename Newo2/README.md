@@ -80,8 +80,8 @@ Expected first boot includes `PID=0x3660`, SD mount (if card is fitted), `logica
 
 - authenticated WSS `/newo2/device` for small commands/events;
 - authenticated HTTPS `/newo2/snapshot` for JPEG upload;
-- localhost-only admin controls for camera, motion, snapshot and status;
-- bounded snapshot retention;
+- localhost-only admin controls for camera, photo, recording, streaming, settings and status;
+- bounded VPS snapshot retention;
 - optional Telegram `sendPhoto` using the existing bot token.
 
 Start from the `server/` directory after adding `.env.newo2.example` values to `.env`:
@@ -97,15 +97,21 @@ For PM2, run the same entry point as a second app. Caddy should proxy **only** t
 reverse_proxy @newo2 127.0.0.1:8792
 ```
 
-Local VPS controls (later Telegram commands simply map onto these):
+Local VPS controls require the separate `NEWO2_ADMIN_SECRET` bearer token.
+Later Telegram commands simply map onto these:
 
 ```bash
-curl -s http://127.0.0.1:8792/newo2/admin/status
-curl -s -X POST -H 'content-type: application/json' -d '{"enabled":true}' http://127.0.0.1:8792/newo2/admin/camera
-curl -s -X POST -H 'content-type: application/json' -d '{"enabled":true}' http://127.0.0.1:8792/newo2/admin/motion
-curl -s -X POST http://127.0.0.1:8792/newo2/admin/snapshot
+curl -s -H "Authorization: Bearer $NEWO2_ADMIN_SECRET" http://127.0.0.1:8792/newo2/admin/status
+curl -s -X POST -H "Authorization: Bearer $NEWO2_ADMIN_SECRET" -H 'content-type: application/json' -d '{"enabled":true}' http://127.0.0.1:8792/newo2/admin/camera
+curl -s -X POST -H "Authorization: Bearer $NEWO2_ADMIN_SECRET" http://127.0.0.1:8792/newo2/admin/snapshot
 ```
+
+The SD card uses a 500-slot snapshot ring (`snapshot-000.jpg` through
+`snapshot-499.jpg`). Videos are never rotated or deleted automatically; an SD
+write failure stops recording and preserves the partial MJPEG file.
 
 ## First physical acceptance test
 
-Do not add another feature until this passes: clean boot, camera ON command, 10-15 minutes of motion operation, several motion-triggered captures, manual capture, SD files readable, VPS uploads valid JPEGs, no watchdog/panic/brownout, and camera OFF preventing both motion acquisition and manual capture.
+Phase 1 intentionally contains no sensing or automatic detection. Hardware
+acceptance covers clean boot with logical camera OFF, manual photo, recording,
+private live stream, settings persistence, SD files, reconnect and power loss.
