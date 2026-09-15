@@ -1,4 +1,5 @@
 #include "newo_display.h"
+#include "newo_console_redirect.h"
 
 #include <Fonts/FreeMono9pt7b.h>
 #include <Fonts/FreeSans18pt7b.h>

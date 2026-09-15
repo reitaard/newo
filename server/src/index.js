@@ -1,4 +1,5 @@
 import { timingSafeEqual, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { loadEnvFile } from "node:process";
 
 import Fastify from "fastify";
@@ -135,6 +136,7 @@ const app = Fastify({ logger: true, trustProxy: true, bodyLimit: 256 * 1024 });
 const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 64 * 1024 });
 const voiceWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: env.VOICE_MAX_CHUNK_BYTES });
 const speakerWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 4 * 1024 });
+const serialMonitorWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 });
 const sherpaModelDirectories = {
   "20m": "models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
   "libri-giga": "models/sherpa-onnx-streaming-zipformer-en-2023-06-21",
@@ -326,6 +328,7 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("speaker_complete"), playback_id: z.string().uuid(), bytes: z.number().int().nonnegative() }).passthrough(),
   z.object({ type: z.literal("speaker_error"), playback_id: z.string().uuid(), bytes: z.number().int().nonnegative(), error: z.string().max(48) }).passthrough(),
   z.object({ type: z.literal("logs"), request_id: z.string(), firmware: z.string(), uptime_ms: z.number().nonnegative(), warnings: z.number().nonnegative(), errors: z.number().nonnegative(), error: z.string().optional(), entries: z.array(z.object({ seq: z.number(), first_ms: z.number(), last_ms: z.number(), repeat: z.number().int().positive(), level: z.enum(["info", "warn", "error"]), subsystem: z.string(), code: z.string(), detail: z.string().max(96) })).max(40) }),
+  z.object({ type: z.literal("serial_monitor_ack"), request_id: z.string(), enabled: z.boolean(), applied: z.boolean(), capacity_bytes: z.number().int().nonnegative() }),
 ]);
 
 function safeEqual(left, right) {
@@ -500,6 +503,18 @@ function scheduleOfflineNotification(deviceId, state, ws) {
 }
 
 app.get("/", async () => ({ service: "newo-cloud", status: "ok" }));
+const serialMonitorAssets = new Map([
+  ["/smonitor", ["../public/smonitor.html", "text/html; charset=utf-8"]],
+  ["/smonitor/", ["../public/smonitor.html", "text/html; charset=utf-8"]],
+  ["/smonitor/smonitor.css", ["../public/smonitor.css", "text/css; charset=utf-8"]],
+  ["/smonitor/smonitor.js", ["../public/smonitor.js", "text/javascript; charset=utf-8"]],
+]);
+for (const [path, [relativePath, contentType]] of serialMonitorAssets) {
+  app.get(path, async (_request, reply) => {
+    const body = await readFile(new URL(relativePath, import.meta.url));
+    return reply.header("Cache-Control", "no-store").type(contentType).send(body);
+  });
+}
 app.get("/health", async () => {
   const device = getDeviceSnapshot();
   const assistant = assistantTurnRuntime.getTelemetry();
@@ -1048,6 +1063,10 @@ if (env.TELEGRAM_BOT_TOKEN) {
 app.server.on("upgrade", (request, socket, head) => {
   let pathname;
   try { pathname = new URL(request.url ?? "/", "http://localhost").pathname; } catch { rejectUpgrade(socket, 400, "Bad Request"); return; }
+  if (pathname === "/smonitor/ws") {
+    serialMonitorWss.handleUpgrade(request, socket, head, (ws) => serialMonitorWss.emit("connection", ws, request));
+    return;
+  }
   if (pathname !== "/device" && pathname !== "/voice" && pathname !== "/speaker") { rejectUpgrade(socket, 404, "Not Found"); return; }
   if (!env.NEWO_DEVICE_SECRET) { app.log.error("Rejected Newo WebSocket because NEWO_DEVICE_SECRET is not configured"); rejectUpgrade(socket, 503, "Service Unavailable"); return; }
   const deviceId = request.headers["x-newo-device-id"];
@@ -1067,6 +1086,45 @@ speakerWss.on("connection", (ws, request, deviceId) => {
   catch (error) { app.log.warn({ device_id: deviceId, error_message: error?.message ?? "unknown" }, "Speaker connection setup failed"); ws.close(1011, "speaker setup failed"); }
 });
 
+function broadcastSerialMonitorStatus(fields) {
+  const payload = JSON.stringify({ type: "monitor_status", ...fields });
+  for (const client of serialMonitorWss.clients) {
+    if (client.readyState === WebSocket.OPEN) client.send(payload);
+  }
+}
+
+let serialMonitorControlGeneration = 0;
+async function synchronizeSerialMonitor() {
+  const generation = ++serialMonitorControlGeneration;
+  const enabled = serialMonitorWss.clients.size > 0;
+  const request = sendDeviceRequest("serial_monitor_control", "serial_monitor_ack", { enabled });
+  if (request.kind === "offline") {
+    broadcastSerialMonitorStatus({ state: "device_offline", enabled: false });
+    return;
+  }
+  broadcastSerialMonitorStatus({ state: enabled ? "starting" : "stopping", enabled });
+  const result = await request.promise;
+  if (generation !== serialMonitorControlGeneration) return;
+  if (result.kind !== "response") {
+    broadcastSerialMonitorStatus({ state: result.kind, enabled: false });
+    return;
+  }
+  broadcastSerialMonitorStatus({
+    state: result.message.applied ? (result.message.enabled ? "streaming" : "stopped") : "rejected",
+    enabled: result.message.enabled,
+    capacity_bytes: result.message.capacity_bytes,
+  });
+}
+
+serialMonitorWss.on("connection", (ws) => {
+  const device = getDeviceSnapshot();
+  ws.send(JSON.stringify({ type: "monitor_status", state: device.connected ? "connecting" : "device_offline", enabled: false,
+    device: { connected: device.connected, id: device.id, firmware: device.hello?.firmware ?? null, last_seen: device.last_seen } }));
+  ws.on("error", () => {});
+  ws.on("close", () => { if (serialMonitorWss.clients.size === 0) void synchronizeSerialMonitor(); });
+  if (serialMonitorWss.clients.size === 1) void synchronizeSerialMonitor();
+});
+
 wss.on("connection", (ws, request, deviceId) => {
   const previous = devices.get(deviceId);
   const reconnectingAfterNotifiedOffline = Boolean(previous?.hasBeenConnected && previous.offlineNotified && previous.offlineSince !== null);
@@ -1083,7 +1141,15 @@ wss.on("connection", (ws, request, deviceId) => {
     const current = devices.get(deviceId);
     if (current !== state || current.ws !== ws) return;
     state.lastSeen = new Date().toISOString();
-    if (isBinary) { app.log.warn({ device_id: deviceId }, "Ignoring unexpected binary device message"); return; }
+    if (isBinary) {
+      const frame = Buffer.from(raw);
+      const valid = frame.length >= 12 && frame[0] === 0x4e && frame[1] === 0x53 && frame[2] === 0x4d && frame[3] === 0x31;
+      if (!valid) { app.log.warn({ device_id: deviceId, bytes: frame.length }, "Ignoring invalid binary device message"); return; }
+      for (const client of serialMonitorWss.clients) {
+        if (client.readyState === WebSocket.OPEN && client.bufferedAmount < 64 * 1024) client.send(frame, { binary: true });
+      }
+      return;
+    }
     let json;
     try { json = JSON.parse(raw.toString("utf8")); } catch { app.log.warn({ device_id: deviceId }, "Ignoring invalid JSON from device"); return; }
     const parsed = DeviceMessageSchema.safeParse(json);
@@ -1106,6 +1172,7 @@ wss.on("connection", (ws, request, deviceId) => {
     failPendingRequestsForDevice(deviceId, ws, "disconnected");
     assistantTurnRuntime.abortDevice(deviceId);
     if (current?.ws === ws) { current.lastSeen = new Date().toISOString(); trackReconciler.disconnected(); scheduleOfflineNotification(deviceId, current, ws); }
+    broadcastSerialMonitorStatus({ state: "device_offline", enabled: false });
     app.log.info({ device_id: deviceId, code, reason: reason.toString() }, "Newo device disconnected");
   });
   ws.on("error", () => app.log.warn({ device_id: deviceId }, "Newo WebSocket error"));
@@ -1114,6 +1181,7 @@ wss.on("connection", (ws, request, deviceId) => {
   void speakerRuntime.handleDeviceConnected(deviceId, state);
   const speakerSync = sendDeviceRequest("speaker_control", "speaker_ack", { action: "set_enabled", enabled: automaticSpeakerEnabled, led_feedback: false });
   if (speakerSync.kind === "sent") void speakerSync.promise.then((result) => app.log.info({ device_id: deviceId, enabled: automaticSpeakerEnabled, result: result.kind }, "Speaker mode synchronized"));
+  if (serialMonitorWss.clients.size > 0) void synchronizeSerialMonitor();
 });
 
 const heartbeatTimer = setInterval(() => {
@@ -1148,8 +1216,8 @@ async function shutdown(signal) {
   assistantTurnRuntime.close();
   trackLive.stopAll();
   speakerRuntime.close();
-  await Promise.all([...[...devices.values()].map((state) => state.ws), ...voiceWss.clients, ...speakerWss.clients].filter((ws) => ws.readyState !== WebSocket.CLOSED).map(closeDeviceSocket));
-  await Promise.all([wss, voiceWss, speakerWss].map((server) => new Promise((resolve) => { try { server.close(() => resolve()); } catch { resolve(); } })));
+  await Promise.all([...[...devices.values()].map((state) => state.ws), ...voiceWss.clients, ...speakerWss.clients, ...serialMonitorWss.clients].filter((ws) => ws.readyState !== WebSocket.CLOSED).map(closeDeviceSocket));
+  await Promise.all([wss, voiceWss, speakerWss, serialMonitorWss].map((server) => new Promise((resolve) => { try { server.close(() => resolve()); } catch { resolve(); } })));
   await Promise.all([voiceAsr.close?.(), speakerVerifier.close?.()]);
   await app.close();
   process.exitCode = 0;

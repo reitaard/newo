@@ -1,4 +1,5 @@
 #include "newo_speaker_output.h"
+#include "newo_console_redirect.h"
 
 #include <cstring>
 

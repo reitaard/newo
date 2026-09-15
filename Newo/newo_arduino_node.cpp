@@ -1,4 +1,5 @@
 #include "newo_arduino_node.h"
+#include "newo_console_redirect.h"
 
 #include <ctype.h>
 #include <stdio.h>

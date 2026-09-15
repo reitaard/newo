@@ -76,6 +76,8 @@ class NewoCloud {
   void sendStatus(const char* requestId = nullptr, bool pong = false);
   void sendHealth(const char* requestId);
   void sendLogs(const char* requestId, uint8_t limit, const char* minLevel);
+  void sendSerialMonitorAck(const char* requestId, bool enabled, bool applied);
+  void drainSerialMonitor();
   void sendRebootAck(const char* requestId);
   void sendDisplayAck(const char* requestId, const char* mode);
   void sendClockAck(const char* requestId, bool enabled, bool applied);
@@ -115,6 +117,7 @@ class NewoCloud {
   bool voiceConnected_ = false;
   uint32_t voiceWakes_ = 0, voiceSessions_ = 0, voiceFailures_ = 0, voiceTimeouts_ = 0;
   uint32_t minimumLoopStackBytes_ = UINT32_MAX;
+  uint32_t serialMonitorFrameSequence_ = 0;
   bool assistantThinking_ = false;
   bool assistantTurnTerminalPending_ = false;
   bool wakeNetRearmHold_ = false;

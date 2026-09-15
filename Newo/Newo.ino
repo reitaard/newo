@@ -17,6 +17,7 @@
 #include "newo_usb_storage.h"
 #include "newo_usb_vcp.h"
 #include "newo_wifi.h"
+#include "newo_console_redirect.h"
 
 NewoStorage newoStorage;
 NewoUsbStorage newoUsbStorage;

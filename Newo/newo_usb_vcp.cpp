@@ -1,4 +1,5 @@
 #include "newo_usb_vcp.h"
+#include "newo_console_redirect.h"
 
 #include <esp_err.h>
 #include <usb/vcp_ch34x.h>

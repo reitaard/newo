@@ -1,4 +1,5 @@
 #include "newo_usb_audio.h"
+#include "newo_console_redirect.h"
 
 #include <cstring>
 #include <new>

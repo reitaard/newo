@@ -49,6 +49,12 @@ The setup AP is intentionally open for phone captive-portal compatibility, so pr
 - health: `https://newo.reitaard.de/health`
 - device channel: `wss://newo.reitaard.de/device`
 
+The on-demand serial monitor is served only inside the VPS tailnet at
+`http://vps-server.pintail-buri.ts.net:8789/smonitor`. Opening the page enables
+a bounded 32 KiB PSRAM console tap over the existing `/device` connection;
+closing the last page disables it. USB Serial remains unchanged and authoritative
+for bootloader, pre-network, and catastrophic-failure output.
+
 Caddy proxies the public endpoint to the Node service on loopback `127.0.0.1:8788`. Firmware opens an outbound, certificate-validated WSS connection, authenticates with device ID and bearer secret, sends hello/status telemetry, answers correlated ping/status requests, and acknowledges reboot before restarting.
 
 `Newo/newo_secrets.h` is ignored. Copy `Newo/newo_secrets.example.h` locally and supply the matching device credential and trusted public CA. Missing secrets disable cloud connectivity rather than weakening TLS.

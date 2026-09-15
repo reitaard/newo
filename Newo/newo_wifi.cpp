@@ -1,4 +1,5 @@
 #include "newo_wifi.h"
+#include "newo_console_redirect.h"
 
 #include <algorithm>
 #include <cstring>

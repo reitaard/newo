@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <esp_heap_caps.h>
 
+#include "newo_console_redirect.h"
+
 namespace NewoMemoryDiagnostics {
 
 inline void log(const char* checkpoint) {

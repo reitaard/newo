@@ -1,4 +1,5 @@
 #include "newo_usb_storage.h"
+#include "newo_console_redirect.h"
 #include "newo_usb_msc_lun.h"
 
 #include <inttypes.h>

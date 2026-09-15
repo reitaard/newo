@@ -1,4 +1,5 @@
 #include "newo_usb_host.h"
+#include "newo_console_redirect.h"
 
 #include <esp_err.h>
 

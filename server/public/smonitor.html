@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Newo Serial Monitor</title>
+  <link rel="stylesheet" href="/smonitor/smonitor.css">
+</head>
+<body>
+  <header>
+    <div><strong>Newo</strong> <span>Serial Monitor</span></div>
+    <div id="status" class="status disconnected">Connecting</div>
+  </header>
+  <main>
+    <div id="meta">Waiting for device…</div>
+    <pre id="terminal" aria-live="polite"></pre>
+  </main>
+  <footer>
+    <label><input id="autoscroll" type="checkbox" checked> Auto-scroll</label>
+    <span id="metrics">0 bytes</span>
+    <button id="clear" type="button">Clear</button>
+  </footer>
+  <script src="/smonitor/smonitor.js" defer></script>
+</body>
+</html>

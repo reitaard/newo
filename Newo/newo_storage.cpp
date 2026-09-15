@@ -1,4 +1,5 @@
 #include "newo_storage.h"
+#include "newo_console_redirect.h"
 
 #include <ArduinoJson.h>
 

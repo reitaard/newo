@@ -9,6 +9,7 @@
 #include "newo_log.h"
 #include "newo_memory_diagnostics.h"
 #include "newo_storage.h"
+#include "newo_console_redirect.h"
 
 #if __has_include("newo_secrets.h")
 #include "newo_secrets.h"
@@ -136,6 +137,8 @@ void NewoCloud::loop() {
   startConnection();
   webSocket_.loop();
   if (!connected_) return;
+
+  drainSerialMonitor();
 
   const uint32_t now = millis();
   if (now - lastStatusMs_ >= NewoConfig::CLOUD_STATUS_INTERVAL_MS) sendStatus();
@@ -643,6 +646,19 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     return;
   }
 
+  if (strcmp(type, "serial_monitor_control") == 0) {
+    const char* requestId = doc["request_id"] | "";
+    if (!requestId[0] || !doc["enabled"].is<bool>()) {
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD,
+                   "SERIAL_MONITOR_INVALID_REQUEST");
+      return;
+    }
+    const bool requested = doc["enabled"].as<bool>();
+    const bool applied = NewoConsole.setRemoteEnabled(requested);
+    sendSerialMonitorAck(requestId, NewoConsole.remoteEnabled(), applied);
+    return;
+  }
+
   NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "CLOUD_UNSUPPORTED_MESSAGE");
 }
 
@@ -785,6 +801,38 @@ void NewoCloud::sendLogs(const char* requestId, uint8_t limit, const char* minLe
   if (body.length() <= 16 * 1024) webSocket_.sendTXT(body);
   heap_caps_free(entries);
   recordStack("after logs");
+}
+
+void NewoCloud::sendSerialMonitorAck(const char* requestId, bool enabled, bool applied) {
+  if (!connected_ || !requestId || requestId[0] == '\0') return;
+  JsonDocument doc;
+  doc["type"] = "serial_monitor_ack";
+  doc["request_id"] = requestId;
+  doc["enabled"] = enabled;
+  doc["applied"] = applied;
+  doc["capacity_bytes"] = NewoConsole.remoteCapacity();
+  String body;
+  serializeJson(doc, body);
+  webSocket_.sendTXT(body);
+}
+
+void NewoCloud::drainSerialMonitor() {
+  if (!authenticated_ || !NewoConsole.remoteEnabled()) return;
+
+  // Static storage protects Arduino loopTask's bounded stack. The 12-byte
+  // header is "NSM1", frame sequence, and dropped byte count, all little-endian.
+  static uint8_t frame[12 + 1024];
+  uint32_t dropped = 0;
+  const size_t bytes = NewoConsole.readRemote(frame + 12, sizeof(frame) - 12, &dropped);
+  if (bytes == 0 && dropped == 0) return;
+
+  frame[0] = 'N'; frame[1] = 'S'; frame[2] = 'M'; frame[3] = '1';
+  const uint32_t sequence = ++serialMonitorFrameSequence_;
+  for (uint8_t i = 0; i < 4; ++i) {
+    frame[4 + i] = static_cast<uint8_t>(sequence >> (i * 8));
+    frame[8 + i] = static_cast<uint8_t>(dropped >> (i * 8));
+  }
+  if (!webSocket_.sendBIN(frame, bytes + 12)) NewoConsole.noteRemoteDrop(bytes);
 }
 
 void NewoCloud::sendDisplayAck(const char* requestId, const char* mode) {

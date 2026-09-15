@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "newo_console_redirect.h"
+
 namespace NewoLog {
 namespace {
 
