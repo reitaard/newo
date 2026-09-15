@@ -385,6 +385,10 @@ function createOllamaTransport() {
           ok: incoming.statusCode >= 200 && incoming.statusCode < 300,
           status: incoming.statusCode,
           body: incoming,
+          headers: { get(name) {
+            const value = incoming.headers[String(name).toLowerCase()];
+            return Array.isArray(value) ? value.join(", ") : value ?? null;
+          } },
           async json() {
             let text = "";
             for await (const chunk of incoming) text += chunk.toString("utf8");

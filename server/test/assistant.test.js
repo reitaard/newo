@@ -714,6 +714,24 @@ test("assistant turn state follows LLM start, first useful token, and completion
   assert.deepEqual(states, ["thinking", "responding", "idle"]);
 });
 
+test("keep-alive transport recognizes OpenAI-compatible SSE responses", async () => {
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end('data: {"choices":[{"delta":{"content":"Fallback works."}}]}\n\ndata: [DONE]\n\n');
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const runtime = createAssistantRuntime({ enabled: true, provider: "openai_chat",
+    baseUrl: `http://127.0.0.1:${server.address().port}`, model: "model", logger: quietLogger });
+  try {
+    const result = await runtime.respond(turn);
+    assert.equal(result.kind, "response");
+    assert.equal(result.text, "Fallback works.");
+  } finally {
+    runtime.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("assistant turn exposes the terminal error cause to the device state", async () => {
   const states = [];
   const assistant = {
