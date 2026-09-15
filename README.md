@@ -50,8 +50,9 @@ The setup AP is intentionally open for phone captive-portal compatibility, so pr
 - device channel: `wss://newo.reitaard.de/device`
 
 The on-demand serial monitor is served only inside the VPS tailnet at
-`http://smonitor.reitaard.de` (the Tailscale MagicDNS fallback is
-`http://vps-server.pintail-buri.ts.net`). Opening the page enables
+`https://smonitor.reitaard.de`; its browser stream automatically uses
+`wss://smonitor.reitaard.de/smonitor/ws`. The Tailscale MagicDNS fallback is
+`http://vps-server.pintail-buri.ts.net`. Opening the page enables
 a bounded 32 KiB PSRAM console tap over the existing `/device` connection;
 closing the last page disables it. USB Serial remains unchanged and authoritative
 for bootloader, pre-network, and catastrophic-failure output.
