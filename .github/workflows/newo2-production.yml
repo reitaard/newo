@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Exercise credential-enabled firmware path
+        run: cp Newo2/main/newo2_secrets.example.h Newo2/main/newo2_secrets.h
       - name: Build Newo2 ESP-IDF firmware
         uses: espressif/esp-idf-ci-action@v1
         with:
