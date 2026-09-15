@@ -1,18 +1,18 @@
 {
-  "version": 3,
+  "version": 4,
   "router": "LiquidAI/LFM2.5-Encoder-350M-Prompt-Router",
   "routes": [
-    { "id": "general_knowledge", "route": "Explain facts, concepts and how things work" },
-    { "id": "conversation", "route": "Chat, jokes, opinions and social replies" },
-    { "id": "device_control", "route": "Change Newo device settings and functions" },
-    { "id": "device_status", "route": "Check Newo state, settings or connectivity" },
+    { "id": "general_knowledge", "route": "Explain general facts, concepts, definitions and how things work" },
+    { "id": "conversation", "route": "Casual chat, greetings, jokes, thanks and social conversation" },
+    { "id": "device_control", "route": "Commands that change Newo settings or device state" },
+    { "id": "device_status", "route": "Questions about current Newo state, settings or connectivity" },
     { "id": "web_current", "route": "Latest news, releases and current information" },
     { "id": "memory", "route": "Recall what the user previously said" },
-    { "id": "camera_vision", "route": "Inspect live camera or image content" },
+    { "id": "camera_vision", "route": "Look through the camera and identify visible scene content" },
     { "id": "sensor_information", "route": "Read live sensor or RF measurements" },
     { "id": "math_units", "route": "Calculate numbers or convert units" },
     { "id": "weather", "route": "Weather conditions and forecasts" },
     { "id": "finance_markets", "route": "Stocks, markets and currency exchange" },
-    { "id": "coding_troubleshooting", "route": "Debug code, software or technical problems" }
+    { "id": "coding_troubleshooting", "route": "Diagnose or fix code, software, hardware or technical problems" }
   ]
 }
