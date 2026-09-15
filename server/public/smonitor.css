@@ -4,7 +4,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; }
 body { margin: 0; height: 100vh; height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 header, footer { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: #101512; border-color: #253129; }
 header { z-index: 2; flex: 0 0 auto; border-bottom: 1px solid #253129; padding-top: max(10px, env(safe-area-inset-top)); padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
-header span, .brand, #meta, #metrics { color: #65d98b; }
+header .brand span { color: #8fa398; }
+.brand, #meta, #metrics { color: #65d98b; }
 .brand { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .header-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
 .toolbar { display: flex; align-items: center; gap: 3px; }
@@ -14,11 +15,11 @@ header span, .brand, #meta, #metrics { color: #65d98b; }
 .icon-button:focus-visible { outline: 2px solid #65d98b; outline-offset: 1px; }
 .icon-button.active { color: #65d98b; background: #17241c; }
 .icon-button.feedback { color: #06140c; background: #65d98b; }
-.status { display: flex; align-items: baseline; min-width: 9ch; color: #65d98b; font-size: 12px; white-space: nowrap; }
-.status::after { content: "..."; display: inline-block; width: 0; overflow: hidden; animation: status-dots 1.2s steps(4, end) infinite; }
+.status { display: flex; align-items: baseline; width: 12ch; min-width: 12ch; color: #65d98b; font-size: 12px; white-space: nowrap; }
+.status.connected::after { content: "..."; display: inline-block; width: 2.4ch; overflow: hidden; clip-path: inset(0 100% 0 0); animation: status-dots 1.2s steps(4, end) infinite; }
 .status.connected, .status.disconnected { color: #65d98b; background: transparent; }
-@keyframes status-dots { to { width: 2.4ch; } }
-@media (prefers-reduced-motion: reduce) { .status::after { width: 2.4ch; animation: none; } }
+@keyframes status-dots { to { clip-path: inset(0 0 0 0); } }
+@media (prefers-reduced-motion: reduce) { .status.connected::after { clip-path: none; animation: none; } }
 main { min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr); }
 #meta { min-width: 0; padding: 8px 16px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; border-bottom: 1px solid #1d2721; font-size: 12px; }
 #terminal { min-width: 0; min-height: 0; margin: 0; padding: 14px 16px; overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; scrollbar-gutter: stable; }

@@ -37,5 +37,6 @@ test("serial monitor page uses same-origin websocket and bounded display history
   assert.match(browser, /function lineClass/);
   assert.match(browser, /rawLog\.slice\(-750_000\)/);
   assert.match(styles, /@keyframes status-dots/);
-  assert.match(styles, /header span, \.brand, #meta, #metrics \{ color: #65d98b; \}/);
+  assert.match(styles, /header \.brand span \{ color: #8fa398; \}/);
+  assert.match(styles, /width: 12ch; min-width: 12ch/);
 });
