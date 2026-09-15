@@ -1,0 +1,45 @@
+name: Newo2 production
+
+on:
+  push:
+    branches: [newo2-production-v1, main]
+    paths:
+      - Newo2/**
+      - server/src/newo2-bridge.js
+      - .github/workflows/newo2-production.yml
+  pull_request:
+    paths:
+      - Newo2/**
+      - server/src/newo2-bridge.js
+      - .github/workflows/newo2-production.yml
+  workflow_dispatch:
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Newo2 ESP-IDF firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.5
+          target: esp32s3
+          path: Newo2
+          command: idf.py -DSDKCONFIG_DEFAULTS=sdkconfig.defaults build && cd build && esptool.py --chip esp32s3 merge_bin -o newo2-production-merged.bin @flash_args
+      - uses: actions/upload-artifact@v4
+        with:
+          name: newo2-production-firmware
+          path: |
+            Newo2/build/newo2-production-merged.bin
+            Newo2/build/newo2.bin
+            Newo2/build/bootloader/bootloader.bin
+            Newo2/build/partition_table/partition-table.bin
+            Newo2/build/flash_args
+  bridge-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --check server/src/newo2-bridge.js
