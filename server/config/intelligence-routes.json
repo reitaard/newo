@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "router": "LiquidAI/LFM2.5-Encoder-350M-Prompt-Router",
+  "routes": [
+    { "id": "general_knowledge", "route": "General knowledge" },
+    { "id": "conversation", "route": "Conversation" },
+    { "id": "device_control", "route": "Device control" },
+    { "id": "device_status", "route": "Device status" },
+    { "id": "web_current", "route": "Web and current information" },
+    { "id": "memory", "route": "Memory" },
+    { "id": "camera_vision", "route": "Camera and vision" },
+    { "id": "sensor_information", "route": "Sensor information" },
+    { "id": "math_units", "route": "Math and unit conversion" },
+    { "id": "weather", "route": "Weather" },
+    { "id": "finance_markets", "route": "Finance and markets" },
+    { "id": "coding_troubleshooting", "route": "Coding and troubleshooting" }
+  ]
+}
