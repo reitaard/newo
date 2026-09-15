@@ -8,7 +8,6 @@
 #include "esp_jpeg_common.h"
 #include "esp_jpeg_dec.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -58,7 +57,8 @@ size_t sanitized_jpeg_len(const uint8_t *data, size_t len) {
 
 bool ensure_rgb565(size_t required) {
     if (g_rgb565 && g_rgb565_capacity >= required) return true;
-    uint8_t *next = static_cast<uint8_t *>(heap_caps_aligned_alloc(16, required, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    uint8_t *next = static_cast<uint8_t *>(
+        heap_caps_aligned_alloc(16, required, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!next) return false;
     if (g_rgb565) heap_caps_free(g_rgb565);
     g_rgb565 = next;
@@ -66,14 +66,45 @@ bool ensure_rgb565(size_t required) {
     return true;
 }
 
-bool set_profile(framesize_t profile) {
+bool switch_profile_while_guarded(framesize_t profile) {
     if (g_profile == profile) return true;
+
+    // One framebuffer + WHEN_EMPTY means checking out the current frame stops
+    // the camera driver from starting another capture while OV3660 registers
+    // are changed. This is intentionally the same safety pattern proven by
+    // MomentScraper for detection/photo mode transitions.
+    camera_fb_t *guard = esp_camera_fb_get();
+    if (!guard) {
+        ESP_LOGW(TAG, "could not guard camera before profile switch");
+        return false;
+    }
+
     sensor_t *sensor = esp_camera_sensor_get();
-    if (!sensor || sensor->set_framesize(sensor, profile) != 0) return false;
-    sensor->set_quality(sensor, kJpegQuality);
-    g_profile = profile;
-    vTaskDelay(pdMS_TO_TICKS(20));
-    return true;
+    const bool switched = sensor && sensor->set_framesize(sensor, profile) == 0;
+    if (switched) {
+        sensor->set_quality(sensor, kJpegQuality);
+        g_profile = profile;
+    }
+    esp_camera_fb_return(guard);
+
+    if (!switched) ESP_LOGW(TAG, "OV3660 frame-size switch failed profile=%d", static_cast<int>(profile));
+    return switched;
+}
+
+bool restore_motion_profile_before_return(camera_fb_t *held_snapshot) {
+    sensor_t *sensor = esp_camera_sensor_get();
+    const bool switched = sensor && sensor->set_framesize(sensor, kMotionFrameSize) == 0;
+    if (switched) {
+        sensor->set_quality(sensor, kJpegQuality);
+        g_profile = kMotionFrameSize;
+    } else {
+        ESP_LOGW(TAG, "failed to restore motion profile while photo framebuffer held");
+    }
+
+    // Keep the photo checked out until after the sensor is back in QVGA. The
+    // first capture after this return is therefore generated in motion mode.
+    if (held_snapshot) esp_camera_fb_return(held_snapshot);
+    return switched;
 }
 
 bool decode_motion(const uint8_t *jpeg, size_t len, uint8_t *out, size_t out_len) {
@@ -157,7 +188,7 @@ bool begin() {
         return false;
     }
     g_initialized = true;
-    g_enabled = false;  // privacy-safe boot: initialized/warm, capture logically OFF.
+    g_enabled = false;  // privacy-safe logical boot state; hardware stays warm.
     ESP_LOGI(TAG, "ready PID=0x%04x native JPEG q=%u 1FB PSRAM DMA OFF; logical camera OFF",
              g_sensor_pid, static_cast<unsigned>(kJpegQuality));
     return true;
@@ -177,7 +208,7 @@ bool capture_motion_luma(uint8_t *out, size_t out_len) {
     if (!g_initialized || !g_enabled || !out || out_len < kMotionPixels) return false;
     if (xSemaphoreTake(g_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
     bool ok = false;
-    if (set_profile(kMotionFrameSize)) {
+    if (switch_profile_while_guarded(kMotionFrameSize)) {
         camera_fb_t *fb = esp_camera_fb_get();
         if (fb) {
             const size_t clean_len = fb->format == PIXFORMAT_JPEG ? sanitized_jpeg_len(fb->buf, fb->len) : 0;
@@ -193,13 +224,15 @@ bool capture_snapshot(Snapshot &snapshot) {
     snapshot = {};
     if (!g_initialized || !g_enabled) return false;
     if (xSemaphoreTake(g_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) return false;
+
     bool ok = false;
-    if (set_profile(kSnapshotFrameSize)) {
+    if (switch_profile_while_guarded(kSnapshotFrameSize)) {
         camera_fb_t *fb = esp_camera_fb_get();
         if (fb) {
             const size_t clean_len = fb->format == PIXFORMAT_JPEG ? sanitized_jpeg_len(fb->buf, fb->len) : 0;
             if (clean_len) {
-                uint8_t *copy = static_cast<uint8_t *>(heap_caps_malloc(clean_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                uint8_t *copy = static_cast<uint8_t *>(
+                    heap_caps_malloc(clean_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
                 if (copy) {
                     memcpy(copy, fb->buf, clean_len);
                     snapshot.jpeg = copy;
@@ -210,12 +243,21 @@ bool capture_snapshot(Snapshot &snapshot) {
                     ok = true;
                 }
             }
-            esp_camera_fb_return(fb);
+            if (!restore_motion_profile_before_return(fb)) ok = false;
+        } else {
+            ESP_LOGW(TAG, "snapshot framebuffer unavailable");
+            // No frame is held, so use the guarded transition back to QVGA.
+            switch_profile_while_guarded(kMotionFrameSize);
         }
     }
-    if (!set_profile(kMotionFrameSize)) ESP_LOGW(TAG, "failed to restore motion profile");
+
     xSemaphoreGive(g_mutex);
-    if (ok) ESP_LOGI(TAG, "snapshot seq=%lu %ux%u bytes=%u", static_cast<unsigned long>(snapshot.sequence), snapshot.width, snapshot.height, static_cast<unsigned>(snapshot.len));
+    if (!ok && snapshot.jpeg) release_snapshot(snapshot);
+    if (ok) {
+        ESP_LOGI(TAG, "snapshot seq=%lu %ux%u bytes=%u",
+                 static_cast<unsigned long>(snapshot.sequence), snapshot.width, snapshot.height,
+                 static_cast<unsigned>(snapshot.len));
+    }
     return ok;
 }
 
