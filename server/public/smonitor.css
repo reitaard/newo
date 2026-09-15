@@ -1,8 +1,9 @@
 :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; background: #080b0a; color: #d7e4dc; }
 * { box-sizing: border-box; }
-body { margin: 0; min-height: 100dvh; display: grid; grid-template-rows: auto 1fr auto; }
+html, body { width: 100%; height: 100%; overflow: hidden; }
+body { margin: 0; height: 100vh; height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 header, footer { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: #101512; border-color: #253129; }
-header { border-bottom: 1px solid #253129; }
+header { z-index: 2; flex: 0 0 auto; border-bottom: 1px solid #253129; padding-top: max(10px, env(safe-area-inset-top)); padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
 header span, #meta, #metrics { color: #8fa398; }
 .brand { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .header-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
@@ -16,14 +17,29 @@ header span, #meta, #metrics { color: #8fa398; }
 .status { padding: 4px 9px; border-radius: 999px; font-size: 12px; }
 .status.connected { color: #06140c; background: #65d98b; }
 .status.disconnected { color: #fff; background: #91454f; }
-main { min-height: 0; display: grid; grid-template-rows: auto 1fr; }
-#meta { padding: 8px 16px; border-bottom: 1px solid #1d2721; font-size: 12px; }
-#terminal { margin: 0; padding: 14px 16px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; }
-footer { justify-content: center; border-top: 1px solid #253129; padding-bottom: max(10px, env(safe-area-inset-bottom)); font-size: 12px; }
+main { min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+#meta { min-width: 0; padding: 8px 16px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; border-bottom: 1px solid #1d2721; font-size: 12px; }
+#terminal { min-width: 0; min-height: 0; margin: 0; padding: 14px 16px; overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; scrollbar-gutter: stable; }
+.log-line.eyes { color: #70d7ff; }
+.log-line.audio { color: #d6a8ff; }
+.log-line.cloud { color: #87e8b0; }
+.log-line.remote { color: #ffb86c; }
+.log-line.warning { color: #ffd76a; }
+.log-line.error { color: #ff7b86; }
+.log-key { color: #81978b; }
+.log-value { color: #e5f1ea; }
+footer { z-index: 2; flex: 0 0 auto; justify-content: center; border-top: 1px solid #253129; padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); padding-bottom: max(10px, env(safe-area-inset-bottom)); font-size: 12px; }
 @media (max-width: 520px) {
-  header { padding-inline: 10px; }
+  header { padding-left: max(10px, env(safe-area-inset-left)); padding-right: max(10px, env(safe-area-inset-right)); }
   .brand span { display: none; }
   .header-actions { gap: 6px; }
   .icon-button { width: 30px; height: 30px; }
-  #terminal { font-size: 12px; }
+  .status { padding-inline: 7px; font-size: 11px; }
+  #meta { padding-inline: 10px; }
+  #terminal { padding: 10px; font-size: 11px; line-height: 1.4; }
+}
+@media (max-height: 420px) {
+  header { padding-top: max(5px, env(safe-area-inset-top)); padding-bottom: 5px; }
+  #meta { padding-block: 5px; }
+  footer { padding-top: 5px; padding-bottom: max(5px, env(safe-area-inset-bottom)); }
 }

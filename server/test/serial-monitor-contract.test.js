@@ -33,4 +33,7 @@ test("serial monitor page uses same-origin websocket and bounded display history
   assert.match(html, /id="copy"/);
   assert.match(html, /id="clear"/);
   assert.match(browser, /navigator\.clipboard\.writeText/);
+  assert.match(browser, /document\.execCommand\("copy"\)/);
+  assert.match(browser, /function lineClass/);
+  assert.match(browser, /rawLog\.slice\(-750_000\)/);
 });

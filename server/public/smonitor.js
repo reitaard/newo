@@ -7,16 +7,76 @@ const copy = document.querySelector("#copy");
 const decoder = new TextDecoder();
 let receivedBytes = 0;
 let lastSequence = 0;
+let rawLog = "";
+let currentLine = null;
+
+function lineClass(text) {
+  const lower = text.toLowerCase();
+  if (/error|failed|failure|unsupported|dropped|frame gap/.test(lower)) return "error";
+  if (/warn|retry|timeout|connecting/.test(lower)) return "warning";
+  if (lower.startsWith("[eyes")) return "eyes";
+  if (lower.startsWith("[audio")) return "audio";
+  if (lower.startsWith("[cloud")) return "cloud";
+  if (lower.startsWith("[remote")) return "remote";
+  return "";
+}
+
+function appendStyled(parent, text) {
+  const tokens = /(\[[^\]\r\n]+\])|(\b[A-Za-z_][\w-]*=)([^\s]+)/g;
+  let cursor = 0;
+  let match;
+  while ((match = tokens.exec(text)) !== null) {
+    parent.append(document.createTextNode(text.slice(cursor, match.index)));
+    if (match[1]) {
+      parent.append(document.createTextNode(match[1]));
+    } else {
+      const key = document.createElement("span");
+      key.className = "log-key";
+      key.textContent = match[2];
+      const value = document.createElement("span");
+      value.className = "log-value";
+      value.textContent = match[3];
+      parent.append(key, value);
+    }
+    cursor = match.index + match[0].length;
+  }
+  parent.append(document.createTextNode(text.slice(cursor)));
+}
+
+function renderText(text) {
+  for (const part of text.split(/(\n)/)) {
+    if (!part) continue;
+    if (!currentLine) {
+      currentLine = document.createElement("span");
+      currentLine.className = "log-line";
+      terminal.append(currentLine);
+    }
+    if (part === "\n") {
+      currentLine.append(document.createTextNode(part));
+      currentLine = null;
+      continue;
+    }
+    appendStyled(currentLine, part);
+    currentLine.className = `log-line ${lineClass(currentLine.textContent)}`.trim();
+  }
+}
 
 function append(text, diagnostic = false) {
-  terminal.append(document.createTextNode(diagnostic ? `\n[remote] ${text}\n` : text));
-  if (terminal.textContent.length > 1_000_000) terminal.textContent = terminal.textContent.slice(-750_000);
+  const output = diagnostic ? `\n[remote] ${text}\n` : text;
+  rawLog += output;
+  renderText(output);
+  if (rawLog.length > 1_000_000) {
+    rawLog = rawLog.slice(-750_000);
+    terminal.replaceChildren();
+    currentLine = null;
+    renderText(rawLog);
+  }
   if (autoscroll.getAttribute("aria-pressed") === "true") terminal.scrollTop = terminal.scrollHeight;
 }
 
 function setStatus(state) {
   const connected = state === "streaming";
-  status.textContent = state.replaceAll("_", " ");
+  status.textContent = state.split("_").join(" ");
   status.className = `status ${connected ? "connected" : "disconnected"}`;
 }
 
@@ -60,9 +120,26 @@ autoscroll.addEventListener("click", () => {
   if (enabled) terminal.scrollTop = terminal.scrollHeight;
 });
 
+async function copyOutput() {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    await navigator.clipboard.writeText(rawLog);
+    return;
+  }
+  const fallback = document.createElement("textarea");
+  fallback.value = rawLog;
+  fallback.setAttribute("readonly", "");
+  fallback.style.position = "fixed";
+  fallback.style.opacity = "0";
+  document.body.append(fallback);
+  fallback.select();
+  const copied = document.execCommand("copy");
+  fallback.remove();
+  if (!copied) throw new Error("copy denied");
+}
+
 copy.addEventListener("click", async () => {
   try {
-    await navigator.clipboard.writeText(terminal.textContent);
+    await copyOutput();
     copy.classList.add("feedback");
     copy.title = "Copied";
     setTimeout(() => { copy.classList.remove("feedback"); copy.title = "Copy output"; }, 900);
@@ -73,6 +150,8 @@ copy.addEventListener("click", async () => {
 
 document.querySelector("#clear").addEventListener("click", () => {
   terminal.textContent = "";
+  rawLog = "";
+  currentLine = null;
   receivedBytes = 0;
   lastSequence = 0;
   metrics.textContent = "0 bytes";
