@@ -21,8 +21,8 @@ test("serial monitor is demand-driven and relays bounded binary frames", async (
 });
 
 test("serial monitor page uses same-origin websocket and bounded display history", async () => {
-  const [html, browser] = await Promise.all([
-    read("../public/smonitor.html"), read("../public/smonitor.js"),
+  const [html, browser, styles] = await Promise.all([
+    read("../public/smonitor.html"), read("../public/smonitor.js"), read("../public/smonitor.css"),
   ]);
   assert.match(html, /Newo Serial Monitor/);
   assert.match(browser, /location\.host.*smonitor\/ws/);
@@ -36,4 +36,6 @@ test("serial monitor page uses same-origin websocket and bounded display history
   assert.match(browser, /document\.execCommand\("copy"\)/);
   assert.match(browser, /function lineClass/);
   assert.match(browser, /rawLog\.slice\(-750_000\)/);
+  assert.match(styles, /@keyframes status-dots/);
+  assert.match(styles, /header span, \.brand, #meta, #metrics \{ color: #65d98b; \}/);
 });
