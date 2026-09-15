@@ -8,17 +8,28 @@
 </head>
 <body>
   <header>
-    <div><strong>Newo</strong> <span>Serial Monitor</span></div>
-    <div id="status" class="status disconnected">Connecting</div>
+    <div class="brand"><strong>Newo</strong> <span>Serial Monitor</span></div>
+    <div class="header-actions">
+      <div class="toolbar" role="toolbar" aria-label="Serial monitor controls">
+        <button id="autoscroll" class="icon-button active" type="button" aria-label="Disable auto-scroll" aria-pressed="true" title="Auto-scroll on">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 6 5 5 5-5M7 13l5 5 5-5"/></svg>
+        </button>
+        <button id="copy" class="icon-button" type="button" aria-label="Copy output" title="Copy output">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="1"/><path d="M16 8V5H5v11h3"/></svg>
+        </button>
+        <button id="clear" class="icon-button" type="button" aria-label="Clear output" title="Clear output">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V4h6v2M7 6l1 14h8l1-14M10 10v6M14 10v6"/></svg>
+        </button>
+      </div>
+      <div id="status" class="status disconnected">Connecting</div>
+    </div>
   </header>
   <main>
     <div id="meta">Waiting for device…</div>
     <pre id="terminal" aria-live="polite"></pre>
   </main>
   <footer>
-    <label><input id="autoscroll" type="checkbox" checked> Auto-scroll</label>
     <span id="metrics">0 bytes</span>
-    <button id="clear" type="button">Clear</button>
   </footer>
   <script src="/smonitor/smonitor.js" defer></script>
 </body>

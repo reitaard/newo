@@ -28,4 +28,9 @@ test("serial monitor page uses same-origin websocket and bounded display history
   assert.match(browser, /location\.host.*smonitor\/ws/);
   assert.match(browser, /1_000_000/);
   assert.match(browser, /console bytes dropped/);
+  assert.match(html, /role="toolbar"/);
+  assert.match(html, /id="autoscroll".*aria-pressed="true"/);
+  assert.match(html, /id="copy"/);
+  assert.match(html, /id="clear"/);
+  assert.match(browser, /navigator\.clipboard\.writeText/);
 });

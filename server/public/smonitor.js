@@ -3,6 +3,7 @@ const status = document.querySelector("#status");
 const meta = document.querySelector("#meta");
 const metrics = document.querySelector("#metrics");
 const autoscroll = document.querySelector("#autoscroll");
+const copy = document.querySelector("#copy");
 const decoder = new TextDecoder();
 let receivedBytes = 0;
 let lastSequence = 0;
@@ -10,7 +11,7 @@ let lastSequence = 0;
 function append(text, diagnostic = false) {
   terminal.append(document.createTextNode(diagnostic ? `\n[remote] ${text}\n` : text));
   if (terminal.textContent.length > 1_000_000) terminal.textContent = terminal.textContent.slice(-750_000);
-  if (autoscroll.checked) terminal.scrollTop = terminal.scrollHeight;
+  if (autoscroll.getAttribute("aria-pressed") === "true") terminal.scrollTop = terminal.scrollHeight;
 }
 
 function setStatus(state) {
@@ -50,5 +51,30 @@ function connect() {
   socket.addEventListener("error", () => socket.close());
 }
 
-document.querySelector("#clear").addEventListener("click", () => { terminal.textContent = ""; receivedBytes = 0; metrics.textContent = "0 bytes"; });
+autoscroll.addEventListener("click", () => {
+  const enabled = autoscroll.getAttribute("aria-pressed") !== "true";
+  autoscroll.setAttribute("aria-pressed", String(enabled));
+  autoscroll.classList.toggle("active", enabled);
+  autoscroll.setAttribute("aria-label", `${enabled ? "Disable" : "Enable"} auto-scroll`);
+  autoscroll.title = `Auto-scroll ${enabled ? "on" : "off"}`;
+  if (enabled) terminal.scrollTop = terminal.scrollHeight;
+});
+
+copy.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(terminal.textContent);
+    copy.classList.add("feedback");
+    copy.title = "Copied";
+    setTimeout(() => { copy.classList.remove("feedback"); copy.title = "Copy output"; }, 900);
+  } catch {
+    append("browser denied clipboard access", true);
+  }
+});
+
+document.querySelector("#clear").addEventListener("click", () => {
+  terminal.textContent = "";
+  receivedBytes = 0;
+  lastSequence = 0;
+  metrics.textContent = "0 bytes";
+});
 connect();

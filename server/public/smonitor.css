@@ -1,15 +1,29 @@
 :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; background: #080b0a; color: #d7e4dc; }
 * { box-sizing: border-box; }
 body { margin: 0; min-height: 100dvh; display: grid; grid-template-rows: auto 1fr auto; }
-header, footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; background: #101512; border-color: #253129; }
+header, footer { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: #101512; border-color: #253129; }
 header { border-bottom: 1px solid #253129; }
 header span, #meta, #metrics { color: #8fa398; }
+.brand { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.header-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.toolbar { display: flex; align-items: center; gap: 3px; }
+.icon-button { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #9fb2a7; cursor: pointer; }
+.icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.icon-button:hover { background: #1b2520; color: #e8f2ec; border-color: #34453b; }
+.icon-button:focus-visible { outline: 2px solid #65d98b; outline-offset: 1px; }
+.icon-button.active { color: #65d98b; background: #17241c; }
+.icon-button.feedback { color: #06140c; background: #65d98b; }
 .status { padding: 4px 9px; border-radius: 999px; font-size: 12px; }
 .status.connected { color: #06140c; background: #65d98b; }
 .status.disconnected { color: #fff; background: #91454f; }
 main { min-height: 0; display: grid; grid-template-rows: auto 1fr; }
 #meta { padding: 8px 16px; border-bottom: 1px solid #1d2721; font-size: 12px; }
 #terminal { margin: 0; padding: 14px 16px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; }
-footer { border-top: 1px solid #253129; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
-button { border: 1px solid #3b4d42; border-radius: 6px; padding: 7px 12px; background: #18201b; color: inherit; }
-@media (max-width: 520px) { #metrics { display: none; } #terminal { font-size: 12px; } }
+footer { justify-content: center; border-top: 1px solid #253129; padding-bottom: max(10px, env(safe-area-inset-bottom)); font-size: 12px; }
+@media (max-width: 520px) {
+  header { padding-inline: 10px; }
+  .brand span { display: none; }
+  .header-actions { gap: 6px; }
+  .icon-button { width: 30px; height: 30px; }
+  #terminal { font-size: 12px; }
+}
