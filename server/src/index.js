@@ -508,6 +508,13 @@ const serialMonitorAssets = new Map([
   ["/smonitor/", ["../public/smonitor.html", "text/html; charset=utf-8"]],
   ["/smonitor/smonitor.css", ["../public/smonitor.css", "text/css; charset=utf-8"]],
   ["/smonitor/smonitor.js", ["../public/smonitor.js", "text/javascript; charset=utf-8"]],
+  ["/smonitor/favicon.ico", ["../public/smonitor-favicon/favicon.ico", "image/x-icon"]],
+  ["/smonitor/favicon.svg", ["../public/smonitor-favicon/favicon.svg", "image/svg+xml"]],
+  ["/smonitor/favicon-96x96.png", ["../public/smonitor-favicon/favicon-96x96.png", "image/png"]],
+  ["/smonitor/apple-touch-icon.png", ["../public/smonitor-favicon/apple-touch-icon.png", "image/png"]],
+  ["/smonitor/web-app-manifest-192x192.png", ["../public/smonitor-favicon/web-app-manifest-192x192.png", "image/png"]],
+  ["/smonitor/web-app-manifest-512x512.png", ["../public/smonitor-favicon/web-app-manifest-512x512.png", "image/png"]],
+  ["/smonitor/site.webmanifest", ["../public/smonitor-favicon/site.webmanifest", "application/manifest+json"]],
 ]);
 for (const [path, [relativePath, contentType]] of serialMonitorAssets) {
   app.get(path, async (_request, reply) => {
