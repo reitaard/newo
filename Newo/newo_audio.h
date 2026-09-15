@@ -41,6 +41,11 @@ class NewoAudio {
   // assistant/speaker turn reaches a terminal boundary.
   void completeAssistantTurn();
   bool wakeNetRearmPending() const { return awaitingAssistantCompletion_; }
+  // Defer speaker TLS until ESP-SR and streaming microphone ownership have
+  // released the constrained internal SRAM heap.
+  bool speakerConnectionAllowed() const {
+    return state_ == NewoVoiceState::OFF && streamTask_ == nullptr;
+  }
   NewoVoiceState state() const { return state_; }
   uint32_t wakeCount() const { return wakeCount_; }
   uint32_t sessionCount() const { return sessionCount_; }

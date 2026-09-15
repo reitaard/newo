@@ -105,3 +105,12 @@ test("WakeNet is isolated behind the minimal WakeEngine boundary", async () => {
   assert.match(wake, /ESP_SR\.begin/);
   assert.doesNotMatch(audio, /ESP_SR\.begin/);
 });
+
+test("persistent speaker TLS waits for WakeNet and voice capture to release internal SRAM", async () => {
+  const [ino, audioHeader] = await Promise.all([
+    readFile(new URL("../../Newo/Newo.ino", import.meta.url), "utf8"),
+    readFile(new URL("../../Newo/newo_audio.h", import.meta.url), "utf8"),
+  ]);
+  assert.match(audioHeader, /speakerConnectionAllowed\(\)[\s\S]*state_\s*==\s*NewoVoiceState::OFF[\s\S]*streamTask_\s*==\s*nullptr/);
+  assert.match(ino, /newoSpeaker\.loop\(newoCloud\.connected\(\)\s*&&\s*newoAudio\.speakerConnectionAllowed\(\)\)/);
+});

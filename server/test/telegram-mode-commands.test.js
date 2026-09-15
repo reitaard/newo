@@ -320,6 +320,14 @@ test("/speaker does not claim success until firmware confirms the requested stat
   assert.deepEqual(harness.replies[0].options, { newoSpeak: false });
 });
 
+test("/speaker accepts an applied ON state whose connection is deferred behind WakeNet", async () => {
+  const harness = createHarness(() => response({ ...speakerAck, enabled: true, connection: "Connecting", applied: true }),
+    { speakerEnabled: false });
+  await harness.handlers.speaker({ match: "" });
+  assert.equal(harness.replies[0].text, "Speaker turned on.");
+  assert.equal(harness.replies[0].options.newoSpeak, false);
+});
+
 test("/eco toggles then refreshes detailed device telemetry", async () => {
   const calls = [];
   const snapshot = { connected: true, status: { ssid: "lab", rssi: -56, uptime_ms: 65_000, free_heap: 204_800, free_psram: 4_194_304 } };

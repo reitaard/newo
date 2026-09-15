@@ -351,7 +351,7 @@ export function createPrimaryModeHandlers({
     // `/speaker` is intentionally terse and never speaks its own toggle reply.
     // Only claim success after firmware confirmed its ready/released boundary.
     const confirmed = status.device?.applied === true && status.device.enabled === enabled &&
-      (enabled ? status.device.connection === "Ready" : status.device.connection === "Disconnected");
+      (enabled ? ["Ready", "Connecting"].includes(status.device.connection) : status.device.connection === "Disconnected");
     if (!confirmed) {
       const text = status.device ? "Speaker change was not confirmed." : "Speaker unavailable.";
       return commandReply(ctx, text, status.device ? "device_error" : "device_unavailable",

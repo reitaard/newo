@@ -267,7 +267,12 @@ void loop() {
       applied = newoSpeaker.setMuted(!newoSpeaker.muted());
     } else if (speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::SET_ENABLED) {
       applied = newoSpeaker.setEnabled(speakerControlRequest.enabled);
-      const bool complete = speakerControlRequest.enabled ? newoSpeaker.ready() : newoSpeaker.released();
+      // Enabling means playback is permitted. While WakeNet owns the scarce
+      // internal heap, the speaker TLS connection is intentionally deferred
+      // until the voice turn releases it; that deferred state is already a
+      // fully-applied control change and must not force a futile boot retry.
+      const bool connectionDeferred = speakerControlRequest.enabled && !newoAudio.speakerConnectionAllowed();
+      const bool complete = speakerControlRequest.enabled ? (newoSpeaker.ready() || connectionDeferred) : newoSpeaker.released();
       speakerStateConfirmed = applied && complete;
       if (applied && !complete) {
         if (pendingSpeakerAckCount < sizeof(pendingSpeakerAcks) / sizeof(pendingSpeakerAcks[0])) {
@@ -332,10 +337,11 @@ void loop() {
     if (applied && changed) usbRebootAtMs = millis() + NewoConfig::REMOTE_REBOOT_DELAY_MS;
   }
   newoAudio.loop();
-  newoSpeaker.loop(newoCloud.connected());
+  newoSpeaker.loop(newoCloud.connected() && newoAudio.speakerConnectionAllowed());
   for (uint8_t i = 0; i < pendingSpeakerAckCount;) {
     SpeakerAck& pending = pendingSpeakerAcks[i];
-    const bool complete = pending.targetEnabled ? newoSpeaker.ready() : newoSpeaker.released();
+    const bool connectionDeferred = pending.targetEnabled && !newoAudio.speakerConnectionAllowed();
+    const bool complete = pending.targetEnabled ? (newoSpeaker.ready() || connectionDeferred) : newoSpeaker.released();
     const bool timedOut = millis() - pending.startedMs >= 6'500;
     if (!complete && !timedOut) { ++i; continue; }
     const bool confirmed = pending.applied && complete;
