@@ -160,6 +160,7 @@ export function parseClockArgument(match) {
 export function parseUsbArgument(match) {
   const input = String(match ?? "").trim().toLowerCase().replaceAll("_", " ");
   if (!input || input === "status") return { action: "status" };
+  if (input === "raw") return { action: "status" };
   const aliases = { a: "audio", audio: "audio", s: "storage", storage: "storage", v: "vcp", vcp: "vcp", nano: "vcp" };
   if (input === "on" || input === "off") return { action: "host", enabled: input === "on" };
   const parts = input.split(/\s+/);
@@ -295,29 +296,64 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, formatProfileStatus(getAssistantInfo()), "response", null, { newoSpeak: false });
   }
 
+  const orientationStatePath = "data/newo2-camera-orientation.json";
+  let orientationQueue = Promise.resolve();
+
+  async function readOrientationState() {
+    const defaults = { flip: true, mirror: false };
+    try {
+      const { readFile } = await import("node:fs/promises");
+      const parsed = JSON.parse(await readFile(orientationStatePath, "utf8"));
+      return {
+        flip: typeof parsed?.flip === "boolean" ? parsed.flip : defaults.flip,
+        mirror: typeof parsed?.mirror === "boolean" ? parsed.mirror : defaults.mirror,
+      };
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      return defaults;
+    }
+  }
+
+  async function writeOrientationState(state) {
+    const { mkdir, rename, writeFile } = await import("node:fs/promises");
+    const path = await import("node:path");
+    const resolved = path.resolve(orientationStatePath);
+    const temporary = `${resolved}.${process.pid}.tmp`;
+    await mkdir(path.dirname(resolved), { recursive: true });
+    await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+    await rename(temporary, resolved);
+  }
+
+  async function applyOrientationToggle(ctx, kind) {
+    const state = await readOrientationState();
+    const enabled = !state[kind];
+    const secret = process.env.NEWO2_ADMIN_SECRET || "";
+    const baseUrl = (process.env.NEWO2_ADMIN_BASE_URL || "http://127.0.0.1:8792").replace(/\/$/, "");
+    if (!secret) return commandReply(ctx, unavailable(`camera ${kind}`, "Newo2 bridge not configured"), "unavailable", null, { newoSpeak: false });
+    try {
+      const response = await fetch(`${baseUrl}/newo2/admin/settings`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
+        body: JSON.stringify({ [kind]: enabled }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.applied === false) throw new Error(payload.error || `HTTP ${response.status}`);
+      await writeOrientationState({ ...state, [kind]: enabled });
+      await commandReply(ctx, `Camera ${kind} ${enabled ? "ON" : "OFF"}.`, "response", null, { newoSpeak: false });
+    } catch (error) {
+      await commandReply(ctx, unavailable(`camera ${kind}`, error?.message || "failed"), "error", null, { newoSpeak: false });
+    }
+  }
+
   async function profilePromptInput(ctx) {
     const text = String(ctx.message?.text ?? "").trim();
-    const orientation = text.match(/^\/cam_(flip|mirror)(?:@[a-z0-9_]+)?(?:\s+(on|off))?$/i);
+    const orientation = text.match(/^\/cam_(flip|mirror)(?:@[a-z0-9_]+)?$/i);
     if (orientation) {
       const kind = orientation[1].toLowerCase();
-      const state = orientation[2]?.toLowerCase();
-      if (!state) return commandReply(ctx, `Usage: /cam_${kind} on | off`, "usage", null, { newoSpeak: false });
-      const secret = process.env.NEWO2_ADMIN_SECRET || "";
-      const baseUrl = (process.env.NEWO2_ADMIN_BASE_URL || "http://127.0.0.1:8792").replace(/\/$/, "");
-      if (!secret) return commandReply(ctx, unavailable(`camera ${kind}`, "Newo2 bridge not configured"), "unavailable", null, { newoSpeak: false });
-      try {
-        const response = await fetch(`${baseUrl}/newo2/admin/settings`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
-          body: JSON.stringify({ [kind]: state === "on" }),
-          signal: AbortSignal.timeout(20_000),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || payload.applied === false) throw new Error(payload.error || `HTTP ${response.status}`);
-        await commandReply(ctx, `Camera ${kind} ${state.toUpperCase()}.`, "response", null, { newoSpeak: false });
-      } catch (error) {
-        await commandReply(ctx, unavailable(`camera ${kind}`, error?.message || "failed"), "error", null, { newoSpeak: false });
-      }
+      const operation = orientationQueue.then(() => applyOrientationToggle(ctx, kind));
+      orientationQueue = operation.catch(() => {});
+      await operation;
       return true;
     }
 
@@ -357,8 +393,6 @@ export function createPrimaryModeHandlers({
 
   async function applySpeakerToggle(ctx) {
     const enabled = !getSpeakerEnabled();
-    // ON is durable before asking the device to connect. OFF stops accepting
-    // automatic work immediately, then becomes durable after teardown is acked.
     if (enabled) {
       try { await persistSpeakerEnabled(true); }
       catch { return commandReply(ctx, unavailable("speaker", "State could not be saved"), "persistence_error", null, { newoSpeak: false }); }
@@ -373,8 +407,6 @@ export function createPrimaryModeHandlers({
       catch { return commandReply(ctx, unavailable("speaker", "Speaker is OFF but state could not be saved"), "persistence_error", status.request.requestId ?? null, { newoSpeak: false }); }
     }
 
-    // `/speaker` is intentionally terse and never speaks its own toggle reply.
-    // Only claim success after firmware confirmed its ready/released boundary.
     const confirmed = status.device?.applied === true && status.device.enabled === enabled &&
       (enabled ? ["Ready", "Connecting"].includes(status.device.connection) : status.device.connection === "Disconnected");
     if (!confirmed) {
@@ -526,7 +558,6 @@ export function createPrimaryModeHandlers({
     trackQueue = operation.catch(() => {});
     return operation;
   }
-
 
   async function volume(ctx) {
     const parsed = parseVolumeArgument(ctx.match);
