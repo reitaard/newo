@@ -334,6 +334,14 @@ app.post("/newo2/admin/record", async (request, reply) => {
 app.post("/newo2/admin/record/stop", async (request, reply) => requestOrHttpError(reply, "record_stop", ["media_ack"], {}));
 app.post("/newo2/admin/settings", async (request, reply) => {
   const body = request.body ?? {};
+  if (Object.hasOwn(body, "flip")) {
+    if (typeof body.flip !== "boolean") return reply.code(400).send({ error: "flip_boolean_required" });
+    return requestOrHttpError(reply, "settings_control", ["settings_ack"], { setting: "vflip", target: "sensor", value: body.flip ? 1 : 0 });
+  }
+  if (Object.hasOwn(body, "mirror")) {
+    if (typeof body.mirror !== "boolean") return reply.code(400).send({ error: "mirror_boolean_required" });
+    return requestOrHttpError(reply, "settings_control", ["settings_ack"], { setting: "hmirror", target: "sensor", value: body.mirror ? 1 : 0 });
+  }
   if (!body.resolution && !body.quality) return requestOrHttpError(reply, "settings_request", ["settings_ack"], {});
   const kind = body.resolution ? "resolution" : "quality";
   const raw = String(body[kind]).trim().toLowerCase();
