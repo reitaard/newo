@@ -12,11 +12,15 @@ export function createNewo2CameraClient({ baseUrl, adminSecret, timeoutMs = 20_0
     if (!response.ok) throw new Error(payload.error || `Newo2 bridge HTTP ${response.status}`);
     return payload;
   }
+  async function photo(chatId, question = "") {
+    const result = await request("/newo2/admin/snapshot", { chat_id: String(chatId), question });
+    return { ...result, captured: result.type === "snapshot_captured" };
+  }
   return {
     configured,
     status: () => request("/newo2/admin/status", undefined, "GET"),
     camera: (enabled) => request("/newo2/admin/camera", { enabled }),
-    photo: (chatId, question = "") => request("/newo2/admin/snapshot", { chat_id: String(chatId), question }),
+    photo,
     stream: (enabled) => request("/newo2/admin/stream", { enabled }),
     record: (chatId, durationSeconds = 30) => request("/newo2/admin/record", { chat_id: String(chatId), duration_seconds: durationSeconds }),
     stopRecording: () => request("/newo2/admin/record/stop", {}),
