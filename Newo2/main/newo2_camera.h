@@ -26,6 +26,8 @@ bool capture_video_frame(Snapshot &frame);
 Settings settings();
 bool set_resolution(const char *target, const char *resolution);
 bool set_quality(const char *target, uint8_t quality);
+bool set_vflip(bool enabled);
+bool set_hmirror(bool enabled);
 void release_snapshot(Snapshot &snapshot);
 uint16_t sensor_pid();
 }  // namespace Newo2Camera
