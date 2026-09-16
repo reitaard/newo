@@ -17,10 +17,15 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "newo2_event.h"
 #include "newo2_console.h"
 #include "newo2_camera.h"
+
+#ifndef CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK
+#error "Newo2 requires CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK for sustained video TX"
+#endif
 
 #if __has_include("newo2_secrets.h")
 #include "newo2_secrets.h"
@@ -40,8 +45,10 @@ namespace Newo2Network {
 namespace {
 constexpr const char *TAG = "newo2_network";
 constexpr EventBits_t WIFI_CONNECTED = BIT0;
-constexpr UBaseType_t kVideoQueueDepth = 16;
-constexpr uint32_t kRecordingDrainTimeoutMs = 5000;
+// 64 VGA JPEG packets absorb roughly three seconds of normal 20 FPS Wi-Fi jitter
+// without blocking the fixed-rate camera/SD recorder.
+constexpr UBaseType_t kVideoQueueDepth = 64;
+constexpr uint32_t kRecordingDrainTimeoutMs = 7000;
 
 struct VideoQueueItem {
     uint8_t *packet;
@@ -51,14 +58,37 @@ struct VideoQueueItem {
 
 EventGroupHandle_t g_wifi_events = nullptr;
 QueueHandle_t g_video_queue = nullptr;
+SemaphoreHandle_t g_ws_send_mutex = nullptr;
 esp_websocket_client_handle_t g_ws = nullptr;
 volatile bool g_cloud_connected = false;
 char g_ws_uri[192] = {};
 char g_ws_headers[256] = {};
 uint32_t g_serial_sequence = 0;
+std::atomic<bool> g_recording_transport_active{false};
 std::atomic<uint32_t> g_recording_frames_pending{0};
 std::atomic<uint32_t> g_video_queue_drops{0};
 std::atomic<uint32_t> g_video_send_failures{0};
+
+int send_binary_serialized(const uint8_t *data, size_t len, TickType_t lock_wait, TickType_t send_timeout) {
+    if (!data || !len || !g_ws_send_mutex) return -1;
+    if (xSemaphoreTake(g_ws_send_mutex, lock_wait) != pdTRUE) return -1;
+    int sent = -1;
+    if (g_ws && g_cloud_connected) {
+        sent = esp_websocket_client_send_bin(
+            g_ws, reinterpret_cast<const char *>(data), len, send_timeout);
+    }
+    xSemaphoreGive(g_ws_send_mutex);
+    return sent;
+}
+
+int send_text_serialized(const char *text, size_t len, TickType_t lock_wait, TickType_t send_timeout) {
+    if (!text || !len || !g_ws_send_mutex) return -1;
+    if (xSemaphoreTake(g_ws_send_mutex, lock_wait) != pdTRUE) return -1;
+    int sent = -1;
+    if (g_ws && g_cloud_connected) sent = esp_websocket_client_send_text(g_ws, text, len, send_timeout);
+    xSemaphoreGive(g_ws_send_mutex);
+    return sent;
+}
 
 void release_video_item(VideoQueueItem &item) {
     if (item.packet) heap_caps_free(item.packet);
@@ -88,8 +118,8 @@ void video_sender_task(void *) {
 
         bool ok = false;
         if (item.packet && item.length && g_ws && g_cloud_connected) {
-            const int sent = esp_websocket_client_send_bin(
-                g_ws, reinterpret_cast<const char *>(item.packet), item.length, pdMS_TO_TICKS(250));
+            const int sent = send_binary_serialized(
+                item.packet, item.length, portMAX_DELAY, pdMS_TO_TICKS(1000));
             ok = sent == static_cast<int>(item.length);
         }
         if (!ok && item.recording) {
@@ -104,6 +134,12 @@ void video_sender_task(void *) {
 
 void drain_serial_monitor() {
     if (!g_ws || !g_cloud_connected || !Newo2Console::remote_enabled()) return;
+
+    // /2 is diagnostic traffic and must never compete with recording video.
+    // Keep capturing into its PSRAM ring, but drain it only after video TX catches up.
+    if (g_recording_transport_active.load(std::memory_order_relaxed) ||
+        (g_video_queue && uxQueueMessagesWaiting(g_video_queue) > 0)) return;
+
     static uint8_t frame[12 + 1024];
     uint32_t dropped = 0;
     const size_t bytes = Newo2Console::read_remote(frame + 12, sizeof(frame) - 12, &dropped);
@@ -114,7 +150,7 @@ void drain_serial_monitor() {
         frame[4 + i] = static_cast<uint8_t>(sequence >> (i * 8));
         frame[8 + i] = static_cast<uint8_t>(dropped >> (i * 8));
     }
-    const int sent = esp_websocket_client_send_bin(g_ws, reinterpret_cast<const char *>(frame), bytes + 12, pdMS_TO_TICKS(100));
+    const int sent = send_binary_serialized(frame, bytes + 12, 0, pdMS_TO_TICKS(100));
     if (sent < 0) Newo2Console::note_remote_drop(bytes);
 }
 
@@ -122,7 +158,8 @@ void send_json(cJSON *root) {
     if (!root || !g_ws || !g_cloud_connected) return;
     char *text = cJSON_PrintUnformatted(root);
     if (!text) return;
-    esp_websocket_client_send_text(g_ws, text, strlen(text), pdMS_TO_TICKS(1000));
+    const int sent = send_text_serialized(text, strlen(text), pdMS_TO_TICKS(1500), pdMS_TO_TICKS(1500));
+    if (sent < 0) ESP_LOGW(TAG, "control websocket send failed");
     cJSON_free(text);
 }
 
@@ -276,8 +313,9 @@ bool begin() {
     }
     g_wifi_events = xEventGroupCreate();
     g_video_queue = xQueueCreate(kVideoQueueDepth, sizeof(VideoQueueItem));
-    if (!g_wifi_events || !g_video_queue) return false;
-    if (xTaskCreate(video_sender_task, "newo2_video_tx", 4096, nullptr, 4, nullptr) != pdPASS) {
+    g_ws_send_mutex = xSemaphoreCreateMutex();
+    if (!g_wifi_events || !g_video_queue || !g_ws_send_mutex) return false;
+    if (xTaskCreate(video_sender_task, "newo2_video_tx", 4096, nullptr, 5, nullptr) != pdPASS) {
         vQueueDelete(g_video_queue);
         g_video_queue = nullptr;
         return false;
@@ -410,10 +448,15 @@ void send_record_result(const char *request_id, bool success, uint32_t frames, u
     cJSON_AddStringToObject(root, "reason", reason ? reason : "unknown");
     send_json(root);
     cJSON_Delete(root);
+    g_recording_transport_active.store(false, std::memory_order_relaxed);
 }
 
 bool send_video_frame(const uint8_t *jpeg, size_t len, uint16_t width, uint16_t height,
                       uint32_t sequence, uint8_t fps, bool streaming, bool recording) {
+    if (recording && !g_recording_transport_active.exchange(true, std::memory_order_relaxed)) {
+        g_video_queue_drops.store(0, std::memory_order_relaxed);
+        g_video_send_failures.store(0, std::memory_order_relaxed);
+    }
     if (!jpeg || !len || !g_video_queue || !g_ws || !g_cloud_connected || len > 256 * 1024) return false;
     uint8_t *packet = static_cast<uint8_t *>(heap_caps_malloc(24 + len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!packet) return false;
