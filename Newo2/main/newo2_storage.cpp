@@ -11,6 +11,11 @@
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
+#include "sdkconfig.h"
+
+#if defined(CONFIG_FATFS_LFN_NONE)
+#error "Newo2 SD storage requires FATFS long filename support; regenerate sdkconfig from sdkconfig.defaults"
+#endif
 
 namespace Newo2Storage {
 namespace {
