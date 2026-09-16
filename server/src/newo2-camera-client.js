@@ -21,5 +21,7 @@ export function createNewo2CameraClient({ baseUrl, adminSecret, timeoutMs = 20_0
     record: (chatId, durationSeconds = 30) => request("/newo2/admin/record", { chat_id: String(chatId), duration_seconds: durationSeconds }),
     stopRecording: () => request("/newo2/admin/record/stop", {}),
     settings: (body) => request("/newo2/admin/settings", body),
+    flip: (enabled) => request("/newo2/admin/settings", { flip: Boolean(enabled) }),
+    mirror: (enabled) => request("/newo2/admin/settings", { mirror: Boolean(enabled) }),
   };
 }
