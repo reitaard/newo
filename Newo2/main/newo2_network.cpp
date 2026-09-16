@@ -263,9 +263,10 @@ void send_control_ack(const char *request_id, const char *target, bool enabled, 
     cJSON_Delete(root);
 }
 
-void send_status(bool camera_enabled, bool motion_enabled) {
+void send_status(bool camera_enabled, bool motion_enabled, const char *request_id) {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "status");
+    if (request_id && request_id[0]) cJSON_AddStringToObject(root, "request_id", request_id);
     cJSON_AddBoolToObject(root, "camera_enabled", camera_enabled);
     cJSON_AddBoolToObject(root, "motion_enabled", motion_enabled);
     cJSON_AddBoolToObject(root, "cloud_connected", g_cloud_connected);
