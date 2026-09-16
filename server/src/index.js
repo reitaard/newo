@@ -556,8 +556,7 @@ const TELEGRAM_COMMANDS = [
   { command: "track_bg", description: "RF tracking without live panel" },
   { command: "status", description: "Device status" },
   { command: "health", description: "System health" },
-  { command: "cam_on", description: "Turn Newo2 camera on" },
-  { command: "cam_off", description: "Turn Newo2 camera off" },
+  { command: "cam", description: "Toggle Newo2 camera on/off" },
   { command: "photo", description: "Capture and send a photo" },
   { command: "record", description: "Record video (default 30 seconds)" },
   { command: "record_stop", description: "Stop a manual recording" },
@@ -656,6 +655,15 @@ async function runCameraCommand(ctx, name, operation, success) {
 async function handleCameraPower(ctx, enabled) {
   return runCameraCommand(ctx, enabled ? "camera on" : "camera off", () => newo2Camera.camera(enabled),
     (result) => `Status: ${bold(result.applied ? (result.enabled ? "on" : "off") : "rejected")}`);
+}
+
+async function handleCameraToggle(ctx) {
+  return runCameraCommand(ctx, "camera", async () => {
+    const status = await newo2Camera.status();
+    if (!status.connected) throw new Error("Newo2 is offline");
+    const enabled = status.status?.camera_enabled === true;
+    return newo2Camera.camera(!enabled);
+  }, (result) => `Status: ${bold(result.applied ? (result.enabled ? "on" : "off") : "rejected")}`);
 }
 
 async function handleCameraPhoto(ctx, vision = false) {
@@ -1075,8 +1083,7 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["ping", "pi"], handlePingCommand);
   bot.command(["reboot", "r"], handleRebootCommand);
   bot.command(["newo", "n"], handleNewoCommand);
-  bot.command(["cam_on", "c_on"], (ctx) => handleCameraPower(ctx, true));
-  bot.command(["cam_off", "c_off"], (ctx) => handleCameraPower(ctx, false));
+  bot.command("cam", handleCameraToggle);
   bot.command(["photo", "ph"], (ctx) => handleCameraPhoto(ctx));
   bot.command(["record", "rec"], handleCameraRecord);
   bot.command(["record_stop", "rec_stop"], (ctx) => runCameraCommand(ctx, "record stop", () => newo2Camera.stopRecording(), () => `Status: ${bold("stopped")}`));
