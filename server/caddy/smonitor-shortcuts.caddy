@@ -3,17 +3,17 @@
 #   /1 -> Newo serial monitor (newo-cloud :8788)
 #   /2 -> Newo2 serial monitor (newo2-bridge :8792)
 #
-# Keep the existing /smonitor1 and /smonitor2 routes during migration.
+# Serve both the exact short path and its child asset/WebSocket paths without
+# redirecting the browser to a trailing slash.
 
-redir /1 /1/ 308
-redir /2 /2/ 308
-
-handle_path /1/* {
-    rewrite * /smonitor1{path}
+@tailnetNewo1Monitor path /1 /1/*
+handle @tailnetNewo1Monitor {
+    uri replace /1 /smonitor1
     reverse_proxy 127.0.0.1:8788
 }
 
-handle_path /2/* {
-    rewrite * /smonitor2{path}
+@tailnetNewo2Monitor path /2 /2/*
+handle @tailnetNewo2Monitor {
+    uri replace /2 /smonitor2
     reverse_proxy 127.0.0.1:8792
 }
