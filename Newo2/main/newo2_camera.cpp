@@ -187,6 +187,11 @@ bool begin() {
     if (sensor) {
         g_sensor_pid = sensor->id.PID;
         sensor->set_quality(sensor, g_video_quality);
+        const int vflip_rc = sensor->set_vflip(sensor, 1);
+        const int hmirror_rc = sensor->set_hmirror(sensor, 1);
+        if (vflip_rc != 0 || hmirror_rc != 0) {
+            ESP_LOGW(TAG, "OV3660 180-degree orientation failed vflip=%d hmirror=%d", vflip_rc, hmirror_rc);
+        }
     }
     if (g_sensor_pid != 0x3660) {
         ESP_LOGW(TAG, "unexpected sensor PID=0x%04x", g_sensor_pid);
@@ -194,7 +199,7 @@ bool begin() {
 
     g_initialized = true;
     g_enabled = false;  // privacy-safe logical boot state; hardware stays warm.
-    ESP_LOGI(TAG, "ready PID=0x%04x native JPEG VGA q=%u 2FB LATEST PSRAM DMA OFF; logical camera OFF",
+    ESP_LOGI(TAG, "ready PID=0x%04x native JPEG VGA q=%u 2FB LATEST PSRAM DMA OFF orientation=180; logical camera OFF",
              g_sensor_pid, static_cast<unsigned>(g_video_quality));
     return true;
 }
