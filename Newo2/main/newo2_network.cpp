@@ -26,6 +26,15 @@
 #ifndef CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK
 #error "Newo2 requires CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK for sustained video TX"
 #endif
+#if CONFIG_LWIP_TCP_SND_BUF_DEFAULT < 65535
+#error "Newo2 requires CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65535 for 20 FPS uplink"
+#endif
+#if CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM < 64
+#error "Newo2 requires at least 64 Wi-Fi dynamic TX buffers for 20 FPS uplink"
+#endif
+#if CONFIG_ESP_WIFI_TX_BA_WIN < 32
+#error "Newo2 requires Wi-Fi TX BA window >= 32 for 20 FPS uplink"
+#endif
 
 #if __has_include("newo2_secrets.h")
 #include "newo2_secrets.h"
@@ -49,6 +58,11 @@ constexpr EventBits_t WIFI_CONNECTED = BIT0;
 // without blocking the fixed-rate camera/SD recorder.
 constexpr UBaseType_t kVideoQueueDepth = 64;
 constexpr uint32_t kRecordingDrainTimeoutMs = 7000;
+// esp_websocket_client defaults to a 1 KiB buffer, which fragments every camera
+// JPEG into many TLS/WebSocket writes. A 64 KiB transport buffer covers normal
+// VGA frames in one write and keeps the sender ahead of the 20 FPS producer.
+constexpr size_t kWebSocketBufferSize = 64 * 1024;
+constexpr uint32_t kVideoSendTimeoutMs = 2000;
 
 struct VideoQueueItem {
     uint8_t *packet;
@@ -119,7 +133,7 @@ void video_sender_task(void *) {
         bool ok = false;
         if (item.packet && item.length && g_ws && g_cloud_connected) {
             const int sent = send_binary_serialized(
-                item.packet, item.length, portMAX_DELAY, pdMS_TO_TICKS(1000));
+                item.packet, item.length, portMAX_DELAY, pdMS_TO_TICKS(kVideoSendTimeoutMs));
             ok = sent == static_cast<int>(item.length);
         }
         if (!ok && item.recording) {
@@ -287,6 +301,12 @@ void cloud_task(void *) {
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
     cfg.reconnect_timeout_ms = 3000;
     cfg.network_timeout_ms = 10000;
+    cfg.buffer_size = kWebSocketBufferSize;
+    ESP_LOGI(TAG, "video transport ws_buf=%u tcp_snd=%u wifi_tx_buf=%u tx_ba=%u",
+             static_cast<unsigned>(kWebSocketBufferSize),
+             static_cast<unsigned>(CONFIG_LWIP_TCP_SND_BUF_DEFAULT),
+             static_cast<unsigned>(CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM),
+             static_cast<unsigned>(CONFIG_ESP_WIFI_TX_BA_WIN));
     g_ws = esp_websocket_client_init(&cfg);
     if (!g_ws) {
         ESP_LOGE(TAG, "websocket init failed");
