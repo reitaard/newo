@@ -296,9 +296,34 @@ export function createPrimaryModeHandlers({
   }
 
   async function profilePromptInput(ctx) {
+    const text = String(ctx.message?.text ?? "").trim();
+    const orientation = text.match(/^\/cam_(flip|mirror)(?:@[a-z0-9_]+)?(?:\s+(on|off))?$/i);
+    if (orientation) {
+      const kind = orientation[1].toLowerCase();
+      const state = orientation[2]?.toLowerCase();
+      if (!state) return commandReply(ctx, `Usage: /cam_${kind} on | off`, "usage", null, { newoSpeak: false });
+      const secret = process.env.NEWO2_ADMIN_SECRET || "";
+      const baseUrl = (process.env.NEWO2_ADMIN_BASE_URL || "http://127.0.0.1:8792").replace(/\/$/, "");
+      if (!secret) return commandReply(ctx, unavailable(`camera ${kind}`, "Newo2 bridge not configured"), "unavailable", null, { newoSpeak: false });
+      try {
+        const response = await fetch(`${baseUrl}/newo2/admin/settings`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
+          body: JSON.stringify({ [kind]: state === "on" }),
+          signal: AbortSignal.timeout(20_000),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload.applied === false) throw new Error(payload.error || `HTTP ${response.status}`);
+        await commandReply(ctx, `Camera ${kind} ${state.toUpperCase()}.`, "response", null, { newoSpeak: false });
+      } catch (error) {
+        await commandReply(ctx, unavailable(`camera ${kind}`, error?.message || "failed"), "error", null, { newoSpeak: false });
+      }
+      return true;
+    }
+
     const key = promptEditorKey(ctx);
     if (!pendingSystemPrompts.has(key)) return false;
-    const prompt = String(ctx.message?.text ?? "").trim();
+    const prompt = text;
     if (!prompt || prompt.startsWith("/")) return false;
     pendingSystemPrompts.delete(key);
     try {
