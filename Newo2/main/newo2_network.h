@@ -6,7 +6,7 @@ namespace Newo2Network {
 bool begin();
 bool cloud_connected();
 void send_control_ack(const char *request_id, const char *target, bool enabled, bool applied);
-void send_status(bool camera_enabled, bool motion_enabled);
+void send_status(bool camera_enabled, bool motion_enabled, const char *request_id = nullptr);
 void send_motion_detected(uint32_t sequence, float confidence);
 void send_serial_monitor_ack(const char *request_id, bool enabled, bool applied);
 void send_media_ack(const char *request_id, const char *target, bool enabled, bool applied, uint8_t fps);
