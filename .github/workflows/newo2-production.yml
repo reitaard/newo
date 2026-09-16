@@ -6,11 +6,17 @@ on:
     paths:
       - Newo2/**
       - server/src/newo2-bridge.js
+      - server/src/newo2-camera-client.js
+      - server/src/newo2-recording-ui.js
+      - server/test/newo2*.test.js
       - .github/workflows/newo2-production.yml
   pull_request:
     paths:
       - Newo2/**
       - server/src/newo2-bridge.js
+      - server/src/newo2-camera-client.js
+      - server/src/newo2-recording-ui.js
+      - server/test/newo2*.test.js
       - .github/workflows/newo2-production.yml
   workflow_dispatch:
 
@@ -46,4 +52,6 @@ jobs:
           node-version: 22
       - run: npm ci --prefix server
       - run: node --check server/src/newo2-bridge.js
-      - run: node --test server/test/newo2-bridge.test.js
+      - run: node --check server/src/newo2-recording-ui.js
+      - run: node --check server/src/newo2-camera-client.js
+      - run: node --test server/test/newo2*.test.js
