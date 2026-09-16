@@ -19,6 +19,10 @@ CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 # so production must explicitly enable long filenames.
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=64
+# The camera stream and control channel share one WebSocket. Keep TX locking
+# separate from RX so sustained 20 FPS sends cannot starve the receive task.
+CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y
+CONFIG_ESP_WS_CLIENT_TX_LOCK_TIMEOUT_MS=2000
 # Keep the camera choices that survived the physical v6 soak.
 CONFIG_CAMERA_PSRAM_DMA=n
 CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE_AUTO=n
