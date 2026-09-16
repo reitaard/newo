@@ -1,6 +1,7 @@
 #include "newo2_network.h"
 
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 
@@ -11,29 +12,30 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_websocket_client.h"
 #include "esp_wifi.h"
-#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "newo2_event.h"
-#include "newo2_console.h"
 #include "newo2_camera.h"
+#include "newo2_console.h"
+#include "newo2_event.h"
+#include "sdkconfig.h"
 
 #ifndef CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK
 #error "Newo2 requires CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK for sustained video TX"
 #endif
 #if CONFIG_LWIP_TCP_SND_BUF_DEFAULT < 65535
-#error "Newo2 requires CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65535 for 20 FPS uplink"
+#error "Newo2 requires CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65535 for video uplink"
 #endif
 #if CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM < 64
-#error "Newo2 requires at least 64 Wi-Fi dynamic TX buffers for 20 FPS uplink"
+#error "Newo2 requires at least 64 Wi-Fi dynamic TX buffers for video uplink"
 #endif
 #if CONFIG_ESP_WIFI_TX_BA_WIN < 32
-#error "Newo2 requires Wi-Fi TX BA window >= 32 for 20 FPS uplink"
+#error "Newo2 requires Wi-Fi TX BA window >= 32 for video uplink"
 #endif
 
 #if __has_include("newo2_secrets.h")
@@ -54,20 +56,25 @@ namespace Newo2Network {
 namespace {
 constexpr const char *TAG = "newo2_network";
 constexpr EventBits_t WIFI_CONNECTED = BIT0;
-// 64 VGA JPEG packets absorb roughly three seconds of normal 20 FPS Wi-Fi jitter
-// without blocking the fixed-rate camera/SD recorder.
 constexpr UBaseType_t kVideoQueueDepth = 64;
-constexpr uint32_t kRecordingDrainTimeoutMs = 7000;
-// esp_websocket_client defaults to a 1 KiB buffer, which fragments every camera
-// JPEG into many TLS/WebSocket writes. A 64 KiB transport buffer covers normal
-// VGA frames in one write and keeps the sender ahead of the 20 FPS producer.
 constexpr size_t kWebSocketBufferSize = 64 * 1024;
 constexpr uint32_t kVideoSendTimeoutMs = 2000;
+constexpr size_t kRecordingChunkSize = 48 * 1024;
+constexpr uint8_t kRecordingUploadAttempts = 5;
+constexpr uint32_t kCloudWaitMs = 60000;
 
 struct VideoQueueItem {
     uint8_t *packet;
     size_t length;
-    bool recording;
+};
+
+struct RecordingUploadJob {
+    char path[128];
+    char request_id[40];
+    size_t bytes;
+    uint32_t frames;
+    uint32_t dropped;
+    uint32_t duration_ms;
 };
 
 EventGroupHandle_t g_wifi_events = nullptr;
@@ -78,8 +85,7 @@ volatile bool g_cloud_connected = false;
 char g_ws_uri[192] = {};
 char g_ws_headers[256] = {};
 uint32_t g_serial_sequence = 0;
-std::atomic<bool> g_recording_transport_active{false};
-std::atomic<uint32_t> g_recording_frames_pending{0};
+std::atomic<bool> g_recording_upload_active{false};
 std::atomic<uint32_t> g_video_queue_drops{0};
 std::atomic<uint32_t> g_video_send_failures{0};
 
@@ -89,7 +95,7 @@ int send_binary_serialized(const uint8_t *data, size_t len, TickType_t lock_wait
     int sent = -1;
     if (g_ws && g_cloud_connected) {
         sent = esp_websocket_client_send_bin(
-            g_ws, reinterpret_cast<const char *>(data), len, send_timeout);
+            g_ws, reinterpret_cast<const char *>(data), static_cast<int>(len), send_timeout);
     }
     xSemaphoreGive(g_ws_send_mutex);
     return sent;
@@ -99,17 +105,33 @@ int send_text_serialized(const char *text, size_t len, TickType_t lock_wait, Tic
     if (!text || !len || !g_ws_send_mutex) return -1;
     if (xSemaphoreTake(g_ws_send_mutex, lock_wait) != pdTRUE) return -1;
     int sent = -1;
-    if (g_ws && g_cloud_connected) sent = esp_websocket_client_send_text(g_ws, text, len, send_timeout);
+    if (g_ws && g_cloud_connected) {
+        sent = esp_websocket_client_send_text(g_ws, text, static_cast<int>(len), send_timeout);
+    }
     xSemaphoreGive(g_ws_send_mutex);
     return sent;
 }
 
+bool send_json_serialized(cJSON *root, TickType_t lock_wait, TickType_t send_timeout) {
+    if (!root) return false;
+    char *text = cJSON_PrintUnformatted(root);
+    if (!text) return false;
+    const int sent = send_text_serialized(text, strlen(text), lock_wait, send_timeout);
+    cJSON_free(text);
+    return sent > 0;
+}
+
+void send_json(cJSON *root) {
+    if (!root || !g_ws || !g_cloud_connected) return;
+    if (!send_json_serialized(root, pdMS_TO_TICKS(1500), pdMS_TO_TICKS(1500))) {
+        ESP_LOGW(TAG, "control websocket send failed");
+    }
+}
+
 void release_video_item(VideoQueueItem &item) {
     if (item.packet) heap_caps_free(item.packet);
-    if (item.recording) g_recording_frames_pending.fetch_sub(1, std::memory_order_relaxed);
     item.packet = nullptr;
     item.length = 0;
-    item.recording = false;
 }
 
 void clear_video_queue() {
@@ -118,29 +140,23 @@ void clear_video_queue() {
     while (xQueueReceive(g_video_queue, &item, 0) == pdTRUE) release_video_item(item);
 }
 
-bool wait_for_recording_frames(uint32_t timeout_ms) {
-    const int64_t deadline = esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000LL;
-    while (g_recording_frames_pending.load(std::memory_order_relaxed) != 0 && esp_timer_get_time() < deadline)
-        vTaskDelay(pdMS_TO_TICKS(5));
-    return g_recording_frames_pending.load(std::memory_order_relaxed) == 0;
-}
-
 void video_sender_task(void *) {
     for (;;) {
         VideoQueueItem item = {};
         if (!g_video_queue || xQueueReceive(g_video_queue, &item, portMAX_DELAY) != pdTRUE) continue;
 
         bool ok = false;
-        if (item.packet && item.length && g_ws && g_cloud_connected) {
+        if (item.packet && item.length && g_ws && g_cloud_connected && !g_recording_upload_active.load(std::memory_order_relaxed)) {
             const int sent = send_binary_serialized(
                 item.packet, item.length, portMAX_DELAY, pdMS_TO_TICKS(kVideoSendTimeoutMs));
             ok = sent == static_cast<int>(item.length);
         }
-        if (!ok && item.recording) {
+        if (!ok) {
             const uint32_t failures = g_video_send_failures.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (failures == 1 || failures % 20 == 0)
-                ESP_LOGW(TAG, "recording frame network send failed count=%lu",
+            if (failures == 1 || failures % 20 == 0) {
+                ESP_LOGW(TAG, "live video network send failed count=%lu",
                          static_cast<unsigned long>(failures));
+            }
         }
         release_video_item(item);
     }
@@ -149,9 +165,9 @@ void video_sender_task(void *) {
 void drain_serial_monitor() {
     if (!g_ws || !g_cloud_connected || !Newo2Console::remote_enabled()) return;
 
-    // /2 is diagnostic traffic and must never compete with recording video.
-    // Keep capturing into its PSRAM ring, but drain it only after video TX catches up.
-    if (g_recording_transport_active.load(std::memory_order_relaxed) ||
+    // Recording-file delivery has priority over diagnostic traffic. The local
+    // /2 PSRAM ring continues collecting while the upload owns the uplink.
+    if (g_recording_upload_active.load(std::memory_order_relaxed) ||
         (g_video_queue && uxQueueMessagesWaiting(g_video_queue) > 0)) return;
 
     static uint8_t frame[12 + 1024];
@@ -166,15 +182,6 @@ void drain_serial_monitor() {
     }
     const int sent = send_binary_serialized(frame, bytes + 12, 0, pdMS_TO_TICKS(100));
     if (sent < 0) Newo2Console::note_remote_drop(bytes);
-}
-
-void send_json(cJSON *root) {
-    if (!root || !g_ws || !g_cloud_connected) return;
-    char *text = cJSON_PrintUnformatted(root);
-    if (!text) return;
-    const int sent = send_text_serialized(text, strlen(text), pdMS_TO_TICKS(1500), pdMS_TO_TICKS(1500));
-    if (sent < 0) ESP_LOGW(TAG, "control websocket send failed");
-    cJSON_free(text);
 }
 
 void copy_string(char *dst, size_t size, const cJSON *item) {
@@ -288,6 +295,128 @@ void wifi_event(void *, esp_event_base_t base, int32_t id, void *) {
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         xEventGroupSetBits(g_wifi_events, WIFI_CONNECTED);
     }
+}
+
+bool wait_for_cloud(uint32_t timeout_ms) {
+    const int64_t deadline = esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000LL;
+    while (!g_cloud_connected && esp_timer_get_time() < deadline) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+    return g_cloud_connected;
+}
+
+bool send_record_upload_control(const char *type, const RecordingUploadJob &job, const char *reason = nullptr) {
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return false;
+    cJSON_AddStringToObject(root, "type", type);
+    cJSON_AddStringToObject(root, "request_id", job.request_id);
+    cJSON_AddNumberToObject(root, "bytes", static_cast<double>(job.bytes));
+    cJSON_AddNumberToObject(root, "frames", job.frames);
+    cJSON_AddNumberToObject(root, "dropped", job.dropped);
+    cJSON_AddNumberToObject(root, "duration_ms", job.duration_ms);
+    cJSON_AddNumberToObject(root, "fps", 20);
+    if (reason) cJSON_AddStringToObject(root, "reason", reason);
+    const bool ok = send_json_serialized(root, portMAX_DELAY, pdMS_TO_TICKS(5000));
+    cJSON_Delete(root);
+    return ok;
+}
+
+void write_u32_le(uint8_t *dst, uint32_t value) {
+    for (uint8_t i = 0; i < 4; ++i) dst[i] = static_cast<uint8_t>(value >> (i * 8));
+}
+
+void write_u64_le(uint8_t *dst, uint64_t value) {
+    for (uint8_t i = 0; i < 8; ++i) dst[i] = static_cast<uint8_t>(value >> (i * 8));
+}
+
+void finish_upload_job(RecordingUploadJob *job, uint8_t *packet) {
+    if (packet) heap_caps_free(packet);
+    if (job) heap_caps_free(job);
+    g_recording_upload_active.store(false, std::memory_order_relaxed);
+}
+
+void recording_upload_task(void *arg) {
+    auto *job = static_cast<RecordingUploadJob *>(arg);
+    uint8_t *packet = static_cast<uint8_t *>(
+        heap_caps_malloc(16 + kRecordingChunkSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!job || !packet) {
+        if (job && wait_for_cloud(5000)) send_record_upload_control("record_upload_failed", *job, "upload_buffer_alloc_failed");
+        finish_upload_job(job, packet);
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    for (uint8_t attempt = 1; attempt <= kRecordingUploadAttempts; ++attempt) {
+        if (!wait_for_cloud(kCloudWaitMs)) {
+            ESP_LOGW(TAG, "recording upload waiting for cloud attempt=%u", static_cast<unsigned>(attempt));
+            continue;
+        }
+
+        FILE *file = fopen(job->path, "rb");
+        if (!file) {
+            ESP_LOGE(TAG, "recording upload fopen failed path=%s errno=%d", job->path, errno);
+            send_record_upload_control("record_upload_failed", *job, "sd_reopen_failed");
+            finish_upload_job(job, packet);
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        ESP_LOGI(TAG, "recording upload start bytes=%u attempt=%u",
+                 static_cast<unsigned>(job->bytes), static_cast<unsigned>(attempt));
+        if (!send_record_upload_control("record_upload_start", *job)) {
+            fclose(file);
+            ESP_LOGW(TAG, "recording upload start signal failed attempt=%u", static_cast<unsigned>(attempt));
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
+        // WebSocket messages are ordered; a short yield lets the VPS finish its
+        // synchronous file-open handler before the first binary chunk arrives.
+        vTaskDelay(pdMS_TO_TICKS(20));
+        size_t offset = 0;
+        bool ok = true;
+        while (offset < job->bytes) {
+            const size_t remaining = job->bytes - offset;
+            const size_t wanted = remaining < kRecordingChunkSize ? remaining : kRecordingChunkSize;
+            const size_t read = fread(packet + 16, 1, wanted, file);
+            if (read != wanted) {
+                ESP_LOGW(TAG, "recording upload read short offset=%u read=%u wanted=%u",
+                         static_cast<unsigned>(offset), static_cast<unsigned>(read), static_cast<unsigned>(wanted));
+                ok = false;
+                break;
+            }
+
+            packet[0] = 'N'; packet[1] = '2'; packet[2] = 'R'; packet[3] = 'F';
+            write_u64_le(packet + 4, static_cast<uint64_t>(offset));
+            write_u32_le(packet + 12, static_cast<uint32_t>(read));
+            const size_t packet_len = 16 + read;
+            const int sent = send_binary_serialized(packet, packet_len, portMAX_DELAY, pdMS_TO_TICKS(5000));
+            if (sent != static_cast<int>(packet_len)) {
+                ESP_LOGW(TAG, "recording upload chunk failed offset=%u sent=%d attempt=%u",
+                         static_cast<unsigned>(offset), sent, static_cast<unsigned>(attempt));
+                ok = false;
+                break;
+            }
+            offset += read;
+            taskYIELD();
+        }
+        fclose(file);
+
+        if (ok && offset == job->bytes && send_record_upload_control("record_upload_end", *job)) {
+            ESP_LOGI(TAG, "recording upload complete bytes=%u", static_cast<unsigned>(job->bytes));
+            finish_upload_job(job, packet);
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        ESP_LOGW(TAG, "recording upload retry attempt=%u", static_cast<unsigned>(attempt));
+        vTaskDelay(pdMS_TO_TICKS(1500));
+    }
+
+    if (wait_for_cloud(5000)) send_record_upload_control("record_upload_failed", *job, "upload_retries_exhausted");
+    ESP_LOGE(TAG, "recording upload failed after %u attempts", static_cast<unsigned>(kRecordingUploadAttempts));
+    finish_upload_job(job, packet);
+    vTaskDelete(nullptr);
 }
 
 void cloud_task(void *) {
@@ -448,15 +577,6 @@ void send_camera_settings(const char *request_id, bool applied) {
 
 void send_record_result(const char *request_id, bool success, uint32_t frames, uint32_t dropped,
                         size_t bytes, uint32_t duration_ms, const char *reason) {
-    // The recorder is already stopped here, so waiting cannot disturb its 20 FPS
-    // capture cadence. Drain queued recording frames before record_complete so the
-    // VPS does not finalize the MP4 before the tail of the MJPEG stream arrives.
-    const bool drained = wait_for_recording_frames(kRecordingDrainTimeoutMs);
-    if (!drained) {
-        ESP_LOGW(TAG, "recording network drain timed out pending=%lu",
-                 static_cast<unsigned long>(g_recording_frames_pending.load(std::memory_order_relaxed)));
-    }
-
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "record_complete");
     cJSON_AddStringToObject(root, "request_id", request_id ? request_id : "");
@@ -468,15 +588,41 @@ void send_record_result(const char *request_id, bool success, uint32_t frames, u
     cJSON_AddStringToObject(root, "reason", reason ? reason : "unknown");
     send_json(root);
     cJSON_Delete(root);
-    g_recording_transport_active.store(false, std::memory_order_relaxed);
+}
+
+bool queue_recording_upload(const char *path, const char *request_id, size_t bytes,
+                            uint32_t frames, uint32_t dropped, uint32_t duration_ms) {
+    if (!path || !path[0] || !request_id || !request_id[0] || !bytes) return false;
+    bool expected = false;
+    if (!g_recording_upload_active.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
+        ESP_LOGW(TAG, "recording upload rejected: another upload is active");
+        return false;
+    }
+
+    auto *job = static_cast<RecordingUploadJob *>(
+        heap_caps_calloc(1, sizeof(RecordingUploadJob), MALLOC_CAP_8BIT));
+    if (!job) {
+        g_recording_upload_active.store(false, std::memory_order_relaxed);
+        return false;
+    }
+    strlcpy(job->path, path, sizeof(job->path));
+    strlcpy(job->request_id, request_id, sizeof(job->request_id));
+    job->bytes = bytes;
+    job->frames = frames;
+    job->dropped = dropped;
+    job->duration_ms = duration_ms;
+
+    if (xTaskCreate(recording_upload_task, "newo2_rec_upload", 6144, job, 5, nullptr) != pdPASS) {
+        heap_caps_free(job);
+        g_recording_upload_active.store(false, std::memory_order_relaxed);
+        return false;
+    }
+    return true;
 }
 
 bool send_video_frame(const uint8_t *jpeg, size_t len, uint16_t width, uint16_t height,
                       uint32_t sequence, uint8_t fps, bool streaming, bool recording) {
-    if (recording && !g_recording_transport_active.exchange(true, std::memory_order_relaxed)) {
-        g_video_queue_drops.store(0, std::memory_order_relaxed);
-        g_video_send_failures.store(0, std::memory_order_relaxed);
-    }
+    if (g_recording_upload_active.load(std::memory_order_relaxed)) return false;
     if (!jpeg || !len || !g_video_queue || !g_ws || !g_cloud_connected || len > 256 * 1024) return false;
     uint8_t *packet = static_cast<uint8_t *>(heap_caps_malloc(24 + len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!packet) return false;
@@ -493,15 +639,14 @@ bool send_video_frame(const uint8_t *jpeg, size_t len, uint16_t width, uint16_t 
     }
     memcpy(packet + 24, jpeg, len);
 
-    VideoQueueItem item = {packet, 24 + len, recording};
-    if (recording) g_recording_frames_pending.fetch_add(1, std::memory_order_relaxed);
+    VideoQueueItem item = {packet, 24 + len};
     if (xQueueSend(g_video_queue, &item, 0) != pdTRUE) {
-        if (recording) g_recording_frames_pending.fetch_sub(1, std::memory_order_relaxed);
         heap_caps_free(packet);
         const uint32_t drops = g_video_queue_drops.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (drops == 1 || drops % 20 == 0)
-            ESP_LOGW(TAG, "video network queue saturated drops=%lu",
+        if (drops == 1 || drops % 20 == 0) {
+            ESP_LOGW(TAG, "live video network queue saturated drops=%lu",
                      static_cast<unsigned long>(drops));
+        }
         return false;
     }
     return true;
