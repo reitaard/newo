@@ -1,0 +1,19 @@
+# Import this inside the smonitor.reitaard.de site block.
+# Public shortcuts:
+#   /1 -> Newo serial monitor (newo-cloud :8788)
+#   /2 -> Newo2 serial monitor (newo2-bridge :8792)
+#
+# Keep the existing /smonitor1 and /smonitor2 routes during migration.
+
+redir /1 /1/ 308
+redir /2 /2/ 308
+
+handle_path /1/* {
+    rewrite * /smonitor1{path}
+    reverse_proxy 127.0.0.1:8788
+}
+
+handle_path /2/* {
+    rewrite * /smonitor2{path}
+    reverse_proxy 127.0.0.1:8792
+}
