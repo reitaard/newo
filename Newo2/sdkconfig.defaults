@@ -14,6 +14,11 @@ CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+# Newo2 stores human-readable SD paths such as snapshots/snapshot-000.jpg
+# and videos/video-00000001.mjpeg. ESP-IDF 5.5 defaults to FAT 8.3 names only,
+# so production must explicitly enable long filenames.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=64
 # Keep the camera choices that survived the physical v6 soak.
 CONFIG_CAMERA_PSRAM_DMA=n
 CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE_AUTO=n
