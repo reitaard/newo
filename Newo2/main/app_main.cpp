@@ -33,10 +33,17 @@ void router_task(void *) {
                 Newo2Network::send_status(Newo2Camera::enabled(), false, event.request_id);
                 break;
             case Newo2Events::Type::SNAPSHOT_REQUEST:
-                // Camera OFF is a privacy/capture barrier. Future automation may
-                // request a snapshot, but it must explicitly enable the camera first.
+                // Camera OFF is a privacy/capture barrier. Recording also owns the
+                // sensor profile exclusively so a still cannot switch resolution
+                // underneath the fixed-20-FPS video path.
                 if (!Newo2Camera::enabled()) {
                     ESP_LOGW(TAG, "snapshot rejected: logical camera OFF");
+                    Newo2Network::send_snapshot_result(event.request_id, event.source, event.sequence,
+                                                       0, false, false, false);
+                    break;
+                }
+                if (Newo2Media::recording()) {
+                    ESP_LOGW(TAG, "snapshot rejected: recording active");
                     Newo2Network::send_snapshot_result(event.request_id, event.source, event.sequence,
                                                        0, false, false, false);
                     break;
@@ -56,6 +63,13 @@ void router_task(void *) {
                 Newo2Media::stop_recording(event.request_id);
                 break;
             case Newo2Events::Type::SETTINGS_SET: {
+                // Resolution/quality/orientation changes can flush camera buffers.
+                // Keep the active recording profile immutable until the SD file closes.
+                if (Newo2Media::recording()) {
+                    ESP_LOGW(TAG, "camera setting rejected: recording active");
+                    Newo2Network::send_camera_settings(event.request_id, false);
+                    break;
+                }
                 bool applied = false;
                 if (strcmp(event.setting, "resolution") == 0)
                     applied = Newo2Camera::set_resolution(event.source, event.value);
