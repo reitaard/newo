@@ -56,7 +56,7 @@ void media_task(void *) {
         uint8_t fps = kTargetFps;
         if (xSemaphoreTake(g_mutex, portMAX_DELAY) == pdTRUE) {
             stream = g_streaming; record = g_recording; duration = g_duration_seconds;
-            started = g_record_started_us; fps = g_fps;
+            started = g_record_started_us; fps = record ? kTargetFps : g_fps;
             xSemaphoreGive(g_mutex);
         }
         if (!stream && !record) { next_us = esp_timer_get_time(); vTaskDelay(pdMS_TO_TICKS(50)); continue; }
@@ -70,22 +70,54 @@ void media_task(void *) {
         const bool captured = Newo2Camera::capture_video_frame(frame);
         bool sd_ok = true;
         if (captured && record) sd_ok = Newo2Storage::append_video_frame(frame.jpeg, frame.len);
-        bool sent = false;
-        if (captured) sent = Newo2Network::send_video_frame(frame.jpeg, frame.len, frame.width, frame.height,
-                                                             frame.sequence, fps, stream, record);
+        bool queued = false;
+        if (captured) queued = Newo2Network::send_video_frame(frame.jpeg, frame.len, frame.width, frame.height,
+                                                               frame.sequence, fps, stream, record);
         const uint32_t elapsed_ms = static_cast<uint32_t>((esp_timer_get_time() - capture_started) / 1000);
 
         if (xSemaphoreTake(g_mutex, portMAX_DELAY) == pdTRUE) {
+            const uint32_t budget_ms = 1000 / kTargetFps;
             if (record) {
                 if (captured && sd_ok) ++g_frames;
                 else ++g_dropped;
+
+                // Recording is fixed at 20 FPS. Network delivery is queued by
+                // Newo2Network and must never down-clock the SD recording path.
+                g_fps = kTargetFps;
+                if (!captured || elapsed_ms > budget_ms) {
+                    ++g_overruns;
+                    g_good_frames = 0;
+                    if (g_overruns == 5 || (g_overruns > 5 && g_overruns % 100 == 0)) {
+                        ESP_LOGW(TAG, "recording holding 20 fps under local pressure frame_ms=%lu",
+                                 static_cast<unsigned long>(elapsed_ms));
+                    }
+                } else {
+                    g_overruns = 0;
+                    ++g_good_frames;
+                }
+                fps = kTargetFps;
+            } else {
+                // Live stream may still adapt when the local capture path or
+                // outbound queue cannot keep up. This policy never applies to recording.
+                if (!captured || elapsed_ms > 1000 / g_fps || (stream && !queued)) {
+                    ++g_overruns;
+                    g_good_frames = 0;
+                } else {
+                    g_overruns = 0;
+                    ++g_good_frames;
+                }
+                if (g_fps == kTargetFps && g_overruns >= 5) {
+                    g_fps = kFallbackFps;
+                    g_overruns = 0;
+                    ESP_LOGW(TAG, "stream falling back to 15 fps");
+                }
+                if (g_fps == kFallbackFps && g_good_frames >= 100) {
+                    g_fps = kTargetFps;
+                    g_good_frames = 0;
+                    ESP_LOGI(TAG, "stream restoring 20 fps");
+                }
+                fps = g_fps;
             }
-            const uint32_t budget_ms = 1000 / g_fps;
-            if (!captured || elapsed_ms > budget_ms || (stream && !sent)) { ++g_overruns; g_good_frames = 0; }
-            else { g_overruns = 0; ++g_good_frames; }
-            if (g_fps == kTargetFps && g_overruns >= 5) { g_fps = kFallbackFps; g_overruns = 0; ESP_LOGW(TAG, "falling back to 15 fps"); }
-            if (g_fps == kFallbackFps && g_good_frames >= 100) { g_fps = kTargetFps; g_good_frames = 0; ESP_LOGI(TAG, "restoring 20 fps"); }
-            fps = g_fps;
             xSemaphoreGive(g_mutex);
         }
         Newo2Camera::release_snapshot(frame);
@@ -124,7 +156,7 @@ bool start_recording(uint32_t duration_seconds, const char *request_id) {
     g_frames = g_dropped = 0; g_fps = kTargetFps; g_overruns = g_good_frames = 0;
     strlcpy(g_record_request_id, request_id, sizeof(g_record_request_id));
     xSemaphoreGive(g_mutex);
-    Newo2Network::send_media_ack(request_id, "record", true, true, g_fps);
+    Newo2Network::send_media_ack(request_id, "record", true, true, kTargetFps);
     return true;
 }
 
@@ -137,5 +169,5 @@ bool stop_recording(const char *request_id) {
 
 bool streaming() { return g_streaming; }
 bool recording() { return g_recording; }
-uint8_t effective_fps() { return g_fps; }
+uint8_t effective_fps() { return g_recording ? kTargetFps : g_fps; }
 }  // namespace Newo2Media
