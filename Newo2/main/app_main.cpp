@@ -25,14 +25,22 @@ void router_task(void *) {
             case Newo2Events::Type::CAMERA_SET: {
                 const bool applied = Newo2Camera::set_enabled(event.enabled);
                 Newo2Network::send_control_ack(event.request_id, "camera", Newo2Camera::enabled(), applied);
-                if (!event.enabled) Newo2Network::send_status(Newo2Camera::enabled(), false);
+                // Keep the bridge cache authoritative after both ON and OFF.
+                Newo2Network::send_status(Newo2Camera::enabled(), false);
                 break;
             }
             case Newo2Events::Type::STATUS_REQUEST:
-                Newo2Network::send_status(Newo2Camera::enabled(), false);
+                Newo2Network::send_status(Newo2Camera::enabled(), false, event.request_id);
                 break;
             case Newo2Events::Type::SNAPSHOT_REQUEST:
-                if (!Newo2Camera::enabled()) Newo2Camera::set_enabled(true);
+                // Camera OFF is a privacy/capture barrier. Future automation may
+                // request a snapshot, but it must explicitly enable the camera first.
+                if (!Newo2Camera::enabled()) {
+                    ESP_LOGW(TAG, "snapshot rejected: logical camera OFF");
+                    Newo2Network::send_snapshot_result(event.request_id, event.source, event.sequence,
+                                                       0, false, false, false);
+                    break;
+                }
                 if (!MotionSnapshotSkill::enqueue(event))
                     Newo2Network::send_snapshot_result(event.request_id, event.source, event.sequence, 0, false, false, false);
                 break;
