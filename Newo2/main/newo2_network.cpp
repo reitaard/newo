@@ -517,12 +517,18 @@ void send_control_ack(const char *request_id, const char *target, bool enabled, 
 }
 
 void send_status(bool camera_enabled, bool motion_enabled, const char *request_id) {
+    const Newo2Camera::Settings settings = Newo2Camera::settings();
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "status");
     if (request_id && request_id[0]) cJSON_AddStringToObject(root, "request_id", request_id);
     cJSON_AddBoolToObject(root, "camera_enabled", camera_enabled);
+    cJSON_AddStringToObject(root, "camera_gate", camera_enabled ? "open" : "closed");
     cJSON_AddBoolToObject(root, "motion_enabled", motion_enabled);
     cJSON_AddBoolToObject(root, "cloud_connected", g_cloud_connected);
+    cJSON_AddStringToObject(root, "photo_resolution", settings.photo_resolution);
+    cJSON_AddStringToObject(root, "video_resolution", settings.video_resolution);
+    cJSON_AddNumberToObject(root, "photo_quality", settings.photo_quality);
+    cJSON_AddNumberToObject(root, "video_quality", settings.video_quality);
     send_json(root);
     cJSON_Delete(root);
 }
@@ -549,6 +555,7 @@ void send_serial_monitor_ack(const char *request_id, bool enabled, bool applied)
 }
 
 void send_media_ack(const char *request_id, const char *target, bool enabled, bool applied, uint8_t fps) {
+    const Newo2Camera::Settings settings = Newo2Camera::settings();
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "media_ack");
     cJSON_AddStringToObject(root, "request_id", request_id ? request_id : "");
@@ -556,6 +563,8 @@ void send_media_ack(const char *request_id, const char *target, bool enabled, bo
     cJSON_AddBoolToObject(root, "enabled", enabled);
     cJSON_AddBoolToObject(root, "applied", applied);
     cJSON_AddNumberToObject(root, "fps", fps);
+    cJSON_AddStringToObject(root, "resolution", settings.video_resolution);
+    cJSON_AddNumberToObject(root, "quality", settings.video_quality);
     send_json(root);
     cJSON_Delete(root);
 }
@@ -577,6 +586,7 @@ void send_camera_settings(const char *request_id, bool applied) {
 
 void send_record_result(const char *request_id, bool success, uint32_t frames, uint32_t dropped,
                         size_t bytes, uint32_t duration_ms, const char *reason) {
+    const Newo2Camera::Settings settings = Newo2Camera::settings();
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "record_complete");
     cJSON_AddStringToObject(root, "request_id", request_id ? request_id : "");
@@ -585,6 +595,9 @@ void send_record_result(const char *request_id, bool success, uint32_t frames, u
     cJSON_AddNumberToObject(root, "dropped", dropped);
     cJSON_AddNumberToObject(root, "bytes", static_cast<double>(bytes));
     cJSON_AddNumberToObject(root, "duration_ms", duration_ms);
+    cJSON_AddNumberToObject(root, "fps", 20);
+    cJSON_AddStringToObject(root, "resolution", settings.video_resolution);
+    cJSON_AddNumberToObject(root, "quality", settings.video_quality);
     cJSON_AddStringToObject(root, "reason", reason ? reason : "unknown");
     send_json(root);
     cJSON_Delete(root);
