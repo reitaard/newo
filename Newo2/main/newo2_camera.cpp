@@ -44,6 +44,8 @@ framesize_t g_video_frame_size = kDefaultVideoFrameSize;
 framesize_t g_photo_frame_size = kDefaultSnapshotFrameSize;
 uint8_t g_video_quality = kDefaultVideoJpegQuality;
 uint8_t g_photo_quality = kDefaultPhotoJpegQuality;
+bool g_vflip = true;
+bool g_hmirror = false;
 framesize_t g_profile = kDefaultVideoFrameSize;
 uint32_t g_snapshot_sequence = 0;
 
@@ -107,6 +109,8 @@ void persist_settings() {
     nvs_set_u8(handle, "video_res", static_cast<uint8_t>(g_video_frame_size));
     nvs_set_u8(handle, "photo_q", g_photo_quality);
     nvs_set_u8(handle, "video_q", g_video_quality);
+    nvs_set_u8(handle, "vflip", g_vflip ? 1 : 0);
+    nvs_set_u8(handle, "hmirror", g_hmirror ? 1 : 0);
     nvs_commit(handle);
     nvs_close(handle);
 }
@@ -121,6 +125,8 @@ void load_settings() {
         (value == FRAMESIZE_QVGA || value == FRAMESIZE_VGA)) g_video_frame_size = static_cast<framesize_t>(value);
     if (nvs_get_u8(handle, "photo_q", &value) == ESP_OK && value >= 4 && value <= 32) g_photo_quality = value;
     if (nvs_get_u8(handle, "video_q", &value) == ESP_OK && value >= 4 && value <= 32) g_video_quality = value;
+    if (nvs_get_u8(handle, "vflip", &value) == ESP_OK && value <= 1) g_vflip = value != 0;
+    if (nvs_get_u8(handle, "hmirror", &value) == ESP_OK && value <= 1) g_hmirror = value != 0;
     nvs_close(handle);
 }
 
@@ -140,6 +146,19 @@ bool restore_video_profile_before_return(camera_fb_t *held_snapshot) {
         if (stale) esp_camera_fb_return(stale);
     }
     return switched;
+}
+
+bool set_orientation_while_guarded(bool vertical_flip, bool enabled) {
+    sensor_t *sensor = esp_camera_sensor_get();
+    if (!sensor) return false;
+    const int rc = vertical_flip ? sensor->set_vflip(sensor, enabled ? 1 : 0)
+                                 : sensor->set_hmirror(sensor, enabled ? 1 : 0);
+    if (rc != 0) return false;
+    if (vertical_flip) g_vflip = enabled; else g_hmirror = enabled;
+    persist_settings();
+    camera_fb_t *stale = esp_camera_fb_get();
+    if (stale) esp_camera_fb_return(stale);
+    return true;
 }
 
 }  // namespace
@@ -187,10 +206,10 @@ bool begin() {
     if (sensor) {
         g_sensor_pid = sensor->id.PID;
         sensor->set_quality(sensor, g_video_quality);
-        const int vflip_rc = sensor->set_vflip(sensor, 1);
-        const int hmirror_rc = sensor->set_hmirror(sensor, 1);
+        const int vflip_rc = sensor->set_vflip(sensor, g_vflip ? 1 : 0);
+        const int hmirror_rc = sensor->set_hmirror(sensor, g_hmirror ? 1 : 0);
         if (vflip_rc != 0 || hmirror_rc != 0) {
-            ESP_LOGW(TAG, "OV3660 180-degree orientation failed vflip=%d hmirror=%d", vflip_rc, hmirror_rc);
+            ESP_LOGW(TAG, "OV3660 orientation failed vflip=%d hmirror=%d", vflip_rc, hmirror_rc);
         }
     }
     if (g_sensor_pid != 0x3660) {
@@ -199,8 +218,8 @@ bool begin() {
 
     g_initialized = true;
     g_enabled = false;  // privacy-safe logical boot state; hardware stays warm.
-    ESP_LOGI(TAG, "ready PID=0x%04x native JPEG VGA q=%u 2FB LATEST PSRAM DMA OFF orientation=180; logical camera OFF",
-             g_sensor_pid, static_cast<unsigned>(g_video_quality));
+    ESP_LOGI(TAG, "ready PID=0x%04x native JPEG VGA q=%u 2FB LATEST PSRAM DMA OFF vflip=%d hmirror=%d; logical camera OFF",
+             g_sensor_pid, static_cast<unsigned>(g_video_quality), g_vflip ? 1 : 0, g_hmirror ? 1 : 0);
     return true;
 }
 
@@ -322,6 +341,22 @@ bool set_quality(const char *target, uint8_t quality) {
     const bool applied = strcmp(target, "photo") == 0 || (sensor && sensor->set_quality(sensor, g_video_quality) == 0);
     if (applied) persist_settings();
     xSemaphoreGive(g_mutex);
+    return applied;
+}
+
+bool set_vflip(bool enabled) {
+    if (!g_mutex || xSemaphoreTake(g_mutex, pdMS_TO_TICKS(2500)) != pdTRUE) return false;
+    const bool applied = set_orientation_while_guarded(true, enabled);
+    xSemaphoreGive(g_mutex);
+    if (applied) ESP_LOGI(TAG, "vertical flip %s", enabled ? "ON" : "OFF");
+    return applied;
+}
+
+bool set_hmirror(bool enabled) {
+    if (!g_mutex || xSemaphoreTake(g_mutex, pdMS_TO_TICKS(2500)) != pdTRUE) return false;
+    const bool applied = set_orientation_while_guarded(false, enabled);
+    xSemaphoreGive(g_mutex);
+    if (applied) ESP_LOGI(TAG, "horizontal mirror %s", enabled ? "ON" : "OFF");
     return applied;
 }
 }  // namespace Newo2Camera
