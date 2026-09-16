@@ -53,6 +53,10 @@ void router_task(void *) {
                     applied = Newo2Camera::set_resolution(event.source, event.value);
                 else if (strcmp(event.setting, "quality") == 0)
                     applied = Newo2Camera::set_quality(event.source, static_cast<uint8_t>(atoi(event.value)));
+                else if (strcmp(event.setting, "vflip") == 0)
+                    applied = Newo2Camera::set_vflip(strcmp(event.value, "1") == 0);
+                else if (strcmp(event.setting, "hmirror") == 0)
+                    applied = Newo2Camera::set_hmirror(strcmp(event.value, "1") == 0);
                 Newo2Network::send_camera_settings(event.request_id, applied);
                 break;
             }
