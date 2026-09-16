@@ -19,6 +19,11 @@ constexpr uint8_t kDefaultPhotoJpegQuality = 10;
 constexpr size_t kJpegEoiScanBytes = 4096;
 constexpr framesize_t kDefaultVideoFrameSize = FRAMESIZE_VGA;
 constexpr framesize_t kDefaultSnapshotFrameSize = FRAMESIZE_SVGA;
+// esp32-camera 2.1.7 sizes JPEG frame buffers from the frame_size passed to
+// esp_camera_init(). Production later switches the sensor up to XGA for stills,
+// so allocate for the maximum supported still size from the start. The sensor is
+// immediately returned to the configured video profile after init.
+constexpr framesize_t kFramebufferAllocationFrameSize = FRAMESIZE_XGA;
 constexpr int CAM_PIN_PWDN = -1;
 constexpr int CAM_PIN_RESET = -1;
 constexpr int CAM_PIN_XCLK = 15;
@@ -47,6 +52,7 @@ uint8_t g_photo_quality = kDefaultPhotoJpegQuality;
 bool g_vflip = true;
 bool g_hmirror = false;
 framesize_t g_profile = kDefaultVideoFrameSize;
+uint8_t g_profile_quality = kDefaultVideoJpegQuality;
 uint32_t g_snapshot_sequence = 0;
 
 size_t sanitized_jpeg_len(const uint8_t *data, size_t len) {
@@ -58,23 +64,43 @@ size_t sanitized_jpeg_len(const uint8_t *data, size_t len) {
     return 0;
 }
 
+void discard_frames_while_guarded(uint8_t count) {
+    for (uint8_t i = 0; i < count; ++i) {
+        camera_fb_t *stale = esp_camera_fb_get();
+        if (!stale) break;
+        esp_camera_fb_return(stale);
+    }
+}
+
 bool switch_profile_while_guarded(framesize_t profile, uint8_t quality) {
-    if (g_profile == profile) return true;
     sensor_t *sensor = esp_camera_sensor_get();
-    const bool switched = sensor && sensor->set_framesize(sensor, profile) == 0;
-    if (switched) {
-        sensor->set_quality(sensor, quality);
+    if (!sensor) return false;
+
+    const bool size_changed = g_profile != profile;
+    const bool quality_changed = g_profile_quality != quality;
+    if (!size_changed && !quality_changed) return true;
+
+    if (size_changed) {
+        if (sensor->set_framesize(sensor, profile) != 0) {
+            ESP_LOGW(TAG, "OV3660 frame-size switch failed profile=%d", static_cast<int>(profile));
+            return false;
+        }
         g_profile = profile;
     }
-    if (!switched) ESP_LOGW(TAG, "OV3660 frame-size switch failed profile=%d", static_cast<int>(profile));
-    if (switched) {
-        // Discard the first frame after an OV3660 mode change. With the v6
-        // double-buffer/latest-frame setup it may still belong to the previous
-        // profile.
-        camera_fb_t *stale = esp_camera_fb_get();
-        if (stale) esp_camera_fb_return(stale);
+
+    if (quality_changed) {
+        if (sensor->set_quality(sensor, quality) != 0) {
+            ESP_LOGW(TAG, "OV3660 JPEG quality switch failed q=%u", static_cast<unsigned>(quality));
+            return false;
+        }
+        g_profile_quality = quality;
     }
-    return switched;
+
+    // Two frame buffers run continuously in CAMERA_GRAB_LATEST mode. After a
+    // size transition, both can contain data from the previous sensor profile,
+    // so drain two complete frames before exposing the new profile to callers.
+    discard_frames_while_guarded(size_changed ? 2 : 1);
+    return true;
 }
 
 const char *frame_size_name(framesize_t size) {
@@ -130,24 +156,6 @@ void load_settings() {
     nvs_close(handle);
 }
 
-bool restore_video_profile_before_return(camera_fb_t *held_snapshot) {
-    sensor_t *sensor = esp_camera_sensor_get();
-    const bool switched = sensor && sensor->set_framesize(sensor, g_video_frame_size) == 0;
-    if (switched) {
-        sensor->set_quality(sensor, g_video_quality);
-        g_profile = g_video_frame_size;
-    } else {
-        ESP_LOGW(TAG, "failed to restore video profile while photo framebuffer held");
-    }
-
-    if (held_snapshot) esp_camera_fb_return(held_snapshot);
-    if (switched) {
-        camera_fb_t *stale = esp_camera_fb_get();
-        if (stale) esp_camera_fb_return(stale);
-    }
-    return switched;
-}
-
 bool set_orientation_while_guarded(bool vertical_flip, bool enabled) {
     sensor_t *sensor = esp_camera_sensor_get();
     if (!sensor) return false;
@@ -156,8 +164,7 @@ bool set_orientation_while_guarded(bool vertical_flip, bool enabled) {
     if (rc != 0) return false;
     if (vertical_flip) g_vflip = enabled; else g_hmirror = enabled;
     persist_settings();
-    camera_fb_t *stale = esp_camera_fb_get();
-    if (stale) esp_camera_fb_return(stale);
+    discard_frames_while_guarded(1);
     return true;
 }
 
@@ -190,7 +197,10 @@ bool begin() {
     config.ledc_timer = LEDC_TIMER_0;
     config.ledc_channel = LEDC_CHANNEL_0;
     config.pixel_format = PIXFORMAT_JPEG;
-    config.frame_size = g_video_frame_size;
+    // Buffer allocation must cover every runtime photo profile. esp32-camera
+    // 2.1.7 does not resize JPEG frame buffers when sensor->set_framesize()
+    // changes resolution after init.
+    config.frame_size = kFramebufferAllocationFrameSize;
     config.jpeg_quality = g_video_quality;
     config.fb_count = 2;
     config.fb_location = CAMERA_FB_IN_PSRAM;
@@ -203,23 +213,38 @@ bool begin() {
         return false;
     }
     sensor_t *sensor = esp_camera_sensor_get();
-    if (sensor) {
-        g_sensor_pid = sensor->id.PID;
-        sensor->set_quality(sensor, g_video_quality);
-        const int vflip_rc = sensor->set_vflip(sensor, g_vflip ? 1 : 0);
-        const int hmirror_rc = sensor->set_hmirror(sensor, g_hmirror ? 1 : 0);
-        if (vflip_rc != 0 || hmirror_rc != 0) {
-            ESP_LOGW(TAG, "OV3660 orientation failed vflip=%d hmirror=%d", vflip_rc, hmirror_rc);
-        }
+    if (!sensor) {
+        ESP_LOGE(TAG, "camera sensor unavailable after init");
+        esp_camera_deinit();
+        return false;
     }
+
+    g_sensor_pid = sensor->id.PID;
+    const int frame_rc = sensor->set_framesize(sensor, g_video_frame_size);
+    const int quality_rc = sensor->set_quality(sensor, g_video_quality);
+    const int vflip_rc = sensor->set_vflip(sensor, g_vflip ? 1 : 0);
+    const int hmirror_rc = sensor->set_hmirror(sensor, g_hmirror ? 1 : 0);
+    if (frame_rc != 0 || quality_rc != 0) {
+        ESP_LOGE(TAG, "OV3660 initial video profile failed frame=%d quality=%d", frame_rc, quality_rc);
+        esp_camera_deinit();
+        return false;
+    }
+    if (vflip_rc != 0 || hmirror_rc != 0) {
+        ESP_LOGW(TAG, "OV3660 orientation failed vflip=%d hmirror=%d", vflip_rc, hmirror_rc);
+    }
+    g_profile = g_video_frame_size;
+    g_profile_quality = g_video_quality;
+    discard_frames_while_guarded(2);
+
     if (g_sensor_pid != 0x3660) {
         ESP_LOGW(TAG, "unexpected sensor PID=0x%04x", g_sensor_pid);
     }
 
     g_initialized = true;
     g_enabled = false;  // privacy-safe logical boot state; hardware stays warm.
-    ESP_LOGI(TAG, "ready PID=0x%04x native JPEG VGA q=%u 2FB LATEST PSRAM DMA OFF vflip=%d hmirror=%d; logical camera OFF",
-             g_sensor_pid, static_cast<unsigned>(g_video_quality), g_vflip ? 1 : 0, g_hmirror ? 1 : 0);
+    ESP_LOGI(TAG, "ready PID=0x%04x native JPEG video=%s q=%u buffers=XGA 2FB LATEST PSRAM DMA OFF vflip=%d hmirror=%d; logical camera OFF",
+             g_sensor_pid, frame_size_name(g_video_frame_size), static_cast<unsigned>(g_video_quality),
+             g_vflip ? 1 : 0, g_hmirror ? 1 : 0);
     return true;
 }
 
@@ -248,7 +273,8 @@ bool capture_snapshot(Snapshot &snapshot) {
     }
 
     bool ok = false;
-    if (switch_profile_while_guarded(g_photo_frame_size, g_photo_quality)) {
+    const bool photo_ready = switch_profile_while_guarded(g_photo_frame_size, g_photo_quality);
+    if (photo_ready) {
         camera_fb_t *fb = esp_camera_fb_get();
         if (fb) {
             const size_t clean_len = fb->format == PIXFORMAT_JPEG ? sanitized_jpeg_len(fb->buf, fb->len) : 0;
@@ -264,14 +290,20 @@ bool capture_snapshot(Snapshot &snapshot) {
                     snapshot.sequence = ++g_snapshot_sequence;
                     ok = true;
                 }
+            } else {
+                ESP_LOGW(TAG, "snapshot rejected malformed JPEG len=%u", static_cast<unsigned>(fb->len));
             }
-            if (!restore_video_profile_before_return(fb)) ok = false;
+            // Return the still framebuffer before touching sensor resolution.
+            // Changing frame size while a buffer from the old profile is held
+            // can mix two capture profiles in continuous 2FB mode.
+            esp_camera_fb_return(fb);
         } else {
             ESP_LOGW(TAG, "snapshot framebuffer unavailable");
-            // No frame is held, so use the guarded transition back to VGA.
-            switch_profile_while_guarded(g_video_frame_size, g_video_quality);
         }
     }
+
+    // Always return the live camera to its video profile after a still attempt.
+    if (!switch_profile_while_guarded(g_video_frame_size, g_video_quality)) ok = false;
 
     xSemaphoreGive(g_mutex);
     if (!ok && snapshot.jpeg) release_snapshot(snapshot);
@@ -336,9 +368,13 @@ bool set_resolution(const char *target, const char *resolution) {
 bool set_quality(const char *target, uint8_t quality) {
     if (!g_mutex || quality < 4 || quality > 32 || (strcmp(target, "photo") != 0 && strcmp(target, "video") != 0)) return false;
     if (xSemaphoreTake(g_mutex, pdMS_TO_TICKS(2500)) != pdTRUE) return false;
-    if (strcmp(target, "photo") == 0) g_photo_quality = quality; else g_video_quality = quality;
-    sensor_t *sensor = esp_camera_sensor_get();
-    const bool applied = strcmp(target, "photo") == 0 || (sensor && sensor->set_quality(sensor, g_video_quality) == 0);
+    bool applied = true;
+    if (strcmp(target, "photo") == 0) {
+        g_photo_quality = quality;
+    } else {
+        g_video_quality = quality;
+        applied = switch_profile_while_guarded(g_video_frame_size, g_video_quality);
+    }
     if (applied) persist_settings();
     xSemaphoreGive(g_mutex);
     return applied;
