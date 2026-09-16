@@ -58,6 +58,17 @@ void finish_recording(bool success, const char *reason) {
     }
 }
 
+void stop_stream_for_camera_gate() {
+    if (xSemaphoreTake(g_mutex, pdMS_TO_TICKS(100)) != pdTRUE) return;
+    const bool was_streaming = g_streaming;
+    g_streaming = false;
+    g_fps = kTargetFps;
+    g_overruns = 0;
+    g_good_frames = 0;
+    xSemaphoreGive(g_mutex);
+    if (was_streaming) ESP_LOGI(TAG, "stream stopped: logical camera OFF");
+}
+
 void media_task(void *) {
     int64_t next_us = esp_timer_get_time();
     for (;;) {
@@ -71,6 +82,18 @@ void media_task(void *) {
             xSemaphoreGive(g_mutex);
         }
         if (!stream && !record) { next_us = esp_timer_get_time(); vTaskDelay(pdMS_TO_TICKS(50)); continue; }
+
+        // /cam_off is a hard privacy gate, not a hint. The camera mutex in
+        // Newo2Camera guarantees any in-flight capture has returned before OFF
+        // is acknowledged. Stop active media from this task so SD close cannot
+        // race an append that was already underway.
+        if (!Newo2Camera::enabled()) {
+            if (record) finish_recording(true, "camera_off");
+            if (stream) stop_stream_for_camera_gate();
+            next_us = esp_timer_get_time();
+            continue;
+        }
+
         if (record && duration && esp_timer_get_time() - started >= static_cast<int64_t>(duration) * 1000000LL) {
             finish_recording(true, "duration_complete");
             continue;
@@ -155,17 +178,42 @@ bool begin() {
 
 bool set_streaming(bool enabled, const char *request_id) {
     if (!g_mutex) return false;
-    if (enabled && !Newo2Camera::enabled() && !Newo2Camera::set_enabled(true)) return false;
-    xSemaphoreTake(g_mutex, portMAX_DELAY); g_streaming = enabled; xSemaphoreGive(g_mutex);
-    Newo2Network::send_media_ack(request_id, "stream", enabled, true, g_fps);
+    if (enabled && !Newo2Camera::enabled()) {
+        ESP_LOGW(TAG, "stream start rejected: logical camera OFF");
+        return false;
+    }
+
+    if (xSemaphoreTake(g_mutex, portMAX_DELAY) != pdTRUE) return false;
+    if (enabled && g_recording) {
+        xSemaphoreGive(g_mutex);
+        ESP_LOGW(TAG, "stream start rejected: recording active");
+        return false;
+    }
+    g_streaming = enabled;
+    if (!enabled) {
+        g_fps = kTargetFps;
+        g_overruns = 0;
+        g_good_frames = 0;
+    }
+    const uint8_t fps = g_fps;
+    xSemaphoreGive(g_mutex);
+    Newo2Network::send_media_ack(request_id, "stream", enabled, true, fps);
     return true;
 }
 
 bool start_recording(uint32_t duration_seconds, const char *request_id) {
     if (!g_mutex || !request_id || !request_id[0]) return false;
-    if (!Newo2Camera::enabled() && !Newo2Camera::set_enabled(true)) return false;
+    if (!Newo2Camera::enabled()) {
+        ESP_LOGW(TAG, "record start rejected: logical camera OFF");
+        return false;
+    }
+
     xSemaphoreTake(g_mutex, portMAX_DELAY);
-    if (g_recording) { xSemaphoreGive(g_mutex); return false; }
+    if (g_recording || g_streaming) {
+        xSemaphoreGive(g_mutex);
+        ESP_LOGW(TAG, "record start rejected: media already active");
+        return false;
+    }
     char path[128] = {};
     const bool opened = Newo2Storage::begin_video(Newo2Events::next_sequence(), path, sizeof(path));
     if (!opened) { xSemaphoreGive(g_mutex); return false; }
