@@ -1,8 +1,7 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { createWriteStream, openAsBlob } from "node:fs";
+import { closeSync, openAsBlob, openSync, writeSync } from "node:fs";
 import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { loadEnvFile } from "node:process";
 import path from "node:path";
 
@@ -152,7 +151,7 @@ async function analyzeVision(jpeg, question) {
 
 function transcode(input, output, fps) {
   return new Promise((resolve, reject) => {
-    const child = spawn(env.ffmpeg, ["-y", "-f", "mjpeg", "-framerate", String(fps || 15), "-i", input,
+    const child = spawn(env.ffmpeg, ["-y", "-f", "mjpeg", "-framerate", String(fps || 20), "-i", input,
       "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", output],
     { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
@@ -162,25 +161,142 @@ function transcode(input, output, fps) {
   });
 }
 
+function closeRecordingFile(recording) {
+  if (!recording || recording.fd === null || recording.fd === undefined) return;
+  try { closeSync(recording.fd); } catch {}
+  recording.fd = null;
+}
+
+function completionFromUploadMessage(message) {
+  return {
+    type: "record_complete",
+    request_id: message.request_id,
+    success: true,
+    frames: Number(message.frames || 0),
+    dropped: Number(message.dropped || 0),
+    bytes: Number(message.bytes || 0),
+    duration_ms: Number(message.duration_ms || 0),
+    reason: "sd_upload_complete",
+  };
+}
+
 async function finalizeRecording(message) {
   const recording = activeRecording;
-  if (!recording || recording.requestId !== message.request_id) return;
-  activeRecording = null;
-  await new Promise((resolve) => recording.stream.end(resolve));
-  const durationSeconds = Math.max(0.001, Number(message.duration_ms || 0) / 1000);
-  const measuredFps = message.frames > 0 ? Math.max(1, Math.min(30, message.frames / durationSeconds)) : recording.fps;
-  if (!message.success || recording.frames === 0) {
+  if (!recording || recording.requestId !== message.request_id || recording.finalizing) return;
+  recording.completion = message;
+
+  if (!message.success) {
+    recording.finalizing = true;
+    closeRecordingFile(recording);
+    activeRecording = null;
     await telegramText(recording.chatId, `Newo2 recording stopped: ${message.reason || "recording failed"}. The partial SD file was preserved.`).catch(() => {});
     return;
   }
+
+  // Successful recording is SD-authoritative. Wait for the post-record file
+  // upload before transcoding; live WebSocket frames are no longer the source.
+  if (!recording.uploadComplete) return;
+  recording.finalizing = true;
+  closeRecordingFile(recording);
+
+  const targetFps = recording.fps || 20;
+  const durationSeconds = Math.max(0.001, Number(message.duration_ms || 0) / 1000);
+  const captureFps = Number(message.frames || 0) / durationSeconds;
+  if (recording.uploadedBytes <= 0) {
+    activeRecording = null;
+    await telegramText(recording.chatId, "Newo2 recording finished on SD, but the VPS received no video data.").catch(() => {});
+    return;
+  }
+
   try {
-    await transcode(recording.rawPath, recording.mp4Path, measuredFps);
+    await transcode(recording.rawPath, recording.mp4Path, targetFps);
     await telegramVideo(recording.mp4Path, recording.chatId,
-      `Newo2 recording · ${message.frames} frames · ${measuredFps.toFixed(1)} FPS`);
+      `Newo2 recording · ${message.frames} frames · ${targetFps} FPS`);
+    app.log.info({ frames: message.frames, bytes: recording.uploadedBytes, target_fps: targetFps,
+      capture_fps: Number.isFinite(captureFps) ? Number(captureFps.toFixed(2)) : null }, "Newo2 recording finalized");
   } catch (error) {
     app.log.error({ error: error?.message }, "Newo2 recording finalization failed");
     await telegramText(recording.chatId, `Newo2 recorded ${message.frames} frames, but MP4 conversion failed.`).catch(() => {});
+  } finally {
+    if (activeRecording === recording) activeRecording = null;
   }
+}
+
+function prepareRecordingUpload(message) {
+  const recording = activeRecording;
+  if (!recording || recording.requestId !== message.request_id || recording.finalizing) return;
+  closeRecordingFile(recording);
+  try {
+    recording.fd = openSync(recording.rawPath, "w");
+  } catch (error) {
+    app.log.error({ error: error?.message }, "Newo2 recording upload open failed");
+    void telegramText(recording.chatId, "Newo2 finished recording on SD, but the VPS could not open its upload file.").catch(() => {});
+    activeRecording = null;
+    return;
+  }
+  recording.uploadStarted = true;
+  recording.uploadComplete = false;
+  recording.uploadedBytes = 0;
+  recording.uploadError = false;
+  recording.fps = Number(message.fps || recording.fps || 20);
+  if (!recording.completion) recording.completion = completionFromUploadMessage(message);
+  app.log.info({ request_id: recording.requestId, bytes: Number(message.bytes || 0), frames: Number(message.frames || 0) },
+    "Newo2 SD recording upload started");
+}
+
+function appendRecordingChunk(frame) {
+  const recording = activeRecording;
+  if (!recording || !recording.uploadStarted || recording.uploadComplete || recording.finalizing || recording.fd === null) return;
+  if (frame.length < 16) return;
+  const offsetBig = frame.readBigUInt64LE(4);
+  if (offsetBig > BigInt(Number.MAX_SAFE_INTEGER)) return;
+  const offset = Number(offsetBig);
+  const payloadLength = frame.readUInt32LE(12);
+  if (!payloadLength || payloadLength !== frame.length - 16) return;
+  if (offset !== recording.uploadedBytes) {
+    app.log.warn({ expected: recording.uploadedBytes, received: offset }, "Newo2 recording upload offset mismatch");
+    recording.uploadError = true;
+    return;
+  }
+  try {
+    const written = writeSync(recording.fd, frame, 16, payloadLength, offset);
+    if (written !== payloadLength) {
+      recording.uploadError = true;
+      app.log.error({ written, expected: payloadLength }, "Newo2 recording upload short write");
+      return;
+    }
+    recording.uploadedBytes += written;
+  } catch (error) {
+    recording.uploadError = true;
+    app.log.error({ error: error?.message }, "Newo2 recording upload write failed");
+  }
+}
+
+function finishRecordingUpload(message) {
+  const recording = activeRecording;
+  if (!recording || recording.requestId !== message.request_id || recording.finalizing) return;
+  closeRecordingFile(recording);
+  const expectedBytes = Number(message.bytes || 0);
+  if (recording.uploadError || (expectedBytes > 0 && recording.uploadedBytes !== expectedBytes)) {
+    app.log.error({ expected: expectedBytes, received: recording.uploadedBytes }, "Newo2 recording upload incomplete");
+    void failRecordingUpload({ request_id: message.request_id, reason: "upload_size_mismatch" });
+    return;
+  }
+  recording.uploadComplete = true;
+  if (!recording.completion) recording.completion = completionFromUploadMessage(message);
+  app.log.info({ request_id: recording.requestId, bytes: recording.uploadedBytes }, "Newo2 SD recording upload complete");
+  void finalizeRecording(recording.completion);
+}
+
+async function failRecordingUpload(message) {
+  const recording = activeRecording;
+  if (!recording || recording.requestId !== message.request_id || recording.finalizing) return;
+  recording.finalizing = true;
+  closeRecordingFile(recording);
+  activeRecording = null;
+  app.log.error({ request_id: message.request_id, reason: message.reason || "upload_failed" }, "Newo2 SD recording upload failed");
+  await telegramText(recording.chatId,
+    `Newo2 recording is safe on the SD card, but VPS upload failed: ${message.reason || "upload_failed"}.`).catch(() => {});
 }
 
 function publishFrame(jpeg) {
@@ -279,7 +395,14 @@ app.get("/newo2/admin/status", async () => ({
   last_seen: device?.lastSeen ?? null,
   hello: device?.hello ?? null,
   status: device?.status ?? null,
-  recording: activeRecording ? { started_at: activeRecording.startedAt, frames: activeRecording.frames } : null,
+  recording: activeRecording ? {
+    started_at: activeRecording.startedAt,
+    frames: Number(activeRecording.completion?.frames || 0),
+    uploaded_bytes: activeRecording.uploadedBytes,
+    upload_started: activeRecording.uploadStarted,
+    upload_complete: activeRecording.uploadComplete,
+    finalizing: activeRecording.finalizing,
+  } : null,
   latest_frame: latestFrame ? { sequence: latestFrame.sequence, width: latestFrame.width, height: latestFrame.height, fps: latestFrame.fps, received_at: latestFrame.receivedAt } : null,
 }));
 
@@ -316,16 +439,26 @@ app.post("/newo2/admin/record", async (request, reply) => {
   const id = `${Date.now()}-${randomUUID()}`;
   const rawPath = path.join(env.videoDirectory, `${id}.mjpeg`);
   const mp4Path = path.join(env.videoDirectory, `${id}.mp4`);
-  const stream = createWriteStream(rawPath, { flags: "wx" });
-  try { await once(stream, "open"); } catch { return reply.code(500).send({ error: "video_storage_unavailable" }); }
+  try { await writeFile(rawPath, Buffer.alloc(0), { flag: "wx" }); }
+  catch { return reply.code(500).send({ error: "video_storage_unavailable" }); }
+
   const sent = sendRequest("record_start", ["media_ack"], { duration_seconds: duration });
-  if (sent.kind === "offline") { stream.destroy(); return reply.code(503).send({ error: "newo2_offline" }); }
-  activeRecording = { requestId: sent.requestId, rawPath, mp4Path, stream,
-    chatId: request.body?.chat_id ? String(request.body.chat_id) : env.telegramChatId, startedAt: new Date().toISOString(), frames: 0, fps: 20 };
+  if (sent.kind === "offline") {
+    await unlink(rawPath).catch(() => {});
+    return reply.code(503).send({ error: "newo2_offline" });
+  }
+  activeRecording = {
+    requestId: sent.requestId, rawPath, mp4Path, fd: null,
+    chatId: request.body?.chat_id ? String(request.body.chat_id) : env.telegramChatId,
+    startedAt: new Date().toISOString(), fps: 20,
+    uploadedBytes: 0, uploadStarted: false, uploadComplete: false,
+    uploadError: false, completion: null, finalizing: false,
+  };
   const result = await sent.promise;
   if (result.kind !== "response" || !result.message.applied) {
     const failed = activeRecording; activeRecording = null;
-    await new Promise((resolve) => failed.stream.end(resolve));
+    closeRecordingFile(failed);
+    await unlink(rawPath).catch(() => {});
     return reply.code(result.kind === "timeout" ? 504 : 502).send({ error: result.kind === "response" ? "record_rejected" : `newo2_${result.kind}` });
   }
   activeRecording.fps = result.message.fps || 20;
@@ -396,6 +529,10 @@ wss.on("connection", (ws) => {
         }
         return;
       }
+      if (magic === "N2RF") {
+        appendRecordingChunk(frame);
+        return;
+      }
       if (magic !== "N2JF" || frame.length < 24) return;
       const jpegLength = frame.readUInt32LE(20);
       if (jpegLength < 4 || jpegLength !== frame.length - 24) return;
@@ -404,7 +541,6 @@ wss.on("connection", (ws) => {
       latestFrame = { jpeg: Buffer.from(jpeg), flags: frame[4], width: frame.readUInt16LE(6), height: frame.readUInt16LE(8),
         fps: frame[10], sequence: frame.readUInt32LE(12), timestampMs: frame.readUInt32LE(16), receivedAt: new Date().toISOString() };
       publishFrame(latestFrame.jpeg);
-      if (activeRecording && (frame[4] & 2)) { activeRecording.stream.write(jpeg); activeRecording.frames += 1; }
       return;
     }
     if (raw.length > 32 * 1024) return;
@@ -421,7 +557,16 @@ wss.on("connection", (ws) => {
     } else if (message.type === "snapshot_captured" || message.type === "snapshot_error") {
       app.log.info({ type: message.type, source: message.source, sequence: message.sequence, uploaded: message.uploaded }, "Newo2 snapshot result");
     } else if (message.type === "record_complete") {
-      void finalizeRecording(message);
+      if (activeRecording && activeRecording.requestId === message.request_id) {
+        activeRecording.completion = message;
+        if (!message.success || activeRecording.uploadComplete) void finalizeRecording(message);
+      }
+    } else if (message.type === "record_upload_start") {
+      prepareRecordingUpload(message);
+    } else if (message.type === "record_upload_end") {
+      finishRecordingUpload(message);
+    } else if (message.type === "record_upload_failed") {
+      void failRecordingUpload(message);
     }
     if (typeof message.request_id === "string") {
       const item = pending.get(message.request_id);
@@ -440,9 +585,11 @@ wss.on("connection", (ws) => {
     }
 
     device = null;
+    // Recording is SD-authoritative. Keep activeRecording through a transient
+    // WebSocket outage so Newo2 can reconnect and restart the post-record upload.
     if (activeRecording) {
-      const interrupted = activeRecording; activeRecording = null; interrupted.stream.end();
-      void telegramText(interrupted.chatId, "Newo2 disconnected; the partial recording was preserved on the SD card and VPS.").catch(() => {});
+      app.log.warn({ request_id: activeRecording.requestId, uploaded_bytes: activeRecording.uploadedBytes },
+        "Newo2 disconnected with recording retained for SD/upload recovery");
     }
     broadcastSerialMonitorStatus({ state: "device_offline", enabled: false });
     app.log.info({ device_id: env.deviceId }, "Newo2 disconnected");
