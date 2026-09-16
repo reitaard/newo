@@ -3,17 +3,34 @@
 #   /1 -> Newo serial monitor (newo-cloud :8788)
 #   /2 -> Newo2 serial monitor (newo2-bridge :8792)
 # Internal WebSockets stay on /1/ws and /2/ws.
-# The shared HTML uses slash-independent root asset URLs, so /1/ and /2/ are
-# deliberately not required.
+# /1/ and /2/ are deliberately not used.
 
-@tailnetNewo1Monitor path /1 /1/ws
+@tailnetNewo1Monitor {
+    remote_ip 100.64.0.0/10 fd7a:115c:a1e0::/48
+    path /1 /1/ws
+}
 handle @tailnetNewo1Monitor {
     uri replace /1 /smonitor1
     reverse_proxy 127.0.0.1:8788
 }
 
-@tailnetNewo2Monitor path /2 /2/ws
+@tailnetNewo2Monitor {
+    remote_ip 100.64.0.0/10 fd7a:115c:a1e0::/48
+    path /2 /2/ws
+}
 handle @tailnetNewo2Monitor {
     uri replace /2 /smonitor2
     reverse_proxy 127.0.0.1:8792
+}
+
+# Both pages use the same static monitor UI. Serve those root assets from the
+# Newo cloud copy so an exact URL such as /1 or /2 does not depend on a trailing
+# slash for relative asset resolution.
+@tailnetMonitorAssets {
+    remote_ip 100.64.0.0/10 fd7a:115c:a1e0::/48
+    path /smonitor.css /smonitor.js /favicon.ico /favicon.svg /favicon-96x96.png /apple-touch-icon.png /web-app-manifest-192x192.png /web-app-manifest-512x512.png /site.webmanifest
+}
+handle @tailnetMonitorAssets {
+    rewrite * /smonitor1{uri}
+    reverse_proxy 127.0.0.1:8788
 }
