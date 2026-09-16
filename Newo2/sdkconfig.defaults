@@ -23,6 +23,14 @@ CONFIG_FATFS_MAX_LFN=64
 # separate from RX so sustained 20 FPS sends cannot starve the receive task.
 CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y
 CONFIG_ESP_WS_CLIENT_TX_LOCK_TIMEOUT_MS=2000
+# Sustained 20 FPS JPEG upload needs much more than the ESP-IDF defaults
+# (TCP send buffer 5760 bytes / Wi-Fi dynamic TX buffers 32). These values
+# follow Espressif's ESP32-S3 iperf performance profile for the uplink path.
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=64
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
+CONFIG_ESP_WIFI_TX_BA_WIN=32
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65535
+CONFIG_LWIP_TCP_WND_DEFAULT=65535
 # Keep the camera choices that survived the physical v6 soak.
 CONFIG_CAMERA_PSRAM_DMA=n
 CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE_AUTO=n
