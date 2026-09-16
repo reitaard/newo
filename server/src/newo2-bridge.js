@@ -430,7 +430,16 @@ wss.on("connection", (ws) => {
   });
   ws.on("close", () => {
     failSocketPending(ws);
-    if (device?.ws === ws) device = null;
+
+    // A reconnect replaces the previous WebSocket. Ignore the old socket's
+    // later close event; otherwise it can falsely mark the new live device
+    // offline in the serial monitor.
+    if (device?.ws !== ws) {
+      app.log.info({ device_id: env.deviceId }, "Replaced Newo2 socket closed");
+      return;
+    }
+
+    device = null;
     if (activeRecording) {
       const interrupted = activeRecording; activeRecording = null; interrupted.stream.end();
       void telegramText(interrupted.chatId, "Newo2 disconnected; the partial recording was preserved on the SD card and VPS.").catch(() => {});
