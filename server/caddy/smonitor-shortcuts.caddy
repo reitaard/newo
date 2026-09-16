@@ -1,18 +1,18 @@
 # Import this inside the smonitor.reitaard.de site block.
-# Public shortcuts:
+# Public pages are exactly:
 #   /1 -> Newo serial monitor (newo-cloud :8788)
 #   /2 -> Newo2 serial monitor (newo2-bridge :8792)
-#
-# Serve both the exact short path and its child asset/WebSocket paths without
-# redirecting the browser to a trailing slash.
+# Internal WebSockets stay on /1/ws and /2/ws.
+# The shared HTML uses slash-independent root asset URLs, so /1/ and /2/ are
+# deliberately not required.
 
-@tailnetNewo1Monitor path /1 /1/*
+@tailnetNewo1Monitor path /1 /1/ws
 handle @tailnetNewo1Monitor {
     uri replace /1 /smonitor1
     reverse_proxy 127.0.0.1:8788
 }
 
-@tailnetNewo2Monitor path /2 /2/*
+@tailnetNewo2Monitor path /2 /2/ws
 handle @tailnetNewo2Monitor {
     uri replace /2 /smonitor2
     reverse_proxy 127.0.0.1:8792
