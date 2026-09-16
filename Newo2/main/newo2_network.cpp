@@ -1,5 +1,6 @@
 #include "newo2_network.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 
@@ -15,6 +16,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "newo2_event.h"
 #include "newo2_console.h"
@@ -38,12 +40,67 @@ namespace Newo2Network {
 namespace {
 constexpr const char *TAG = "newo2_network";
 constexpr EventBits_t WIFI_CONNECTED = BIT0;
+constexpr UBaseType_t kVideoQueueDepth = 16;
+constexpr uint32_t kRecordingDrainTimeoutMs = 5000;
+
+struct VideoQueueItem {
+    uint8_t *packet;
+    size_t length;
+    bool recording;
+};
+
 EventGroupHandle_t g_wifi_events = nullptr;
+QueueHandle_t g_video_queue = nullptr;
 esp_websocket_client_handle_t g_ws = nullptr;
 volatile bool g_cloud_connected = false;
 char g_ws_uri[192] = {};
 char g_ws_headers[256] = {};
 uint32_t g_serial_sequence = 0;
+std::atomic<uint32_t> g_recording_frames_pending{0};
+std::atomic<uint32_t> g_video_queue_drops{0};
+std::atomic<uint32_t> g_video_send_failures{0};
+
+void release_video_item(VideoQueueItem &item) {
+    if (item.packet) heap_caps_free(item.packet);
+    if (item.recording) g_recording_frames_pending.fetch_sub(1, std::memory_order_relaxed);
+    item.packet = nullptr;
+    item.length = 0;
+    item.recording = false;
+}
+
+void clear_video_queue() {
+    if (!g_video_queue) return;
+    VideoQueueItem item = {};
+    while (xQueueReceive(g_video_queue, &item, 0) == pdTRUE) release_video_item(item);
+}
+
+bool wait_for_recording_frames(uint32_t timeout_ms) {
+    const int64_t deadline = esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000LL;
+    while (g_recording_frames_pending.load(std::memory_order_relaxed) != 0 && esp_timer_get_time() < deadline)
+        vTaskDelay(pdMS_TO_TICKS(5));
+    return g_recording_frames_pending.load(std::memory_order_relaxed) == 0;
+}
+
+void video_sender_task(void *) {
+    for (;;) {
+        VideoQueueItem item = {};
+        if (!g_video_queue || xQueueReceive(g_video_queue, &item, portMAX_DELAY) != pdTRUE) continue;
+
+        bool ok = false;
+        if (item.packet && item.length && g_ws && g_cloud_connected) {
+            const int sent = esp_websocket_client_send_bin(
+                g_ws, reinterpret_cast<const char *>(item.packet), item.length, pdMS_TO_TICKS(250));
+            ok = sent == static_cast<int>(item.length);
+        }
+        if (!ok && item.recording) {
+            const uint32_t failures = g_video_send_failures.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (failures == 1 || failures % 20 == 0)
+                ESP_LOGW(TAG, "recording frame network send failed count=%lu",
+                         static_cast<unsigned long>(failures));
+        }
+        release_video_item(item);
+    }
+}
 
 void drain_serial_monitor() {
     if (!g_ws || !g_cloud_connected || !Newo2Console::remote_enabled()) return;
@@ -158,11 +215,13 @@ void ws_event(void *, esp_event_base_t, int32_t event_id, void *event_data) {
         ESP_LOGI(TAG, "cloud connected");
     } else if (event_id == WEBSOCKET_EVENT_DISCONNECTED) {
         g_cloud_connected = false;
+        clear_video_queue();
         ESP_LOGW(TAG, "cloud disconnected");
     } else if (event_id == WEBSOCKET_EVENT_DATA && data && data->op_code == 0x1 && data->data_len > 0) {
         handle_command(data->data_ptr, data->data_len);
     } else if (event_id == WEBSOCKET_EVENT_ERROR) {
         g_cloud_connected = false;
+        clear_video_queue();
         ESP_LOGW(TAG, "cloud websocket error");
     }
 }
@@ -173,6 +232,7 @@ void wifi_event(void *, esp_event_base_t base, int32_t id, void *) {
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         xEventGroupClearBits(g_wifi_events, WIFI_CONNECTED);
         g_cloud_connected = false;
+        clear_video_queue();
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         xEventGroupSetBits(g_wifi_events, WIFI_CONNECTED);
@@ -215,7 +275,13 @@ bool begin() {
         return false;
     }
     g_wifi_events = xEventGroupCreate();
-    if (!g_wifi_events) return false;
+    g_video_queue = xQueueCreate(kVideoQueueDepth, sizeof(VideoQueueItem));
+    if (!g_wifi_events || !g_video_queue) return false;
+    if (xTaskCreate(video_sender_task, "newo2_video_tx", 4096, nullptr, 4, nullptr) != pdPASS) {
+        vQueueDelete(g_video_queue);
+        g_video_queue = nullptr;
+        return false;
+    }
     ESP_ERROR_CHECK(esp_netif_init());
     const esp_err_t loop_err = esp_event_loop_create_default();
     if (loop_err != ESP_OK && loop_err != ESP_ERR_INVALID_STATE) ESP_ERROR_CHECK(loop_err);
@@ -324,6 +390,15 @@ void send_camera_settings(const char *request_id, bool applied) {
 
 void send_record_result(const char *request_id, bool success, uint32_t frames, uint32_t dropped,
                         size_t bytes, uint32_t duration_ms, const char *reason) {
+    // The recorder is already stopped here, so waiting cannot disturb its 20 FPS
+    // capture cadence. Drain queued recording frames before record_complete so the
+    // VPS does not finalize the MP4 before the tail of the MJPEG stream arrives.
+    const bool drained = wait_for_recording_frames(kRecordingDrainTimeoutMs);
+    if (!drained) {
+        ESP_LOGW(TAG, "recording network drain timed out pending=%lu",
+                 static_cast<unsigned long>(g_recording_frames_pending.load(std::memory_order_relaxed)));
+    }
+
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "record_complete");
     cJSON_AddStringToObject(root, "request_id", request_id ? request_id : "");
@@ -339,7 +414,7 @@ void send_record_result(const char *request_id, bool success, uint32_t frames, u
 
 bool send_video_frame(const uint8_t *jpeg, size_t len, uint16_t width, uint16_t height,
                       uint32_t sequence, uint8_t fps, bool streaming, bool recording) {
-    if (!jpeg || !len || !g_ws || !g_cloud_connected || len > 256 * 1024) return false;
+    if (!jpeg || !len || !g_video_queue || !g_ws || !g_cloud_connected || len > 256 * 1024) return false;
     uint8_t *packet = static_cast<uint8_t *>(heap_caps_malloc(24 + len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!packet) return false;
     packet[0] = 'N'; packet[1] = '2'; packet[2] = 'J'; packet[3] = 'F';
@@ -354,9 +429,19 @@ bool send_video_frame(const uint8_t *jpeg, size_t len, uint16_t width, uint16_t 
         packet[20 + i] = static_cast<uint8_t>(len >> (i * 8));
     }
     memcpy(packet + 24, jpeg, len);
-    const int sent = esp_websocket_client_send_bin(g_ws, reinterpret_cast<const char *>(packet), 24 + len, pdMS_TO_TICKS(100));
-    heap_caps_free(packet);
-    return sent == static_cast<int>(24 + len);
+
+    VideoQueueItem item = {packet, 24 + len, recording};
+    if (recording) g_recording_frames_pending.fetch_add(1, std::memory_order_relaxed);
+    if (xQueueSend(g_video_queue, &item, 0) != pdTRUE) {
+        if (recording) g_recording_frames_pending.fetch_sub(1, std::memory_order_relaxed);
+        heap_caps_free(packet);
+        const uint32_t drops = g_video_queue_drops.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (drops == 1 || drops % 20 == 0)
+            ESP_LOGW(TAG, "video network queue saturated drops=%lu",
+                     static_cast<unsigned long>(drops));
+        return false;
+    }
+    return true;
 }
 
 void send_snapshot_result(const char *request_id, const char *source, uint32_t sequence,
