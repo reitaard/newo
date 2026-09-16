@@ -28,23 +28,34 @@ uint32_t g_dropped = 0;
 uint32_t g_overruns = 0;
 uint32_t g_good_frames = 0;
 char g_record_request_id[40] = {};
+char g_record_path[128] = {};
 
 void finish_recording(bool success, const char *reason) {
     char request_id[40] = {};
+    char path[128] = {};
     uint32_t frames = 0, dropped = 0;
     int64_t started = 0;
     if (xSemaphoreTake(g_mutex, pdMS_TO_TICKS(100)) != pdTRUE || !g_recording) return;
     g_recording = false;
     strlcpy(request_id, g_record_request_id, sizeof(request_id));
+    strlcpy(path, g_record_path, sizeof(path));
     frames = g_frames; dropped = g_dropped; started = g_record_started_us;
     g_record_request_id[0] = '\0';
+    g_record_path[0] = '\0';
     xSemaphoreGive(g_mutex);
 
     size_t bytes = 0;
     const bool closed = Newo2Storage::end_video(&bytes);
     const uint32_t elapsed_ms = static_cast<uint32_t>((esp_timer_get_time() - started) / 1000);
-    Newo2Network::send_record_result(request_id, success && closed, frames, dropped, bytes, elapsed_ms,
+    const bool complete = success && closed;
+    Newo2Network::send_record_result(request_id, complete, frames, dropped, bytes, elapsed_ms,
                                      reason ? reason : (closed ? "complete" : "sd_close_failed"));
+
+    if (complete && bytes > 0 && path[0]) {
+        if (!Newo2Network::queue_recording_upload(path, request_id, bytes, frames, dropped, elapsed_ms)) {
+            ESP_LOGE(TAG, "recording upload task could not start path=%s", path);
+        }
+    }
 }
 
 void media_task(void *) {
@@ -70,9 +81,15 @@ void media_task(void *) {
         const bool captured = Newo2Camera::capture_video_frame(frame);
         bool sd_ok = true;
         if (captured && record) sd_ok = Newo2Storage::append_video_frame(frame.jpeg, frame.len);
-        bool queued = false;
-        if (captured) queued = Newo2Network::send_video_frame(frame.jpeg, frame.len, frame.width, frame.height,
-                                                               frame.sequence, fps, stream, record);
+
+        // Recording is SD-authoritative. Do not mirror recording frames over the
+        // WAN while capture is in progress; that coupling caused transport stalls
+        // and queue saturation. Live stream frames still use the WebSocket path.
+        bool queued = true;
+        if (captured && stream) {
+            queued = Newo2Network::send_video_frame(frame.jpeg, frame.len, frame.width, frame.height,
+                                                    frame.sequence, fps, true, false);
+        }
         const uint32_t elapsed_ms = static_cast<uint32_t>((esp_timer_get_time() - capture_started) / 1000);
 
         if (xSemaphoreTake(g_mutex, portMAX_DELAY) == pdTRUE) {
@@ -81,8 +98,8 @@ void media_task(void *) {
                 if (captured && sd_ok) ++g_frames;
                 else ++g_dropped;
 
-                // Recording is fixed at 20 FPS. Network delivery is queued by
-                // Newo2Network and must never down-clock the SD recording path.
+                // Recording is fixed at 20 FPS. Network delivery happens after
+                // the SD file closes and cannot down-clock the capture path.
                 g_fps = kTargetFps;
                 if (!captured || elapsed_ms > budget_ms) {
                     ++g_overruns;
@@ -97,8 +114,8 @@ void media_task(void *) {
                 }
                 fps = kTargetFps;
             } else {
-                // Live stream may still adapt when the local capture path or
-                // outbound queue cannot keep up. This policy never applies to recording.
+                // Live stream may adapt when capture or outbound networking cannot
+                // keep up. This policy never applies to SD recording.
                 if (!captured || elapsed_ms > 1000 / g_fps || (stream && !queued)) {
                     ++g_overruns;
                     g_good_frames = 0;
@@ -155,6 +172,7 @@ bool start_recording(uint32_t duration_seconds, const char *request_id) {
     g_recording = true; g_duration_seconds = duration_seconds; g_record_started_us = esp_timer_get_time();
     g_frames = g_dropped = 0; g_fps = kTargetFps; g_overruns = g_good_frames = 0;
     strlcpy(g_record_request_id, request_id, sizeof(g_record_request_id));
+    strlcpy(g_record_path, path, sizeof(g_record_path));
     xSemaphoreGive(g_mutex);
     Newo2Network::send_media_ack(request_id, "record", true, true, kTargetFps);
     return true;
