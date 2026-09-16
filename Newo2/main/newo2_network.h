@@ -13,6 +13,8 @@ void send_media_ack(const char *request_id, const char *target, bool enabled, bo
 void send_camera_settings(const char *request_id, bool applied);
 void send_record_result(const char *request_id, bool success, uint32_t frames, uint32_t dropped,
                         size_t bytes, uint32_t duration_ms, const char *reason);
+bool queue_recording_upload(const char *path, const char *request_id, size_t bytes,
+                            uint32_t frames, uint32_t dropped, uint32_t duration_ms);
 bool send_video_frame(const uint8_t *jpeg, size_t len, uint16_t width, uint16_t height,
                       uint32_t sequence, uint8_t fps, bool streaming, bool recording);
 void send_snapshot_result(const char *request_id, const char *source, uint32_t sequence,
