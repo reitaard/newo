@@ -1,6 +1,6 @@
-// Temporary compile probe for the Alfred microWakeWord integration.
-// This file deliberately does not change runtime behaviour. It proves that the
-// Arduino-ESP32 3.3.10 toolchain exposes the TFLite Micro + the pinned Tater
+// Compile contract probe for the Alfred microWakeWord integration.
+// This deliberately does not change runtime behaviour. It keeps the
+// Arduino-ESP32 3.3.10 build honest about the TFLite Micro + pinned Tater
 // microfrontend APIs required by the streaming Alfred model.
 
 #include "tensorflow/lite/c/common.h"
