@@ -9,10 +9,10 @@
 #include "newo_display.h"
 #include "newo_voice_state.h"
 #include "newo_wifi.h"
-#include "newo_wake_engine.h"
+#include "newo_mww_engine.h"
 
-// Voice owns I2S in exactly one place: ESP_SR while ARMED, or the temporary
-// streaming task while STREAMING. OFF owns neither.
+// Voice owns I2S in exactly one place: the local wake detector while ARMED, or
+// the temporary streaming task while STREAMING. OFF owns neither.
 class NewoAudio {
  public:
   enum class MicMode : uint8_t { RAW = 0, NS = 1 };
@@ -29,20 +29,20 @@ class NewoAudio {
   uint8_t micNsLevel() const { return micNsLevel_; }
   const MicMetrics& micMetrics() const { return micMetrics_; }
   // Starts one direct microphone session, or cancels it when already streaming.
-  // It intentionally does not enable or re-arm WakeNet.
+  // It intentionally does not enable or re-arm the wake detector.
   bool manualToggle();
   // Starts one direct session from a physical control. Unlike manualToggle(),
   // this never turns off or cancels an existing session.
   bool startPhysicalVoiceTrigger();
-  // Temporarily releases WakeNet while preserving the user's OFF/ARMED choice.
+  // Temporarily releases the wake detector while preserving OFF/ARMED choice.
   // Returns false only when an active STREAMING session makes playback unsafe.
   bool setPlaybackActive(bool active);
   // Release a deferred hands-free re-arm only after the server's complete
   // assistant/speaker turn reaches a terminal boundary.
   void completeAssistantTurn();
   bool wakeNetRearmPending() const { return awaitingAssistantCompletion_; }
-  // Defer speaker TLS until ESP-SR and streaming microphone ownership have
-  // released the constrained internal SRAM heap.
+  // Defer speaker TLS until wake detection and streaming microphone ownership
+  // have released the constrained internal SRAM heap.
   bool speakerConnectionAllowed() const {
     return state_ == NewoVoiceState::OFF && streamTask_ == nullptr;
   }
@@ -70,7 +70,7 @@ class NewoAudio {
   NewoWiFi& wifi_;
   NewoDisplay& display_;
   I2SClass i2s_;
-  NewoEspSrWakeEngine wakeEngine_;
+  NewoMicroWakeEngine wakeEngine_;
   WebSocketsClient voiceWebSocket_;
   TaskHandle_t streamTask_ = nullptr;
   volatile NewoVoiceState state_ = NewoVoiceState::OFF;
