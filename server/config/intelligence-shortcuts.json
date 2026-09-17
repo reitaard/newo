@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "mode": "conservative",
+  "description": "High-confidence intent shortcuts evaluated before Liquid. Ambiguous requests must fall through to the semantic router.",
+  "rules": [
+    {
+      "id": "memory_recall",
+      "route": "memory",
+      "patterns": [
+        "^what did i tell you\\b",
+        "^what did we decide\\b",
+        "^what was the last thing i said\\b",
+        "^what did you say\\b.*\\b(?:earlier|before|previously|last time)\\b",
+        "^which\\b.*\\bdid i tell you i\\b",
+        "^which\\b.*\\bdid i (?:choose|pick|select)\\b",
+        "^do you remember\\b",
+        "^remind me (?:what|which)\\b.*\\b(?:we|i)\\b.*\\b(?:chose|decided|said|picked|selected|used)\\b"
+      ]
+    },
+    {
+      "id": "technical_troubleshooting",
+      "route": "coding_troubleshooting",
+      "patterns": [
+        "^(?=.*\\b(?:python|node|code|software|service|bot|docker|container|esp32?|wi-?fi|csi|sensor|camera|stream|speaker|packet|exception)\\b).*\\b(?:debug|diagnose|fix)\\b",
+        "^(?=.*\\b(?:python|node|code|software|service|bot|docker|container|esp32?|wi-?fi|csi|sensor|camera|stream|speaker|packet|exception)\\b)why\\b.*\\b(?:disconnect(?:ing|s|ed)?|restart(?:ing|s|ed)?|freez(?:e|es|ing)|underrun(?:s|ning)?|jumping around|stops? replying|fail(?:s|ed|ing)?|broken|error)\\b",
+        "^(?=.*\\b(?:camera|stream|speaker|esp32?|wi-?fi|csi|sensor|docker|container|telegram|bot|packet|code|service)\\b).*\\bwhat should i check\\b"
+      ]
+    },
+    {
+      "id": "device_status_question",
+      "route": "device_status",
+      "patterns": [
+        "^(?=.*\\b(?:newo2?|speaker|display|screen|voice mode|tracking|camera device|assistant profile|profile)\\b)is\\b.*\\b(?:enabled|disabled|muted|on|off|online|connected|active|running)\\b",
+        "^what volume\\b.*\\b(?:set to|currently|now)\\b",
+        "^what (?:assistant )?profile\\b.*\\b(?:active|enabled|selected|current)\\b"
+      ]
+    },
+    {
+      "id": "device_control_command",
+      "route": "device_control",
+      "patterns": [
+        "^(?:turn|set|mute|unmute|dim|brighten|reboot|restart|start|stop|enable|disable)\\b(?=.*\\b(?:newo2?|speaker|display|screen|voice mode|tracking|camera|volume)\\b)"
+      ]
+    },
+    {
+      "id": "social_conversation",
+      "route": "conversation",
+      "patterns": [
+        "^(?:good morning|good afternoon|good evening|hello|hi|hey)(?:,?\\s+(?:newo|neo))?[.!?]*$",
+        "^(?:thanks|thank you)(?:,?\\s+(?:newo|neo))?[.!?]*$",
+        "^tell me a joke[.!?]*$",
+        "^say something encouraging[.!?]*$",
+        "^(?:i['’]?m bored,?\\s*)?talk to me[.!?]*$",
+        "^what should we chat about[.!?]*$",
+        "^tell me something weird[.!?]*$"
+      ]
+    }
+  ]
+}
