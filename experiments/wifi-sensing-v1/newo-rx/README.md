@@ -1,54 +1,74 @@
 # Standalone Newo CSI receiver
 
-This ESP-IDF application is the Phase 2 measurement-plane receiver. It targets ESP32-S3 and is intentionally isolated from production firmware in `Newo/`. It captures raw CSI, zeroes only the invalid leading bytes reported by ESP-IDF while preserving buffer geometry, and sends version-1 NCSI datagrams to a host collector. It performs no DSP, inference, ML, camera work, or hardware-specific Newo integration.
+This ESP-IDF target is the isolated Newo Wi-Fi CSI measurement node. It remains separate from production `Newo/` firmware and performs no DSP, ML, camera work, or production device integration.
 
-Tested build toolchain: **ESP-IDF v5.5.5**, using the official `espressif/idf:v5.5.5` Docker image.
-The hardened credential-free reference build produced `newo_csi_receiver.bin`
-at **730,640 bytes (`0xb2610`)**, leaving 30% of the default 1 MiB application
-partition free. Size is configuration-dependent.
+Hardware status: **physically validated** on the real Newo ESP32-S3 using ESP-IDF v5.5.5. Router→Newo CSI and Newo2→Newo ESP-NOW peer CSI have both been observed on hardware.
+
+See [`../HARDWARE_VALIDATION_2026-09-10.md`](../HARDWARE_VALIDATION_2026-09-10.md) for measured results.
+
+## Responsibilities
+
+The target:
+
+- associates as a normal 2.4 GHz Wi-Fi station;
+- follows the AP channel;
+- captures ESP32-S3 CSI in the Wi-Fi callback;
+- classifies AP and configured ESP-NOW peer sources explicitly;
+- preserves raw CSI geometry;
+- zeroes only the invalid leading bytes reported by ESP-IDF;
+- enqueues fixed-size records in a bounded static ring;
+- sends versioned NCSI CSI/STATUS/DIAGNOSTIC records to the host;
+- can generate controlled gateway traffic;
+- can receive versioned ESP-NOW probes from Newo2.
 
 ## Configuration
 
-Create local configuration from this directory:
+From this directory:
 
 ```sh
 idf.py set-target esp32s3
 idf.py menuconfig
 ```
 
-Under **Newo CSI receiver**, set the Wi-Fi SSID/password and collector IPv4/UDP port. Also check the node ID, Phase-1 path ID, source filter, raw rate, and gateway-ping rate. The defaults retain and ping at 20 Hz; both settings have a hard Kconfig/build maximum of 50 Hz.
+Under **Newo CSI receiver**, configure locally:
 
-`sdkconfig` is ignored. Do not add it, credentials, captures, binaries, `build/`, `dependencies.lock`, or `managed_components/` to Git. `sdkconfig.defaults` contains only non-secret project defaults.
+- Wi-Fi SSID/password;
+- collector IPv4/UDP port;
+- node ID `1`;
+- router path ID `1` (`ROUTER_NEWO`);
+- AP-BSSID source filter;
+- gateway ping cadence;
+- CSI retention setting;
+- ESP-NOW receive role when testing path 3;
+- configured Newo2 station MAC for the peer identity.
 
-The default source filter uses the associated AP BSSID. Choose the custom MAC option for a deliberate `NEWO2_NEWO` source. Disabling filtering is diagnostic-only: every datagram still carries the actual callback source MAC and the collector must validate `(receiver_mac, source_mac)` before trusting `path_id`.
+Generated `sdkconfig`, credentials, builds, captures, and binaries are ignored and must not be committed.
 
-Each accepted path has its own receiver-local cadence gate. On Newo,
-`ROUTER_NEWO` and `NEWO2_NEWO` can therefore each retain 20 Hz without one
-source consuming the other's slots; the emitted CSI sequence remains one
-node-global counter. After every `GOT_IP`, a task refreshes AP/channel/filter,
-gateway, and self-ping and advances the association epoch. CSI is rejected
-while that identity refresh is pending.
+## ESP-NOW role
 
-For Phase 3, the default ESP-NOW receive role requires Newo2's station MAC.
-Frames from the AP remain `ROUTER_NEWO` (`1`); frames whose callback source is
-that configured peer become `NEWO2_NEWO` (`3`). This explicit two-source
-classification replaces cadence-based inference. Set the ESP-NOW role to
-disabled to reproduce the Phase 2 AP-only setup.
+For the validated three-path topology, Newo uses **ESP-NOW receive** mode. AP-originated CSI remains `ROUTER_NEWO` (`1`); CSI whose source matches the configured Newo2 station MAC is labeled `NEWO2_NEWO` (`3`).
 
-## Native build
+The application probe receive counter and CSI callback counter are deliberately separate. Physical validation showed that peer-originated CSI events can outnumber validated application probes, so peer CSI count must not be treated as application-probe count.
 
-With ESP-IDF v5.5.5 exported in the current shell:
+## Rate-gate status
+
+The checked-in reference implementation contains independent receiver-local minimum-spacing gates per path.
+
+During physical validation, a temporary **local worktree edit** bypassed the gate for AP-originated CSI so the actual qualifying router callback rate could be measured. The peer/ESP-NOW path kept its configured gate.
+
+Observed result: with only the AP path active, Router→Newo supplied roughly 24–26 qualifying observations/s in the tested room; the earlier lower retained rate was therefore a gate artifact rather than a compute limit.
+
+That AP bypass is not implied to be present in the checked-in source and is not yet the final retention policy.
+
+## Build
+
+Native ESP-IDF v5.5.5:
 
 ```sh
-idf.py set-target esp32s3
 idf.py build
 ```
 
-An empty SSID is accepted at compile time so CI can build the complete runtime without secrets, but the firmware stops at boot and asks for menuconfig configuration. A build is not hardware validation.
-
-## Reproducible Docker build
-
-From the repository root on Linux/macOS:
+Docker from the repository root:
 
 ```sh
 docker run --rm \
@@ -58,21 +78,9 @@ docker run --rm \
   bash -lc 'idf.py set-target esp32s3 && idf.py build'
 ```
 
-PowerShell:
+An empty SSID can compile for CI but the runtime will abort until credentials are configured locally.
 
-```powershell
-docker run --rm `
-  -v "${PWD}:/project" `
-  -w /project/experiments/wifi-sensing-v1/newo-rx `
-  espressif/idf:v5.5.5 `
-  bash -lc 'idf.py set-target esp32s3 && idf.py build'
-```
-
-The container writes ignored `sdkconfig` and `build/` outputs into the experiment directory. Delete or retain them locally as needed; never commit them.
-
-## Host protocol test
-
-The serializers are dependency-free C. With a host C compiler:
+## Host protocol tests
 
 ```sh
 cc -std=c11 -Wall -Wextra -Werror \
@@ -90,24 +98,38 @@ cc -std=c11 -Wall -Wextra -Werror \
 ./rate_gate_test
 ```
 
-The tests check CSI framing/sanitation and exact RX metadata, diagnostic
-records, probe encoding/decoding, and deterministic independent path gating.
+## Physical flashing boundary
 
-## Run without flashing instructions
+The generated ESP-IDF `flash_args` includes an experiment bootloader and experiment partition table. The validated Newo hardware already has a different production partition layout, so the physical experiment did **not** use full generated flash args.
 
-Phase 2 does not authorize flashing. When a later phase explicitly authorizes hardware use, configure a collector first and use the normal ESP-IDF monitor workflow. UDP datagrams contain one NCSI record each. The firmware also prints one diagnostic line per second with callback/accepted rate, cumulative UDP results and queue drops, and the latest RSSI, CSI length, channel, and source MAC.
+Before any hardware write, the production flash map was read and backed up. The experiment app was then written **app-only at `0x10000`**, leaving the production bootloader and partition table intact.
 
-Gateway self-ping discovers the DHCP gateway through the station network interface and sends one-byte ICMP echo requests. The session is stopped and recreated for the current gateway after reassociation. Router replies are ordinary controlled traffic; no special router firmware is required. The `CONTROL_TRAFFIC_ACTIVE` flag means the generator was running, not that a particular CSI callback was certainly caused by its reply.
+Do not copy that procedure to another board without first verifying its real partition layout and security state. Never `erase-flash` merely to run this experiment.
+
+## Runtime diagnostics
+
+Once per second the firmware emits STATUS/DIAGNOSTIC data over UDP and also prints a serial diagnostic line containing:
+
+- callback and accepted rates;
+- CSI UDP success/failure;
+- ring drops;
+- latest RSSI/CSI length/channel/source;
+- association state/epoch;
+- per-path gate drops;
+- ESP-NOW transmit/receive counters.
+
+For long runs, host NCSI diagnostics remain the authoritative machine-readable record; serial logging is an additional debugging record.
 
 ## Implementation boundaries
 
-- fixed 2.4 GHz associated channel; no channel hopping or 5 GHz logic;
-- ESP32-S3 LLTF, HT-LTF, and STBC HT-LTF capture only;
-- no per-callback heap allocation, logging, UDP, CRC, or DSP;
-- statically allocated single-producer/single-consumer ring;
-- source filtering precedes independent per-path processing cadence gates;
-- full/invalid rings and transport failures are counted;
-- raw signed I/Q byte pairs remain in ESP-IDF imaginary-real order;
-- no C6, NDP, time-sync, WASM, Home Assistant, pose, heartbeat, person count, or ML code.
+- fixed associated 2.4 GHz channel;
+- no channel hopping;
+- no DSP in callback;
+- no callback heap allocation or network send;
+- bounded static SPSC ring;
+- raw signed I/Q stays in ESP-IDF imaginary-real order;
+- queue/transport/gate loss stays observable;
+- no production gesture model yet;
+- no medical, fall, identity, person-count, or sleep-stage claims.
 
-See the parent [PROTOCOL.md](../PROTOCOL.md) and [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) for the byte format and RuView MIT attribution.
+See [`../PROTOCOL.md`](../PROTOCOL.md), [`../PROBE_PROTOCOL.md`](../PROBE_PROTOCOL.md), and [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
