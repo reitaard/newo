@@ -1,7 +1,9 @@
 {
-  "version": 1,
+  "version": 2,
   "mode": "conservative",
-  "description": "High-confidence intent shortcuts evaluated before Liquid. Ambiguous requests must fall through to the semantic router.",
+  "description": "High-confidence deterministic shortcuts evaluated before Liquid. Ambiguous requests must fall through to the semantic router.",
+  "purpose": "Latency optimization and protection for nearly deterministic intents; not a replacement for semantic classification.",
+  "policy": "Do not expand regex coverage to compensate for Liquid semantic errors. Prefer improving the semantic model, taxonomy, or supervised training for natural-language cases.",
   "rules": [
     {
       "id": "memory_recall",
