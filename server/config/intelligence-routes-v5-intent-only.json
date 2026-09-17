@@ -1,0 +1,20 @@
+{
+  "version": 5,
+  "router": "LiquidAI/LFM2.5-Encoder-350M-Prompt-Router",
+  "experiment": "intent_only_route_wording",
+  "description": "A/B route set that removes project-specific nouns and domain-heavy wording so the zero-shot router must focus more on user intent than subject similarity.",
+  "routes": [
+    { "id": "general_knowledge", "route": "Request to explain a fact, concept, definition or how something works" },
+    { "id": "conversation", "route": "Request for casual conversation, a social reply, a joke, encouragement or an opinion" },
+    { "id": "device_control", "route": "Request to change, enable, disable, start, stop or configure something" },
+    { "id": "device_status", "route": "Request to know the present state, setting, configuration or connection state of something" },
+    { "id": "web_current", "route": "Request for information that depends on what is true or available now" },
+    { "id": "memory", "route": "Request to recall information from an earlier interaction" },
+    { "id": "camera_vision", "route": "Request to inspect or identify what is currently visible in an image or live view" },
+    { "id": "sensor_information", "route": "Request to read or report a current measurement, reading or signal" },
+    { "id": "math_units", "route": "Request to calculate a result or convert a quantity" },
+    { "id": "weather", "route": "Request for current or forecast atmospheric conditions" },
+    { "id": "finance_markets", "route": "Request for a market price, financial quote or currency exchange rate" },
+    { "id": "coding_troubleshooting", "route": "Request to diagnose the cause of a problem or find a fix" }
+  ]
+}
