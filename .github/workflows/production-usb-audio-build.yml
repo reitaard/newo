@@ -8,7 +8,6 @@ on:
       - usb-host-manager
       - main
       - voice-input-cleanup
-      - alfred-mww
     paths:
       - "Newo/**"
       - "server/src/voice.js"
@@ -59,6 +58,9 @@ jobs:
           arduino-cli lib install "Adafruit GFX Library@1.12.6"
           arduino-cli lib install "Adafruit ST7735 and ST7789 Library@1.11.0"
           arduino-cli lib install "esp32_opus@1.0.3"
+
+      - name: Prepare Alfred microWakeWord frontend
+        run: bash Newo/prepare_alfred_mww.sh
 
       - name: Replace stock ESP32-S3 USB archive with proven 2048-byte-control build
         run: |
