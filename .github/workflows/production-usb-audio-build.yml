@@ -8,7 +8,6 @@ on:
       - usb-host-manager
       - main
       - voice-input-cleanup
-      - alfred-mww
     paths:
       - "Newo/**"
       - "server/src/voice.js"
