@@ -9,7 +9,7 @@
 #include "newo_display.h"
 #include "newo_voice_state.h"
 #include "newo_wifi.h"
-#include "newo_mww_engine.h"
+#include "newo_wake_backend_select.h"
 
 // Voice owns I2S in exactly one place: the local wake detector while ARMED, or
 // the temporary streaming task while STREAMING. OFF owns neither.
@@ -70,7 +70,7 @@ class NewoAudio {
   NewoWiFi& wifi_;
   NewoDisplay& display_;
   I2SClass i2s_;
-  NewoMicroWakeEngine wakeEngine_;
+  NewoActiveWakeEngine wakeEngine_;
   WebSocketsClient voiceWebSocket_;
   TaskHandle_t streamTask_ = nullptr;
   volatile NewoVoiceState state_ = NewoVoiceState::OFF;
