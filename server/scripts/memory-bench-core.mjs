@@ -74,6 +74,12 @@ function request(body) {
     let done = {};
     const req = http.request(url, { method: "POST", headers: { "content-type": "application/json" } }, res => {
       res.setEncoding("utf8");
+      if ((res.statusCode ?? 500) < 200 || (res.statusCode ?? 500) >= 300) {
+        let bodyText = "";
+        res.on("data", chunk => { bodyText += chunk; });
+        res.on("end", () => reject(new Error(`HTTP ${res.statusCode}: ${bodyText.slice(0, 240)}`)));
+        return;
+      }
       res.on("data", chunk => {
         pending += chunk;
         const lines = pending.split(/\r?\n/);
@@ -95,9 +101,14 @@ function request(body) {
           try {
             const item = JSON.parse(pending);
             if (item.error) return reject(new Error(String(item.error)));
-            if (typeof item.response === "string") raw += item.response;
+            if (typeof item.response === "string") {
+              if (item.response.length) firstRaw ??= performance.now();
+              raw += item.response;
+            }
             if (item.done) done = item;
-          } catch {}
+          } catch (error) {
+            if (!raw) return reject(new Error(`invalid Ollama response: ${error.message}`));
+          }
         }
         const total = performance.now() - started;
         const evalNs = Number(done.eval_duration ?? 0);
@@ -171,32 +182,38 @@ function average(values) {
 function aggregate(rows) {
   const valid = rows.filter(x => x.json_valid);
   const scores = valid.map(x => x.score);
+  const requestErrors = rows.filter(x => x.error);
+  const parseErrors = rows.filter(x => !x.error && !x.json_valid);
   const sum = key => scores.reduce((n, x) => n + Number(Boolean(x[key])), 0);
   const matched = scores.reduce((n, x) => n + x.matched, 0);
   const extracted = scores.reduce((n, x) => n + x.extracted_count, 0);
   const expected = scores.reduce((n, x) => n + x.expected_count, 0);
-  const precision = extracted ? matched / extracted : 1;
-  const recall = expected ? matched / expected : 1;
+  const precision = valid.length ? (extracted ? matched / extracted : expected ? 0 : 1) : null;
+  const recall = valid.length ? (expected ? matched / expected : extracted ? 0 : 1) : null;
   const typeChecks = scores.flatMap(x => x.type_checks);
   const timeChecks = scores.flatMap(x => x.time_checks);
-  const totalLat = rows.map(x => x.metrics?.total_latency_ms);
-  const ttft = rows.map(x => x.metrics?.first_raw_token_ms);
+  const totalLat = valid.map(x => x.metrics?.total_latency_ms);
+  const ttft = valid.map(x => x.metrics?.first_raw_token_ms);
   return {
     cases: rows.length,
+    valid_cases: valid.length,
+    request_errors: requestErrors.length,
+    parse_errors: parseErrors.length,
     json_valid_rate: rows.length ? valid.length / rows.length : 0,
-    decision_accuracy: valid.length ? sum("decision_correct") / valid.length : 0,
-    exact_count_accuracy: valid.length ? sum("count_correct") / valid.length : 0,
+    decision_accuracy: valid.length ? sum("decision_correct") / valid.length : null,
+    exact_count_accuracy: valid.length ? sum("count_correct") / valid.length : null,
     fact_precision: precision,
     fact_recall: recall,
-    fact_f1: precision + recall ? 2 * precision * recall / (precision + recall) : 0,
-    false_memories: scores.reduce((n, x) => n + x.false_positive_count, 0),
+    fact_f1: precision == null || recall == null ? null : (precision + recall ? 2 * precision * recall / (precision + recall) : 0),
+    false_memories: valid.length ? scores.reduce((n, x) => n + x.false_positive_count, 0) : null,
     type_accuracy: typeChecks.length ? typeChecks.filter(Boolean).length / typeChecks.length : null,
     temporal_accuracy: timeChecks.length ? timeChecks.filter(Boolean).length / timeChecks.length : null,
     ttft_ms: { p50: percentile(ttft, 50), p95: percentile(ttft, 95), mean: average(ttft) },
     total_latency_ms: { p50: percentile(totalLat, 50), p95: percentile(totalLat, 95), mean: average(totalLat) },
-    mean_prompt_tokens: average(rows.map(x => x.metrics?.prompt_tokens)),
-    mean_output_tokens: average(rows.map(x => x.metrics?.output_tokens)),
-    mean_tokens_per_s: average(rows.map(x => x.metrics?.tokens_per_s)),
+    mean_prompt_tokens: average(valid.map(x => x.metrics?.prompt_tokens)),
+    mean_output_tokens: average(valid.map(x => x.metrics?.output_tokens)),
+    mean_tokens_per_s: average(valid.map(x => x.metrics?.tokens_per_s)),
+    first_error: requestErrors[0]?.error ?? parseErrors[0]?.parse_error ?? null,
   };
 }
 
@@ -208,6 +225,7 @@ export async function runBenchmark(style) {
   const cases = limit > 0 ? sourceCases.slice(0, limit) : sourceCases;
   const runs = [];
 
+  console.log(`\nMemory benchmark: style=${style} endpoint=${endpoint} model=${model} cases=${cases.length}`);
   for (const mode of modes) {
     const rows = [];
     for (const testCase of cases) {
@@ -236,7 +254,8 @@ export async function runBenchmark(style) {
           parse_error: null, error: error.message, score: null, metrics: null });
       }
       const last = rows.at(-1);
-      console.log(`${style}/${mode} ${testCase.id}: ${last.json_valid ? "ok" : "ERR"} ${last.metrics?.total_latency_ms ?? "-"}ms`);
+      const detail = last.error ? ` request=${last.error}` : last.parse_error ? ` parse=${last.parse_error}` : "";
+      console.log(`${style}/${mode} ${testCase.id}: ${last.json_valid ? "ok" : "ERR"} ${last.metrics?.total_latency_ms ?? "-"}ms${detail}`);
     }
     runs.push({ style, mode, summary: aggregate(rows), rows });
   }
