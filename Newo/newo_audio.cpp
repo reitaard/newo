@@ -8,6 +8,7 @@
 #include "newo_log.h"
 #include "newo_memory_diagnostics.h"
 #include "newo_pcm_ring.h"
+#include "newo_wake_earcon.h"
 #include "newo_webrtc.h"
 
 #if __has_include("newo_secrets.h")
@@ -23,18 +24,26 @@ struct VoiceCaptureContext {
   NewoPcmFrameRing* ring = nullptr;
   portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
   volatile bool stop = false;
+  // started means the producer has successfully read a complete microphone
+  // frame. retainFrames is the wake-cue gate: while false, frames are consumed
+  // from I2S but never enter the ASR/preroll ring.
   volatile bool started = false;
+  volatile bool retainFrames = true;
+  volatile bool firstKept = false;
   volatile bool finished = false;
   const char* volatile error = nullptr;
   volatile uint32_t startedMs = 0;
+  volatile uint32_t gateOpenedMs = 0;
+  volatile uint32_t firstKeptMs = 0;
 };
 
 // This producer deliberately does only microphone capture and bounded storage.
 // It never performs DSP or networking, so neither TLS nor NS setup can create a
-// hole at the beginning of an utterance.
+// hole at the beginning of an utterance. For a wake-word turn the producer is
+// primed before the earcon, but retention stays gated until the earcon and its
+// acoustic tail are completely finished.
 void voiceCaptureTaskEntry(void* parameter) {
   auto* capture = static_cast<VoiceCaptureContext*>(parameter);
-  const uint32_t captureAttemptMs = millis();
   int16_t stereo[NewoConfig::AUDIO_SAMPLES_PER_FRAME * 2];
   int16_t mono[NewoConfig::AUDIO_SAMPLES_PER_FRAME];
 
@@ -47,16 +56,21 @@ void voiceCaptureTaskEntry(void* parameter) {
       mono[i] = stereo[i * 2 + (NewoConfig::AUDIO_I2S_MIC_IS_LEFT ? 0 : 1)];
     }
 
-    portENTER_CRITICAL(&capture->mux);
-    capture->ring->push(mono);
-    portEXIT_CRITICAL(&capture->mux);
-
-    // Signal readiness only after the first complete PCM frame is safely in the
-    // ring. The network consumer cannot start TLS before this point.
+    const uint32_t frameReadyMs = millis();
     if (!capture->started) {
-      capture->startedMs = captureAttemptMs;
+      capture->startedMs = frameReadyMs;
       capture->started = true;
     }
+
+    portENTER_CRITICAL(&capture->mux);
+    if (capture->retainFrames) {
+      capture->ring->push(mono);
+      if (!capture->firstKept) {
+        capture->firstKeptMs = frameReadyMs;
+        capture->firstKept = true;
+      }
+    }
+    portEXIT_CRITICAL(&capture->mux);
   }
 
   capture->finished = true;
@@ -86,10 +100,17 @@ void NewoAudio::begin() {
 
 bool NewoAudio::configureI2s() {
   if (i2sRunning_) return true;
+  // Pin microphone RX to I2S0. The local wake earcon uses I2S1 so its physical
+  // TX can run while the microphone producer is already primed on RX.
+  if (!i2s_.setPort(I2S_NUM_0)) {
+    NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::AUDIO,
+                 "VOICE_I2S_FAILED", "reason=set_port");
+    return false;
+  }
   i2s_.setPins(NewoConfig::AUDIO_I2S_BCLK_PIN, NewoConfig::AUDIO_I2S_WS_PIN, -1,
                NewoConfig::AUDIO_I2S_SD_PIN);
-  // ESP_SR accepts PCM16. The Arduino supplied RX transform converts the
-  // INMP441's 32-bit I2S slots once, before either WakeNet or streaming sees it.
+  // The Arduino supplied RX transform converts the INMP441's 32-bit I2S slots
+  // once, before either Alfred or streaming sees PCM16.
   if (!i2s_.begin(I2S_MODE_STD, NewoConfig::AUDIO_SAMPLE_RATE, I2S_DATA_BIT_WIDTH_32BIT,
                   I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_LEFT) ||
       !i2s_.configureRX(NewoConfig::AUDIO_SAMPLE_RATE, I2S_DATA_BIT_WIDTH_32BIT,
@@ -113,7 +134,7 @@ bool NewoAudio::startWakeNet() {
   if (!enabled_ || playbackSuppressed_ || wakeNetRunning_) return wakeNetRunning_;
   if (!configureI2s()) return false;
   // Streaming shortens the read timeout so its producer can be joined quickly.
-  // Restore Arduino Stream's normal 1 s timeout before handing I2S to WakeNet.
+  // Restore Arduino Stream's normal 1 s timeout before handing I2S to Alfred.
   i2s_.setTimeout(1'000);
   NewoMemoryDiagnostics::log("BEFORE_WAKENET_START");
   const bool started = wakeEngine_.start(i2s_, srEvent);
@@ -131,8 +152,8 @@ bool NewoAudio::startWakeNet() {
 
 void NewoAudio::stopWakeNet() {
   if (!wakeNetRunning_) return;
-  // end waits for ESP_SR feed/detect tasks to stop, so I2S is not concurrently
-  // read when the streaming capture task is created.
+  // stop waits for the Alfred inference/feed task to release I2S before direct
+  // streaming capture is created.
   wakeEngine_.stop();
   NewoMemoryDiagnostics::log("AFTER_WAKENET_STOP");
   wakeNetRunning_ = false;
@@ -151,7 +172,7 @@ bool NewoAudio::setPlaybackActive(bool active) {
   playbackSuppressed_ = false;
   if (awaitingAssistantCompletion_) {
     // One assistant turn may contain a progress acknowledgement followed by
-    // the real answer. Keep WakeNet released between physical speaker clips;
+    // the real answer. Keep Alfred released between physical speaker clips;
     // the server's assistant_state=idle event is the terminal boundary.
   } else if (enabled_ && state_ != NewoVoiceState::STREAMING) {
     state_ = NewoVoiceState::ARMED;
@@ -227,8 +248,8 @@ bool NewoAudio::beginStreaming(bool rearmAfterStream) {
 #else
   if (state_ == NewoVoiceState::STREAMING || streamTask_ || playbackSuppressed_) return false;
   if (rearmAfterStream && (!enabled_ || state_ != NewoVoiceState::ARMED)) return false;
-  // A future WakeNet event and a manual request share this stream session.
-  // StopWakeNet also releases its I2S ownership before direct capture begins.
+  // A future Alfred event and a manual request share this stream session.
+  // stopWakeNet also releases its I2S ownership before direct capture begins.
   stopWakeNet();
   if (!configureI2s()) { ++failures_; return false; }
   rearmAfterStream_ = rearmAfterStream;
@@ -265,7 +286,7 @@ bool NewoAudio::manualToggle() {
     NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO, "VOICE_MANUAL_BUSY", "speaker_playback");
     return false;
   }
-  // ARMED is preserved for future WakeNet work, but a manual turn takes the
+  // ARMED is preserved for future local-wake work, but a manual turn takes the
   // microphone directly and always settles back to OFF.
   return beginStreaming(false);
 }
@@ -302,6 +323,10 @@ void NewoAudio::streamTask() {
     return;
   }
 
+  // Only a local wake-word turn gets the cue. Manual /v and physical triggers
+  // retain microphone frames immediately, exactly as before.
+  const bool wakeCueTurn = rearmAfterStream_;
+
   int16_t* captureStorage = static_cast<int16_t*>(heap_caps_malloc(
       NewoConfig::VOICE_CAPTURE_BUFFER_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   int16_t* rawBatch = static_cast<int16_t*>(heap_caps_malloc(
@@ -326,6 +351,8 @@ void NewoAudio::streamTask() {
   VoiceCaptureContext capture;
   capture.i2s = &i2s_;
   capture.ring = &ring;
+  capture.retainFrames = !wakeCueTurn;
+  if (!wakeCueTurn) capture.gateOpenedMs = millis();
   if (xTaskCreatePinnedToCoreWithCaps(
           voiceCaptureTaskEntry, "newo-voice-rx", NewoConfig::VOICE_CAPTURE_TASK_STACK_BYTES,
           &capture, 3, nullptr, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
@@ -341,10 +368,45 @@ void NewoAudio::streamTask() {
     return;
   }
 
-  // Do not initialize DSP or start TLS until one complete microphone frame is
-  // already retained. Speech can begin immediately after the trigger.
+  // Prime the microphone producer before giving the user any audible signal.
+  // The wake cue is played only after one complete RX frame proves capture is
+  // alive; while the cue plays, RX continues but those frames are discarded.
   while (!capture.started && !capture.finished) vTaskDelay(pdMS_TO_TICKS(1));
   if (capture.finished && capture.error) streamEndReason_ = capture.error;
+
+  if (!streamEndReason_ && wakeCueTurn) {
+    char primed[80];
+    snprintf(primed, sizeof(primed), "after_stream_ms=%lu",
+             static_cast<unsigned long>(capture.startedMs - streamStartedMs_));
+    NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO,
+                 "WAKE_CAPTURE_PRIMED", primed);
+
+    const bool cuePlayed = newoPlayWakeEarcon();
+    portENTER_CRITICAL(&capture.mux);
+    capture.gateOpenedMs = millis();
+    capture.retainFrames = true;
+    portEXIT_CRITICAL(&capture.mux);
+
+    char gate[112];
+    snprintf(gate, sizeof(gate), "cue_played=%s after_stream_ms=%lu",
+             cuePlayed ? "yes" : "no",
+             static_cast<unsigned long>(capture.gateOpenedMs - streamStartedMs_));
+    NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO,
+                 "WAKE_CAPTURE_GATE_OPEN", gate);
+  }
+
+  // As with the previous preroll design, no DSP or TLS work is allowed to start
+  // until at least one frame that is eligible for ASR is safely in the ring.
+  while (!capture.firstKept && !capture.finished) vTaskDelay(pdMS_TO_TICKS(1));
+  if (capture.finished && capture.error) streamEndReason_ = capture.error;
+  if (!streamEndReason_ && wakeCueTurn) {
+    char kept[112];
+    snprintf(kept, sizeof(kept), "gate_to_pcm_ms=%lu after_stream_ms=%lu",
+             static_cast<unsigned long>(capture.firstKeptMs - capture.gateOpenedMs),
+             static_cast<unsigned long>(capture.firstKeptMs - streamStartedMs_));
+    NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO,
+                 "WAKE_FIRST_PCM_KEPT", kept);
+  }
 
   NewoWebRtcHandle* voiceDsp = nullptr;
   if (!streamEndReason_ && micMode_ == MicMode::NS) {
@@ -422,7 +484,7 @@ void NewoAudio::streamTask() {
       bufferedFrames = ring.size();
       overwrittenFrames = ring.overwrittenFrames();
       portEXIT_CRITICAL(&capture.mux);
-      const uint32_t captureStartMs = static_cast<uint32_t>(capture.startedMs - streamStartedMs_);
+      const uint32_t captureStartMs = static_cast<uint32_t>(capture.firstKeptMs - streamStartedMs_);
       char detail[208];
       snprintf(detail, sizeof(detail),
                "connect_ms=%lu capture_start_ms=%lu buffered_frames=%lu buffered_ms=%lu overwritten_frames=%lu ring_ms=%lu psram=yes",
