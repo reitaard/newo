@@ -39,8 +39,6 @@ uint32_t nanoLedHandshake = 0;
 uint32_t nanoLedRetryAfterMs = 0;
 uint32_t nanoLedErrorUntilMs = 0;
 NewoPhysicalVoice::TriggerGate physicalTriggerGate;
-bool wakeNetCloudRearmPending = false;
-uint32_t wakeNetCloudReleasedAtMs = 0;
 
 void serviceNanoLed() {
   if (!newoArduinoNode.ready()) return;
@@ -156,21 +154,11 @@ void loop() {
   newoWiFi.loop();
   newoPortal.loop();
   newoCloud.loop();
-  if (wakeNetCloudRearmPending &&
-      static_cast<int32_t>(millis() - wakeNetCloudReleasedAtMs) >=
-          static_cast<int32_t>(NewoConfig::WAKENET_REARM_CLOUD_RELEASE_MS)) {
-    newoAudio.completeAssistantTurn();
-    newoCloud.resumeAfterWakeNetRearm();
-    wakeNetCloudRearmPending = false;
-  }
   if (newoCloud.consumeAssistantTurnTerminal()) {
-    if (newoAudio.wakeNetRearmPending() && !wakeNetCloudRearmPending) {
-      newoCloud.releaseForWakeNetRearm();
-      wakeNetCloudReleasedAtMs = millis();
-      wakeNetCloudRearmPending = true;
-    } else if (!wakeNetCloudRearmPending) {
-      newoAudio.completeAssistantTurn();
-    }
+    const bool rearmingAlfred = newoAudio.wakeNetRearmPending();
+    if (rearmingAlfred) NewoMemoryDiagnostics::log("BEFORE_ALFRED_REARM_CLOUD_KEPT");
+    newoAudio.completeAssistantTurn();
+    if (rearmingAlfred) NewoMemoryDiagnostics::log("AFTER_ALFRED_REARM_CLOUD_KEPT");
   }
   if (newoStorage.usbTrialPending()) {
     if (newoCloud.ready()) {
@@ -267,10 +255,8 @@ void loop() {
       applied = newoSpeaker.setMuted(!newoSpeaker.muted());
     } else if (speakerControlRequest.action == NewoCloud::SpeakerControlRequest::Action::SET_ENABLED) {
       applied = newoSpeaker.setEnabled(speakerControlRequest.enabled);
-      // Enabling means playback is permitted. While WakeNet owns the scarce
-      // internal heap, the speaker TLS connection is intentionally deferred
-      // until the voice turn releases it; that deferred state is already a
-      // fully-applied control change and must not force a futile boot retry.
+      // Enabling means playback is permitted. While the wake detector owns the
+      // internal heap, speaker TLS is deferred until the voice turn releases it.
       const bool connectionDeferred = speakerControlRequest.enabled && !newoAudio.speakerConnectionAllowed();
       const bool complete = speakerControlRequest.enabled ? (newoSpeaker.ready() || connectionDeferred) : newoSpeaker.released();
       speakerStateConfirmed = applied && complete;

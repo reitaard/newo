@@ -59,6 +59,9 @@ jobs:
           arduino-cli lib install "Adafruit ST7735 and ST7789 Library@1.11.0"
           arduino-cli lib install "esp32_opus@1.0.3"
 
+      - name: Prepare Alfred microWakeWord frontend
+        run: bash Newo/prepare_alfred_mww.sh
+
       - name: Replace stock ESP32-S3 USB archive with proven 2048-byte-control build
         run: |
           set -euo pipefail
