@@ -24,7 +24,9 @@ constexpr uint8_t kModeChime = 2;
 constexpr uint8_t kModeSweep = 3;
 constexpr uint8_t kModeTick = 4;
 constexpr uint32_t kSampleRate = NewoConfig::SPEAKER_SAMPLE_RATE;
-constexpr uint32_t kAcousticGuardMs = 25;
+// No silent post-cue guard: once the physical TX tail is drained the capture
+// gate opens immediately. The tone itself has a fade-out to avoid a hard edge.
+constexpr uint32_t kAcousticGuardMs = 0;
 constexpr float kTwoPi = 6.2831853071795864769f;
 constexpr int32_t kBaseAmplitude = 6000;
 constexpr size_t kChunkFrames = 128;
@@ -79,7 +81,7 @@ bool parseMode(const char* value, uint8_t& mode) {
 
 float fadeEnvelope(uint32_t localFrame, uint32_t segmentFrames) {
   if (segmentFrames <= 1) return 0.0f;
-  const uint32_t fadeFrames = kSampleRate * 5 / 1000;  // 5 ms click-free edge.
+  const uint32_t fadeFrames = kSampleRate * 8 / 1000;  // soft 8 ms edge.
   const float attack = localFrame >= fadeFrames ? 1.0f :
       static_cast<float>(localFrame) / static_cast<float>(fadeFrames);
   const uint32_t remaining = segmentFrames - 1 - localFrame;
@@ -249,10 +251,7 @@ bool newoPlayWakeEarcon() {
     return false;
   }
 
-  // Do not let the acknowledgement itself leak into retained request audio.
-  // The microphone producer is already alive, but its retention gate remains
-  // closed until this short acoustic tail has passed.
-  vTaskDelay(pdMS_TO_TICKS(kAcousticGuardMs));
+  if (kAcousticGuardMs) vTaskDelay(pdMS_TO_TICKS(kAcousticGuardMs));
   char endDetail[96];
   snprintf(endDetail, sizeof(endDetail), "mode=%s total_ms=%lu drain_ms=%lu guard_ms=%lu",
            modeName(shape.mode), static_cast<unsigned long>(millis() - startedMs),
