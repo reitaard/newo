@@ -3,7 +3,7 @@
   "reference_now": "2026-09-20T17:00:00+07:00",
   "cases": [
     {"id":"preference_tea","category":"preference","input":"I prefer tea without sugar.","expected":[{"terms":["prefer","tea","without sugar"],"type":"preference","event_at":null}]},
-    {"id":"preference_negative","category":"preference","input":"I really don't like red chillies.","expected":[{"terms":["don t like","red chillies"],"type":"preference","event_at":null}]},
+    {"id":"preference_negative","category":"preference","input":"I really don't like red chillies.","expected":[{"alternatives":[["don t like","red chillies"],["dislike","red chillies"]],"type":"preference","event_at":null}]},
     {"id":"personal_name","category":"fact","input":"My name is Maya Chen.","expected":[{"terms":["maya chen"],"type":"fact","event_at":null}]},
     {"id":"relationship_sister","category":"relationship","input":"My sister Lena lives in Rome.","expected":[{"terms":["sister","lena","rome"],"type":"relationship","event_at":null}]},
     {"id":"device_location","category":"device","input":"The camera node is mounted beside the window.","expected":[{"terms":["camera node","beside","window"],"type":"device","event_at":null}]},
