@@ -52,7 +52,7 @@ class NewoAudio {
   bool voiceConnected() const { return voiceConnected_; }
   // True from the first ASR-eligible PCM frame onward. Unlike voiceConnected(),
   // this is entirely local and is the authoritative "you may speak now" signal.
-  bool listeningReady() const;
+  bool listeningReady() const { return display_.listeningActive(); }
   uint32_t failures() const { return failures_; }
   uint32_t timeouts() const { return timeouts_; }
   bool transitionPending() const { return transitionPending_; }
