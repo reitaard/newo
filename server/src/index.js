@@ -11,7 +11,7 @@ import { createAssistantRuntime } from "./assistant.js";
 import { createAssistantWebTools, readAgentToolsToken } from "./assistant-web-tools.js";
 import { createStructuredCapabilityRuntime } from "./assistant-capabilities.js";
 import { createCapabilityRouterClient } from "./capability-router.js";
-import { createAssistantProfiles, normalizeProfileTuning, PROFILE_TUNING_PRESETS, QWEN_PROFILE_ID, resolveAssistantProfile } from "./assistant-profiles.js";
+import { createAssistantProfiles, GEMMA_PROFILE_ID, LFM_PROFILE_ID, normalizeProfileTuning, PROFILE_TUNING_PRESETS, QWEN_PROFILE_ID, resolveAssistantProfile } from "./assistant-profiles.js";
 import { createAssistantTurnRuntime } from "./assistant-turn.js";
 import { createRuntimeStateStore } from "./runtime-state.js";
 import { createSpeakerRuntime, startTelegramAndSpeech } from "./tts.js";
@@ -80,7 +80,7 @@ const EnvSchema = z.object({
   SPEAKER_VOICEPRINT_DIRECTORY: z.preprocess(emptyToUndefined, z.string().default("data/voiceprints")),
   ASSISTANT_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
   ASSISTANT_PROFILE: z.preprocess(emptyToUndefined, z.string().default("qwen")),
-  ASSISTANT_PROVIDER: z.preprocess(emptyToUndefined, z.enum(["openai_chat", "ollama_raw"]).default("openai_chat")),
+  ASSISTANT_PROVIDER: z.preprocess(emptyToUndefined, z.enum(["openai_chat", "ollama_raw", "ollama_chat"]).default("openai_chat")),
   ASSISTANT_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   ASSISTANT_MODEL: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   ASSISTANT_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
@@ -244,7 +244,9 @@ const speakerRuntime = createSpeakerRuntime({
 const assistantRuntime = createAssistantRuntime({
   enabled: env.ASSISTANT_ENABLED,
   profiles: assistantProfiles,
-  preferredProfile: resolveAssistantProfile(runtimeState.assistantProfile, assistantProfiles) ?? configuredAssistantProfile,
+  preferredProfile: (resolveAssistantProfile(runtimeState.assistantProfile, assistantProfiles) === LFM_PROFILE_ID && configuredAssistantProfile === GEMMA_PROFILE_ID)
+    ? GEMMA_PROFILE_ID
+    : resolveAssistantProfile(runtimeState.assistantProfile, assistantProfiles) ?? configuredAssistantProfile,
   timeZone: env.ASSISTANT_TIME_ZONE,
   runtimeContext: ({ deviceId }) => {
     const device = devices.get(deviceId);
@@ -587,7 +589,7 @@ const TELEGRAM_COMMANDS = [
   { command: "voice", description: "Toggle voice" },
   { command: "vs", description: "Voice status" },
   { command: "profile", description: "Assistant profile status" },
-  { command: "profile_lfm", description: "Use LFM assistant" },
+  { command: "profile_gemma", description: "Use Gemma assistant" },
   { command: "profile_qwen", description: "Use Qwen assistant" },
   { command: "speaker", description: "Toggle speaker" },
   { command: "volume", description: "Set speaker volume" },
@@ -933,8 +935,12 @@ const primaryModeHandlers = createPrimaryModeHandlers({
     const id = assistantRuntime.getTelemetry().preferred_profile;
     const nextOverrides = { ...assistantProfileOverrides };
     if (preset === "reset" || preset === "balanced") delete nextOverrides[id];
-    else if (PROFILE_TUNING_PRESETS[preset]) nextOverrides[id] = PROFILE_TUNING_PRESETS[preset];
-    else throw new Error("invalid profile tuning preset");
+    else if (PROFILE_TUNING_PRESETS[preset]) {
+      const basePreset = PROFILE_TUNING_PRESETS[preset];
+      nextOverrides[id] = id === GEMMA_PROFILE_ID
+        ? { ...basePreset, think_mode: preset === "fast" ? "off" : "on" }
+        : basePreset;
+    } else throw new Error("invalid profile tuning preset");
     const profiles = createAssistantProfiles({ qwenApiKey: env.ASSISTANT_API_KEY, overrides: nextOverrides });
     await runtimeState.setAssistantProfileOverrides(nextOverrides);
     assistantProfileOverrides = nextOverrides;
@@ -943,9 +949,12 @@ const primaryModeHandlers = createPrimaryModeHandlers({
   },
   setAssistantTuningValue: async (key, value) => {
     const id = assistantRuntime.getTelemetry().preferred_profile;
-    const canonical = { topk: "top_k", topp: "top_p", maxtoken: "max_tokens", maxchars: "max_chars", timeout: "timeout_ms", rpenalty: "repeat_penalty", temp: "temperature" }[key];
-    const tuning = normalizeProfileTuning({ [canonical]: Number(value) });
-    if (!canonical || !Object.hasOwn(tuning, canonical)) throw new Error("invalid profile tuning value");
+    const canonical = { topk: "top_k", topp: "top_p", maxtoken: "max_tokens", maxchars: "max_chars", timeout: "timeout_ms", rpenalty: "repeat_penalty", temp: "temperature", think: "think_mode" }[key];
+    if (!canonical) throw new Error("invalid profile tuning value");
+    if (canonical === "think_mode" && id !== GEMMA_PROFILE_ID) throw new Error("thinking control is only available for Gemma");
+    const parsedValue = canonical === "think_mode" ? String(value).trim().toLowerCase() : Number(value);
+    const tuning = normalizeProfileTuning({ [canonical]: parsedValue });
+    if (!Object.hasOwn(tuning, canonical)) throw new Error("invalid profile tuning value");
     const nextOverrides = { ...assistantProfileOverrides, [id]: { ...(assistantProfileOverrides[id] ?? {}), ...tuning } };
     const profiles = createAssistantProfiles({ qwenApiKey: env.ASSISTANT_API_KEY, overrides: nextOverrides });
     await runtimeState.setAssistantProfileOverrides(nextOverrides);
@@ -1040,6 +1049,8 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command("owner_status", primaryModeHandlers.ownerStatus);
   bot.command("owner_cancel", primaryModeHandlers.ownerCancel);
   bot.command(["profile", "p"], (ctx) => primaryModeHandlers.profile(ctx));
+  bot.command(["profile_gemma", "p_gemma"], (ctx) => primaryModeHandlers.profile(ctx, "gemma"));
+  // Hidden compatibility command during migration; it is not advertised in the Telegram menu.
   bot.command(["profile_lfm", "p_lfm"], (ctx) => primaryModeHandlers.profile(ctx, "lfm"));
   bot.command(["profile_qwen", "p_qwen"], (ctx) => primaryModeHandlers.profile(ctx, "qwen"));
   bot.command(["profile_tune", "pt"], (ctx) => primaryModeHandlers.profileTune(ctx));

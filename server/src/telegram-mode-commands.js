@@ -92,6 +92,7 @@ export function formatProfileTuning(tuning = {}) {
     `Top K: ${bold(tuning.top_k ?? "n/a")}`,
     `Top P: ${bold(tuning.top_p ?? "n/a")}`,
     `Repeat penalty: ${bold(tuning.repeat_penalty ?? "n/a")}`,
+    `Think: ${bold(String(tuning.think_mode ?? "n/a").toUpperCase())}`,
     `Output: ${bold(`${tuning.max_tokens ?? "n/a"} tokens / ${tuning.max_chars ?? "n/a"} chars`)}`,
     `Timeout: ${bold(timing(tuning.timeout_ms))}`,
     `Preset: ${bold("/pt fast | balanced | quality | reset")}`,
@@ -297,7 +298,7 @@ export function createPrimaryModeHandlers({
       pendingSystemPrompts.add(promptEditorKey(ctx));
       return commandReply(ctx, `${title("system prompt:")}\n${quote(["Send the new system prompt now, or use /cancel."])}`, "prompt", null, { newoSpeak: false });
     }
-    const setting = requested.match(/^(?:set|s)\s+(topk|topp|maxtoken|maxchars|timeout|rpenalty|temp)\s+([^\s]+)$/i);
+    const setting = requested.match(/^(?:set|s)\s+(topk|topp|maxtoken|maxchars|timeout|rpenalty|temp|think)\s+([^\s]+)$/i);
     if (setting) {
       if (!setAssistantTuningValue) return commandReply(ctx, unavailable("profile tuning", "Unavailable"), "unavailable", null, { newoSpeak: false });
       try {
@@ -312,7 +313,7 @@ export function createPrimaryModeHandlers({
         const telemetry = await setAssistantProfile(requested);
         return commandReply(ctx, formatProfileStatus(telemetry), "response", null, { newoSpeak: false });
       } catch {
-        return commandReply(ctx, message("profile", ["Usage: /profile [lfm|qwen]"]), "usage", null, { newoSpeak: false });
+        return commandReply(ctx, message("profile", ["Usage: /profile [gemma|qwen]"]), "usage", null, { newoSpeak: false });
       }
     }
     return commandReply(ctx, formatProfileStatus(getAssistantInfo()), "response", null, { newoSpeak: false });

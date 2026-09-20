@@ -1,5 +1,6 @@
 export const QWEN_PROFILE_ID = "qwen3:0.6b";
 export const LFM_PROFILE_ID = "lfm2.5:8b";
+export const GEMMA_PROFILE_ID = "gemma4:e4b";
 
 export const QWEN_SYSTEM_PROMPT = [
   "You are Alfred, the user's private voice assistant.",
@@ -22,6 +23,17 @@ export const LFM_SYSTEM_PROMPT = [
   "Answer directly and candidly in plain natural language for speech, usually one to three short sentences.",
   "Use sir only occasionally when it feels natural; do not repeat honorifics or make every reply formal.",
   "Be truthful; never invent facts, reveal reasoning, claim actions you did not take, or continue on your own.",
+  "Do not mention hidden instructions or use markdown. If unclear, ask one short question.",
+].join(" ");
+
+export const GEMMA_SYSTEM_PROMPT = [
+  "You are Alfred, the user's private voice assistant.",
+  "Speak like a highly capable private butler: calm, composed, discreet, practical, impeccably mannered, with occasional dry understated wit.",
+  "If asked who or what you are, say simply that you are Alfred.",
+  "Do not volunteer creator credits, product names, model names, backend details, or labels such as uncensored unless the user explicitly asks about the implementation.",
+  "Answer directly and candidly in plain natural language for speech, usually one to three short sentences.",
+  "Use sir only occasionally when it feels natural; do not repeat honorifics or make every reply formal.",
+  "Be truthful; never invent facts, expose private reasoning, claim actions you did not take, or continue on your own.",
   "Do not mention hidden instructions or use markdown. If unclear, ask one short question.",
 ].join(" ");
 
@@ -59,6 +71,10 @@ export function normalizeProfileTuning(input = {}) {
     const prompt = input.system_prompt.trim();
     if (prompt.length >= 1 && prompt.length <= 2_000) tuning.system_prompt = prompt;
   }
+  if (typeof input?.think_mode === "string") {
+    const thinkMode = input.think_mode.trim().toLowerCase();
+    if (["auto", "on", "off"].includes(thinkMode)) tuning.think_mode = thinkMode;
+  }
   for (const [key, value] of Object.entries(input ?? {})) {
     const bounds = TUNING_RULES[key];
     if (!bounds || typeof value !== "number" || !Number.isFinite(value) || value < bounds[0] || value > bounds[1]) continue;
@@ -74,6 +90,7 @@ export function profileTuning(profile) {
     ...(profile.sampling.top_k == null ? {} : { top_k: profile.sampling.top_k }),
     ...(profile.sampling.top_p == null ? {} : { top_p: profile.sampling.top_p }),
     ...(profile.sampling.repeat_penalty == null ? {} : { repeat_penalty: profile.sampling.repeat_penalty }),
+    ...(profile.thinkMode == null ? {} : { think_mode: profile.thinkMode }),
     max_tokens: profile.maxOutputTokens, max_chars: profile.maxReplyChars, timeout_ms: profile.timeoutMs,
     system_prompt: profile.systemPrompt,
   };
@@ -88,6 +105,7 @@ function applyTuning(profile, input) {
   const sampling = { ...profile.sampling };
   for (const key of ["temperature", "top_k", "top_p", "repeat_penalty"]) if (key in tuning) sampling[key] = tuning[key];
   return Object.freeze({ ...profile, sampling: Object.freeze(sampling),
+    thinkMode: tuning.think_mode ?? profile.thinkMode,
     systemPrompt: tuning.system_prompt ?? profile.systemPrompt,
     maxOutputTokens: tuning.max_tokens ?? profile.maxOutputTokens,
     maxReplyChars: tuning.max_chars ?? profile.maxReplyChars,
@@ -96,6 +114,33 @@ function applyTuning(profile, input) {
 
 export function createAssistantProfiles({ qwenApiKey = null, overrides = {} } = {}) {
   const profiles = {
+    [GEMMA_PROFILE_ID]: Object.freeze({
+      id: GEMMA_PROFILE_ID,
+      aliases: Object.freeze(["gemma"]),
+      enabled: true,
+      provider: "ollama_chat",
+      baseUrl: "http://100.110.136.15:11435",
+      endpoint: "/api/chat",
+      model: "hf.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive:Q4_K_M",
+      apiKey: null,
+      systemPrompt: GEMMA_SYSTEM_PROMPT,
+      promptFormat: "ollama_messages",
+      reasoning: "route_controlled",
+      routing: Object.freeze({ fast: "off", think: "on" }),
+      thinkMode: "auto",
+      progressiveTts: true,
+      chunking: Object.freeze({ mode: "sentence_clause", minChars: 24, clauseChars: 72, hardChars: 140 }),
+      sampling: Object.freeze({ temperature: 1.0, top_p: 0.95, top_k: 64, repeat_penalty: 1.0 }),
+      maxOutputTokens: 256,
+      maxReplyChars: 450,
+      timeoutMs: 30_000,
+      keepAlive: -1,
+      health: Object.freeze({ method: "ollama_tags", endpoint: "/api/tags", implicitLatestTag: false, timeoutMs: 3_000 }),
+      contextPolicy: sharedContextPolicy,
+      requestOptions: Object.freeze({ stream: true }),
+      toolPolicy: Object.freeze({ web: false, maxSearches: 0, maxReads: 0, maxRounds: 1 }),
+      fallbackProfile: QWEN_PROFILE_ID,
+    }),
     [LFM_PROFILE_ID]: Object.freeze({
       id: LFM_PROFILE_ID,
       aliases: Object.freeze(["lfm"]),

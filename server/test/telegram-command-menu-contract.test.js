@@ -28,7 +28,7 @@ test("Telegram menu exposes core controls, semantic faces, and composed reaction
     "effect_none", "effect_question", "effect_exclamation", "effect_surprise", "effect_ellipsis", "effect_sweat", "effect_zzz",
     "caption_none", "caption_huh", "caption_woah", "caption_hmm", "caption_hey", "caption_wtf", "caption_tsk",
     "reaction", "reaction_none", "reaction_huh", "reaction_woah", "reaction_hmm", "reaction_hey", "reaction_wtf", "reaction_tsk",
-    "eco", "clock", "track", "track_bg", "voice", "profile", "profile_lfm", "profile_qwen", "speaker", "ping",
+    "eco", "clock", "track", "track_bg", "voice", "profile", "profile_gemma", "profile_qwen", "speaker", "ping",
   ]) {
     assert.ok(commands.some(({ command }) => command === required), `missing Telegram menu command: ${required}`);
   }
@@ -57,6 +57,7 @@ test("Telegram menu exposes core controls, semantic faces, and composed reaction
   assert.match(server, /for \(const effect of SECONDARY_EFFECTS\) bot\.command\(`effect_\$\{effect\}`/);
   assert.match(server, /for \(const caption of FACE_CAPTIONS\) bot\.command\(`caption_\$\{caption\}`/);
   assert.match(server, /bot\.command\(\["reaction", "rx"\], handleReactionCommand\)/);
+  assert.match(server, /bot\.command\(\["profile_gemma", "p_gemma"\]/);
   assert.match(server, /bot\.command\(\["profile_lfm", "p_lfm"\]/);
   assert.match(server, /bot\.command\(\["profile_qwen", "p_qwen"\]/);
   assert.match(server, /bot\s*=\s*new Bot\(env\.TELEGRAM_BOT_TOKEN\);\s*await bot\.init\(\);/);

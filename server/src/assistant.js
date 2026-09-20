@@ -3,6 +3,7 @@ import https from "node:https";
 
 import {
   createAssistantProfiles,
+  GEMMA_PROFILE_ID,
   LFM_PROFILE_ID,
   QWEN_PROFILE_ID,
   QWEN_SYSTEM_PROMPT,
@@ -340,6 +341,55 @@ async function readOllamaStream(response, {
     toolCallDetected };
 }
 
+function resolveOllamaThink(profile, routing) {
+  if (profile.thinkMode === "on") return true;
+  if (profile.thinkMode === "off") return false;
+  return routing?.route === "THINK";
+}
+
+async function readOllamaChatStream(response, { onFirstRawToken, onFirstSpeakableToken, onSpeakableText }) {
+  if (!response.body) throw assistantError("assistant_invalid_response");
+  const decoder = new TextDecoder();
+  let pending = "";
+  let answer = "";
+  let finalUsage = null;
+  let thinkingSeen = false;
+  const consume = (line) => {
+    if (!line.trim()) return;
+    let payload;
+    try { payload = JSON.parse(line); }
+    catch { throw assistantError("assistant_invalid_response"); }
+    if (payload.error) throw assistantError("assistant_request_failed", String(payload.error));
+    const thinking = payload?.message?.thinking;
+    const text = payload?.message?.content;
+    if (typeof thinking === "string" && thinking.length > 0) {
+      thinkingSeen = true;
+      onFirstRawToken();
+    }
+    if (typeof text === "string" && text.length > 0) {
+      onFirstRawToken();
+      if (/\S/.test(text)) onFirstSpeakableToken();
+      onSpeakableText?.(text);
+      answer += text;
+    }
+    if (payload.done) finalUsage = payload;
+  };
+  for await (const chunk of response.body) {
+    pending += decoder.decode(chunk, { stream: true });
+    const lines = pending.split(/\r?\n/);
+    pending = lines.pop() ?? "";
+    for (const line of lines) consume(line);
+  }
+  pending += decoder.decode();
+  if (pending.trim()) consume(pending);
+  return {
+    answer,
+    inputTokens: Number.isFinite(finalUsage?.prompt_eval_count) ? finalUsage.prompt_eval_count : null,
+    totalTokens: Number.isFinite(finalUsage?.eval_count) ? finalUsage.eval_count : null,
+    reasoningTokens: thinkingSeen ? null : 0,
+  };
+}
+
 async function readOpenAiStream(response, { onFirstRawToken, onFirstSpeakableToken, onSpeakableText }) {
   if (!response.body) throw assistantError("assistant_invalid_response");
   const decoder = new TextDecoder();
@@ -429,7 +479,7 @@ export function createAssistantRuntime({
   const profileMode = profiles != null || preferredProfile != null;
   let configuredProfiles = profiles ?? createAssistantProfiles({ qwenApiKey: apiKey });
   const requestedId = resolveAssistantProfile(preferredProfile, configuredProfiles) ??
-    (provider === "ollama_raw" ? LFM_PROFILE_ID : QWEN_PROFILE_ID);
+    (provider === "ollama_chat" ? GEMMA_PROFILE_ID : provider === "ollama_raw" ? LFM_PROFILE_ID : QWEN_PROFILE_ID);
 
   // Keep the original constructor contract for focused provider tests and older callers.
   if (!profileMode) {
@@ -504,9 +554,10 @@ export function createAssistantRuntime({
       const headers = profile.apiKey ? { authorization: `Bearer ${profile.apiKey}` } : undefined;
       const response = await requestImpl(endpointFor(profile, true), { headers, signal: controller.signal });
       const payload = response.ok ? await response.json() : null;
-      const models = profile.provider === "ollama_raw" ? payload?.models : payload?.data;
+      const ollamaProvider = profile.provider === "ollama_raw" || profile.provider === "ollama_chat";
+      const models = ollamaProvider ? payload?.models : payload?.data;
       const online = Array.isArray(models) && models.some((item) => {
-        const candidate = profile.provider === "ollama_raw" ? item?.name ?? item?.model : item?.id;
+        const candidate = ollamaProvider ? item?.name ?? item?.model : item?.id;
         return candidate === profile.model ||
           (profile.health.implicitLatestTag && !profile.model.includes(":") && candidate === `${profile.model}:latest`);
       });
@@ -639,6 +690,16 @@ export function createAssistantRuntime({
             ...profile.sampling,
             stop: ["<|im_end|>", "<|im_start|>"],
           },
+        } : profile.provider === "ollama_chat" ? {
+          model: profile.model,
+          messages,
+          think: resolveOllamaThink(profile, routing),
+          stream: profile.requestOptions.stream,
+          keep_alive: profile.keepAlive,
+          options: {
+            num_predict: profile.maxOutputTokens,
+            ...profile.sampling,
+          },
         } : {
           model: profile.model,
           messages,
@@ -651,7 +712,25 @@ export function createAssistantRuntime({
 
         let roundUsage = null;
         let toolCallDetected = false;
-        if (profile.provider === "ollama_raw") {
+        if (profile.provider === "ollama_chat") {
+          const streamed = await readOllamaChatStream(response, {
+            onFirstRawToken: () => {
+              roundFirstRawAt ??= performance.now();
+              firstRawTokenAt ??= roundFirstRawAt;
+            },
+            onFirstSpeakableToken: () => {
+              roundFirstSpeakableAt ??= performance.now();
+              if (firstTokenAt == null) {
+                firstTokenAt = roundFirstSpeakableAt;
+                onFirstToken?.();
+              }
+            },
+            onSpeakableText,
+          });
+          rawAnswer = streamed.answer;
+          roundUsage = { prompt_tokens: streamed.inputTokens, completion_tokens: streamed.totalTokens,
+            reasoning_tokens: streamed.reasoningTokens };
+        } else if (profile.provider === "ollama_raw") {
           const streamed = await readOllamaStream(response, {
             detectToolCalls: usableTools,
             toolNames: toolDefinitions.map((tool) => tool.name),
@@ -778,6 +857,8 @@ export function createAssistantRuntime({
         effective_profile: profile.id, fallback_active: profile.id !== preferredId,
         fallback_reason: profile.id !== preferredId ? fallbackReason : null,
         provider: profile.provider, model: profile.model, reasoning_route: routing.route,
+        think_mode: profile.thinkMode ?? null,
+        think_enabled: profile.provider === "ollama_chat" ? resolveOllamaThink(profile, routing) : null,
         routing_reasons: routing.reasons, activity: routing.activity,
         llm_rounds: round, llm_round_timings: roundTimings,
         tool_selected: [...(structuredContext ? [structured.tool] : []), ...toolEvents.map((event) => event.tool)],
@@ -965,7 +1046,9 @@ export function createAssistantRuntime({
       const decision = routeAssistantRequest({ ...input, context });
       const profile = profileById(effectiveId);
       return { ...decision, profileId: profile?.id ?? null,
-        reasoningMode: profile?.routing?.[decision.route.toLowerCase()] ?? profile?.reasoning ?? "model_default",
+        reasoningMode: profile?.provider === "ollama_chat"
+          ? (profile.thinkMode === "auto" ? (decision.route === "THINK" ? "on" : "off") : profile.thinkMode)
+          : profile?.routing?.[decision.route.toLowerCase()] ?? profile?.reasoning ?? "model_default",
         webTools: Boolean(webTools?.available && profile?.toolPolicy?.web) };
     },
     refreshHealth,
