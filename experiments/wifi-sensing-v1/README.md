@@ -1,150 +1,176 @@
 # Newo Wi-Fi CSI sensing experiment v1
 
-Status: Phase 1 protocol, isolated Newo receiver under [`newo-rx/`](./newo-rx/),
-and the Phase 3 GOOUUU ESP32-S3-CAM radio node under
-[`newo2-node/`](./newo2-node/), plus Phase 4 host capture/replay tooling under
-[`tools/`](./tools/). Nothing is integrated into production `Newo/`, the camera
-remains disabled, and no ESP has been flashed.
+Status: **physical hardware validation is active**. The standalone ESP-IDF targets under [`newo-rx/`](./newo-rx/) and [`newo2-node/`](./newo2-node/) have been exercised on the real Newo and Newo2 ESP32-S3 boards. Two router CSI paths and the Newo2→Newo ESP-NOW path have been observed simultaneously. Production `Newo/` firmware is still isolated from this experiment, the Newo2 camera remains disabled in the sensing target, and raw datasets remain outside Git.
 
-## Goal and boundaries
+See [`HARDWARE_VALIDATION_2026-09-10.md`](./HARDWARE_VALIDATION_2026-09-10.md) for measured rates, loss counters, geometry observations, and the first three-path ESP-NOW result.
 
-This experiment will collect raw 2.4 GHz Wi-Fi Channel State Information (CSI) from two ESP32-S3 devices in one fixed room:
+## Goal
+
+Use two fixed ESP32-S3 devices and an ordinary fixed 2.4 GHz router as a room-scale RF sensing system, with a practical end goal of **reliable learned gestures that can trigger Newo actions**.
+
+The experiment may also support later, separately validated research into presence, movement, direction, activity, respiration, and other RF features. Retaining CSI does not prove that a downstream task is feasible or accurate. Health, safety, identity, sleep-stage, or person-specific claims require their own validation and are not implied by this experiment.
+
+## Hardware
 
 - **Newo**: ESP32-S3, 16 MB flash, 8 MB PSRAM.
-- **Newo2**: GOOUUU ESP32-S3-CAM, 16 MB flash, 8 MB PSRAM, OV3660 camera, microSD.
-- **Router**: an ordinary, fixed 2.4 GHz home access point.
+- **Newo2**: GOOUUU ESP32-S3-CAM, ESP32-S3, 16 MB flash, 8 MB PSRAM, OV3660 camera and microSD available to production firmware but unused by the radio-only sensing target.
+- **Router**: ordinary fixed 2.4 GHz access point.
+- **Host collector**: receives versioned NCSI UDP records and stores exact raw datagrams with host monotonic timestamps.
 
-The retained measurements should support later, separately validated research into presence, movement, zone, direction, activity, person count, gait/identity, respiration, and pose. Retaining a signal does not establish that any of those outcomes are feasible or accurate.
-
-The experiment deliberately excludes pose models or claims, heart-rate claims, person-count heuristics, fall classification, WASM, Matter/Home Assistant, channel hopping, 5 GHz, ESP32-C6 features, NDP injection, mesh operation, and the wider RuView platform.
-
-## Physical and data architecture
+## Validated topology
 
 ```text
                          fixed 2.4 GHz router
                         /                    \
              ROUTER_NEWO                      ROUTER_NEWO2
                       /                        \
-                  Newo  <---- NEWO2_NEWO ---- Newo2 + OV3660
+                  Newo  <---- NEWO2_NEWO ---- Newo2
                     |                              |
                     +----- versioned NCSI records-+
                                       |
-                              bounded device queues
+                                host collector
                                       |
-                              host collector/storage
-                               /                  \
-                    session metadata          raw CSI archive
-                  (labels, camera IDs)       (radio facts only)
+                    session metadata + frames.ncsi
                                       |
-                        offline sanitation / phase / DSP
+                          offline geometry-aware DSP
+                                      |
+                         gesture/background studies
 ```
 
-Each receiver joins the router and stays on the connected access point's channel. No channel hopping is allowed in v1. Newo and Newo2 capture CSI in the Wi-Fi receive callback, verify the transmitter against an explicit MAC allowlist, sanitize invalid leading CSI bytes, rate-gate accepted frames, and enqueue fixed-size descriptors into a bounded ring. A non-callback task serializes and transports records to the host.
+All three paths were observed on the same associated AP channel:
 
-After every `GOT_IP`, a normal task (not the Wi-Fi event callback) refreshes the
-AP BSSID, primary/secondary channel, AP-derived filter, station identity,
-gateway, and self-ping session. CSI acceptance stays disabled until that
-association epoch is coherent, preventing stale BSSID/path attribution after a
-reassociation. ESP-NOW peer channel `0` continues to follow the STA channel.
-
-The callback must not allocate, block, perform DSP, write to storage, or send network packets. Ring-full and rate-gate losses are counted rather than hidden. Raw transport and DSP have separate clocks: retained raw records target **20 Hz per active path** initially and are configurable up to **50 Hz per path**; later DSP may consume a lower uniform cadence without changing or suppressing the raw archive. A faster callback arrival rate is expected and must be gated. This design never assumes 100 Hz is required.
-
-## Initial measurement paths
-
-| Path ID | Receiver | Required source identity | Intended traffic |
+| Path ID | Receiver | Source identity | Purpose |
 | --- | --- | --- | --- |
-| `ROUTER_NEWO` (`1`) | Newo | Router BSSID/source MAC | Router traffic, including controlled gateway replies |
-| `ROUTER_NEWO2` (`2`) | Newo2 | Router BSSID/source MAC | Router traffic, including controlled gateway replies |
-| `NEWO2_NEWO` (`3`) | Newo | Newo2 station MAC | Deliberate Newo2-to-Newo packets |
+| `ROUTER_NEWO` (`1`) | Newo | AP BSSID | Router traffic, including controlled gateway replies |
+| `ROUTER_NEWO2` (`2`) | Newo2 | AP BSSID | Router traffic, including controlled gateway replies |
+| `NEWO2_NEWO` (`3`) | Newo | configured Newo2 station MAC | deliberate ESP-NOW peer traffic |
 
-Path assignment is a host/configuration lookup over the tuple `(receiver_mac, source_mac)`. Router and Newo2 identity must come from observed/configured MAC addresses, never packet timing, RSSI, node proximity, or other inference. A frame with an unknown or disallowed source is not silently assigned a path.
+Path identity is based on explicit receiver/source MAC configuration, never inferred from timing, RSSI, proximity, or packet cadence.
 
-Gateway self-ping is the initial controlled OFDM traffic source for the two router paths: after association, a node discovers the gateway address and sends small ICMP echo requests at a configured cadence. The resulting router replies provide receive-side traffic. This does not prove that every accepted router frame is a ping reply, so the CSI record describes the observed source MAC and the session/control log describes when self-ping was enabled.
+## Measurement-plane rules
 
-`NEWO2_NEWO` needs an explicit, separately scheduled Newo2 transmitter in a firmware phase. It must use Newo2's configured station MAC and must not be inferred from ambient packets. `NEWO_NEWO2` is reserved for a later protocol revision/extension and is not an initial path.
+The firmware keeps the Wi-Fi callback small: validate metadata, classify the source, copy CSI into a bounded static ring, and return. Allocation, UDP transport, logging, DSP, and storage stay outside the callback.
 
-## Capture contract
+Raw CSI remains signed 8-bit complex I/Q in ESP-IDF imaginary-real byte order. When ESP-IDF reports `first_word_invalid`, only the invalid leading bytes are zeroed in place; payload length and subcarrier geometry are preserved.
 
-The future firmware implementation must:
+After every association, AP BSSID/channel/filter/gateway identity is refreshed before CSI acceptance resumes. ESP-NOW uses the station interface and follows the AP channel rather than hopping independently.
 
-1. Join the fixed 2.4 GHz router, query the associated AP channel, and remain on it.
-2. Configure ESP32-S3 CSI collection for the chosen legacy/HT LTFs and preserve the receive metadata needed to interpret buffer geometry.
-3. Copy the receiver identity and compare `wifi_csi_info_t.mac` with an explicit source-MAC allowlist before path assignment.
-4. If `first_word_invalid` is set, zero up to the first four invalid bytes in place, record the sanitized-byte count, and set both corresponding flags. Preserve the original payload length and I/Q positions; never feed the invalid values into DSP.
-5. Assign a node-local sequence number to every accepted post-filter, post-rate-gate CSI record. Sequence gaps therefore expose downstream queue/transport loss; callback and gate counters expose earlier loss.
-6. Timestamp accepted records from the local monotonic microsecond clock. Wall-clock labels belong to the host metadata, not the CSI callback.
-7. Copy raw signed 8-bit complex samples in ESP-IDF order: imaginary byte, then real byte. Do not convert to magnitude or phase in the raw record.
-8. Apply the cadence gate independently after source/path filtering for each active path, so unrelated traffic and one busy source cannot consume another path's budget. Gate retained raw records to 20 Hz per path by default, configurable from 1 through 50 Hz. Do not burst to catch up after delayed callbacks.
-9. Push into a fixed-capacity single-producer/single-consumer ring and increment `ring_full_drops` if no slot is available.
-10. Emit periodic `STATUS` records with packet-yield and CSI-only transport loss counters, plus separate versioned diagnostic records for per-path gate, STATUS transport, association, and ESP-NOW counters. Keep raw-record cadence independent of later DSP cadence.
+Every accepted CSI record carries receiver/source identity, path, sequence, local timestamp, RSSI, channel, receive metadata, CSI geometry, and loss-observable counters. Periodic STATUS and DIAGNOSTIC records expose queue, transport, association, per-path gating, and ESP-NOW probe behavior.
 
-See [PROTOCOL.md](./PROTOCOL.md) for the exact byte contract and host session schema.
+## Important hardware findings
 
-## Future DSP baseline
+The first physical validation changed several assumptions from the design-only phase:
 
-Offline processing should begin from the archived I/Q payload, grouped by session and path. Initial, testable building blocks are:
+- A single Router→Newo path produced roughly **24–26 qualifying observations/s** when the local AP-path minimum-spacing gate was bypassed.
+- The earlier lower retained rate was caused by software gate semantics, not ESP32-S3 processing capacity.
+- With both stations generating 20 Hz gateway traffic, the two router paths produced roughly **43–45 CSI frames/s each** in repeated five-minute busy-room captures.
+- The higher packet rate came from additional controlled traffic, so **packet count/cadence is not a movement feature**.
+- Both receivers sustained the tested load with **zero ring overflow**.
+- AP CSI was dominated by 612-byte geometry, with 376-byte frames and occasional 128/256-byte variants. Geometry classes must not be mixed blindly in DSP.
+- A 60 s ESP-NOW validation produced all three expected paths.
+- Newo2 queued 1,079 application probes and reported 1,079 link successes; Newo received 1,079 valid probes and zero invalid probes.
+- `NEWO2_NEWO` produced more CSI callbacks than validated application probes, so **peer CSI count is not one-to-one with probe count**. Probe delivery must be read from explicit probe diagnostics.
+- UDP transport loss is small but non-zero and remains visible through sequence/status counters.
 
-- derive amplitude and phase with `atan2(imag, real)`;
-- unwrap phase over time independently for each stable subcarrier/LTF geometry;
-- maintain numerically stable running mean and variance (for example, Welford statistics);
-- select top-K subcarriers by an explicitly documented quality/variance score;
-- reset or partition state when channel, bandwidth, PHY/LTF geometry, receiver, source, or session changes;
-- record actual input cadence and missing sequences instead of assuming uniform 100 Hz data.
+The detailed numbers and caveats are in [`HARDWARE_VALIDATION_2026-09-10.md`](./HARDWARE_VALIDATION_2026-09-10.md).
 
-Top-K selection is a feature-selection primitive, not evidence for person count, health measurements, identity, or pose.
+## Current local hardware-validation variant
 
-## Phase roadmap
+The repository reference implementation still contains the original independent per-path minimum-spacing gate. During physical validation, a **temporary local worktree edit** bypassed that gate for AP-originated Router→Newo/Router→Newo2 CSI while retaining the configured gate for the ESP-NOW peer path. This allowed measurement of the actual qualifying AP callback rate.
 
-1. **Phase 1 — protocol and experiment design (this directory):** freeze record v1, paths, metadata separation, diagnostics, scope, and attribution.
-2. **Phase 2 — isolated receiver firmware:** create experiment-only ESP32-S3 CSI capture targets for Newo and Newo2; add host-side serialization tests; do not merge into production `Newo/` firmware.
-3. **Phase 3 — third RF path:** add deliberate Newo2 ESP-NOW traffic for `NEWO2_NEWO` while both nodes remain associated with the AP.
-4. **Phase 4 — host collector (current):** validate and archive exact radio records, store session metadata separately, report rates/geometry/loss, and support deterministic replay and derived inspection exports.
-5. **Phase 5 — synchronization and calibration:** emit synchronization records, quantify cross-node clock offset/drift, and collect repeatable empty-room baselines before combining paths.
-6. **Phase 6 — offline DSP:** implement geometry-aware phase extraction/unwrapping, running statistics, top-K selection, and reproducible signal-quality reports.
-7. **Phase 7 — labeled feasibility studies:** evaluate one target at a time with held-out sessions and camera-derived labels where consented. Report negative results and uncertainty; make no health or safety claims.
+That local edit is evidence-gathering, not yet the final retention policy. Do not assume the checked-in source already contains the bypass.
 
-## Data and safety notes
+## Controlled traffic
 
-- CSI and camera-derived labels can reveal occupancy, behavior, or identity. Obtain consent, minimize retention, restrict access, and define deletion rules before captures involving people.
-- Wi-Fi credentials and secrets belong in untracked runtime provisioning, never source control or session metadata.
-- Camera media is not embedded in radio records. `camera_frame_id` is an optional host-side join key only.
-- Generated captures, binaries, build directories, and secret-bearing `sdkconfig` files must remain untracked.
-- No hardware was flashed or exercised in Phase 1.
+Each station can ping its DHCP gateway at a configured rate. The resulting AP replies provide ordinary receive-side traffic without router firmware changes. `CONTROL_TRAFFIC_ACTIVE` only says the generator was running; an individual AP CSI record is not asserted to be a particular ICMP reply.
 
-## Phase 2 build and configuration
+Newo2 can additionally transmit versioned ESP-NOW probes to Newo. The application probe scheduler, link callback, receive validator, and CSI callback are measured separately. This distinction matters because a single application probe schedule can correspond to more peer-originated Wi-Fi/CSI events than application payload receives.
 
-The standalone receiver is documented in [`newo-rx/README.md`](./newo-rx/README.md). It is tested against ESP-IDF v5.5.5 and can be built reproducibly with the official `espressif/idf:v5.5.5` Docker image. Configure Wi-Fi credentials and the collector through `idf.py menuconfig`; the generated `sdkconfig` and `build/` directory are ignored and must not be committed.
+See [`PROBE_PROTOCOL.md`](./PROBE_PROTOCOL.md).
 
-The normal workflow from `experiments/wifi-sensing-v1/newo-rx/` is:
+## Capture format
+
+The Python tooling under [`tools/`](./tools/) stores:
+
+```text
+datasets/<session_id>/
+  session.json
+  events.jsonl
+  frames.ncsi
+  summary.json
+```
+
+`frames.ncsi` is the canonical raw archive: exact validated NCSI datagrams wrapped with authoritative host monotonic and wall-clock receive timestamps. CSV export is derived inspection data only and must not replace the raw archive.
+
+See [`RECORDING.md`](./RECORDING.md) before human-labeled captures.
+
+## DSP direction
+
+Offline extraction should start conservatively:
+
+1. partition by path, receiver/source identity, channel, bandwidth, PHY/LTF metadata, and CSI length;
+2. derive amplitude and wrapped phase from raw I/Q;
+3. unwrap/filter only within stable geometry classes;
+4. measure short-window amplitude variance, phase change, motion energy, and cross-path agreement;
+5. retain actual cadence and sequence gaps instead of assuming uniform samples;
+6. first prove **still vs walking vs one repeated gesture**;
+7. use busy-room and overnight resting sessions as negative/background data;
+8. add gesture classes only after held-out repetitions remain separable.
+
+The target is a robust gesture trigger, not a packet-rate heuristic. Mean RSSI and packet count alone are insufficient.
+
+## Recording strategy
+
+A perfectly empty room is not required if the real environment cannot provide one. The baseline must instead be **honestly labeled and repeatable**. For example, a stationary occupied baseline with idle phones/laptops is valid background data when that reflects the deployment environment.
+
+For gesture development, prefer many short independently labeled repetitions over one long mixed session. Long natural-motion and overnight resting sessions are useful as negative/background data and false-trigger tests.
+
+The first planned overnight capture uses two people sleeping/resting naturally, Newo fixed on USB for serial logging, and Newo2 fixed separately on a power bank. This is background RF data, **not validated sleep-stage data**, and with two people the signal must not be assumed to identify which person moved.
+
+## Flashing boundary
+
+The standalone experiment uses its own ESP-IDF build artifacts and partition table, but the validated physical procedure deliberately preserved each device's production bootloader and production partition layout. Experiment binaries were flashed **app-only at `0x10000`** after the actual production layouts were read and backed up.
+
+Do not blindly use generated `@flash_args` on a production-configured board: it includes an experiment bootloader and experiment partition table. Verify the target's real partition map first. Never commit device backups, credentials, generated `sdkconfig`, raw captures, or binaries.
+
+## Roadmap
+
+1. **Protocol/design** — complete enough for hardware work.
+2. **Isolated receiver firmware** — physically validated.
+3. **Newo2 ESP-NOW third path** — physically validated at 20 Hz application schedule.
+4. **Host collector/replay** — physically validated on multi-minute captures.
+5. **Long background capture** — overnight two-person resting/background run.
+6. **Geometry-aware offline extraction** — next engineering focus.
+7. **Gesture feasibility** — still/walk/one-gesture first, then additional learned triggers.
+8. **Synchronization/calibration improvements** — add only where cross-node analysis requires them.
+9. **Production integration** — only after false-trigger behavior and resource cost are understood.
+
+## Privacy and safety
+
+CSI and labels can reveal occupancy or behavior. Obtain consent, minimize retention, keep raw datasets outside Git, and define deletion rules. Camera media is not embedded in NCSI records; optional camera labels must remain a separate consented data source.
+
+No result in this experiment is a medical measurement, safety detector, identity guarantee, or sleep-stage classifier.
+
+## Build targets
+
+Both experiment targets are tested with ESP-IDF v5.5.5 and the official `espressif/idf:v5.5.5` Docker image:
 
 ```sh
+cd newo-rx
+idf.py set-target esp32s3
+idf.py menuconfig
+idf.py build
+
+cd ../newo2-node
 idf.py set-target esp32s3
 idf.py menuconfig
 idf.py build
 ```
 
-The Docker commands, host protocol test, configuration fields, and future run/monitor expectations are in the receiver README. Phase 2 builds only; it does not authorize flashing.
+Secret-bearing `sdkconfig` and generated build outputs are ignored and must stay local.
 
-## Phase 3 ESP-NOW path
-
-Phase 3 adds one-way, versioned Newo2-to-Newo ESP-NOW probes while both ESPs
-remain ordinary stations on the same AP. The peer is bound to `WIFI_IF_STA` with
-channel `0` so it follows the associated interface channel; there is no channel
-hopping. See [`newo2-node/README.md`](./newo2-node/README.md) for topology and
-explicit MAC configuration, and [`PROBE_PROTOCOL.md`](./PROBE_PROTOCOL.md) for
-the 28-byte probe header. Bidirectional probes, camera streaming, ML, and NDP
-injection remain out of scope.
-
-## Phase 4 capture and replay
-
-The dependency-light Python tooling in [`tools/`](./tools/) captures strict
-protocol-v1 UDP records into a binary archive without rewriting their bytes,
-keeps session labels in separate JSON, reports per-path and device loss
-diagnostics, archives host monotonic and wall time separately, replays original
-datagrams using monotonic recorded timing, and optionally
-exports selected subcarrier amplitude/phase for inspection. See
-[`RECORDING.md`](./RECORDING.md) before collecting any human-labeled session.
+See [`newo-rx/README.md`](./newo-rx/README.md) and [`newo2-node/README.md`](./newo2-node/README.md) for node-specific configuration.
 
 ## Source lineage
 
-The measurement-plane design adapts a narrow set of implementation ideas reviewed in RuView, including CSI callback configuration, source-MAC filtering, AP channel detection, gateway self-ping, early rate limiting, fixed rings and loss counters, separate raw/DSP cadences, invalid-first-word sanitation, sequence/metadata capture, phase unwrapping, running statistics, and top-K selection. RuView is MIT licensed; see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md). The Newo wire format is new and is not RuView's wire format.
+The measurement-plane design adapts a narrow set of implementation ideas reviewed in RuView, including CSI callback configuration, source-MAC filtering, AP channel detection, gateway self-ping, early rate limiting, fixed rings and loss counters, invalid-first-word sanitation, sequence/metadata capture, phase processing concepts, running statistics, and subcarrier selection. RuView is MIT licensed; see [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md). The Newo wire format is independent and is not RuView's wire format.
