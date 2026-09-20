@@ -50,6 +50,9 @@ class NewoAudio {
   uint32_t wakeCount() const { return wakeCount_; }
   uint32_t sessionCount() const { return sessionCount_; }
   bool voiceConnected() const { return voiceConnected_; }
+  // True from the first ASR-eligible PCM frame onward. Unlike voiceConnected(),
+  // this is entirely local and is the authoritative "you may speak now" signal.
+  bool listeningReady() const;
   uint32_t failures() const { return failures_; }
   uint32_t timeouts() const { return timeouts_; }
   bool transitionPending() const { return transitionPending_; }
