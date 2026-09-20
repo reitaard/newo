@@ -19,6 +19,8 @@
 #endif
 
 namespace {
+volatile bool gListeningReady = false;
+
 struct VoiceCaptureContext {
   I2SClass* i2s = nullptr;
   NewoPcmFrameRing* ring = nullptr;
@@ -210,6 +212,7 @@ bool NewoAudio::setEnabled(bool enabled) {
     wakePending_ = false;
     awaitingAssistantCompletion_ = false;
     assistantTerminalSeen_ = false;
+    gListeningReady = false;
     if (state_ == NewoVoiceState::STREAMING) {
       stopStreaming_ = true;
       transitionPending_ = true;
@@ -250,6 +253,7 @@ bool NewoAudio::beginStreaming(bool rearmAfterStream) {
   if (rearmAfterStream && (!enabled_ || state_ != NewoVoiceState::ARMED)) return false;
   // A future Alfred event and a manual request share this stream session.
   // stopWakeNet also releases its I2S ownership before direct capture begins.
+  gListeningReady = false;
   stopWakeNet();
   if (!configureI2s()) { ++failures_; return false; }
   rearmAfterStream_ = rearmAfterStream;
@@ -399,6 +403,16 @@ void NewoAudio::streamTask() {
   // until at least one frame that is eligible for ASR is safely in the ring.
   while (!capture.firstKept && !capture.finished) vTaskDelay(pdMS_TO_TICKS(1));
   if (capture.finished && capture.error) streamEndReason_ = capture.error;
+  if (!streamEndReason_ && capture.firstKept) {
+    gListeningReady = true;
+    char ready[128];
+    snprintf(ready, sizeof(ready), "after_stream_ms=%lu gate_to_pcm_ms=%lu network_connected=%s",
+             static_cast<unsigned long>(capture.firstKeptMs - streamStartedMs_),
+             static_cast<unsigned long>(capture.firstKeptMs - capture.gateOpenedMs),
+             voiceConnected_ ? "yes" : "no");
+    NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO,
+                 "VOICE_LISTENING_READY", ready);
+  }
   if (!streamEndReason_ && wakeCueTurn) {
     char kept[112];
     snprintf(kept, sizeof(kept), "gate_to_pcm_ms=%lu after_stream_ms=%lu",
@@ -676,6 +690,7 @@ void NewoAudio::streamTask() {
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO,
                "VOICE_PROCESSING_SUMMARY", processing);
 
+  gListeningReady = false;
   voiceConnected_ = false;
   voiceWebSocket_.disconnect();
   releaseI2s();
@@ -694,6 +709,7 @@ void NewoAudio::finishStreaming(const char* reason) {
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO, "VOICE_STREAM_STOPPED", detail);
   streamTask_ = nullptr;
   transitionPending_ = false;
+  gListeningReady = false;
   // Idempotent after the normal task cleanup, and required if task creation
   // failed after direct manual I2S acquisition.
   releaseI2s();
@@ -741,7 +757,10 @@ void NewoAudio::handleVoiceEvent(WStype_t type, uint8_t* payload, size_t length)
 }
 
 void NewoAudio::loop() {
-  display_.setListeningActive(state_ == NewoVoiceState::STREAMING && voiceConnected_);
+  // LISTENING now means the microphone is actually retaining ASR-eligible PCM,
+  // not that the remote /voice TLS/WebSocket handshake happened to finish.
+  // This makes the visual cue line up with the local wake earcon boundary.
+  display_.setListeningActive(state_ == NewoVoiceState::STREAMING && gListeningReady);
   if (state_ == NewoVoiceState::ARMED && wakePending_) {
     wakePending_ = false;
     if (beginStreaming(true)) ++wakeCount_;
