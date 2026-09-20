@@ -40,6 +40,17 @@ export function authorizeToolInvocation({ tool, hostAuthorized = false } = {}) {
     hintsTrustedAsAuthorization: false };
 }
 
+const acknowledgements = Object.freeze([
+  "Certainly.",
+  "Of course.",
+  "Right away.",
+  "Yes, sir.",
+  "One moment.",
+  "Allow me.",
+  "Understood.",
+  "Very good.",
+]);
+
 const feedback = Object.freeze({
   calculation: Object.freeze(["Working through the calculation.", "Checking the numbers."]),
   search: Object.freeze(["Checking the available information.", "Looking through the available sources."]),
@@ -64,10 +75,13 @@ const toolFeedback = Object.freeze({
   generic: Object.freeze(["Checking that.", "Working through that."]),
 });
 
-export function progressFeedbackFor({ route, activity, variation = 0 }) {
-  if (route !== "THINK" || activity === "conversation") return null;
-  const options = feedback[activity] ?? feedback.tool_action;
+function rotate(options, variation = 0) {
   return options[Math.abs(Number(variation) || 0) % options.length];
+}
+
+export function progressFeedbackFor({ route, activity, variation = 0 }) {
+  if (route === "FAST" || activity === "conversation") return rotate(acknowledgements, variation);
+  return rotate(feedback[activity] ?? feedback.tool_action, variation);
 }
 
 export function progressFeedbackForTool(name, variation = 0) {
@@ -79,6 +93,5 @@ export function progressFeedbackForTool(name, variation = 0) {
     value.startsWith("device.") || value.startsWith("device_") ? "device" :
     value.startsWith("sensor.") || value.startsWith("sensor_") ? "sensor" :
     value.startsWith("camera.") || value.startsWith("camera_") ? "camera" : "generic";
-  const options = toolFeedback[category];
-  return options[Math.abs(Number(variation) || 0) % options.length];
+  return rotate(toolFeedback[category], variation);
 }

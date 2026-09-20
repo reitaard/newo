@@ -36,9 +36,17 @@ test("MCP annotations influence routing but never authorize destructive work", (
   assert.equal(authorizeToolInvocation({ tool: destructive, hostAuthorized: true }).allowed, true);
 });
 
-test("progress feedback is delayed-policy content only for non-conversational THINK work", () => {
-  assert.equal(progressFeedbackFor({ route: "FAST", activity: "search" }), null);
-  assert.equal(progressFeedbackFor({ route: "THINK", activity: "conversation" }), null);
+test("progress feedback rotates short Alfred acknowledgements for ordinary turns", () => {
+  const first = progressFeedbackFor({ route: "FAST", activity: "conversation", variation: 0 });
+  const second = progressFeedbackFor({ route: "FAST", activity: "conversation", variation: 1 });
+  assert.equal(first, "Certainly.");
+  assert.equal(second, "Of course.");
+  assert.equal(progressFeedbackFor({ route: "FAST", activity: "conversation", variation: 3 }), "Yes, sir.");
+  assert.notEqual(first, second);
+  assert.equal(progressFeedbackFor({ route: "THINK", activity: "conversation", variation: 5 }), "Allow me.");
+});
+
+test("non-conversational THINK work keeps capability-specific progress phrases", () => {
   assert.match(progressFeedbackFor({ route: "THINK", activity: "sensor_fusion" }), /sensor/i);
   assert.notEqual(progressFeedbackFor({ route: "THINK", activity: "search", variation: 0 }),
     progressFeedbackFor({ route: "THINK", activity: "search", variation: 1 }));

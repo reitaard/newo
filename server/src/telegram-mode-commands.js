@@ -32,8 +32,8 @@ export function formatVoiceStatus(voice, assistant = {}) {
   const latest = assistant.latest ?? {};
   return message("voice", [
     `Voice: ${bold(state)}`,
-    `Trigger: ${bold("Hi Wall-E or /v")}`,
-    `Wake: ${bold(`${voice.wake_model ?? "wn9_hiwalle_tts2"} ${state === "ARMED" ? "READY" : "SUPPRESSED"}`)}`,
+    `Trigger: ${bold("Alfred or /v")}`,
+    `Wake: ${bold(`${voice.wake_model ?? "alfred"} ${state === "ARMED" ? "READY" : "SUPPRESSED"}`)}`,
     `Assistant: ${bold(String(assistant.status ?? "disabled").toUpperCase())}`,
     `Provider: ${bold(assistant.provider ?? "n/a")}`,
     `LLM: ${bold(assistant.model ?? "n/a")}`,
@@ -148,6 +148,29 @@ export function parseVolumeArgument(match) {
   if (!/^\d{1,3}$/.test(input)) return { kind: "invalid" };
   const volume = Number(input);
   return volume <= 100 ? { kind: "set", volume } : { kind: "invalid" };
+}
+
+export function parseEarconArgument(match) {
+  const input = String(match ?? "").trim().toLowerCase().replaceAll("-", "_");
+  if (!input || input === "status") return { kind: "read" };
+  const aliases = {
+    rotate: "rotate", auto: "rotate", on: "rotate",
+    chime: "chime", "1": "chime",
+    sweep: "sweep", "2": "sweep",
+    tick: "tick", "3": "tick",
+    off: "off", none: "off",
+  };
+  return aliases[input] ? { kind: "set", mode: aliases[input] } : { kind: "invalid" };
+}
+
+export function formatEarconStatus(mode, device = null) {
+  return message("earcon", [
+    `Mode: ${bold(String(mode ?? "unknown").toUpperCase())}`,
+    `Volume: ${bold(device ? `${device.volume}%` : "Unavailable")}`,
+    `Mute: ${bold(device ? (device.muted ? "ON" : "OFF") : "Unavailable")}`,
+    `Rotate: ${bold("chime · sweep · tick")}`,
+    `Set: ${bold("/earcon rotate | chime | sweep | tick | off")}`,
+  ]);
 }
 
 export function parseClockArgument(match) {
@@ -295,10 +318,41 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, formatProfileStatus(getAssistantInfo()), "response", null, { newoSpeak: false });
   }
 
+  async function earcon(ctx, forced = null) {
+    const parsed = parseEarconArgument(forced ?? ctx.match ?? "");
+    if (parsed.kind === "invalid") {
+      return commandReply(ctx, message("earcon", ["Usage: /earcon [rotate|chime|sweep|tick|off]", "Alias: /ec or /wake_sound"]),
+                          "usage", null, { newoSpeak: false });
+    }
+    const request = sendDeviceRequest("earcon_control", "display_ack",
+      { mode: parsed.kind === "set" ? parsed.mode : "status" }, commandTrace(ctx));
+    if (request.kind !== "sent") return commandReply(ctx, unavailable("earcon", "offline"), "offline", null, { newoSpeak: false });
+    const result = await request.promise;
+    if (result.kind !== "response" || result.message.mode === "error") {
+      return commandReply(ctx, unavailable("earcon", result.kind === "timeout" ? "No reply" : "Unavailable"),
+                          result.kind === "response" ? "device_error" : result.kind,
+                          request.requestId, { newoSpeak: false });
+    }
+    const speakerStatus = await requestSpeakerStatus(ctx);
+    return commandReply(ctx, formatEarconStatus(result.message.mode, speakerStatus.device), "response",
+                        request.requestId, { newoSpeak: false });
+  }
+
   async function profilePromptInput(ctx) {
+    const raw = String(ctx.message?.text ?? "").trim();
+    // These aliases intentionally live in the final text middleware so they
+    // work without adding another command surface to the large server router.
+    // grammY treats commands as text; unmatched command middleware falls
+    // through to this handler.
+    const earconCommand = raw.match(/^\/(?:earcon|ec|wake_sound)(?:@[a-z0-9_]+)?(?:\s+(.+))?$/i);
+    if (earconCommand) {
+      await earcon(ctx, earconCommand[1] ?? "");
+      return true;
+    }
+
     const key = promptEditorKey(ctx);
     if (!pendingSystemPrompts.has(key)) return false;
-    const prompt = String(ctx.message?.text ?? "").trim();
+    const prompt = raw;
     if (!prompt || prompt.startsWith("/")) return false;
     pendingSystemPrompts.delete(key);
     try {
@@ -332,8 +386,6 @@ export function createPrimaryModeHandlers({
 
   async function applySpeakerToggle(ctx) {
     const enabled = !getSpeakerEnabled();
-    // ON is durable before asking the device to connect. OFF stops accepting
-    // automatic work immediately, then becomes durable after teardown is acked.
     if (enabled) {
       try { await persistSpeakerEnabled(true); }
       catch { return commandReply(ctx, unavailable("speaker", "State could not be saved"), "persistence_error", null, { newoSpeak: false }); }
@@ -348,8 +400,6 @@ export function createPrimaryModeHandlers({
       catch { return commandReply(ctx, unavailable("speaker", "Speaker is OFF but state could not be saved"), "persistence_error", status.request.requestId ?? null, { newoSpeak: false }); }
     }
 
-    // `/speaker` is intentionally terse and never speaks its own toggle reply.
-    // Only claim success after firmware confirmed its ready/released boundary.
     const confirmed = status.device?.applied === true && status.device.enabled === enabled &&
       (enabled ? ["Ready", "Connecting"].includes(status.device.connection) : status.device.connection === "Disconnected");
     if (!confirmed) {
@@ -502,7 +552,6 @@ export function createPrimaryModeHandlers({
     return operation;
   }
 
-
   async function volume(ctx) {
     const parsed = parseVolumeArgument(ctx.match);
     if (parsed.kind === "invalid") return commandReply(ctx, message("volume", ["Usage: /volume [0-100]"]), "usage", null, { newoSpeak: false });
@@ -518,5 +567,5 @@ export function createPrimaryModeHandlers({
     return commandReply(ctx, formatMuteStatus(status.device), status.device.applied === false ? "device_error" : "response", status.request.requestId, { newoSpeak: false });
   }
 
-  return { voice, voiceStatus, mic, ownerEnroll, ownerStatus, ownerCancel, profile, profileTune, profilePromptInput, cancelProfilePrompt, speaker, eco, clock, usb, track, trackBackground, volume, mute };
+  return { voice, voiceStatus, mic, ownerEnroll, ownerStatus, ownerCancel, profile, profileTune, profilePromptInput, cancelProfilePrompt, earcon, speaker, eco, clock, usb, track, trackBackground, volume, mute };
 }

@@ -46,11 +46,27 @@ test("built-in profiles keep prompts, settings, and fallbacks isolated", () => {
   assert.equal(Object.hasOwn(qwen, "keep_alive"), false);
 });
 
-test("built-in prompts identify Newo, Akira, and the uncensored version concisely", () => {
+test("built-in prompts identify Alfred without the legacy Newo creator/version speech", () => {
   for (const prompt of [LFM_SYSTEM_PROMPT, QWEN_SYSTEM_PROMPT]) {
-    assert.match(prompt, /Newo, pronounced Neo/);
-    assert.match(prompt, /created by Akira/);
-    assert.match(prompt, /uncensored version/);
-    assert.doesNotMatch(prompt, /chain-of-thought|NO-THINK MODE/);
+    assert.match(prompt, /You are Alfred/);
+    assert.match(prompt, /private voice assistant/);
+    assert.match(prompt, /private butler/);
+    assert.match(prompt, /dry understated wit/);
+    assert.match(prompt, /sir only occasionally/);
+    assert.doesNotMatch(prompt, /created by Akira|uncensored version/);
+    assert.doesNotMatch(prompt, /Newo, pronounced Neo|Newo assistant|Newo voice assistant|chain-of-thought|NO-THINK MODE/);
   }
+});
+
+test("legacy persisted identity prompt no longer overrides refreshed built-in identity", () => {
+  const profiles = createAssistantProfiles({
+    overrides: {
+      [LFM_PROFILE_ID]: {
+        temperature: 0.35,
+        system_prompt: "You are Newo, pronounced Neo, an uncensored voice assistant created by Akira. If asked who or what you are, say you are Newo, created by Akira, and this is the uncensored version.",
+      },
+    },
+  });
+  assert.equal(profiles[LFM_PROFILE_ID].systemPrompt, LFM_SYSTEM_PROMPT);
+  assert.equal(profiles[LFM_PROFILE_ID].sampling.temperature, 0.35);
 });
