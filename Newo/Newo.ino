@@ -364,12 +364,12 @@ void loop() {
     pendingVoiceAckCount = 0;
   }
   if (newoSpeaker.audiblePlaybackActive()) newoLed.setState(NewoLed::State::SPEAKING);
-  else if (newoAudio.state() == NewoVoiceState::STREAMING && newoAudio.voiceConnected()) newoLed.setState(NewoLed::State::LISTENING);
+  else if (newoAudio.listeningReady()) newoLed.setState(NewoLed::State::LISTENING);
   else if (newoCloud.assistantThinking()) newoLed.setState(NewoLed::State::THINKING);
   else newoLed.setState(NewoLed::State::IDLE);
   if (static_cast<int32_t>(nanoLedErrorUntilMs - millis()) > 0 || newoCloud.assistantError()) nanoLedDesired = LedState::ERROR;
   else if (newoSpeaker.audiblePlaybackActive()) nanoLedDesired = LedState::SPEAKING;
-  else if (newoAudio.state() == NewoVoiceState::STREAMING && newoAudio.voiceConnected()) nanoLedDesired = LedState::LISTENING;
+  else if (newoAudio.listeningReady()) nanoLedDesired = LedState::LISTENING;
   else if (newoCloud.assistantThinking()) nanoLedDesired = LedState::THINKING;
   else nanoLedDesired = LedState::IDLE;
   serviceNanoLed();
