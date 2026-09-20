@@ -24,6 +24,7 @@ class NewoDisplay {
   bool setFaceCaption(NewoFaceCaption caption, uint32_t durationMs = 4'000);
   // Runtime signals are arbitrated independently of the persistent display mode.
   void setListeningActive(bool active);
+  bool listeningActive() const { return listeningActive_; }
   void setAssistantThinking(bool active);
   void setAssistantState(NewoDisplayMode mode);
   void setSpeakerActive(bool active);
