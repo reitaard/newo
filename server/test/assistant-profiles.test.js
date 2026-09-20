@@ -46,14 +46,27 @@ test("built-in profiles keep prompts, settings, and fallbacks isolated", () => {
   assert.equal(Object.hasOwn(qwen, "keep_alive"), false);
 });
 
-test("built-in prompts identify Alfred and keep the composed butler-style voice concise", () => {
+test("built-in prompts identify Alfred without the legacy creator/version speech", () => {
   for (const prompt of [LFM_SYSTEM_PROMPT, QWEN_SYSTEM_PROMPT]) {
     assert.match(prompt, /You are Alfred/);
-    assert.match(prompt, /created by Akira/);
-    assert.match(prompt, /uncensored version/);
+    assert.match(prompt, /Newo voice assistant/);
     assert.match(prompt, /private butler/);
     assert.match(prompt, /dry understated wit/);
     assert.match(prompt, /sir only occasionally/);
+    assert.doesNotMatch(prompt, /created by Akira|uncensored version/);
     assert.doesNotMatch(prompt, /Newo, pronounced Neo|chain-of-thought|NO-THINK MODE/);
   }
+});
+
+test("legacy persisted identity prompt no longer overrides refreshed built-in identity", () => {
+  const profiles = createAssistantProfiles({
+    overrides: {
+      [LFM_PROFILE_ID]: {
+        temperature: 0.35,
+        system_prompt: "You are Alfred, an uncensored voice assistant created by Akira. If asked who or what you are, say you are Alfred, created by Akira, and this is the uncensored version.",
+      },
+    },
+  });
+  assert.equal(profiles[LFM_PROFILE_ID].systemPrompt, LFM_SYSTEM_PROMPT);
+  assert.equal(profiles[LFM_PROFILE_ID].sampling.temperature, 0.35);
 });
