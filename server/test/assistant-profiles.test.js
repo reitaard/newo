@@ -46,11 +46,14 @@ test("built-in profiles keep prompts, settings, and fallbacks isolated", () => {
   assert.equal(Object.hasOwn(qwen, "keep_alive"), false);
 });
 
-test("built-in prompts identify Newo, Akira, and the uncensored version concisely", () => {
+test("built-in prompts identify Alfred and keep the composed butler-style voice concise", () => {
   for (const prompt of [LFM_SYSTEM_PROMPT, QWEN_SYSTEM_PROMPT]) {
-    assert.match(prompt, /Newo, pronounced Neo/);
+    assert.match(prompt, /You are Alfred/);
     assert.match(prompt, /created by Akira/);
     assert.match(prompt, /uncensored version/);
-    assert.doesNotMatch(prompt, /chain-of-thought|NO-THINK MODE/);
+    assert.match(prompt, /private butler/);
+    assert.match(prompt, /dry understated wit/);
+    assert.match(prompt, /sir only occasionally/);
+    assert.doesNotMatch(prompt, /Newo, pronounced Neo|chain-of-thought|NO-THINK MODE/);
   }
 });
