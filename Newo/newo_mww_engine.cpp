@@ -31,7 +31,7 @@ constexpr int kFeatureSize = 40;
 constexpr int kInputFeatureFrames = 2;
 constexpr int kInputElements = kFeatureSize * kInputFeatureFrames;
 constexpr int kSlidingWindow = 5;
-constexpr float kProbabilityCutoff = 0.95f;
+constexpr float kProbabilityCutoff = 0.97f;
 constexpr size_t kExpectedModelBytes = 137984;
 constexpr uint32_t kDetectorReadTimeoutMs = 100;
 constexpr uint32_t kDetectorTaskStackBytes = 12 * 1024;
@@ -262,7 +262,7 @@ bool NewoMicroWakeEngine::start(I2SClass& i2s, sr_cb callback) {
 
   running_ = true;
   NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO,
-               "MWW_ARMED", "alfred cutoff=0.95 window=5");
+               "MWW_ARMED", "alfred cutoff=0.97 window=5");
   return true;
 }
 
