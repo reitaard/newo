@@ -1,5 +1,6 @@
 #include "newo_wake_earcon.h"
 
+#include <ESP_I2S.h>
 #include <Preferences.h>
 #include <cmath>
 #include <cstring>
