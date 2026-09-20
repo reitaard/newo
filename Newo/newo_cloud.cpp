@@ -10,6 +10,7 @@
 #include "newo_memory_diagnostics.h"
 #include "newo_storage.h"
 #include "newo_console_redirect.h"
+#include "newo_wake_earcon.h"
 
 #if __has_include("newo_secrets.h")
 #include "newo_secrets.h"
@@ -263,7 +264,7 @@ void NewoCloud::sendVoiceAck(const char* requestId, NewoVoiceState state, bool v
   doc["state"] = newoVoiceStateName(state);
   doc["voice_connected"] = voiceConnected;
   doc["wake_count"] = wakes;
-  doc["wake_model"] = "wn9_hiwalle_tts2";
+  doc["wake_model"] = "alfred";
   doc["session_count"] = sessions;
   doc["failures"] = failures;
   doc["timeouts"] = timeouts;
@@ -410,6 +411,25 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     }
     if (applied) display_.setClockEnabled(enabled);
     sendClockAck(requestId, display_.clockEnabled(), applied);
+    return;
+  }
+
+  if (strcmp(type, "earcon_control") == 0) {
+    const char* requestId = doc["request_id"] | "";
+    const char* mode = doc["mode"] | "status";
+    if (!requestId[0]) {
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD,
+                   "EARCON_INVALID_REQUEST");
+      return;
+    }
+    const bool applied = strcmp(mode, "status") == 0 || newoSetWakeEarconMode(mode);
+    if (!applied) {
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD,
+                   "EARCON_INVALID_MODE", mode);
+      sendDisplayAck(requestId, "error");
+      return;
+    }
+    sendDisplayAck(requestId, newoWakeEarconModeName());
     return;
   }
 
