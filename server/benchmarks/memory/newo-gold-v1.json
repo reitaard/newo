@@ -1,0 +1,30 @@
+{
+  "name": "newo-gold-v1",
+  "reference_now": "2026-09-20T17:00:00+07:00",
+  "cases": [
+    {"id":"preference_tea","category":"preference","input":"I prefer tea without sugar.","expected":[{"terms":["prefer","tea","without sugar"],"type":"preference","event_at":null}]},
+    {"id":"preference_negative","category":"preference","input":"I really don't like red chillies.","expected":[{"terms":["don t like","red chillies"],"type":"preference","event_at":null}]},
+    {"id":"personal_name","category":"fact","input":"My name is Maya Chen.","expected":[{"terms":["maya chen"],"type":"fact","event_at":null}]},
+    {"id":"relationship_sister","category":"relationship","input":"My sister Lena lives in Rome.","expected":[{"terms":["sister","lena","rome"],"type":"relationship","event_at":null}]},
+    {"id":"device_location","category":"device","input":"The camera node is mounted beside the window.","expected":[{"terms":["camera node","beside","window"],"type":"device","event_at":null}]},
+    {"id":"event_yesterday","category":"temporal","input":"I moved the camera beside the window yesterday.","expected":[{"terms":["moved","camera","window"],"type":"event","event_at":"2026-09-19"}]},
+    {"id":"plan_tomorrow","category":"temporal","input":"Tomorrow I'm installing the second sensor in the hallway.","expected":[{"terms":["installing","second sensor","hallway"],"type":"plan","event_at":"2026-09-21"}]},
+    {"id":"correction","category":"update","context":[{"role":"user","text":"The camera is on my desk."}],"input":"Actually, I moved it to the bookshelf.","expected":[{"terms":["camera","bookshelf"],"type":"device","event_at":null}]},
+    {"id":"preference_update","category":"update","context":[{"role":"user","text":"My favorite restaurant is Sakura."}],"input":"I have a new favorite restaurant now: Nami House.","expected":[{"terms":["favorite restaurant","nami house"],"type":"preference","event_at":null}]},
+    {"id":"multiple_facts","category":"multi","input":"I bought an ESP32-S3 and I keep it in the top desk drawer.","expected":[{"terms":["bought","esp32 s3"],"type":"event","event_at":null},{"terms":["esp32 s3","top desk drawer"],"type":"location","event_at":null}]},
+    {"id":"pronoun_context","category":"context","context":[{"role":"user","text":"I bought a new microphone yesterday."}],"input":"I keep it beside my monitor.","expected":[{"terms":["microphone","beside","monitor"],"type":"location","event_at":null}]},
+    {"id":"durable_plus_request","category":"mixed","input":"I'm vegetarian. Can you recommend somewhere for dinner?","expected":[{"terms":["vegetarian"],"type":"preference","event_at":null}]},
+    {"id":"job_fact","category":"fact","input":"I work as a product designer at Northstar Labs.","expected":[{"terms":["product designer","northstar labs"],"type":"fact","event_at":null}]},
+    {"id":"episodic_trip","category":"event","input":"I visited Kyoto last spring and loved the railway museum.","expected":[{"terms":["visited","kyoto","railway museum"],"type":"event","event_at":null}]},
+    {"id":"irrelevant_math","category":"negative","input":"What's 12 times 8?","expected":[]},
+    {"id":"small_talk","category":"negative","input":"That's interesting, thanks.","expected":[]},
+    {"id":"temporary_action","category":"negative","input":"I'm opening GitHub right now.","expected":[]},
+    {"id":"uncertain_plan","category":"negative","input":"Maybe I'll buy another sensor someday.","expected":[]},
+    {"id":"one_off_request","category":"negative","input":"Give me three restaurant recommendations for tonight.","expected":[]},
+    {"id":"assistant_confirmation","category":"negative","context":[{"role":"assistant","text":"I recommend placing the sensor near the doorway."}],"input":"Sounds good.","expected":[]},
+    {"id":"identity_probe","category":"negative","input":"Do you remember who I am?","expected":[]},
+    {"id":"audibility_probe","category":"negative","input":"Can you hear me clearly?","expected":[]},
+    {"id":"conversation_meta","category":"negative","input":"Why are you replying so quickly?","expected":[]},
+    {"id":"garbled_asr","category":"negative","input":"uh lolo mm the uh","expected":[]}
+  ]
+}
