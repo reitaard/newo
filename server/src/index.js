@@ -13,7 +13,7 @@ import { createStructuredCapabilityRuntime } from "./assistant-capabilities.js";
 import { createCapabilityRouterClient } from "./capability-router.js";
 import { createAssistantProfiles, normalizeProfileTuning, PROFILE_TUNING_PRESETS, QWEN_PROFILE_ID, resolveAssistantProfile } from "./assistant-profiles.js";
 import { createAssistantTurnRuntime } from "./assistant-turn.js";
-import { formatClockReply, parseClockRequest } from "./clock-request.js";
+import { createClockTranscriptHandler } from "./clock-transcript.js";
 import { createRuntimeStateStore } from "./runtime-state.js";
 import { createSpeakerRuntime, startTelegramAndSpeech } from "./tts.js";
 import { createTtsBackend } from "./tts-backend.js";
@@ -270,33 +270,13 @@ function sendAssistantState(deviceId, state, errorCode = null) {
   catch { return false; }
 }
 
-async function handleClockTranscript(turn) {
-  const request = parseClockRequest(turn.text, { timeZone: env.ASSISTANT_TIME_ZONE });
-  if (request.kind === "not_clock") return false;
-  sendAssistantState(turn.deviceId, "thinking");
-  let reply;
-  if (request.kind === "ambiguous") reply = request.message;
-  else if (request.kind === "local") reply = formatClockReply(request, { applied: true }, { timeZone: env.ASSISTANT_TIME_ZONE });
-  else {
-    const fields = { action: request.action };
-    if (request.epoch_s) fields.epoch_s = request.epoch_s;
-    if (request.duration_s) fields.duration_s = request.duration_s;
-    if (request.target) fields.target = request.target;
-    const sent = sendDeviceRequest("clock_command", "clock_command_ack", fields);
-    if (sent.kind !== "sent") reply = "The clock is unavailable right now.";
-    else {
-      const outcome = await sent.promise;
-      reply = outcome.kind === "response" ? formatClockReply(request, outcome.message, { timeZone: env.ASSISTANT_TIME_ZONE }) :
-        "The clock did not confirm that request.";
-    }
-  }
-  sendAssistantState(turn.deviceId, "responding");
-  const speech = speakerRuntime.speak(reply, { temporary: !automaticSpeakerEnabled,
-    metadata: { clock_turn: true, voice_stream_id: turn.streamId } });
-  try { if (speech.kind === "queued") await speech.completion; }
-  finally { sendAssistantState(turn.deviceId, "idle"); }
-  return true;
-}
+const handleClockTranscript = createClockTranscriptHandler({
+  timeZone: env.ASSISTANT_TIME_ZONE,
+  sendDeviceRequest,
+  speakerRuntime,
+  isPersistentSpeakerEnabled: () => automaticSpeakerEnabled,
+  sendAssistantState,
+});
 
 const assistantTurnRuntime = createAssistantTurnRuntime({
   assistant: assistantRuntime,

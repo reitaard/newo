@@ -1,11 +1,35 @@
-const CLOCK_WORDS = /\b(alarm|timer|stopwatch|snooze|clock|time|date)\b/i;
+const ONES = Object.freeze({ one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8,
+  nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16,
+  seventeen: 17, eighteen: 18, nineteen: 19 });
+const TENS = Object.freeze({ twenty: 20, thirty: 30, forty: 40, fifty: 50 });
+const ONES_WORDS = Object.keys(ONES).join("|");
+const SMALL_ONES_WORDS = Object.keys(ONES).slice(0, 9).join("|");
+const NUMBER_WORD_SOURCE = `(?:(?:twenty|thirty|forty|fifty)(?:[- ](?:${SMALL_ONES_WORDS}))?|${ONES_WORDS}|an?)`;
+const HOUR_WORD_SOURCE = Object.keys(ONES).slice(0, 12).join("|");
+const UNSUPPORTED_DATE = /\b(?:the\s+day\s+after\s+tomorrow|next\s+week|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)\b/i;
+const DATE_CLARIFICATION = "Please give a supported date such as today or tomorrow.";
+
+function spokenNumber(value) {
+  const normalized = String(value ?? "").toLowerCase().replaceAll("-", " ").trim().replace(/\s+/g, " ");
+  if (/^\d+$/.test(normalized)) return Number(normalized);
+  if (normalized === "a" || normalized === "an") return 1;
+  if (ONES[normalized] !== undefined) return ONES[normalized];
+  const [tens, ones] = normalized.split(" ");
+  if (TENS[tens] !== undefined && (ones === undefined || ONES[ones] >= 1 && ONES[ones] <= 9))
+    return TENS[tens] + (ones ? ONES[ones] : 0);
+  return null;
+}
 
 function durationSeconds(text) {
+  const normalized = String(text).toLowerCase().replace(/\bhalf\s+(?:an?\s+)?hour\b/g, "thirty minutes");
+  const matcher = new RegExp(`\\b(${NUMBER_WORD_SOURCE}|\\d{1,4})\\s*(hours?|minutes?|seconds?)\\b`, "gi");
+  const units = { hour: 3600, hours: 3600, minute: 60, minutes: 60, second: 1, seconds: 1 };
   let total = 0;
   let matched = false;
-  const units = { hour: 3600, hours: 3600, minute: 60, minutes: 60, second: 1, seconds: 1 };
-  for (const match of text.matchAll(/\b(\d{1,4})\s*(hours?|minutes?|seconds?)\b/gi)) {
-    total += Number(match[1]) * units[match[2].toLowerCase()];
+  for (const match of normalized.matchAll(matcher)) {
+    const amount = spokenNumber(match[1]);
+    if (amount === null) continue;
+    total += amount * units[match[2].toLowerCase()];
     matched = true;
   }
   return matched && total > 0 && total <= 7 * 24 * 3600 ? total : null;
@@ -28,22 +52,51 @@ function zonedEpoch({ year, month, day, hour, minute }, timeZone) {
   return Math.floor(guess / 1000);
 }
 
-function absoluteAlarm(text, now, timeZone) {
-  const match = text.match(/\b(?:at|for)\s+(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?\b/i);
-  if (!match) return null;
-  let hour = Number(match[1]);
-  const minute = Number(match[2] ?? 0);
-  const meridiem = match[3]?.toLowerCase().replaceAll(".", "") ?? null;
-  if (minute > 59 || hour > (meridiem ? 12 : 23) || hour === 0 && meridiem) return null;
+function parseAlarmTimeTail(tail) {
+  const normalized = tail.trim().replace(/[?!.,]+$/g, "").replace(/\s+/g, " ");
+  let match = normalized.match(/^(\d{1,2})(?::(\d{1,2}))?\s*(a\.?m\.?|p\.?m\.?)?(?:\s+(.*))?$/i);
+  let hour;
+  let minute;
+  let meridiem;
+  let remainder;
+  if (match) {
+    hour = Number(match[1]);
+    minute = Number(match[2] ?? 0);
+    meridiem = match[3]?.toLowerCase().replaceAll(".", "") ?? null;
+    remainder = match[4] ?? "";
+  } else {
+    match = normalized.match(new RegExp(`^(${HOUR_WORD_SOURCE})(?:\\s+(${NUMBER_WORD_SOURCE}))?\\s*(a\\.?m\\.?|p\\.?m\\.?)?(?:\\s+(.*))?$`, "i"));
+    if (!match) return null;
+    hour = spokenNumber(match[1]);
+    minute = match[2] ? spokenNumber(match[2]) : 0;
+    meridiem = match[3]?.toLowerCase().replaceAll(".", "") ?? null;
+    remainder = match[4] ?? "";
+  }
+  if (minute === null || minute > 59 || hour > (meridiem ? 12 : 23) || hour === 0 && meridiem)
+    return { ambiguous: true, reason: "Please give a valid alarm time." };
+  const dateQualifier = remainder.trim().toLowerCase();
+  if (dateQualifier && dateQualifier !== "today" && dateQualifier !== "tomorrow")
+    return { ambiguous: true, reason: DATE_CLARIFICATION };
   if (!meridiem && hour <= 12) return { ambiguous: true, reason: "Please say AM or PM." };
   if (meridiem) hour = hour % 12 + (meridiem === "pm" ? 12 : 0);
+  return { hour, minute, dateQualifier };
+}
+
+function absoluteAlarm(text, now, timeZone) {
+  const tail = text.match(/\b(?:at|for)\s+(.+)$/i);
+  if (!tail) return null;
+  const parsed = parseAlarmTimeTail(tail[1]);
+  if (!parsed || parsed.ambiguous) return parsed;
   const current = zonedParts(now, timeZone);
-  const base = new Date(Date.UTC(current.year, current.month - 1, current.day + (/\btomorrow\b/i.test(text) ? 1 : 0), 12));
-  const date = { year: base.getUTCFullYear(), month: base.getUTCMonth() + 1, day: base.getUTCDate(), hour, minute };
+  const base = new Date(Date.UTC(current.year, current.month - 1,
+    current.day + (parsed.dateQualifier === "tomorrow" ? 1 : 0), 12));
+  const date = { year: base.getUTCFullYear(), month: base.getUTCMonth() + 1, day: base.getUTCDate(),
+    hour: parsed.hour, minute: parsed.minute };
   let epoch = zonedEpoch(date, timeZone);
-  if (!/\b(today|tomorrow)\b/i.test(text) && epoch <= Math.floor(now.getTime() / 1000)) {
+  if (!parsed.dateQualifier && epoch <= Math.floor(now.getTime() / 1000)) {
     base.setUTCDate(base.getUTCDate() + 1);
-    epoch = zonedEpoch({ ...date, year: base.getUTCFullYear(), month: base.getUTCMonth() + 1, day: base.getUTCDate() }, timeZone);
+    epoch = zonedEpoch({ ...date, year: base.getUTCFullYear(), month: base.getUTCMonth() + 1,
+      day: base.getUTCDate() }, timeZone);
   }
   return { epoch };
 }
@@ -51,31 +104,43 @@ function absoluteAlarm(text, now, timeZone) {
 export function parseClockRequest(text, { now = new Date(), timeZone = "Asia/Bangkok" } = {}) {
   const input = String(text ?? "").trim();
   const lower = input.toLowerCase();
-  if (!CLOCK_WORDS.test(input) && !/^\s*(stop|dismiss|pause|resume)\s*$/i.test(input)) return { kind: "not_clock" };
-  if (/\b(what(?:'s| is) the time|current time|time is it)\b/i.test(input)) return { kind: "local", action: "current_time" };
-  if (/\b(what(?:'s| is) (?:today'?s )?date|current date|date is it|what day is it)\b/i.test(input)) return { kind: "local", action: "current_date" };
-  if (/\b(set|start|create)\b.*\btimer\b|\btimer\b.*\bfor\b/i.test(input)) {
+  if (/^(?:what(?:'s| is) the time|what time is it|tell me the time|current time)[?.!]*$/i.test(input))
+    return { kind: "local", action: "current_time" };
+  if (/^(?:what(?:'s| is) today'?s date|what(?:'s| is) the date|what date is it|current date|what day is it)[?.!]*$/i.test(input))
+    return { kind: "local", action: "current_date" };
+
+  const timerCreation = /\b(?:set|start|create)\s+(?:a\s+)?timer\b/i.test(input) || /^timer\s+for\b/i.test(input);
+  if (timerCreation) {
     const seconds = durationSeconds(input);
     return seconds ? { kind: "command", action: "create_timer", duration_s: seconds } :
       { kind: "ambiguous", message: "Please give the timer duration in hours, minutes, or seconds." };
   }
-  if (/\b(set|create|wake me)\b.*\balarm\b|\bwake me\b.*\bat\b/i.test(input)) {
+
+  const alarmCreation = /\b(?:set|create)\s+(?:an?\s+)?alarm\b/i.test(input) || /^wake me\b/i.test(input);
+  if (alarmCreation) {
+    if (UNSUPPORTED_DATE.test(input)) return { kind: "ambiguous", message: DATE_CLARIFICATION };
     const parsed = absoluteAlarm(input, now, timeZone);
     if (!parsed) return { kind: "ambiguous", message: "Please give an alarm time." };
     if (parsed.ambiguous) return { kind: "ambiguous", message: parsed.reason };
     return { kind: "command", action: "create_alarm", epoch_s: parsed.epoch };
   }
-  if (/\bsnooze\b/i.test(input)) return { kind: "command", action: "snooze", duration_s: durationSeconds(input) ?? 9 * 60 };
-  if (/\b(dismiss|stop (?:the )?(?:alarm|timer)|silence)\b/i.test(input) || /^stop$/i.test(lower)) return { kind: "command", action: "dismiss" };
-  if (/\b(cancel|delete|remove)\b.*\b(timer|alarm)\b/i.test(input)) return { kind: "command", action: "cancel", target: lower.includes("alarm") ? "alarm" : "timer" };
-  if (/\bpause\b.*\btimer\b/i.test(input)) return { kind: "command", action: "pause_timer" };
-  if (/\b(resume|continue)\b.*\btimer\b/i.test(input)) return { kind: "command", action: "resume_timer" };
-  if (/\b(start)\b.*\bstopwatch\b/i.test(input)) return { kind: "command", action: "start_stopwatch" };
-  if (/\bpause\b.*\bstopwatch\b/i.test(input)) return { kind: "command", action: "pause_stopwatch" };
-  if (/\b(resume|continue)\b.*\bstopwatch\b/i.test(input)) return { kind: "command", action: "resume_stopwatch" };
-  if (/\b(reset|clear)\b.*\bstopwatch\b/i.test(input)) return { kind: "command", action: "reset_stopwatch" };
-  if (/\b(list|what|show|status|remaining|left)\b.*\b(alarms?|timers?|stopwatch)\b/i.test(input)) return { kind: "command", action: "status" };
-  return { kind: "ambiguous", message: "I understood this as a clock request, but I need a clearer action or time." };
+
+  if (/^snooze(?:\s+for\s+.+)?[?.!]*$/i.test(input))
+    return { kind: "command", action: "snooze", duration_s: durationSeconds(input) ?? 9 * 60 };
+  if (/^(?:dismiss|silence)(?:\s+the)?\s+(?:alarm|timer)[?.!]*$/i.test(input) ||
+      /^stop(?:\s+the)?\s+(?:alarm|timer)[?.!]*$/i.test(input) || /^stop[?.!]*$/i.test(input))
+    return { kind: "command", action: "dismiss" };
+  if (/\b(?:cancel|delete|remove)\b.*\b(?:timer|alarm)\b/i.test(input))
+    return { kind: "command", action: "cancel", target: lower.includes("alarm") ? "alarm" : "timer" };
+  if (/^pause(?:\s+the)?\s+timer[?.!]*$/i.test(input)) return { kind: "command", action: "pause_timer" };
+  if (/^(?:resume|continue)(?:\s+the)?\s+timer[?.!]*$/i.test(input)) return { kind: "command", action: "resume_timer" };
+  if (/^start(?:\s+the)?\s+stopwatch[?.!]*$/i.test(input)) return { kind: "command", action: "start_stopwatch" };
+  if (/^pause(?:\s+the)?\s+stopwatch[?.!]*$/i.test(input)) return { kind: "command", action: "pause_stopwatch" };
+  if (/^(?:resume|continue)(?:\s+the)?\s+stopwatch[?.!]*$/i.test(input)) return { kind: "command", action: "resume_stopwatch" };
+  if (/^(?:reset|clear)(?:\s+the)?\s+stopwatch[?.!]*$/i.test(input)) return { kind: "command", action: "reset_stopwatch" };
+  if (/\b(?:list|show|status|remaining|left)\b.*\b(?:alarms?|timers?|stopwatch)\b/i.test(input) ||
+      /^what\b.*\b(?:alarms?|timers?|stopwatch)\b/i.test(input)) return { kind: "command", action: "status" };
+  return { kind: "not_clock" };
 }
 
 export function formatClockReply(request, ack, { now = new Date(), timeZone = "Asia/Bangkok" } = {}) {
