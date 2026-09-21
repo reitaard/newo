@@ -174,3 +174,77 @@ export function createAssistantModeSwitch({
     reconcile: () => enqueue(() => perform(mode, { announce: false, force: true })),
   };
 }
+
+function envBoolean(value, fallback = false) {
+  if (value == null || String(value).trim() === "") return fallback;
+  return String(value).trim().toLowerCase() === "true";
+}
+
+function envTimeout(value, fallback = 60_000) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 1_000 && parsed <= 120_000 ? parsed : fallback;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function telegramStatus(state) {
+  const active = state.mode === "xiaomei" ? "Xiaomei" : "Alfred";
+  const transition = state.switching ? `\nSwitching to: <b>${escapeHtml(state.target)}</b>` : "";
+  return `<b><i>xiaomei:</i></b>\n<blockquote>Active assistant: <b>${active}</b>\nXiaomei voice: <b>Serena</b>\nSwitch: <b>${state.switching ? "BUSY" : "READY"}</b>${transition}</blockquote>`;
+}
+
+export function createXiaomeiIntegration({ speakerRuntime, runtimeState, logger = null, env = process.env } = {}) {
+  const enabled = envBoolean(env.XIAOMEI_ENABLED, false);
+  const manager = createAssistantModeSwitch({
+    enabled,
+    initialMode: runtimeState?.assistantMode ?? "alfred",
+    ollamaBaseUrl: env.XIAOMEI_OLLAMA_BASE_URL ?? "http://100.110.136.15:11435",
+    alfredModel: env.XIAOMEI_ALFRED_MODEL ?? "newo-minicpm5:latest",
+    xiaomeiTtsBaseUrl: env.XIAOMEI_TTS_BASE_URL ?? "http://100.110.136.15:8124",
+    timeoutMs: envTimeout(env.XIAOMEI_SWITCH_TIMEOUT_MS),
+    logger,
+    persistMode: (mode) => runtimeState?.setAssistantMode?.(mode) ?? Promise.resolve(mode),
+    playEarcon: async (text) => {
+      const speech = speakerRuntime?.speak?.(text, { temporary: true, maxChars: 80,
+        metadata: { assistant_mode_switch: true } });
+      if (!speech || speech.kind === "disabled" || speech.kind === "offline") {
+        throw new Error(`speaker ${speech?.kind ?? "unavailable"}`);
+      }
+      if (speech.kind !== "queued") throw new Error(`speaker ${speech.kind}`);
+      await speech.completion;
+    },
+  });
+
+  if (enabled) {
+    const timer = setTimeout(() => {
+      void manager.reconcile().catch((error) => logger?.error?.({ event: "ASSISTANT_MODE_RECONCILE_FAILED",
+        error_message: error?.message ?? "unknown" }, "Assistant mode startup reconcile failed"));
+    }, 0);
+    timer.unref?.();
+  }
+
+  async function handleTelegram(ctx, commandReply) {
+    const input = String(ctx.match ?? "").trim().toLowerCase();
+    if (input === "status") return commandReply(ctx, telegramStatus(manager.status()), "response", null, { newoSpeak: false });
+    if (!enabled) {
+      return commandReply(ctx, `<b><i>xiaomei:</i></b>\n<blockquote>Status: <b>DISABLED</b>\nSet XIAOMEI_ENABLED=true on the VPS to enable switching.</blockquote>`,
+        "disabled", null, { newoSpeak: false });
+    }
+    if (input && !["on", "off"].includes(input)) {
+      return commandReply(ctx, `<b><i>xiaomei:</i></b>\n<blockquote>Use /xiaomei to toggle, /xiaomei on, /xiaomei off, or /xiaomei status.</blockquote>`,
+        "usage", null, { newoSpeak: false });
+    }
+    try {
+      const state = input === "on" ? await manager.switchTo("xiaomei")
+        : input === "off" ? await manager.switchTo("alfred") : await manager.toggle();
+      return commandReply(ctx, telegramStatus(state), "response", null, { newoSpeak: false });
+    } catch (error) {
+      return commandReply(ctx, `<b><i>xiaomei:</i></b>\n<blockquote>Switch failed: <b>${escapeHtml(error?.message ?? "unknown")}</b>\nFallback: <b>${manager.status().mode === "alfred" ? "Alfred" : "Xiaomei"}</b></blockquote>`,
+        "error", null, { newoSpeak: false });
+    }
+  }
+
+  return { ...manager, handleTelegram };
+}
