@@ -103,20 +103,21 @@ function absoluteAlarm(text, now, timeZone) {
 
 export function parseClockRequest(text, { now = new Date(), timeZone = "Asia/Bangkok" } = {}) {
   const input = String(text ?? "").trim();
-  const lower = input.toLowerCase();
   if (/^(?:what(?:'s| is) the time|what time is it|tell me the time|current time)[?.!]*$/i.test(input))
     return { kind: "local", action: "current_time" };
   if (/^(?:what(?:'s| is) today'?s date|what(?:'s| is) the date|what date is it|current date|what day is it)[?.!]*$/i.test(input))
     return { kind: "local", action: "current_date" };
 
-  const timerCreation = /\b(?:set|start|create)\s+(?:a\s+)?timer\b/i.test(input) || /^timer\s+for\b/i.test(input);
+  const timerCreation = /^(?:please\s+)?(?:set|start|create)\s+(?:a\s+)?timer\b/i.test(input) ||
+    /^timer\s+for\b/i.test(input);
   if (timerCreation) {
     const seconds = durationSeconds(input);
     return seconds ? { kind: "command", action: "create_timer", duration_s: seconds } :
       { kind: "ambiguous", message: "Please give the timer duration in hours, minutes, or seconds." };
   }
 
-  const alarmCreation = /\b(?:set|create)\s+(?:an?\s+)?alarm\b/i.test(input) || /^wake me\b/i.test(input);
+  const alarmCreation = /^(?:please\s+)?(?:set|create)\s+(?:an?\s+)?alarm\b/i.test(input) ||
+    /^wake me\b/i.test(input);
   if (alarmCreation) {
     if (UNSUPPORTED_DATE.test(input)) return { kind: "ambiguous", message: DATE_CLARIFICATION };
     const parsed = absoluteAlarm(input, now, timeZone);
@@ -130,16 +131,20 @@ export function parseClockRequest(text, { now = new Date(), timeZone = "Asia/Ban
   if (/^(?:dismiss|silence)(?:\s+the)?\s+(?:alarm|timer)[?.!]*$/i.test(input) ||
       /^stop(?:\s+the)?\s+(?:alarm|timer)[?.!]*$/i.test(input) || /^stop[?.!]*$/i.test(input))
     return { kind: "command", action: "dismiss" };
-  if (/\b(?:cancel|delete|remove)\b.*\b(?:timer|alarm)\b/i.test(input))
-    return { kind: "command", action: "cancel", target: lower.includes("alarm") ? "alarm" : "timer" };
+  const cancellation = input.match(/^(?:please\s+)?(?:cancel|delete|remove)\s+(?:(?:my|the)\s+)?(alarm|timer)[?.!]*$/i);
+  if (cancellation)
+    return { kind: "command", action: "cancel", target: cancellation[1].toLowerCase() };
   if (/^pause(?:\s+the)?\s+timer[?.!]*$/i.test(input)) return { kind: "command", action: "pause_timer" };
   if (/^(?:resume|continue)(?:\s+the)?\s+timer[?.!]*$/i.test(input)) return { kind: "command", action: "resume_timer" };
   if (/^start(?:\s+the)?\s+stopwatch[?.!]*$/i.test(input)) return { kind: "command", action: "start_stopwatch" };
   if (/^pause(?:\s+the)?\s+stopwatch[?.!]*$/i.test(input)) return { kind: "command", action: "pause_stopwatch" };
   if (/^(?:resume|continue)(?:\s+the)?\s+stopwatch[?.!]*$/i.test(input)) return { kind: "command", action: "resume_stopwatch" };
   if (/^(?:reset|clear)(?:\s+the)?\s+stopwatch[?.!]*$/i.test(input)) return { kind: "command", action: "reset_stopwatch" };
-  if (/\b(?:list|show|status|remaining|left)\b.*\b(?:alarms?|timers?|stopwatch)\b/i.test(input) ||
-      /^what\b.*\b(?:alarms?|timers?|stopwatch)\b/i.test(input)) return { kind: "command", action: "status" };
+  if (/^(?:list|show)(?:\s+(?:my|the|active))?\s+(?:alarms?|timers?|stopwatch)[?.!]*$/i.test(input) ||
+      /^(?:alarm|timer|stopwatch)\s+status[?.!]*$/i.test(input) ||
+      /^what\s+(?:alarms?|timers?)\s+do\s+i\s+have[?.!]*$/i.test(input) ||
+      /^how\s+much\s+time\s+is\s+left\s+on\s+(?:the|my)\s+timer[?.!]*$/i.test(input))
+    return { kind: "command", action: "status" };
   return { kind: "not_clock" };
 }
 

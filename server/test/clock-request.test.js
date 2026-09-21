@@ -70,6 +70,48 @@ test("time and date discussion stays in the normal assistant pipeline", () => {
   ]) assert.equal(parseClockRequest(text, options).kind, "not_clock", text);
 });
 
+test("cancellation requires a direct imperative clock request", () => {
+  for (const text of ["cancel my alarm", "cancel the alarm", "delete my alarm", "remove the timer"])
+    assert.equal(parseClockRequest(text, options).action, "cancel", text);
+  for (const text of [
+    "why did you cancel the alarm",
+    "why would someone delete a timer",
+    "tell me why alarms get cancelled",
+  ]) assert.equal(parseClockRequest(text, options).kind, "not_clock", text);
+});
+
+test("status routing accepts explicit queries without stealing clock discussion", () => {
+  for (const text of [
+    "show my alarms",
+    "list alarms",
+    "list timers",
+    "timer status",
+    "what alarms do I have",
+    "how much time is left on the timer",
+  ]) assert.equal(parseClockRequest(text, options).action, "status", text);
+  for (const text of [
+    "what are smoke alarms",
+    "what timers exist in JavaScript",
+    "tell me about stopwatch apps",
+    "what alarm systems are good",
+  ]) assert.equal(parseClockRequest(text, options).kind, "not_clock", text);
+});
+
+test("creation routing accepts imperatives without stealing instructional questions", () => {
+  for (const text of [
+    "set a timer for ten minutes",
+    "create a timer for five minutes",
+    "set an alarm for seven AM tomorrow",
+    "wake me at seven thirty AM tomorrow",
+  ]) assert.equal(parseClockRequest(text, options).kind, "command", text);
+  for (const text of [
+    "how do I set a timer in JavaScript",
+    "show me how to create an alarm app",
+    "what happens when I set a timer",
+    "can you explain how alarms work",
+  ]) assert.equal(parseClockRequest(text, options).kind, "not_clock", text);
+});
+
 test("positive clock phrases retain deterministic routing", () => {
   const actions = new Map([
     ["what time is it", "current_time"],

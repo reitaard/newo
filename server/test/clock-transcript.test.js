@@ -40,6 +40,14 @@ test("non-clock transcripts continue to the normal assistant", async () => {
   assert.deepEqual(calls.spoken, []);
 });
 
+test("instructional timer questions reach the assistant without a clock device command", async () => {
+  const { calls, route } = harness();
+  await route("how do I set a timer in JavaScript");
+  assert.deepEqual(calls.assistant, ["how do I set a timer in JavaScript"]);
+  assert.deepEqual(calls.device, []);
+  assert.deepEqual(calls.spoken, []);
+});
+
 test("ambiguous clock transcripts clarify without assistant or device execution", async () => {
   const { calls, route } = harness();
   await route("set an alarm for seven");
