@@ -1,6 +1,6 @@
 # Xiaomei model benchmark
 
-This benchmark is for the Xiaomei/Ling Ling controller model shootout. It is intentionally model-agnostic and keeps the context fixed at 4096 so MiniCPM5-2B, Qwen3.5-2B, Spark-X2.5-1.7B, and any later challenger are compared under the same conditions.
+This benchmark is for the Xiaomei/Ling Ling controller model shootout. The official run is preconfigured for the three downloaded VPS candidates and keeps context fixed at 4096 so they are compared under the same conditions.
 
 The suite focuses on the behavior Xiaomei actually needs:
 
@@ -12,15 +12,31 @@ The suite focuses on the behavior Xiaomei actually needs:
 - distinguishing speech to the other person from meta-questions to Xiaomei
 - cold/warm latency and Ollama-reported residency
 
-## Important benchmark rule
+## Official candidates
 
-For official comparisons, change only `benchmarks/xiaomei/candidate.json` in a dedicated candidate-swap commit. Do not retune the fixture, prompt, or context between candidates. Production assistant profiles stay untouched during the shootout.
+The endpoint/model list lives in `benchmarks/xiaomei/candidates.json`:
 
-`candidate.json` is intentionally unset in the benchmark-prep commit. Fill `label`, `base_url`, and `model` only when the downloaded candidate and endpoint are ready.
+1. MiniCPM5-2B — `newo-minicpm5:latest`
+2. Qwen3.5-2B — `newo-qwen35-2b:latest`
+3. Spark-X2.5-1.7B — `newo-spark17:latest`
 
-## Run
+All three currently use `http://100.110.136.15:11435/api/chat`.
+
+`newo-spark-x2.5:latest` is recorded as an alias of the Spark 1.7B candidate because it currently resolves to the same digest. The archived 4B rollback model is intentionally not part of the first shootout.
+
+Hy-MT2-1.8B is not part of this controller test. It gets a separate translation benchmark after the controller winner is narrowed down.
+
+## One-command run
 
 From `/opt/newo/server`:
+
+```bash
+npm run xiaomei:benchmark
+```
+
+That command runs all three controller candidates sequentially. Production Alfred profiles are not changed.
+
+For a full branch validation first:
 
 ```bash
 npm test
@@ -28,45 +44,56 @@ npm run check
 npm run xiaomei:benchmark
 ```
 
-Defaults:
+Defaults for every candidate:
 
-- candidate source: `benchmarks/xiaomei/candidate.json`
 - context: `4096`
 - repeats: `1`
 - thinking: off
-- keep-alive: forever during the warm run
+- temperature: `0.2`
+- top_p: `0.9`
+- keep-alive: forever during its warm run
+- explicit unload after its report is captured, before the next candidate
 
-Optional diagnostics only:
+To repeat each case three times:
 
 ```bash
 XIAOMEI_BENCH_REPEATS=3 npm run xiaomei:benchmark
-XIAOMEI_BENCH_BASE_URL=http://HOST:11435 XIAOMEI_BENCH_MODEL=model-id npm run xiaomei:benchmark
 ```
-
-For the official shootout, prefer a committed `candidate.json` swap over environment overrides so every report maps to an exact git commit.
 
 ## Reports
 
-Each run writes both JSON and Markdown:
+Each candidate still writes its own full JSON and Markdown report with raw replies:
 
 ```text
 server/benchmarks/xiaomei/results/<model>__<timestamp>.json
 server/benchmarks/xiaomei/results/<model>__<timestamp>.md
-server/benchmarks/xiaomei/results/LATEST.json
-server/benchmarks/xiaomei/results/LATEST.md
 ```
 
-The JSON keeps every raw model reply. The Markdown is the review report with route accuracy, JSON compliance, first-content latency, total latency, prefill/decode speed, cold-load measurements, and Ollama `/api/ps` residency data.
+The shootout also writes a combined comparison:
 
-The report also leaves a human-review section for Chinese quality, code switching, teaching quality, interpreter judgment, and voice-response suitability.
+```text
+server/benchmarks/xiaomei/results/SHOOTOUT-LATEST.json
+server/benchmarks/xiaomei/results/SHOOTOUT-LATEST.md
+server/benchmarks/xiaomei/results/SHOOTOUT__<timestamp>.json
+server/benchmarks/xiaomei/results/SHOOTOUT__<timestamp>.md
+```
 
-## Candidate order
+The combined report compares route accuracy, JSON compliance, reply checks, first-content latency, total latency, prefill speed, decode speed, and Ollama-reported VRAM residency. The JSON embeds every candidate's complete per-case report so raw Chinese/English replies remain available for human review.
 
-Current baseline and challengers:
+Do not select the winner from speed alone. Review Chinese fluency, code switching, teaching quality, interpreter/meta-command judgment, and voice-response brevity after the automated run.
 
-1. MiniCPM5-2B — baseline
-2. Qwen3.5-2B
-3. Spark-X2.5-1.7B
-4. Gemma 4 E2B — existing control result
+## Single-model diagnostics
 
-Hy-MT2-1.8B is not part of this controller test. It gets a separate translation benchmark after the controller winner is narrowed down.
+`candidate.json` remains deliberately isolated for ad-hoc diagnostics and does not modify production profiles. To use it, fill that file or pass environment overrides, then run:
+
+```bash
+npm run xiaomei:benchmark:single
+```
+
+Example:
+
+```bash
+XIAOMEI_BENCH_BASE_URL=http://100.110.136.15:11435 \
+XIAOMEI_BENCH_MODEL=newo-minicpm5:latest \
+npm run xiaomei:benchmark:single
+```
