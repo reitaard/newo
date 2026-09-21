@@ -11,7 +11,7 @@ import { createAssistantRuntime } from "./assistant.js";
 import { createAssistantWebTools, readAgentToolsToken } from "./assistant-web-tools.js";
 import { createStructuredCapabilityRuntime } from "./assistant-capabilities.js";
 import { createCapabilityRouterClient } from "./capability-router.js";
-import { createAssistantProfiles, GEMMA_PROFILE_ID, LFM_PROFILE_ID, MINICPM_PROFILE_ID, normalizeProfileTuning, PROFILE_TUNING_PRESETS, QWEN_PROFILE_ID, resolveAssistantProfile } from "./assistant-profiles.js";
+import { createAssistantProfiles, GEMMA_PROFILE_ID, LFM_PROFILE_ID, MINICPM_PROFILE_ID, MINISTRAL_PROFILE_ID, SPARK_PROFILE_ID, normalizeProfileTuning, PROFILE_TUNING_PRESETS, QWEN_PROFILE_ID, resolveAssistantProfile } from "./assistant-profiles.js";
 import { createAssistantTurnRuntime } from "./assistant-turn.js";
 import { createRuntimeStateStore } from "./runtime-state.js";
 import { createSpeakerRuntime, startTelegramAndSpeech } from "./tts.js";
@@ -591,6 +591,8 @@ const TELEGRAM_COMMANDS = [
   { command: "profile", description: "Assistant profile status" },
   { command: "profile_gemma", description: "Use Gemma assistant" },
   { command: "profile_minicpm", description: "Use MiniCPM assistant" },
+  { command: "profile_ministral", description: "Use Ministral assistant" },
+  { command: "profile_spark", description: "Use Spark assistant" },
   { command: "profile_qwen", description: "Use Qwen assistant" },
   { command: "speaker", description: "Toggle speaker" },
   { command: "volume", description: "Set speaker volume" },
@@ -938,7 +940,7 @@ const primaryModeHandlers = createPrimaryModeHandlers({
     if (preset === "reset" || preset === "balanced") delete nextOverrides[id];
     else if (PROFILE_TUNING_PRESETS[preset]) {
       const basePreset = PROFILE_TUNING_PRESETS[preset];
-      nextOverrides[id] = (id === GEMMA_PROFILE_ID || id === MINICPM_PROFILE_ID)
+      nextOverrides[id] = (id === GEMMA_PROFILE_ID || id === MINICPM_PROFILE_ID || id === SPARK_PROFILE_ID)
         ? { ...basePreset, think_mode: preset === "fast" ? "off" : "on" }
         : basePreset;
     } else throw new Error("invalid profile tuning preset");
@@ -952,7 +954,7 @@ const primaryModeHandlers = createPrimaryModeHandlers({
     const id = assistantRuntime.getTelemetry().preferred_profile;
     const canonical = { topk: "top_k", topp: "top_p", maxtoken: "max_tokens", maxchars: "max_chars", timeout: "timeout_ms", rpenalty: "repeat_penalty", temp: "temperature", think: "think_mode" }[key];
     if (!canonical) throw new Error("invalid profile tuning value");
-    if (canonical === "think_mode" && id !== GEMMA_PROFILE_ID && id !== MINICPM_PROFILE_ID) throw new Error("thinking control is only available for Gemma");
+    if (canonical === "think_mode" && id !== GEMMA_PROFILE_ID && id !== MINICPM_PROFILE_ID && id !== SPARK_PROFILE_ID) throw new Error("thinking control is not available for this profile");
     const parsedValue = canonical === "think_mode" ? String(value).trim().toLowerCase() : Number(value);
     const tuning = normalizeProfileTuning({ [canonical]: parsedValue });
     if (!Object.hasOwn(tuning, canonical)) throw new Error("invalid profile tuning value");
@@ -1052,6 +1054,8 @@ if (env.TELEGRAM_BOT_TOKEN) {
   bot.command(["profile", "p"], (ctx) => primaryModeHandlers.profile(ctx));
   bot.command(["profile_gemma", "p_gemma"], (ctx) => primaryModeHandlers.profile(ctx, "gemma"));
   bot.command(["profile_minicpm", "p_minicpm"], (ctx) => primaryModeHandlers.profile(ctx, "minicpm"));
+  bot.command(["profile_ministral", "p_ministral"], (ctx) => primaryModeHandlers.profile(ctx, "ministral"));
+  bot.command(["profile_spark", "p_spark"], (ctx) => primaryModeHandlers.profile(ctx, "spark"));
   // Hidden compatibility command during migration; it is not advertised in the Telegram menu.
   bot.command(["profile_lfm", "p_lfm"], (ctx) => primaryModeHandlers.profile(ctx, "lfm"));
   bot.command(["profile_qwen", "p_qwen"], (ctx) => primaryModeHandlers.profile(ctx, "qwen"));

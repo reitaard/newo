@@ -313,7 +313,7 @@ export function createPrimaryModeHandlers({
         const telemetry = await setAssistantProfile(requested);
         return commandReply(ctx, formatProfileStatus(telemetry), "response", null, { newoSpeak: false });
       } catch {
-        return commandReply(ctx, message("profile", ["Usage: /profile [gemma|minicpm|qwen]"]), "usage", null, { newoSpeak: false });
+        return commandReply(ctx, message("profile", ["Usage: /profile [gemma|minicpm|ministral|spark|qwen]"]), "usage", null, { newoSpeak: false });
       }
     }
     return commandReply(ctx, formatProfileStatus(getAssistantInfo()), "response", null, { newoSpeak: false });
