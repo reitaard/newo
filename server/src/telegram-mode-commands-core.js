@@ -1,0 +1,571 @@
+const escapeHtml = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+const bold = (value) => `<b>${escapeHtml(value)}</b>`;
+const italic = (value) => `<i>${escapeHtml(value)}</i>`;
+const title = (value) => `<b><i>${escapeHtml(value)}</i></b>`;
+const quote = (lines) => `<blockquote>${lines.join("\n")}</blockquote>`;
+const message = (name, lines) => `${title(`${name}:`)}\n${quote(lines)}`;
+
+function duration(milliseconds) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "unknown";
+  let seconds = Math.floor(milliseconds / 1_000);
+  const days = Math.floor(seconds / 86_400); seconds %= 86_400;
+  const hours = Math.floor(seconds / 3_600); seconds %= 3_600;
+  const minutes = Math.floor(seconds / 60); seconds %= 60;
+  const parts = [];
+  if (days) parts.push(`${days}d`);
+  if (hours) parts.push(`${hours}h`);
+  if (minutes) parts.push(`${minutes}m`);
+  if (seconds || parts.length === 0) parts.push(`${seconds}s`);
+  return parts.join(" ");
+}
+
+function bytes(value) {
+  if (!Number.isFinite(value) || value < 0) return "unknown";
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(2)} MB`;
+  return `${Math.round(value / 1024)} KB`;
+}
+
+function timing(value) { return Number.isFinite(value) && value >= 0 ? `${Math.round(value)} ms` : "n/a"; }
+
+export function formatVoiceStatus(voice, assistant = {}) {
+  const state = String(voice.state ?? "off").toUpperCase();
+  const latest = assistant.latest ?? {};
+  return message("voice", [
+    `Voice: ${bold(state)}`,
+    `Trigger: ${bold("Alfred or /v")}`,
+    `Wake: ${bold(`${voice.wake_model ?? "alfred"} ${state === "ARMED" ? "READY" : "SUPPRESSED"}`)}`,
+    `Assistant: ${bold(String(assistant.status ?? "disabled").toUpperCase())}`,
+    `Provider: ${bold(assistant.provider ?? "n/a")}`,
+    `LLM: ${bold(assistant.model ?? "n/a")}`,
+    `Model state: ${bold(String(assistant.online ?? "n/a").toUpperCase())}`,
+    `Last LLM: ${bold(timing(latest.llmMs))}`,
+    `Last turn: ${bold(latest.result ?? "n/a")}`,
+    `ASR final: ${bold(timing(latest.asrFinalMs))}`,
+    `TTS queued: ${bold(timing(latest.ttsQueuedMs))}`,
+    `Total: ${bold(timing(latest.totalMs))}`,
+    `Speaker: ${bold(assistant.speakerEnabled ? "ON" : "OFF")}`,
+    `Cloud voice: ${bold(voice.voice_connected ? "Connected" : "Disconnected")}`,
+    `Wake count: ${bold(voice.wake_count ?? 0)}`,
+    `Barge-in: ${bold("DISABLED (mic/I2S exclusive)")}`,
+    `Sessions: ${bold(voice.session_count ?? 0)}`,
+    `Failures: ${bold(voice.failures ?? "Unavailable")}`,
+    `Timeouts: ${bold(voice.timeouts ?? "Unavailable")}`,
+  ]);
+}
+
+export function parseMicArgument(value = "") {
+  const input = String(value).trim().toLowerCase().replaceAll("-", "_");
+  if (!input || input === "status") return { action: "status" };
+  if (input === "raw") return { action: "set", mode: "raw", ns_level: 1 };
+  const levels = { ns: 1, mild: 0, medium: 1, strong: 2, "1": 0, "2": 1, "3": 2 };
+  if (Object.hasOwn(levels, input)) return { action: "set", mode: "ns", ns_level: levels[input] };
+  return null;
+}
+
+export function formatMicStatus(mic = {}) {
+  const strength = ["MILD", "MEDIUM", "STRONG"][mic.ns_level] ?? "UNKNOWN";
+  return message("microphone", [
+    `Processing: ${bold(String(mic.mode ?? "unknown").toUpperCase())}`,
+    `NS strength: ${bold(strength)}`,
+    `Raw RMS / peak: ${bold(`${mic.raw_rms ?? 0} / ${mic.raw_peak ?? 0}`)}`,
+    `Clean RMS / peak: ${bold(`${mic.clean_rms ?? 0} / ${mic.clean_peak ?? 0}`)}`,
+    `Clipped raw / clean: ${bold(`${mic.raw_clipped ?? 0} / ${mic.clean_clipped ?? 0}`)}`,
+    `Noise floor: ${bold(mic.noise_floor_rms ?? 0)}`,
+  ]);
+}
+
+export function formatProfileStatus(assistant = {}) {
+  return message("profile", [
+    `Preferred: ${bold(assistant.preferred_profile ?? "n/a")}`,
+    `Effective: ${bold(assistant.effective_profile ?? "n/a")}`,
+    `Model: ${bold(assistant.model ?? "n/a")}`,
+    `Provider: ${bold(assistant.provider ?? "n/a")}`,
+    `Health: ${bold(String(assistant.online ?? "unknown").toUpperCase())}`,
+    `Fallback: ${bold(assistant.fallback_active ? `ON (${assistant.fallback_reason ?? "unavailable"})` : "OFF")}`,
+  ]);
+}
+
+export function formatProfileTuning(tuning = {}) {
+  return `${title("profile tuning:")}\n${quote([
+    `Profile: ${bold(tuning.id ?? "n/a")}`,
+    `Temperature: ${bold(tuning.temperature ?? "n/a")}`,
+    `Top K: ${bold(tuning.top_k ?? "n/a")}`,
+    `Top P: ${bold(tuning.top_p ?? "n/a")}`,
+    `Repeat penalty: ${bold(tuning.repeat_penalty ?? "n/a")}`,
+    `Output: ${bold(`${tuning.max_tokens ?? "n/a"} tokens / ${tuning.max_chars ?? "n/a"} chars`)}`,
+    `Timeout: ${bold(timing(tuning.timeout_ms))}`,
+    `Preset: ${bold("/pt fast | balanced | quality | reset")}`,
+  ])}\n${italic("System prompt:")}\n${quote([escapeHtml(tuning.system_prompt ?? "n/a")])}`;
+}
+
+export function formatSpeakerStatus({ enabled, ttsEnabled, backend, format, bufferBytes, device }) {
+  return message("speaker", [
+    `Speaker: ${bold(enabled ? "ON" : "OFF")}`,
+    `Connection: ${bold(device?.connection ?? "Disconnected")}`,
+    `TTS: ${bold(ttsEnabled ? "Enabled" : "Disabled")}`,
+    `Volume: ${bold(device ? `${device.volume}%` : "Unavailable")}`,
+    `Mute: ${bold(device ? (device.muted ? "ON" : "OFF") : "Unavailable")}`,
+    `Backend: ${bold(backend)}`,
+    `Format: ${bold(format)}`,
+    `Buffer: ${bold(`${device?.buffer_bytes ?? bufferBytes} bytes`)}`,
+    `Last playback: ${bold(device?.last_playback ?? "Unavailable")}`,
+    `Underruns: ${bold(device?.underruns ?? "Unavailable")}`,
+    `Overflows: ${bold(device?.overflows ?? "Unavailable")}`,
+  ]);
+}
+
+export function formatEcoStatus(enabled, snapshot) {
+  const status = snapshot.status ?? {};
+  return message("eco", [
+    `ECO: ${bold(enabled ? "ON" : "OFF")}`,
+    `Page rotation: ${bold("5s")}`,
+    `WiFi: ${bold(snapshot.connected && status.ssid ? "Connected" : "Disconnected")}`,
+    `Cloud: ${bold(snapshot.connected ? "Connected" : "Disconnected")}`,
+    `RSSI: ${bold(typeof status.rssi === "number" ? `${status.rssi} dBm` : "Unavailable")}`,
+    `Uptime: ${bold(duration(status.uptime_ms))}`,
+    `Heap: ${bold(bytes(status.free_heap))}`,
+    `PSRAM: ${bold(bytes(status.free_psram))}`,
+  ]);
+}
+
+export function formatVolumeStatus(device) {
+  return message("volume", [
+    `Volume: ${bold(`${device.volume}%`)}`,
+    `Mute: ${bold(device.muted ? "ON" : "OFF")}`,
+  ]);
+}
+
+export function formatMuteStatus(device) {
+  return message("mute", [
+    `Mute: ${bold(device.muted ? "ON" : "OFF")}`,
+    `Volume: ${bold(`${device.volume}%`)}`,
+  ]);
+}
+
+export function parseVolumeArgument(match) {
+  const input = String(match ?? "").trim();
+  if (!input) return { kind: "read" };
+  if (!/^\d{1,3}$/.test(input)) return { kind: "invalid" };
+  const volume = Number(input);
+  return volume <= 100 ? { kind: "set", volume } : { kind: "invalid" };
+}
+
+export function parseEarconArgument(match) {
+  const input = String(match ?? "").trim().toLowerCase().replaceAll("-", "_");
+  if (!input || input === "status") return { kind: "read" };
+  const aliases = {
+    rotate: "rotate", auto: "rotate", on: "rotate",
+    chime: "chime", "1": "chime",
+    sweep: "sweep", "2": "sweep",
+    tick: "tick", "3": "tick",
+    off: "off", none: "off",
+  };
+  return aliases[input] ? { kind: "set", mode: aliases[input] } : { kind: "invalid" };
+}
+
+export function formatEarconStatus(mode, device = null) {
+  return message("earcon", [
+    `Mode: ${bold(String(mode ?? "unknown").toUpperCase())}`,
+    `Volume: ${bold(device ? `${device.volume}%` : "Unavailable")}`,
+    `Mute: ${bold(device ? (device.muted ? "ON" : "OFF") : "Unavailable")}`,
+    `Rotate: ${bold("chime · sweep · tick")}`,
+    `Set: ${bold("/earcon rotate | chime | sweep | tick | off")}`,
+  ]);
+}
+
+export function parseClockArgument(match) {
+  const input = String(match ?? "").trim().toLowerCase();
+  if (!input) return { kind: "toggle" };
+  if (input === "on" || input === "off" || input === "status") return { kind: input };
+  return { kind: "invalid" };
+}
+
+export function parseUsbArgument(match) {
+  const input = String(match ?? "").trim().toLowerCase().replaceAll("_", " ");
+  if (!input || input === "status") return { action: "status" };
+  const aliases = { a: "audio", audio: "audio", s: "storage", storage: "storage", v: "vcp", vcp: "vcp", nano: "vcp" };
+  if (input === "on" || input === "off") return { action: "host", enabled: input === "on" };
+  const parts = input.split(/\s+/);
+  if (parts.length === 2 && aliases[parts[0]] && ["on", "off"].includes(parts[1])) {
+    return { action: aliases[parts[0]], enabled: parts[1] === "on" };
+  }
+  return null;
+}
+
+export function parseTrackArgument(match) {
+  const input = String(match ?? "").trim().toLowerCase();
+  if (!input) return { kind: "toggle" };
+  if (["on", "off", "status", "debug"].includes(input)) return { kind: input };
+  return { kind: "invalid" };
+}
+
+export function createPrimaryModeHandlers({
+  sendDeviceRequest,
+  commandReply,
+  commandTrace,
+  getDeviceSnapshot,
+  getSpeakerEnabled,
+  setSpeakerAccepting,
+  persistSpeakerEnabled,
+  speakerInfo,
+  getAssistantInfo = () => ({}),
+  setAssistantProfile = null,
+  getAssistantTuning = () => ({}),
+  setAssistantTuningPreset = null,
+  setAssistantTuningValue = null,
+  setAssistantSystemPrompt = null,
+  ownerVoiceprint = null,
+  getTrackDesired = () => false,
+  persistTrackDesired = async () => false,
+  handleTrackCommandResult = () => {},
+  renderTrackSnapshot = () => "Tracking telemetry unavailable.",
+  startTrackLive = () => {},
+  stopTrackLive = async () => false,
+  hasTrackLive = () => false,
+}) {
+  const unavailable = (name, status) => message(name, [`Status: ${bold(status)}`]);
+  const pendingSystemPrompts = new Set();
+  const promptEditorKey = (ctx) => `${ctx.chat?.id ?? "chat"}:${ctx.from?.id ?? "user"}`;
+
+  async function requestSpeakerStatus(ctx, action = null, fields = {}) {
+    const request = action
+      ? sendDeviceRequest("speaker_control", "speaker_ack", { action, ...fields }, commandTrace(ctx))
+      : sendDeviceRequest("speaker_status", "speaker_ack", {}, commandTrace(ctx));
+    if (request.kind !== "sent") return { request, device: null };
+    const result = await request.promise;
+    return { request, result, device: result.kind === "response" ? result.message : null };
+  }
+
+  async function voice(ctx) {
+    if (String(ctx.match ?? "").trim()) return commandReply(ctx, "Usage: /voice", "usage", null, { newoSpeak: false });
+    const request = sendDeviceRequest("voice_control", "voice_ack", { action: "manual_toggle" }, commandTrace(ctx));
+    if (request.kind !== "sent") return commandReply(ctx, "Voice offline.", "offline", null, { newoSpeak: false });
+    const result = await request.promise;
+    if (result.kind === "response" && result.message.applied === false) return commandReply(ctx, "Voice busy.", "busy", request.requestId, { newoSpeak: false });
+    if (result.kind === "response") {
+      const text = result.message.state === "streaming" ? "Listening." : "Stopped.";
+      return commandReply(ctx, text, "response", request.requestId, { newoSpeak: false });
+    }
+    return commandReply(ctx, "Voice offline.", result.kind, request.requestId, { newoSpeak: false });
+  }
+
+  async function voiceStatus(ctx) {
+    const request = sendDeviceRequest("voice_status", "voice_ack", {}, commandTrace(ctx));
+    if (request.kind !== "sent") return commandReply(ctx, unavailable("voice", "offline"), "offline", null, { newoSpeak: false });
+    const result = await request.promise;
+    if (result.kind === "response") return commandReply(ctx, formatVoiceStatus(result.message, getAssistantInfo()), "response", request.requestId, { newoSpeak: false });
+    return commandReply(ctx, unavailable("voice", result.kind === "timeout" ? "No reply" : "offline"), result.kind, request.requestId, { newoSpeak: false });
+  }
+
+  async function mic(ctx, forced = null) {
+    const fields = parseMicArgument(forced ?? ctx.match ?? "");
+    if (!fields) return commandReply(ctx, "Usage: /mic raw | mild | medium | strong", "usage", null, { newoSpeak: false });
+    const request = sendDeviceRequest("mic_control", "mic_ack", fields, commandTrace(ctx));
+    if (request.kind !== "sent") return commandReply(ctx, unavailable("microphone", "offline"), "offline", null, { newoSpeak: false });
+    const result = await request.promise;
+    if (result.kind === "response") return commandReply(ctx, formatMicStatus(result.message), "response", request.requestId, { newoSpeak: false });
+    return commandReply(ctx, unavailable("microphone", result.kind === "timeout" ? "No reply" : "offline"), result.kind, request.requestId, { newoSpeak: false });
+  }
+
+  function formatOwnerStatus(status = {}) {
+    return message("owner voice", [
+      `Verification: ${bold(status.enabled ? "ON" : "OFF")}`,
+      `Voiceprint: ${bold(status.enrolled ? "ENROLLED" : "NOT ENROLLED")}`,
+      `Enrollment: ${bold(status.enrollment_active ? `${status.enrollment_samples}/${status.enrollment_required}` : "IDLE")}`,
+      `Threshold: ${bold(status.threshold ?? "n/a")}`,
+    ]);
+  }
+
+  async function ownerEnroll(ctx) {
+    const status = ownerVoiceprint?.begin?.();
+    if (!status?.enabled) return commandReply(ctx, unavailable("owner voice", "Disabled"), "unavailable", null, { newoSpeak: false });
+    return commandReply(ctx, `${formatOwnerStatus(status)}\n${italic("Use /v, say “Hi Wall-E”, and repeat for all 3 samples.")}`, "response", null, { newoSpeak: false });
+  }
+
+  async function ownerStatus(ctx) {
+    return commandReply(ctx, formatOwnerStatus(ownerVoiceprint?.status?.() ?? {}), "response", null, { newoSpeak: false });
+  }
+
+  async function ownerCancel(ctx) {
+    const cancelled = ownerVoiceprint?.cancel?.();
+    return commandReply(ctx, cancelled ? "Owner enrollment cancelled." : "No owner enrollment is active.", "response", null, { newoSpeak: false });
+  }
+
+  async function profile(ctx, forcedProfile = null) {
+    const requested = forcedProfile ?? String(ctx.match ?? "").trim();
+    if (/^(?:set|s)\s+sysprompt$/i.test(requested)) {
+      pendingSystemPrompts.add(promptEditorKey(ctx));
+      return commandReply(ctx, `${title("system prompt:")}\n${quote(["Send the new system prompt now, or use /cancel."])}`, "prompt", null, { newoSpeak: false });
+    }
+    const setting = requested.match(/^(?:set|s)\s+(topk|topp|maxtoken|maxchars|timeout|rpenalty|temp)\s+([^\s]+)$/i);
+    if (setting) {
+      if (!setAssistantTuningValue) return commandReply(ctx, unavailable("profile tuning", "Unavailable"), "unavailable", null, { newoSpeak: false });
+      try {
+        return commandReply(ctx, formatProfileTuning(await setAssistantTuningValue(setting[1].toLowerCase(), setting[2])), "response", null, { newoSpeak: false });
+      } catch {
+        return commandReply(ctx, message("profile tuning", ["Invalid value. Use /p_conf for current settings."]), "usage", null, { newoSpeak: false });
+      }
+    }
+    if (requested) {
+      if (!setAssistantProfile) return commandReply(ctx, unavailable("profile", "Unavailable"), "unavailable", null, { newoSpeak: false });
+      try {
+        const telemetry = await setAssistantProfile(requested);
+        return commandReply(ctx, formatProfileStatus(telemetry), "response", null, { newoSpeak: false });
+      } catch {
+        return commandReply(ctx, message("profile", ["Usage: /profile [lfm|qwen]"]), "usage", null, { newoSpeak: false });
+      }
+    }
+    return commandReply(ctx, formatProfileStatus(getAssistantInfo()), "response", null, { newoSpeak: false });
+  }
+
+  async function earcon(ctx, forced = null) {
+    const parsed = parseEarconArgument(forced ?? ctx.match ?? "");
+    if (parsed.kind === "invalid") {
+      return commandReply(ctx, message("earcon", ["Usage: /earcon [rotate|chime|sweep|tick|off]", "Alias: /ec or /wake_sound"]),
+                          "usage", null, { newoSpeak: false });
+    }
+    const request = sendDeviceRequest("earcon_control", "display_ack",
+      { mode: parsed.kind === "set" ? parsed.mode : "status" }, commandTrace(ctx));
+    if (request.kind !== "sent") return commandReply(ctx, unavailable("earcon", "offline"), "offline", null, { newoSpeak: false });
+    const result = await request.promise;
+    if (result.kind !== "response" || result.message.mode === "error") {
+      return commandReply(ctx, unavailable("earcon", result.kind === "timeout" ? "No reply" : "Unavailable"),
+                          result.kind === "response" ? "device_error" : result.kind,
+                          request.requestId, { newoSpeak: false });
+    }
+    const speakerStatus = await requestSpeakerStatus(ctx);
+    return commandReply(ctx, formatEarconStatus(result.message.mode, speakerStatus.device), "response",
+                        request.requestId, { newoSpeak: false });
+  }
+
+  async function profilePromptInput(ctx) {
+    const raw = String(ctx.message?.text ?? "").trim();
+    // These aliases intentionally live in the final text middleware so they
+    // work without adding another command surface to the large server router.
+    // grammY treats commands as text; unmatched command middleware falls
+    // through to this handler.
+    const earconCommand = raw.match(/^\/(?:earcon|ec|wake_sound)(?:@[a-z0-9_]+)?(?:\s+(.+))?$/i);
+    if (earconCommand) {
+      await earcon(ctx, earconCommand[1] ?? "");
+      return true;
+    }
+
+    const key = promptEditorKey(ctx);
+    if (!pendingSystemPrompts.has(key)) return false;
+    const prompt = raw;
+    if (!prompt || prompt.startsWith("/")) return false;
+    pendingSystemPrompts.delete(key);
+    try {
+      const tuning = await setAssistantSystemPrompt(prompt);
+      await commandReply(ctx, formatProfileTuning(tuning), "response", null, { newoSpeak: false });
+    } catch {
+      await commandReply(ctx, unavailable("system prompt", "State could not be saved"), "persistence_error", null, { newoSpeak: false });
+    }
+    return true;
+  }
+
+  async function cancelProfilePrompt(ctx) {
+    const cancelled = pendingSystemPrompts.delete(promptEditorKey(ctx));
+    return commandReply(ctx, cancelled ? "System prompt edit cancelled." : "Nothing to cancel.", cancelled ? "cancelled" : "response", null, { newoSpeak: false });
+  }
+
+  async function profileTune(ctx, forcedPreset = null) {
+    const preset = forcedPreset ?? String(ctx.match ?? "").trim().toLowerCase();
+    if (!preset) return commandReply(ctx, formatProfileTuning(getAssistantTuning()), "response", null, { newoSpeak: false });
+    if (!setAssistantTuningPreset || !["fast", "balanced", "quality", "reset"].includes(preset)) {
+      return commandReply(ctx, message("profile tuning", ["Usage: /pt [fast|balanced|quality|reset]"]), "usage", null, { newoSpeak: false });
+    }
+    try {
+      return commandReply(ctx, formatProfileTuning(await setAssistantTuningPreset(preset)), "response", null, { newoSpeak: false });
+    } catch {
+      return commandReply(ctx, unavailable("profile tuning", "State could not be saved"), "persistence_error", null, { newoSpeak: false });
+    }
+  }
+
+  let speakerToggleQueue = Promise.resolve();
+
+  async function applySpeakerToggle(ctx) {
+    const enabled = !getSpeakerEnabled();
+    if (enabled) {
+      try { await persistSpeakerEnabled(true); }
+      catch { return commandReply(ctx, unavailable("speaker", "State could not be saved"), "persistence_error", null, { newoSpeak: false }); }
+      setSpeakerAccepting(true);
+    } else {
+      setSpeakerAccepting(false);
+    }
+
+    const status = await requestSpeakerStatus(ctx, "set_enabled", { enabled, led_feedback: true });
+    if (!enabled) {
+      try { await persistSpeakerEnabled(false); }
+      catch { return commandReply(ctx, unavailable("speaker", "Speaker is OFF but state could not be saved"), "persistence_error", status.request.requestId ?? null, { newoSpeak: false }); }
+    }
+
+    const confirmed = status.device?.applied === true && status.device.enabled === enabled &&
+      (enabled ? ["Ready", "Connecting"].includes(status.device.connection) : status.device.connection === "Disconnected");
+    if (!confirmed) {
+      const text = status.device ? "Speaker change was not confirmed." : "Speaker unavailable.";
+      return commandReply(ctx, text, status.device ? "device_error" : "device_unavailable",
+                          status.request.requestId ?? null, { newoSpeak: false });
+    }
+    const text = enabled ? "Speaker turned on." : "Speaker turned off.";
+    return commandReply(ctx, text, "response", status.request.requestId ?? null, { newoSpeak: false });
+  }
+
+  async function speaker(ctx) {
+    if (String(ctx.match ?? "").trim()) return commandReply(ctx, message("speaker", ["Usage: /speaker"]), "usage", null, { newoSpeak: false });
+    const operation = speakerToggleQueue.then(() => applySpeakerToggle(ctx));
+    speakerToggleQueue = operation.catch(() => {});
+    return operation;
+  }
+
+  async function eco(ctx) {
+    if (String(ctx.match ?? "").trim()) return commandReply(ctx, message("eco", ["Usage: /eco"]), "usage", null, { newoSpeak: false });
+    const toggle = sendDeviceRequest("eco_toggle", "display_ack", {}, commandTrace(ctx));
+    if (toggle.kind !== "sent") return commandReply(ctx, unavailable("eco", "offline"), "offline", null, { newoSpeak: false });
+    const toggled = await toggle.promise;
+    if (toggled.kind !== "response") return commandReply(ctx, unavailable("eco", toggled.kind === "timeout" ? "No reply" : "offline"), toggled.kind, toggle.requestId, { newoSpeak: false });
+    const enabled = toggled.message.mode === "eco_on";
+    const telemetry = sendDeviceRequest("status_request", "status", {}, commandTrace(ctx));
+    if (telemetry.kind === "sent") await telemetry.promise;
+    return commandReply(ctx, formatEcoStatus(enabled, getDeviceSnapshot()), "response", toggle.requestId, { newoSpeak: false });
+  }
+
+  async function clock(ctx) {
+    const parsed = parseClockArgument(ctx.match);
+    if (parsed.kind === "invalid") {
+      return commandReply(ctx, "Usage: /clock [on|off|status]", "usage", null, { newoSpeak: false });
+    }
+    const request = sendDeviceRequest("clock_control", "clock_ack", { action: parsed.kind }, commandTrace(ctx));
+    if (request.kind !== "sent") return commandReply(ctx, "Clock offline.", "offline", null, { newoSpeak: false });
+    const result = await request.promise;
+    if (result.kind === "response" && result.message.applied !== false) {
+      return commandReply(ctx, `Clock ${result.message.enabled ? "ON" : "OFF"}.`, "response", request.requestId,
+                          { newoSpeak: false });
+    }
+    return commandReply(ctx, "Clock unavailable.", result.kind, request.requestId, { newoSpeak: false });
+  }
+
+  async function usb(ctx, forced = null) {
+    const parsed = parseUsbArgument(forced ?? ctx.match);
+    if (!parsed) return commandReply(ctx, "Usage: /u [on|off|a on|a off|s on|s off|v on|v off]", "usage", null, { newoSpeak: false });
+    const request = sendDeviceRequest("usb_control", "usb_ack", parsed, commandTrace(ctx));
+    if (request.kind !== "sent") return commandReply(ctx, unavailable("USB", "offline"), "offline", null, { newoSpeak: false });
+    const result = await request.promise;
+    if (result.kind !== "response") return commandReply(ctx, unavailable("USB", result.kind === "timeout" ? "No reply" : "offline"), result.kind, request.requestId, { newoSpeak: false });
+    const u = result.message;
+    const text = message("USB", [
+      `Host: ${bold(u.host ? "ON" : "OFF")}`,
+      `Audio: ${bold(u.audio ? "ON" : "OFF")}`,
+      `Storage: ${bold(u.storage ? "ON" : "OFF")}`,
+      `VCP/Nano: ${bold(u.vcp ? "ON" : "OFF")}`,
+      `Active: ${bold(u.active ? "ON" : "OFF")}`,
+      `Safety trial: ${bold(u.trial_pending ? "PENDING" : "OFF")}`,
+      `Apply: ${bold(u.reboot_required ? "REBOOTING" : "CURRENT")}`,
+    ]);
+    return commandReply(ctx, text, u.applied === false ? "device_error" : "response", request.requestId, { newoSpeak: false });
+  }
+
+  let trackQueue = Promise.resolve();
+  async function trackSnapshot(ctx, debug = false) {
+    const request = sendDeviceRequest("track_control", "track_ack", { action: "status" }, commandTrace(ctx));
+    if (request.kind !== "sent") {
+      handleTrackCommandResult(request);
+      return commandReply(ctx, renderTrackSnapshot({ debug, deviceResult: request }), "offline", null, { newoSpeak: false });
+    }
+    const result = await request.promise;
+    handleTrackCommandResult(result);
+    return commandReply(ctx, renderTrackSnapshot({ debug, deviceResult: result }),
+                        result.kind === "response" ? "response" : result.kind,
+                        request.requestId, { newoSpeak: false });
+  }
+
+  async function applyTrack(ctx) {
+    const parsed = parseTrackArgument(ctx.match);
+    if (parsed.kind === "invalid") return commandReply(ctx, "Usage: /track [on|off|status|debug]", "usage", null, { newoSpeak: false });
+    if (parsed.kind === "status" || parsed.kind === "debug") return trackSnapshot(ctx, parsed.kind === "debug");
+    let action = parsed.kind;
+    const desired = action === "toggle" ? !getTrackDesired() : action === "on";
+    try { await persistTrackDesired(desired); }
+    catch { return commandReply(ctx, "Tracking desired state could not be saved.", "persistence_error", null, { newoSpeak: false }); }
+    action = desired ? "on" : "off";
+    const request = sendDeviceRequest("track_control", "track_ack", { action }, commandTrace(ctx));
+    let panelMessage = null;
+    if (desired) {
+      const initial = renderTrackSnapshot({ transient: true, deviceResult: request });
+      panelMessage = await commandReply(ctx, initial, "starting", request.requestId ?? null, { newoSpeak: false });
+      startTrackLive(ctx.chat?.id ?? 0, panelMessage?.message_id, initial);
+    }
+    if (request.kind !== "sent") {
+      handleTrackCommandResult(request);
+      if (!desired) return commandReply(ctx, "Tracking desired OFF; actual device offline.", "offline", null, { newoSpeak: false });
+      return panelMessage;
+    }
+    const result = await request.promise;
+    handleTrackCommandResult(result);
+    if (!desired) {
+      const stopped = await stopTrackLive(ctx.chat?.id ?? 0, { final: true });
+      if (stopped) return null;
+    }
+    if (result.kind === "response" && result.message.applied === true) {
+      const peerWarning = result.message.state === "off" && ["uncertain", "unavailable"].includes(result.message.peer_state)
+        ? " Newo2 stop unconfirmed."
+        : "";
+      const actual = result.message.state === "active" ? "ACTIVE" : "OFF";
+      if (desired) return panelMessage;
+      return commandReply(ctx, `Tracking desired OFF; actual ${actual}; peer ${result.message.peer_state ?? "unknown"}.${peerWarning}`, "response", request.requestId, { newoSpeak: false });
+    }
+    if (desired) return panelMessage;
+    return commandReply(ctx, "Tracking desired OFF; actual change not confirmed.", result.kind === "response" ? "device_error" : result.kind, request.requestId, { newoSpeak: false });
+  }
+  function track(ctx) {
+    const operation = trackQueue.then(() => applyTrack(ctx));
+    trackQueue = operation.catch(() => {});
+    return operation;
+  }
+
+  async function applyTrackBackground(ctx) {
+    if (String(ctx.match ?? "").trim()) return commandReply(ctx, "Usage: /track_bg", "usage", null, { newoSpeak: false });
+    if (getTrackDesired() && hasTrackLive(ctx.chat?.id ?? 0)) {
+      await stopTrackLive(ctx.chat?.id ?? 0, { final: true });
+      return commandReply(ctx, "Tracking in background…", "response", null, { newoSpeak: false });
+    }
+    const desired = !getTrackDesired();
+    try { await persistTrackDesired(desired); }
+    catch { return commandReply(ctx, "Tracking desired state could not be saved.", "persistence_error", null, { newoSpeak: false }); }
+    const request = sendDeviceRequest("track_control", "track_ack", { action: desired ? "on" : "off" }, commandTrace(ctx));
+    if (request.kind !== "sent") {
+      handleTrackCommandResult(request);
+      return commandReply(ctx, desired ? "Tracking desired ON in background; device offline." : "Tracking desired OFF; device offline.", "offline", null, { newoSpeak: false });
+    }
+    const result = await request.promise;
+    handleTrackCommandResult(result);
+    const confirmed = result.kind === "response" && result.message.applied === true &&
+      result.message.state === (desired ? "active" : "off");
+    if (!confirmed) return commandReply(ctx, `Tracking desired ${desired ? "ON" : "OFF"}; actual change not confirmed.`,
+                                        result.kind === "response" ? "device_error" : result.kind,
+                                        request.requestId, { newoSpeak: false });
+    return commandReply(ctx, desired ? "Tracking in background…" : "Tracking turned off.", "response", request.requestId, { newoSpeak: false });
+  }
+  function trackBackground(ctx) {
+    const operation = trackQueue.then(() => applyTrackBackground(ctx));
+    trackQueue = operation.catch(() => {});
+    return operation;
+  }
+
+  async function volume(ctx) {
+    const parsed = parseVolumeArgument(ctx.match);
+    if (parsed.kind === "invalid") return commandReply(ctx, message("volume", ["Usage: /volume [0-100]"]), "usage", null, { newoSpeak: false });
+    const status = await requestSpeakerStatus(ctx, parsed.kind === "set" ? "set_volume" : null, parsed.kind === "set" ? { volume: parsed.volume } : {});
+    if (!status.device) return commandReply(ctx, unavailable("volume", status.result?.kind === "timeout" ? "No reply" : "offline"), status.result?.kind ?? "offline", status.request.requestId ?? null, { newoSpeak: false });
+    return commandReply(ctx, formatVolumeStatus(status.device), status.device.applied === false ? "device_error" : "response", status.request.requestId, { newoSpeak: false });
+  }
+
+  async function mute(ctx) {
+    if (String(ctx.match ?? "").trim()) return commandReply(ctx, message("mute", ["Usage: /mute"]), "usage", null, { newoSpeak: false });
+    const status = await requestSpeakerStatus(ctx, "toggle_mute");
+    if (!status.device) return commandReply(ctx, unavailable("mute", status.result?.kind === "timeout" ? "No reply" : "offline"), status.result?.kind ?? "offline", status.request.requestId ?? null, { newoSpeak: false });
+    return commandReply(ctx, formatMuteStatus(status.device), status.device.applied === false ? "device_error" : "response", status.request.requestId, { newoSpeak: false });
+  }
+
+  return { voice, voiceStatus, mic, ownerEnroll, ownerStatus, ownerCancel, profile, profileTune, profilePromptInput, cancelProfilePrompt, earcon, speaker, eco, clock, usb, track, trackBackground, volume, mute };
+}
