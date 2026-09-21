@@ -78,6 +78,8 @@ export function createPrimaryModeHandlers(options) {
       if (!ctx) return;
       const text = SWITCH_MESSAGES.get(earcon);
       if (!text) return;
+      const trace = options.commandTrace?.(ctx);
+      if (trace) trace.speechQueued = false;
       await options.commandReply(ctx, text, "assistant_mode_switch", null, { newoSpeak: true, newoSpeakMaxChars: 80 });
       await new Promise((resolve) => setTimeout(resolve, EARCON_SETTLE_MS));
     },
