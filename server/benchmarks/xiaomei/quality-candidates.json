@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "endpoint": "http://100.110.136.15:11435/api/chat",
+  "candidates": [
+    {"label":"MiniCPM5-2B","model":"newo-minicpm5:latest"},
+    {"label":"Gemma-4-E2B","model":"newo-gemma-e2b:latest"},
+    {"label":"Qwen3.5-2B","model":"newo-qwen35-2b:latest"}
+  ]
+}
