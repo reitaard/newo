@@ -1,6 +1,7 @@
 export const QWEN_PROFILE_ID = "qwen3:0.6b";
 export const LFM_PROFILE_ID = "lfm2.5:8b";
 export const GEMMA_PROFILE_ID = "gemma4:e2b";
+export const MINICPM_PROFILE_ID = "minicpm5:2b";
 
 export const QWEN_SYSTEM_PROMPT = [
   "You are Alfred, the user's private voice assistant.",
@@ -131,6 +132,33 @@ export function createAssistantProfiles({ qwenApiKey = null, overrides = {} } = 
       progressiveTts: true,
       chunking: Object.freeze({ mode: "sentence_clause", minChars: 24, clauseChars: 72, hardChars: 140 }),
       sampling: Object.freeze({ temperature: 1.0, top_p: 0.95, top_k: 64, repeat_penalty: 1.0 }),
+      maxOutputTokens: 256,
+      maxReplyChars: 450,
+      timeoutMs: 30_000,
+      keepAlive: -1,
+      health: Object.freeze({ method: "ollama_tags", endpoint: "/api/tags", implicitLatestTag: false, timeoutMs: 3_000 }),
+      contextPolicy: sharedContextPolicy,
+      requestOptions: Object.freeze({ stream: true }),
+      toolPolicy: Object.freeze({ web: false, maxSearches: 0, maxReads: 0, maxRounds: 1 }),
+      fallbackProfile: QWEN_PROFILE_ID,
+    }),
+    [MINICPM_PROFILE_ID]: Object.freeze({
+      id: MINICPM_PROFILE_ID,
+      aliases: Object.freeze(["minicpm", "minicpm5"]),
+      enabled: true,
+      provider: "ollama_chat",
+      baseUrl: "http://100.110.136.15:11435",
+      endpoint: "/api/chat",
+      model: "newo-minicpm5:latest",
+      apiKey: null,
+      systemPrompt: GEMMA_SYSTEM_PROMPT,
+      promptFormat: "ollama_messages",
+      reasoning: "route_controlled",
+      routing: Object.freeze({ fast: "off", think: "on" }),
+      thinkMode: "auto",
+      progressiveTts: true,
+      chunking: Object.freeze({ mode: "sentence_clause", minChars: 24, clauseChars: 72, hardChars: 140 }),
+      sampling: Object.freeze({ temperature: 1.0, top_p: 0.95, repeat_penalty: 1.0 }),
       maxOutputTokens: 256,
       maxReplyChars: 450,
       timeoutMs: 30_000,
