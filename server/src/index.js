@@ -79,7 +79,7 @@ const EnvSchema = z.object({
   SPEAKER_VERIFICATION_THRESHOLD: z.preprocess(emptyToUndefined, z.coerce.number().min(0).max(1).default(0.65)),
   SPEAKER_VOICEPRINT_DIRECTORY: z.preprocess(emptyToUndefined, z.string().default("data/voiceprints")),
   ASSISTANT_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
-  ASSISTANT_PROFILE: z.preprocess(emptyToUndefined, z.string().default("qwen")),
+  ASSISTANT_PROFILE: z.preprocess(emptyToUndefined, z.string().default("minicpm")),
   ASSISTANT_PROVIDER: z.preprocess(emptyToUndefined, z.enum(["openai_chat", "ollama_raw", "ollama_chat"]).default("openai_chat")),
   ASSISTANT_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   ASSISTANT_MODEL: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
@@ -187,7 +187,7 @@ let bot = null;
 let pendingReboot = null;
 let shuttingDown = false;
 const builtInAssistantProfiles = createAssistantProfiles({ qwenApiKey: env.ASSISTANT_API_KEY });
-const configuredAssistantProfile = resolveAssistantProfile(env.ASSISTANT_PROFILE, builtInAssistantProfiles) ?? QWEN_PROFILE_ID;
+const configuredAssistantProfile = resolveAssistantProfile(env.ASSISTANT_PROFILE, builtInAssistantProfiles) ?? MINICPM_PROFILE_ID;
 const runtimeState = createRuntimeStateStore({
   filePath: env.RUNTIME_STATE_FILE,
   logger: app.log,
@@ -195,6 +195,11 @@ const runtimeState = createRuntimeStateStore({
 });
 let assistantProfileOverrides = runtimeState.assistantProfileOverrides;
 const assistantProfiles = createAssistantProfiles({ qwenApiKey: env.ASSISTANT_API_KEY, overrides: assistantProfileOverrides });
+const persistedAssistantProfile = resolveAssistantProfile(runtimeState.assistantProfile, assistantProfiles);
+const initialAssistantProfile =
+  persistedAssistantProfile === LFM_PROFILE_ID && configuredAssistantProfile !== LFM_PROFILE_ID
+    ? configuredAssistantProfile
+    : persistedAssistantProfile ?? configuredAssistantProfile;
 let automaticSpeakerEnabled = runtimeState.speakerEnabled;
 let desiredTrackEnabled = runtimeState.trackDesired;
 
@@ -244,9 +249,7 @@ const speakerRuntime = createSpeakerRuntime({
 const assistantRuntime = createAssistantRuntime({
   enabled: env.ASSISTANT_ENABLED,
   profiles: assistantProfiles,
-  preferredProfile: (resolveAssistantProfile(runtimeState.assistantProfile, assistantProfiles) === LFM_PROFILE_ID && configuredAssistantProfile === GEMMA_PROFILE_ID)
-    ? GEMMA_PROFILE_ID
-    : resolveAssistantProfile(runtimeState.assistantProfile, assistantProfiles) ?? configuredAssistantProfile,
+  preferredProfile: initialAssistantProfile,
   timeZone: env.ASSISTANT_TIME_ZONE,
   runtimeContext: ({ deviceId }) => {
     const device = devices.get(deviceId);
@@ -590,7 +593,7 @@ const TELEGRAM_COMMANDS = [
   { command: "vs", description: "Voice status" },
   { command: "profile", description: "Assistant profile status" },
   { command: "profile_gemma", description: "Use Gemma assistant" },
-  { command: "profile_minicpm", description: "Use MiniCPM assistant" },
+  { command: "profile_minicpm", description: "Use MiniCPM assistant (main)" },
   { command: "profile_ministral", description: "Use Ministral assistant" },
   { command: "profile_spark", description: "Use Spark assistant" },
   { command: "profile_qwen", description: "Use Qwen assistant" },

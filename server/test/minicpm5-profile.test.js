@@ -15,6 +15,7 @@ test("MiniCPM5 profile uses native Ollama chat", () => {
   assert.equal(MINICPM_PROFILE_ID, "minicpm5:2b");
   assert.equal(resolveAssistantProfile("minicpm", profiles), MINICPM_PROFILE_ID);
   assert.equal(resolveAssistantProfile("minicpm5", profiles), MINICPM_PROFILE_ID);
+  assert.equal(resolveAssistantProfile("main", profiles), MINICPM_PROFILE_ID);
 
   assert.equal(profile.provider, "ollama_chat");
   assert.equal(profile.endpoint, "/api/chat");

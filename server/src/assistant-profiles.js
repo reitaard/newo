@@ -146,7 +146,7 @@ export function createAssistantProfiles({ qwenApiKey = null, overrides = {} } = 
     }),
     [MINICPM_PROFILE_ID]: Object.freeze({
       id: MINICPM_PROFILE_ID,
-      aliases: Object.freeze(["minicpm", "minicpm5"]),
+      aliases: Object.freeze(["minicpm", "minicpm5", "main"]),
       enabled: true,
       provider: "ollama_chat",
       baseUrl: "http://100.110.136.15:11435",
@@ -210,7 +210,7 @@ export function createAssistantProfiles({ qwenApiKey = null, overrides = {} } = 
       provider: "ollama_chat",
       baseUrl: "http://100.110.136.15:11435",
       endpoint: "/api/chat",
-      model: "newo-spark-x2.5:latest",
+      model: "newo-spark-x2.5-4b:archive",
       apiKey: null,
       systemPrompt: GEMMA_SYSTEM_PROMPT,
       promptFormat: "ollama_messages",
