@@ -114,3 +114,13 @@ test("ambiguous active speech falls through to Xiaomei chat, not generic routing
   const session = createXiaomeiSession(); session.active = true;
   assert.equal(routeXiaomeiTurn("Maybe we could go later", session).route, "chat");
 });
+
+test("persisted assistant mode gates Xiaomei ownership of voice transcripts", async () => {
+  let activeMode = false;
+  const runtime = createXiaomeiRuntime({ gemma: model("gemma", "你好"), translator: translator(),
+    isActiveMode: () => activeMode });
+  assert.equal(await runtime.handleTranscript({ deviceId: "n", streamId: "1", text: "hello" }, { dryRun: true }), false);
+  activeMode = true;
+  const result = await runtime.handleTranscript({ deviceId: "n", streamId: "2", text: "hello" }, { dryRun: true });
+  assert.equal(result.route, "chat");
+});

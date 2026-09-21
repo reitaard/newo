@@ -61,7 +61,7 @@ function applyCommand(session, command) {
 
 export function createXiaomeiRuntime({ gemma, translator, speakerRuntime = null, serenaBackend = null,
   pronunciationProvider = null, logger = null, sessions = createXiaomeiSessionStore(), enabled = true,
-  setAssistantState = () => {} }) {
+  setAssistantState = () => {}, isActiveMode = () => true }) {
   const active = new Map();
   const translate = async (request) => {
     try { return await translator.translate(request); }
@@ -88,10 +88,10 @@ export function createXiaomeiRuntime({ gemma, translator, speakerRuntime = null,
   }
 
   async function handleTranscript(turn, { dryRun = false } = {}) {
-    if (!enabled) return false;
+    if (!enabled || !isActiveMode()) return false;
     const session = sessions.get(turn.deviceId);
+    if (!session.active) session.active = true;
     const command = resolveXiaomeiCommand(turn.text, session);
-    if (!session.active && command?.id !== "session.activate") return false;
     cancelDevice(turn.deviceId, "xiaomei_superseded");
     const controller = new AbortController();
     const generationId = ++session.generation;

@@ -95,12 +95,15 @@ const EnvSchema = z.object({
   ASSISTANT_PROGRESS_FEEDBACK_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
   ASSISTANT_WEB_TOOLS_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
   XIAOMEI_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
-  XIAOMEI_GEMMA_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://127.0.0.1:11434")),
+  XIAOMEI_OLLAMA_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://100.110.136.15:11435")),
+  XIAOMEI_ALFRED_MODEL: z.preprocess(emptyToUndefined, z.string().default("newo-minicpm5:latest")),
+  XIAOMEI_SWITCH_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(120_000).default(60_000)),
+  XIAOMEI_GEMMA_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   XIAOMEI_GEMMA_MODEL: z.preprocess(emptyToUndefined, z.string().default("newo-gemma-e2b:latest")),
-  XIAOMEI_TRANSLATE_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://127.0.0.1:11434")),
+  XIAOMEI_TRANSLATE_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   XIAOMEI_TRANSLATE_MODEL: z.preprocess(emptyToUndefined, z.string().default("newo-translate:latest")),
   XIAOMEI_MODEL_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(60_000).default(20_000)),
-  XIAOMEI_TTS_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://127.0.0.1:8184")),
+  XIAOMEI_TTS_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://100.110.136.15:8124")),
   XIAOMEI_TTS_MODEL: z.preprocess(emptyToUndefined, z.string().default("qwen3-tts-0.6b-customvoice")),
   XIAOMEI_TTS_SPEAKER: z.preprocess(emptyToUndefined, z.string().default("Serena")),
   XIAOMEI_TTS_LANGUAGE: z.preprocess(emptyToUndefined, z.string().default("Auto")),
@@ -256,9 +259,9 @@ const speakerRuntime = createSpeakerRuntime({
   maxTextChars: env.TTS_MAX_TEXT_CHARS,
   format: { sampleRate: env.TTS_SAMPLE_RATE, channels: 1, bitsPerSample: 16 },
 });
-const xiaomeiGemma = new XiaomeiModelClient({ baseUrl: env.XIAOMEI_GEMMA_BASE_URL, model: env.XIAOMEI_GEMMA_MODEL,
+const xiaomeiGemma = new XiaomeiModelClient({ baseUrl: env.XIAOMEI_GEMMA_BASE_URL ?? env.XIAOMEI_OLLAMA_BASE_URL, model: env.XIAOMEI_GEMMA_MODEL,
   timeoutMs: env.XIAOMEI_MODEL_TIMEOUT_MS, logger: app.log, role: "gemma" });
-const xiaomeiTranslator = new HyMtTranslationClient({ baseUrl: env.XIAOMEI_TRANSLATE_BASE_URL, model: env.XIAOMEI_TRANSLATE_MODEL,
+const xiaomeiTranslator = new HyMtTranslationClient({ baseUrl: env.XIAOMEI_TRANSLATE_BASE_URL ?? env.XIAOMEI_OLLAMA_BASE_URL, model: env.XIAOMEI_TRANSLATE_MODEL,
   timeoutMs: env.XIAOMEI_MODEL_TIMEOUT_MS, logger: app.log, role: "translation" });
 const serenaBackend = new Qwen3TtsBackend({ baseUrl: env.XIAOMEI_TTS_BASE_URL, model: env.XIAOMEI_TTS_MODEL,
   speaker: env.XIAOMEI_TTS_SPEAKER, language: env.XIAOMEI_TTS_LANGUAGE, requestTimeoutMs: env.XIAOMEI_TTS_TIMEOUT_MS,
@@ -266,7 +269,8 @@ const serenaBackend = new Qwen3TtsBackend({ baseUrl: env.XIAOMEI_TTS_BASE_URL, m
 const xiaomeiTtsBackend = new FallbackTtsBackend(serenaBackend, ttsBackend, app.log);
 const xiaomeiRuntime = createXiaomeiRuntime({ enabled: env.XIAOMEI_ENABLED, gemma: xiaomeiGemma,
   translator: xiaomeiTranslator, speakerRuntime, serenaBackend: xiaomeiTtsBackend,
-  pronunciationProvider: new NullPronunciationProvider(), logger: app.log, setAssistantState: sendAssistantState });
+  pronunciationProvider: new NullPronunciationProvider(), logger: app.log, setAssistantState: sendAssistantState,
+  isActiveMode: () => runtimeState.assistantMode === "xiaomei" });
 const assistantRuntime = createAssistantRuntime({
   enabled: env.ASSISTANT_ENABLED,
   profiles: assistantProfiles,
