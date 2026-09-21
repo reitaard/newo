@@ -39,9 +39,13 @@ test("Xiaomei benchmark fixture covers the controller modes without duplicate ca
   for (const route of allowedRoutes) assert.ok(routesSeen.has(route), `fixture does not cover ${route}`);
 });
 
-test("Xiaomei single-model benchmark is fixed to 4096 context and writes durable reports", async () => {
+test("Xiaomei single-model benchmark is fixed to 4096 context, supports schema/think modes, and writes durable reports", async () => {
   const source = await readFile(scriptUrl, "utf8");
   assert.match(source, /const CONTEXT_SIZE = 4096;/);
+  assert.match(source, /XIAOMEI_BENCH_OUTPUT_MODE/);
+  assert.match(source, /XIAOMEI_BENCH_THINK/);
+  assert.match(source, /CONTROLLER_SCHEMA/);
+  assert.match(source, /body\.format = CONTROLLER_SCHEMA/);
   assert.match(source, /LATEST\.json/);
   assert.match(source, /LATEST\.md/);
   assert.match(source, /\/api\/ps/);
@@ -56,18 +60,22 @@ test("single-candidate diagnostic config remains isolated from production profil
   assert.equal(candidate.model, null);
 });
 
-test("official Xiaomei shootout is pinned to the downloaded VPS models", async () => {
+test("official Xiaomei schema shootout is pinned to the downloaded VPS finalists", async () => {
   const config = JSON.parse(await readFile(candidatesUrl, "utf8"));
-  assert.equal(config.version, 1);
+  assert.equal(config.version, 2);
   assert.equal(config.endpoint, "http://100.110.136.15:11435/api/chat");
   assert.deepEqual(config.candidates.map((candidate) => candidate.model), [
-    "newo-minicpm5:latest",
     "newo-qwen35-2b:latest",
+    "newo-qwen38-2b:latest",
+    "newo-gemma-e2b:latest",
+    "newo-minicpm5:latest",
     "newo-spark17:latest",
   ]);
   assert.deepEqual(config.candidates.map((candidate) => candidate.label), [
-    "MiniCPM5-2B",
     "Qwen3.5-2B",
+    "Qwen3.8-2B",
+    "Gemma-4-E2B",
+    "MiniCPM5-2B",
     "Spark-X2.5-1.7B",
   ]);
 });
