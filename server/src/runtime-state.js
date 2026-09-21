@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 const ASSISTANT_MODES = new Set(["alfred", "xiaomei"]);
+let activeRuntimeStateStore = null;
+
+export function getActiveRuntimeStateStore() { return activeRuntimeStateStore; }
 
 export function createRuntimeStateStore({ filePath, logger, defaults = { speakerEnabled: true, assistantProfile: "qwen3:0.6b", assistantProfileOverrides: {}, assistantMode: "alfred", trackDesired: false, telegramUpdateIds: [] } }) {
   const resolvedPath = path.resolve(filePath);
@@ -39,7 +42,7 @@ export function createRuntimeStateStore({ filePath, logger, defaults = { speaker
     return operation;
   }
 
-  return {
+  const store = {
     get speakerEnabled() { return state.speakerEnabled; },
     get assistantProfile() { return state.assistantProfile; },
     get assistantProfileOverrides() { return structuredClone(state.assistantProfileOverrides ?? {}); },
@@ -67,4 +70,6 @@ export function createRuntimeStateStore({ filePath, logger, defaults = { speaker
     }),
     path: resolvedPath,
   };
+  activeRuntimeStateStore = store;
+  return store;
 }
