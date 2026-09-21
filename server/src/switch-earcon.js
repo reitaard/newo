@@ -11,9 +11,20 @@ const EARCONS = new Map([
   [ALFRED_SWITCH_START, { first: 900, second: 620, firstMs: 85, gapMs: 28, secondMs: 120 }],
   [ALFRED_SWITCH_READY, { first: 820, second: 560, firstMs: 55, gapMs: 20, secondMs: 75 }],
 ]);
+const PHRASE_ALIASES = new Map([
+  ["Switching to Xiaomei.", XIAOMEI_SWITCH_START],
+  ["Xiaomei ready.", XIAOMEI_SWITCH_READY],
+  ["Switching to Alfred.", ALFRED_SWITCH_START],
+  ["Alfred ready.", ALFRED_SWITCH_READY],
+]);
+
+function canonicalEarcon(text) {
+  const input = String(text ?? "");
+  return EARCONS.has(input) ? input : PHRASE_ALIASES.get(input) ?? null;
+}
 
 export function isSwitchEarcon(text) {
-  return EARCONS.has(String(text ?? ""));
+  return canonicalEarcon(text) !== null;
 }
 
 function toneSample(frequency, index, total) {
@@ -25,7 +36,8 @@ function toneSample(frequency, index, total) {
 }
 
 export function renderSwitchEarcon(text) {
-  const spec = EARCONS.get(String(text ?? ""));
+  const key = canonicalEarcon(text);
+  const spec = key ? EARCONS.get(key) : null;
   if (!spec) return null;
   const firstFrames = Math.round(SAMPLE_RATE * spec.firstMs / 1_000);
   const gapFrames = Math.round(SAMPLE_RATE * spec.gapMs / 1_000);
