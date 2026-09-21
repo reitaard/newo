@@ -100,16 +100,21 @@ export function createCapabilityRouterClient({
   }
 
   async function classify(text) {
-    if (!enabled) return { enabled: false, fallback: true, reason: "disabled", latency_ms: null };
+    // Cheap exact rules always run. SetFit is only a second-stage classifier for
+    // requests that did not match a deterministic local intent.
     const local = localCapability(text);
     if (local) {
       logger?.info({ capability_primary: local.primary, capability_raw_primary: local.raw_primary,
         capability_abstain: false, capability_confidence: 1, capability_margin: 1,
         capability_source_need: local.source_need, capability_router_latency_ms: 0,
         capability_router_request_ms: 0, capability_router_deterministic: true }, "Assistant capability routed");
-      last = { status: "ready", model: "deterministic+setfit-minilm-router-v2", at: Date.now(), error: null };
+      last = { status: "ready", model: enabled ? "deterministic+setfit-minilm-router-v2" : "deterministic",
+        at: Date.now(), error: null };
       return local;
     }
+
+    if (!enabled) return { enabled: false, fallback: true, reason: "disabled", latency_ms: null, request_latency_ms: 0 };
+
     const startedAt = performance.now();
     try {
       const result = await request("/v1/route", {
