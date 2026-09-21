@@ -8,14 +8,45 @@ const SERVER_DIR = path.resolve(__dirname, "..");
 const FIXTURE_PATH = path.join(SERVER_DIR, "benchmarks", "xiaomei", "controller-v1.json");
 const CANDIDATE_PATH = path.join(SERVER_DIR, "benchmarks", "xiaomei", "candidate.json");
 const RESULTS_DIR = path.join(SERVER_DIR, "benchmarks", "xiaomei", "results");
+
 const CONTEXT_SIZE = 4096;
 const REPEATS = Math.max(1, Number.parseInt(process.env.XIAOMEI_BENCH_REPEATS || "1", 10) || 1);
 const REQUEST_TIMEOUT_MS = Math.max(5_000, Number.parseInt(process.env.XIAOMEI_BENCH_TIMEOUT_MS || "45000", 10) || 45_000);
+const OUTPUT_MODE = String(process.env.XIAOMEI_BENCH_OUTPUT_MODE || "schema").trim().toLowerCase();
+const THINK = /^(1|true|on|yes)$/i.test(String(process.env.XIAOMEI_BENCH_THINK || "false"));
+const TEMPERATURE = Number.isFinite(Number(process.env.XIAOMEI_BENCH_TEMPERATURE)) ? Number(process.env.XIAOMEI_BENCH_TEMPERATURE) : 0.2;
+const TOP_P = Number.isFinite(Number(process.env.XIAOMEI_BENCH_TOP_P)) ? Number(process.env.XIAOMEI_BENCH_TOP_P) : 0.9;
+const TOP_K = Number.isFinite(Number(process.env.XIAOMEI_BENCH_TOP_K)) ? Number(process.env.XIAOMEI_BENCH_TOP_K) : 20;
+const NUM_PREDICT = Math.max(32, Number.parseInt(process.env.XIAOMEI_BENCH_NUM_PREDICT || (THINK ? "2048" : "192"), 10) || (THINK ? 2048 : 192));
+
+if (!["schema", "prompt"].includes(OUTPUT_MODE)) {
+  throw new Error("XIAOMEI_BENCH_OUTPUT_MODE must be schema or prompt");
+}
+
+const ROUTES = [
+  "chat",
+  "teach",
+  "translate_once",
+  "interpreter_start",
+  "interpreter_translate",
+  "interpreter_meta",
+  "interpreter_stop",
+];
+
+const CONTROLLER_SCHEMA = {
+  type: "object",
+  properties: {
+    route: { type: "string", enum: ROUTES },
+    reply: { type: "string" },
+  },
+  required: ["route", "reply"],
+  additionalProperties: false,
+};
 
 const XIAOMEI_CONTROLLER_PROMPT = [
   "You are Xiaomei, a bilingual English-Chinese voice assistant and interpreter controller.",
   "Classify the user's latest intent using exactly one route:",
-  "chat, teach, translate_once, interpreter_start, interpreter_translate, interpreter_meta, interpreter_stop.",
+  ROUTES.join(", ") + ".",
   "Use chat for ordinary conversation in English or Chinese.",
   "Use teach when the user asks to learn, explain, pronounce, or understand Chinese or English.",
   "Use translate_once for a one-off translation when continuous interpreter mode is not active.",
@@ -23,7 +54,7 @@ const XIAOMEI_CONTROLLER_PROMPT = [
   "While interpreter mode is active, use interpreter_translate for speech or instructions intended for the other person.",
   "While interpreter mode is active, use interpreter_meta when the user is talking to you about the conversation, asking what something meant, or asking for an explanation rather than asking you to relay it.",
   "Use interpreter_stop when the user asks to leave interpreter mode.",
-  "Return exactly one JSON object with keys route and reply. Do not use markdown or code fences.",
+  "Return exactly one object with keys route and reply.",
   "The reply should be brief and natural. For interpreter_translate, preserve the speaker's meaning and do not add commentary.",
 ].join(" ");
 
@@ -102,7 +133,7 @@ async function unloadModel(baseUrl, model) {
   }
 }
 
-async function streamChat({ baseUrl, model, messages, systemPrompt = XIAOMEI_CONTROLLER_PROMPT }) {
+async function streamChat({ baseUrl, model, messages, systemPrompt = XIAOMEI_CONTROLLER_PROMPT, structured = true }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   const startedNs = process.hrtime.bigint();
@@ -111,28 +142,32 @@ async function streamChat({ baseUrl, model, messages, systemPrompt = XIAOMEI_CON
   let thinking = "";
   let finalChunk = null;
 
+  const body = {
+    model,
+    messages: [{ role: "system", content: systemPrompt }, ...messages],
+    stream: true,
+    think: THINK,
+    keep_alive: -1,
+    options: {
+      num_ctx: CONTEXT_SIZE,
+      temperature: TEMPERATURE,
+      top_p: TOP_P,
+      top_k: TOP_K,
+      num_predict: NUM_PREDICT,
+    },
+  };
+  if (structured && OUTPUT_MODE === "schema") body.format = CONTROLLER_SCHEMA;
+
   try {
     const response = await fetch(`${baseUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       signal: controller.signal,
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "system", content: systemPrompt }, ...messages],
-        stream: true,
-        think: false,
-        keep_alive: -1,
-        options: {
-          num_ctx: CONTEXT_SIZE,
-          temperature: 0.2,
-          top_p: 0.9,
-          num_predict: 192,
-        },
-      }),
+      body: JSON.stringify(body),
     });
     if (!response.ok || !response.body) {
-      const body = await response.text();
-      throw new Error(`${response.status} ${response.statusText}: ${body.slice(0, 500)}`);
+      const responseBody = await response.text();
+      throw new Error(`${response.status} ${response.statusText}: ${responseBody.slice(0, 500)}`);
     }
 
     const decoder = new TextDecoder();
@@ -213,7 +248,7 @@ function replyCheck(caseDef, reply) {
 async function runCase({ caseDef, baseUrl, model }) {
   const attemptResults = [];
   for (let attempt = 1; attempt <= REPEATS; attempt += 1) {
-    const timing = await streamChat({ baseUrl, model, messages: caseDef.messages });
+    const timing = await streamChat({ baseUrl, model, messages: caseDef.messages, structured: true });
     const parsed = parseControllerJson(timing.text);
     const route = String(parsed.value?.route || "").trim().toLowerCase() || null;
     const reply = typeof parsed.value?.reply === "string" ? parsed.value.reply.trim() : "";
@@ -267,6 +302,10 @@ function markdownReport(report) {
   lines.push(`- Endpoint: \`${report.target.base_url}\``);
   lines.push(`- Context: ${report.config.context_size}`);
   lines.push(`- Repeats: ${report.config.repeats}`);
+  lines.push(`- Output contract: ${report.config.output_mode}`);
+  lines.push(`- Think: ${report.config.think}`);
+  lines.push(`- Sampling: temperature ${report.config.temperature} / top_p ${report.config.top_p} / top_k ${report.config.top_k}`);
+  lines.push(`- Output budget: ${report.config.num_predict}`);
   lines.push("");
   lines.push("## Summary");
   lines.push("");
@@ -306,21 +345,9 @@ function markdownReport(report) {
     lines.push(`| ${result.id} | ${result.expected_route} | ${first.route || "invalid"} | ${first.route_match ? "✓" : "✗"} | ${first.first_content_ms ?? "n/a"} | ${first.total_ms ?? "n/a"} | ${first.decode_tps ?? "n/a"} |`);
   }
   lines.push("");
-  lines.push("## Human review");
-  lines.push("");
-  lines.push("Fill these after reading the raw replies in the JSON report:");
-  lines.push("");
-  lines.push("- English conversational quality (1-5):");
-  lines.push("- Chinese conversational quality (1-5):");
-  lines.push("- Code-switch understanding (1-5):");
-  lines.push("- Chinese teaching quality (1-5):");
-  lines.push("- Interpreter/meta-command judgment (1-5):");
-  lines.push("- Voice-response suitability / brevity (1-5):");
-  lines.push("- Notes:");
-  lines.push("");
   lines.push("## Decision gate");
   lines.push("");
-  lines.push("Do not promote a candidate only because it is faster. Compare route accuracy, Chinese quality, warm/cold latency, and residency headroom against the same fixture and 4096 context.");
+  lines.push("Use schema mode for the production controller score. Prompt mode is only a format-obedience diagnostic. Compare FAST routing separately from THINK quality; do not mix those scores.");
   lines.push("");
   return `${lines.join("\n")}\n`;
 }
@@ -330,7 +357,7 @@ async function main() {
   const baseUrlRaw = process.env.XIAOMEI_BENCH_BASE_URL?.trim() || candidate.base_url;
   const model = process.env.XIAOMEI_BENCH_MODEL?.trim() || candidate.model;
   if (!baseUrlRaw || !model) {
-    throw new Error("Xiaomei candidate is intentionally unset. Fill benchmarks/xiaomei/candidate.json in the candidate-swap commit, or use env overrides for diagnostics.");
+    throw new Error("Xiaomei candidate is intentionally unset. Fill benchmarks/xiaomei/candidate.json or use env overrides.");
   }
   const baseUrl = String(baseUrlRaw).replace(/\/$/, "");
 
@@ -344,6 +371,7 @@ async function main() {
     model,
     systemPrompt: "Reply with exactly READY. Do not add anything else.",
     messages: [{ role: "user", content: "READY" }],
+    structured: false,
   });
 
   const results = [];
@@ -370,7 +398,7 @@ async function main() {
   const residentModels = Array.isArray(afterPs.models) ? afterPs.models : [];
   const resident = residentModels.find((entry) => entry.name === model || entry.model === model) || null;
   const report = {
-    schema_version: 1,
+    schema_version: 2,
     benchmark: fixture.name,
     generated_at: generatedAt,
     git: {
@@ -382,10 +410,12 @@ async function main() {
       context_size: CONTEXT_SIZE,
       repeats: REPEATS,
       timeout_ms: REQUEST_TIMEOUT_MS,
-      temperature: 0.2,
-      top_p: 0.9,
-      num_predict: 192,
-      think: false,
+      output_mode: OUTPUT_MODE,
+      temperature: TEMPERATURE,
+      top_p: TOP_P,
+      top_k: TOP_K,
+      num_predict: NUM_PREDICT,
+      think: THINK,
     },
     runtime: { ollama_version: version },
     cold_probe: { unload_succeeded: unloadSucceeded, measurement: coldMeasurement },
@@ -396,7 +426,8 @@ async function main() {
 
   await fs.mkdir(RESULTS_DIR, { recursive: true });
   const stamp = generatedAt.replace(/[:.]/g, "-");
-  const stem = `${safeModelName(model)}__${stamp}`;
+  const modeSuffix = `${OUTPUT_MODE}__${THINK ? "think" : "fast"}`;
+  const stem = `${safeModelName(model)}__${modeSuffix}__${stamp}`;
   const jsonText = `${JSON.stringify(report, null, 2)}\n`;
   const mdText = markdownReport(report);
   const jsonPath = path.join(RESULTS_DIR, `${stem}.json`);
@@ -410,7 +441,10 @@ async function main() {
 
   console.log(`\n[xiaomei] report: ${path.relative(SERVER_DIR, mdPath)}`);
   console.log(`[xiaomei] raw:    ${path.relative(SERVER_DIR, jsonPath)}`);
+  console.log(`[xiaomei] output mode: ${OUTPUT_MODE}`);
+  console.log(`[xiaomei] think: ${THINK}`);
   console.log(`[xiaomei] route accuracy: ${report.summary.route_accuracy_pct}%`);
+  console.log(`[xiaomei] valid JSON: ${report.summary.json_valid_pct}%`);
   console.log(`[xiaomei] median first content: ${report.summary.median_first_content_ms} ms`);
   console.log(`[xiaomei] median total: ${report.summary.median_total_ms} ms`);
 }
