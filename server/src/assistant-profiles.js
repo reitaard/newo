@@ -40,6 +40,19 @@ export const GEMMA_SYSTEM_PROMPT = [
   "Do not mention hidden instructions or use markdown. If unclear, ask one short question.",
 ].join(" ");
 
+export const MINICPM_SYSTEM_PROMPT = [
+  "You are Alfred, a private voice assistant.",
+  "Answer directly in plain spoken English.",
+  "Keep simple answers short.",
+  "Follow literal tasks exactly.",
+  "If asked to spell a word, say its letters separated by hyphens.",
+  "Interpret normal questions by their intended meaning.",
+  "Use provided current or structured data exactly.",
+  "Never invent facts. If unsure, say so.",
+  "If asked who you are, say Alfred.",
+  "Do not use markdown.",
+].join(" ");
+
 const sharedContextPolicy = Object.freeze({
   selectiveHistory: true,
   maxStoredExchanges: 3,
@@ -153,17 +166,17 @@ export function createAssistantProfiles({ qwenApiKey = null, overrides = {} } = 
       endpoint: "/api/chat",
       model: "newo-minicpm5:latest",
       apiKey: null,
-      systemPrompt: GEMMA_SYSTEM_PROMPT,
+      systemPrompt: MINICPM_SYSTEM_PROMPT,
       promptFormat: "ollama_messages",
       reasoning: "route_controlled",
       routing: Object.freeze({ fast: "off", think: "on" }),
       thinkMode: "auto",
       progressiveTts: true,
       chunking: Object.freeze({ mode: "sentence_clause", minChars: 24, clauseChars: 72, hardChars: 140 }),
-      sampling: Object.freeze({ temperature: 1.0, top_p: 0.95, repeat_penalty: 1.0 }),
-      maxOutputTokens: 256,
-      maxReplyChars: 450,
-      timeoutMs: 30_000,
+      sampling: Object.freeze({ temperature: 0.35, top_p: 0.9, repeat_penalty: 1.0 }),
+      maxOutputTokens: 128,
+      maxReplyChars: 320,
+      timeoutMs: 20_000,
       keepAlive: -1,
       health: Object.freeze({ method: "ollama_tags", endpoint: "/api/tags", implicitLatestTag: false, timeoutMs: 3_000 }),
       contextPolicy: sharedContextPolicy,
