@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "endpoint": "http://100.110.136.15:11435/api/chat",
+  "candidates": [
+    {
+      "label": "MiniCPM5-2B",
+      "model": "newo-minicpm5:latest",
+      "role": "baseline"
+    },
+    {
+      "label": "Qwen3.5-2B",
+      "model": "newo-qwen35-2b:latest",
+      "role": "challenger"
+    },
+    {
+      "label": "Spark-X2.5-1.7B",
+      "model": "newo-spark17:latest",
+      "role": "challenger",
+      "aliases": ["newo-spark-x2.5:latest"],
+      "notes": "newo-spark17:latest and newo-spark-x2.5:latest currently have the same digest."
+    }
+  ]
+}
