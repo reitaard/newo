@@ -16,6 +16,7 @@ const SWITCH_MESSAGES = new Map([
   [ALFRED_SWITCH_START, "Switching to Alfred."],
   [ALFRED_SWITCH_READY, "Alfred ready."],
 ]);
+const EARCON_SETTLE_MS = 450;
 
 function envBoolean(value, fallback = false) {
   if (value == null || String(value).trim() === "") return fallback;
@@ -78,6 +79,7 @@ export function createPrimaryModeHandlers(options) {
       const text = SWITCH_MESSAGES.get(earcon);
       if (!text) return;
       await options.commandReply(ctx, text, "assistant_mode_switch", null, { newoSpeak: true, newoSpeakMaxChars: 80 });
+      await new Promise((resolve) => setTimeout(resolve, EARCON_SETTLE_MS));
     },
   });
 
