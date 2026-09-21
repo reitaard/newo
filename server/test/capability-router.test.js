@@ -29,6 +29,30 @@ test("trained abstain and router fallback preserve prior tool exposure", () => {
   assert.equal(toolsForCapability({ fallback: true }, available).length, available.length);
 });
 
+test("deterministic intents still route when SetFit is disabled", async () => {
+  let fetches = 0;
+  const client = createCapabilityRouterClient({ enabled: false, fetchImpl: async () => {
+    fetches += 1;
+    throw new Error("SetFit must not be called");
+  } });
+
+  const date = await client.classify("Tell me the date");
+  assert.equal(date.primary, "time.current");
+  assert.equal(date.deterministic, true);
+  assert.equal(date.fallback, false);
+
+  const spell = await client.classify("Spell psychopath");
+  assert.equal(spell.primary, "text.spell");
+  assert.equal(spell.deterministic, true);
+  assert.equal(spell.fallback, false);
+
+  const general = await client.classify("What can you see from the moon?");
+  assert.equal(general.fallback, true);
+  assert.equal(general.reason, "disabled");
+  assert.equal(fetches, 0);
+  assert.equal(client.getTelemetry().model, "deterministic");
+});
+
 test("client performs one validated inference and preserves v2 diagnostics", async () => {
   let calls = 0;
   const client = createCapabilityRouterClient({ enabled: true, fetchImpl: async (_url, options) => {
