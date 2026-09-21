@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "name": "xiaomei-response-quality-v1",
+  "description": "Direct Xiaomei response-quality cases after routing is already known. Automated anchors are sanity checks, not a substitute for human review.",
+  "cases": [
+    {
+      "id": "natural-tired-zh",
+      "category": "naturalness",
+      "prompt": "How would I naturally say ‘I'm tired’ in everyday Mandarin? Keep it short and explain the most natural option.",
+      "checks": {
+        "must_include_any": [["我累了", "我有点累"], ["自然", "口语", "everyday"]],
+        "max_chars": 500
+      }
+    },
+    {
+      "id": "xinku-social-nuance",
+      "category": "meaning",
+      "prompt": "What does 辛苦了 really mean socially? Don't just give me a dictionary translation; explain when a Chinese speaker would say it.",
+      "checks": {
+        "must_include_any": [["辛苦", "effort", "hard work", "努力"], ["感谢", "appreciat", "acknowledg", "体谅", "付出"]],
+        "max_chars": 700
+      }
+    },
+    {
+      "id": "cai-vs-jiu",
+      "category": "grammar",
+      "prompt": "Explain the difference between 他十点才来 and 他十点就来了. Focus on what 才 versus 就 implies about the speaker's expectation.",
+      "checks": {
+        "must_include_any": [["才"], ["就"], ["晚", "迟", "later", "late"], ["早", "earlier", "early", "so soon", "已经"]],
+        "max_chars": 850
+      }
+    },
+    {
+      "id": "qingwen-pronunciation",
+      "category": "pronunciation",
+      "prompt": "Teach me how to pronounce 请问. Give the correct pinyin with tones, then one short pronunciation tip.",
+      "checks": {
+        "must_include_any": [["qǐng"], ["wèn"]],
+        "must_not_include": ["qīng wèn", "wèn qǐng"],
+        "max_chars": 500
+      }
+    },
+    {
+      "id": "preserve-tomorrow-time",
+      "category": "translation",
+      "prompt": "Translate 我明天上午八点半不在家 into natural English. Preserve every important time detail.",
+      "checks": {
+        "must_include_any": [["tomorrow"], ["8:30", "eight thirty", "eight-thirty"], ["not home", "won't be home", "not at home", "away"]],
+        "max_chars": 400
+      }
+    },
+    {
+      "id": "preserve-negation-softness",
+      "category": "translation",
+      "prompt": "Translate ‘I don't really like it, but I'll think about it.’ into natural Mandarin. Preserve the soft negative tone rather than making it sound absolute.",
+      "checks": {
+        "must_include_any": [["不太喜欢", "不是很喜欢", "不怎么喜欢"], ["考虑", "想想", "想一想"]],
+        "max_chars": 450
+      }
+    },
+    {
+      "id": "polite-water-request",
+      "category": "pragmatics",
+      "prompt": "A learner says 给我水. Make it sound polite and natural in Mandarin, then briefly explain what changed.",
+      "checks": {
+        "must_include_any": [["请", "麻烦", "可以", "能不能"], ["水"]],
+        "max_chars": 650
+      }
+    },
+    {
+      "id": "code-switch-cleanup",
+      "category": "code_switch",
+      "prompt": "Rewrite 这个meeting我可能会late一点 as natural Mandarin, then tell me briefly why your version sounds better.",
+      "checks": {
+        "must_include_any": [["会议", "开会"], ["晚一点", "迟一点", "晚到", "迟到"]],
+        "max_chars": 650
+      }
+    },
+    {
+      "id": "cai-emphatic-denial",
+      "category": "grammar",
+      "prompt": "In 我才没生气呢, what is 才 doing? Explain the conversational tone. Don't confuse it with the ‘only then’ use of 才.",
+      "checks": {
+        "must_include_any": [["否认", "denial", "没生气", "not angry"], ["强调", "emphasis", "根本", "才没有", "才不"]],
+        "must_not_include": ["only then did I get angry"],
+        "max_chars": 750
+      }
+    },
+    {
+      "id": "le-contrast",
+      "category": "grammar",
+      "prompt": "Explain the practical difference between 我吃饭了 and 我吃了饭 to an English-speaking learner. Keep it concise and use one contrastive example if useful.",
+      "checks": {
+        "must_include_any": [["了"], ["状态", "变化", "现在", "已经", "new situation", "change of state"], ["动作", "完成", "completed", "completion"]],
+        "max_chars": 900
+      }
+    },
+    {
+      "id": "classifier-cat",
+      "category": "grammar",
+      "prompt": "Why is 一只猫 more natural than 一个猫? Explain it simply to a beginner.",
+      "checks": {
+        "must_include_any": [["只"], ["量词", "classifier", "measure word"], ["猫"]],
+        "max_chars": 600
+      }
+    },
+    {
+      "id": "chi-le-ma-pragmatics",
+      "category": "pragmatics",
+      "prompt": "If someone asks 你吃了吗？, are they always literally asking about food? Explain the social use and how I should respond naturally.",
+      "checks": {
+        "must_include_any": [["问候", "greeting", "关心", "care"], ["吃", "food", "meal"]],
+        "max_chars": 800
+      }
+    }
+  ]
+}
