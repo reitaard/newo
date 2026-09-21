@@ -1,6 +1,6 @@
 export const QWEN_PROFILE_ID = "qwen3:0.6b";
 export const LFM_PROFILE_ID = "lfm2.5:8b";
-export const GEMMA_PROFILE_ID = "gemma4:e4b";
+export const GEMMA_PROFILE_ID = "gemma4:e2b";
 
 export const QWEN_SYSTEM_PROMPT = [
   "You are Alfred, the user's private voice assistant.",
@@ -121,7 +121,7 @@ export function createAssistantProfiles({ qwenApiKey = null, overrides = {} } = 
       provider: "ollama_chat",
       baseUrl: "http://100.110.136.15:11435",
       endpoint: "/api/chat",
-      model: "hf.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive:Q4_K_M",
+      model: "newo-gemma-e2b:latest",
       apiKey: null,
       systemPrompt: GEMMA_SYSTEM_PROMPT,
       promptFormat: "ollama_messages",

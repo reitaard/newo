@@ -36,7 +36,7 @@ test("Gemma profile uses persistent laptop endpoint and native Ollama chat", () 
   assert.equal(profile.provider, "ollama_chat");
   assert.equal(profile.baseUrl, "http://100.110.136.15:11435");
   assert.equal(profile.endpoint, "/api/chat");
-  assert.equal(profile.model, "hf.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive:Q4_K_M");
+  assert.equal(profile.model, "newo-gemma-e2b:latest");
   assert.equal(profile.thinkMode, "auto");
   assert.equal(profile.fallbackProfile, QWEN_PROFILE_ID);
 });
