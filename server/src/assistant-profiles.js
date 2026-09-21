@@ -182,7 +182,7 @@ export function createAssistantProfiles({ qwenApiKey = null, overrides = {} } = 
       apiKey: null,
       systemPrompt: GEMMA_SYSTEM_PROMPT,
       promptFormat: "ollama_messages",
-      reasoning: "disabled",
+      reasoning: "inline_content",
       routing: Object.freeze({ fast: "off", think: "off" }),
       thinkMode: "off",
       progressiveTts: true,
