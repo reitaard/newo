@@ -628,7 +628,7 @@ export function createSpeakerRuntime({
   }
   function logContinuity(job, result) {
     logger.info({
-      event: "SPEAKER_CONTINUITY", playback_id: job.id, tts_backend: backend.name ?? "unknown",
+      event: "SPEAKER_CONTINUITY", playback_id: job.id, tts_backend: job.backend.name ?? "unknown",
       completed: result.kind === "complete", error: result.kind === "complete" ? null : (result.error ?? result.kind),
       source_wait_max_ms: Math.round(job.sourceWaitMaxMs), source_wait_over_40: job.sourceWaitOver40,
       source_wait_over_80: job.sourceWaitOver80, source_wait_over_120: job.sourceWaitOver120,
@@ -997,7 +997,7 @@ export function createSpeakerRuntime({
           (job.transport.enabled || initialBytes < SPEAKER_FIRMWARE_PREBUFFER_BYTES)) {
         if (!job.bytesSent || (job.bytesSent & 1)) throw new Error("invalid_pcm");
         job.ttsCompletedAt = source.metrics.completedAt ?? performance.now();
-        job.audio = job.statistics.result(backend.limiter ?? SPEAKER_LIMITER);
+        job.audio = job.statistics.result(job.backend.limiter ?? SPEAKER_LIMITER);
         job.endSent = true;
         await job.transport.finish((data, options) => sendFrame(current.ws, data, options));
         await sendFrame(current.ws, JSON.stringify({ type: "speaker_end", playback_id: job.id, bytes: job.bytesSent }));
@@ -1034,7 +1034,7 @@ export function createSpeakerRuntime({
       }
       if (!job.bytesSent || (job.bytesSent & 1)) throw new Error("invalid_pcm");
       job.ttsCompletedAt = source.metrics.completedAt ?? performance.now();
-      job.audio = job.statistics.result(backend.limiter ?? SPEAKER_LIMITER);
+      job.audio = job.statistics.result(job.backend.limiter ?? SPEAKER_LIMITER);
       job.endSent = true;
       await job.transport.finish((data, options) => sendFrame(current.ws, data, options));
       await sendFrame(current.ws, JSON.stringify({ type: "speaker_end", playback_id: job.id, bytes: job.bytesSent }));
@@ -1062,7 +1062,7 @@ export function createSpeakerRuntime({
     if (job.cancelRequested) return job.completion;
     await sendWithFlow(job, current, pcm);
     if (job.cancelRequested) return job.completion;
-    job.audio = job.statistics.result(backend.limiter ?? SPEAKER_LIMITER);
+    job.audio = job.statistics.result(job.backend.limiter ?? SPEAKER_LIMITER);
     job.endSent = true;
     await job.transport.finish((data, options) => sendFrame(current.ws, data, options));
     await sendFrame(current.ws, JSON.stringify({ type: "speaker_end", playback_id: job.id, bytes: job.bytesSent }));
@@ -1099,7 +1099,7 @@ export function createSpeakerRuntime({
       event: "SPEAKER_AUDIO", playback_id: job.id,
       peak_dbfs: Number.isFinite(audio.peakDbfs) ? Number(audio.peakDbfs.toFixed(1)) : "-inf",
       rms_dbfs: Number.isFinite(audio.rmsDbfs) ? Number(audio.rmsDbfs.toFixed(1)) : "-inf",
-      gain_db: backend.gainDb ?? SPEAKER_GAIN_DB, limiter: backend.limiter ?? SPEAKER_LIMITER,
+      gain_db: job.backend.gainDb ?? SPEAKER_GAIN_DB, limiter: job.backend.limiter ?? SPEAKER_LIMITER,
       limiter_reached: audio.limiterReached, clipped: audio.clipped, bytes: audio.bytes,
     }, "SPEAKER_AUDIO");
     logger.info({
@@ -1129,12 +1129,13 @@ export function createSpeakerRuntime({
     const connectionPromise = job.temporary ? requestTemporaryConnection(job) : waitForConnection();
     connectionPromise.catch(() => {});
     job.synthesisStartedAt = performance.now();
-    if (typeof backend.stream === "function") {
+    const selectedBackend = job.backend;
+    if (typeof selectedBackend.stream === "function") {
       // A backend can have opened a local streaming response while speaker connection
       // negotiation fails. Explicitly cancel it rather than leaving Pocket producing.
       const sourcePromise = job.segments
-        ? backend.streamSegments(job.segments, format, { playbackId: job.id })
-        : backend.stream(job.text, format, { playbackId: job.id });
+        ? selectedBackend.streamSegments(job.segments, format, { playbackId: job.id, ...job.synthesisOptions })
+        : selectedBackend.stream(job.text, format, { playbackId: job.id, ...job.synthesisOptions });
       let source = null;
       try {
         const result = await Promise.all([sourcePromise, connectionPromise]);
@@ -1146,23 +1147,25 @@ export function createSpeakerRuntime({
         throw error;
       }
     }
-    const [pcm, current] = await Promise.all([backend.synthesize(job.text, format), connectionPromise]);
+    const [pcm, current] = await Promise.all([selectedBackend.synthesize(job.text, format), connectionPromise]);
     job.ttsCompletedAt = performance.now();
     return streamKnown(job, current, pcm);
   }
-  function queueSpeech(text, { temporary = false, replyReadyAt = performance.now(), metadata = null, segments = null } = {}) {
+  function queueSpeech(text, { temporary = false, replyReadyAt = performance.now(), metadata = null, segments = null,
+    backend: backendOverride = null, synthesisOptions = null } = {}) {
     if (!enabled || closing) return { kind: "disabled" };
     if (allJobs.size >= maxPendingJobs) return { kind: "busy" };
     if (!text) return { kind: "empty" };
     if (!getDevice()) return { kind: "offline" };
-    if (segments && typeof backend.streamSegments !== "function") return { kind: "unsupported" };
+    const selectedBackend = backendOverride ?? backend;
+    if (segments && typeof selectedBackend.streamSegments !== "function") return { kind: "unsupported" };
     const id = randomUUID();
     let resolve;
     let reject;
     const completion = new Promise((res, rej) => { resolve = res; reject = rej; });
     completion.catch(() => {});
     const job = {
-      id, text, segments, temporary, metadata, settled: false, cancelRequested: false, resultTimer: null, queuedAt: performance.now(), replyReadyAt,
+      id, text, segments, temporary, metadata, backend: selectedBackend, synthesisOptions, settled: false, cancelRequested: false, resultTimer: null, queuedAt: performance.now(), replyReadyAt,
       synthesisStartedAt: null, ttsCompletedAt: null, beginSentAt: null, firstPcmSentAt: null,
       backendMetrics: null, playbackStartedAt: null, firstPcmToPlayMs: null, cancelSource: null,
       resolve, reject, completion, bytesSent: 0, admittedBytes: 0, receivedBytes: 0, consumedBytes: 0, reportedBufferedBytes: 0,
@@ -1275,11 +1278,11 @@ export function createSpeakerRuntime({
       startWaiter.resolve();
     }
     logger.info({
-      event: "SPEAKER_TTFA", device_id: deviceId, playback_id: job.id, tts_backend: backend.name ?? "unknown",
+      event: "SPEAKER_TTFA", device_id: deviceId, playback_id: job.id, tts_backend: job.backend.name ?? "unknown",
       tts_request_to_first_pcm_ms: job.backendMetrics?.conditionerFirstOutputAt == null ? null : Math.round(job.backendMetrics.conditionerFirstOutputAt - job.backendMetrics.requestStartedAt),
       tts_first_audio_byte_ms: job.backendMetrics?.firstAudioByteAt == null ? null : Math.round(job.backendMetrics.firstAudioByteAt - job.backendMetrics.requestStartedAt),
       // Retained for existing Kokoro log consumers; generic field above applies to all backends.
-      kokoro_first_audio_byte_ms: backend.name === "kokoro" && job.backendMetrics?.firstAudioByteAt != null ? Math.round(job.backendMetrics.firstAudioByteAt - job.backendMetrics.requestStartedAt) : null,
+      kokoro_first_audio_byte_ms: job.backend.name === "kokoro" && job.backendMetrics?.firstAudioByteAt != null ? Math.round(job.backendMetrics.firstAudioByteAt - job.backendMetrics.requestStartedAt) : null,
       conditioning_first_output_ms: job.backendMetrics?.conditionerFirstOutputAt == null ? null : Math.round(job.backendMetrics.conditionerFirstOutputAt - job.backendMetrics.firstAudioByteAt),
       reply_ready_to_first_pcm_send_ms: Math.round(job.firstPcmSentAt - job.replyReadyAt),
       first_pcm_to_play_ms: job.firstPcmToPlayMs,
@@ -1330,7 +1333,7 @@ export function createSpeakerRuntime({
     }, "SPEAKER_FLOW_FINAL");
     if (result.kind === "complete") {
       logger.info({
-        event: "SPEAKER_TTFA_FINAL", device_id: deviceId, playback_id: job.id, tts_backend: backend.name ?? "unknown",
+        event: "SPEAKER_TTFA_FINAL", device_id: deviceId, playback_id: job.id, tts_backend: job.backend.name ?? "unknown",
         tts_request_to_first_pcm_ms: job.backendMetrics?.conditionerFirstOutputAt == null ? null : Math.round(job.backendMetrics.conditionerFirstOutputAt - job.backendMetrics.requestStartedAt),
         tts_first_audio_byte_ms: job.backendMetrics?.firstAudioByteAt == null ? null : Math.round(job.backendMetrics.firstAudioByteAt - job.backendMetrics.requestStartedAt),
         conditioning_first_output_ms: job.backendMetrics?.conditionerFirstOutputAt == null || job.backendMetrics?.firstAudioByteAt == null ? null : Math.round(job.backendMetrics.conditionerFirstOutputAt - job.backendMetrics.firstAudioByteAt),

@@ -26,6 +26,9 @@ import { createVoiceRuntime, NullAsrBackend, WorkerAsrBackend } from "./voice.js
 import { LazyFallbackAsrBackend, PythonSherpaAsrBackend } from "./python-sherpa-asr.js";
 import { NullSpeakerVerifier, SpeakerVerifier } from "./speaker-verification.js";
 import { resolveSherpaLmConfig } from "./sherpa-lm-config.js";
+import { XiaomeiModelClient, HyMtTranslationClient, NullPronunciationProvider } from "./xiaomei-clients.js";
+import { createXiaomeiRuntime } from "./xiaomei-runtime.js";
+import { FallbackTtsBackend, Qwen3TtsBackend } from "./qwen3-tts.js";
 
 try {
   loadEnvFile(".env");
@@ -91,6 +94,17 @@ const EnvSchema = z.object({
   ASSISTANT_MAX_REPLY_CHARS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(40).max(500).default(300)),
   ASSISTANT_PROGRESS_FEEDBACK_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
   ASSISTANT_WEB_TOOLS_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
+  XIAOMEI_ENABLED: z.preprocess(stringToBoolean, z.boolean().default(false)),
+  XIAOMEI_GEMMA_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://127.0.0.1:11434")),
+  XIAOMEI_GEMMA_MODEL: z.preprocess(emptyToUndefined, z.string().default("newo-gemma-e2b:latest")),
+  XIAOMEI_TRANSLATE_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://127.0.0.1:11434")),
+  XIAOMEI_TRANSLATE_MODEL: z.preprocess(emptyToUndefined, z.string().default("newo-translate:latest")),
+  XIAOMEI_MODEL_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(60_000).default(20_000)),
+  XIAOMEI_TTS_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://127.0.0.1:8184")),
+  XIAOMEI_TTS_MODEL: z.preprocess(emptyToUndefined, z.string().default("qwen3-tts-0.6b-customvoice")),
+  XIAOMEI_TTS_SPEAKER: z.preprocess(emptyToUndefined, z.string().default("Serena")),
+  XIAOMEI_TTS_LANGUAGE: z.preprocess(emptyToUndefined, z.string().default("Auto")),
+  XIAOMEI_TTS_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(120_000).default(30_000)),
   AGENT_TOOLS_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().default("http://127.0.0.1:8790")),
   AGENT_TOOLS_TOKEN_FILE: z.preprocess(emptyToUndefined, z.string().default("/srv/agent-tools/.env")),
   AGENT_TOOLS_TIMEOUT_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1_000).max(20_000).default(12_000)),
@@ -242,6 +256,17 @@ const speakerRuntime = createSpeakerRuntime({
   maxTextChars: env.TTS_MAX_TEXT_CHARS,
   format: { sampleRate: env.TTS_SAMPLE_RATE, channels: 1, bitsPerSample: 16 },
 });
+const xiaomeiGemma = new XiaomeiModelClient({ baseUrl: env.XIAOMEI_GEMMA_BASE_URL, model: env.XIAOMEI_GEMMA_MODEL,
+  timeoutMs: env.XIAOMEI_MODEL_TIMEOUT_MS, logger: app.log, role: "gemma" });
+const xiaomeiTranslator = new HyMtTranslationClient({ baseUrl: env.XIAOMEI_TRANSLATE_BASE_URL, model: env.XIAOMEI_TRANSLATE_MODEL,
+  timeoutMs: env.XIAOMEI_MODEL_TIMEOUT_MS, logger: app.log, role: "translation" });
+const serenaBackend = new Qwen3TtsBackend({ baseUrl: env.XIAOMEI_TTS_BASE_URL, model: env.XIAOMEI_TTS_MODEL,
+  speaker: env.XIAOMEI_TTS_SPEAKER, language: env.XIAOMEI_TTS_LANGUAGE, requestTimeoutMs: env.XIAOMEI_TTS_TIMEOUT_MS,
+  maxPcmBytes: env.TTS_MAX_PCM_BYTES, logger: app.log });
+const xiaomeiTtsBackend = new FallbackTtsBackend(serenaBackend, ttsBackend, app.log);
+const xiaomeiRuntime = createXiaomeiRuntime({ enabled: env.XIAOMEI_ENABLED, gemma: xiaomeiGemma,
+  translator: xiaomeiTranslator, speakerRuntime, serenaBackend: xiaomeiTtsBackend,
+  pronunciationProvider: new NullPronunciationProvider(), logger: app.log, setAssistantState: sendAssistantState });
 const assistantRuntime = createAssistantRuntime({
   enabled: env.ASSISTANT_ENABLED,
   profiles: assistantProfiles,
@@ -301,11 +326,16 @@ const voiceRuntime = createVoiceRuntime({
     liveTestMode: env.VOICE_LIVE_TEST_MODE,
     firstAudioTimeoutMs: env.VOICE_FIRST_AUDIO_TIMEOUT_MS,
     batchDurationMs: env.VOICE_ASR_BATCH_MS,
-    onSpeechStart: ({ deviceId }) => assistantTurnRuntime.interruptDevice(deviceId, "vad_speech_start"),
+    onSpeechStart: ({ deviceId }) => {
+      xiaomeiRuntime.interruptDevice(deviceId, "vad_speech_start");
+      assistantTurnRuntime.interruptDevice(deviceId, "vad_speech_start");
+    },
     onSpeechEnd: ({ deviceId }) => env.ASSISTANT_ENABLED && sendAssistantState(deviceId, "processing"),
     onSpeechCancelled: ({ deviceId }) => env.ASSISTANT_ENABLED && sendAssistantState(deviceId, "idle"),
     onFinalTranscript: async (turn) => {
       if (turn.enrollment) return sendAssistantState(turn.deviceId, "idle");
+      const xiaomei = await xiaomeiRuntime.handleTranscript(turn);
+      if (xiaomei) return xiaomei;
       if (await handleClockTranscript(turn)) return;
       return assistantTurnRuntime.handleFinalTranscript(turn);
     },
