@@ -6,6 +6,7 @@ export const CAPABILITY_TOOL_POLICY = Object.freeze({
   "unit.convert": Object.freeze([]),
   "time.current": Object.freeze([]),
   "time.convert": Object.freeze([]),
+  "text.spell": Object.freeze([]),
   "currency.exchange": WEB_TOOL_NAMES,
   "weather.current": WEB_TOOL_NAMES,
   "weather.forecast": WEB_TOOL_NAMES,
@@ -25,6 +26,40 @@ function routerError(code) {
   const error = new Error(code);
   error.code = code;
   return error;
+}
+
+function localCapability(text) {
+  const value = String(text ?? "").trim().replace(/[?!.,:;]+$/g, "").replace(/\s+/g, " ");
+  const lower = value.toLowerCase();
+  let primary = null;
+  let sourceNeed = "stable";
+
+  if (/^(?:please )?spell(?: the word)? .+/i.test(value)) primary = "text.spell";
+  else if (/^(?:please )?(?:(?:can|could|would) you (?:please )?)?(?:what time is it|what(?:'s| is) the time|tell me (?:the )?time|current time)(?: right now| now| please)?$/i.test(value)) {
+    primary = "time.current";
+    sourceNeed = "live";
+  } else if (/^(?:please )?(?:(?:can|could|would) you (?:please )?)?(?:what(?:'s| is) (?:the )?(?:date|day)|what (?:date|day) is it|tell me (?:the )?(?:date|day)|give me (?:the )?(?:current )?date|current date|today(?:'s| is the) date|what year is it|what month is it)(?: today| right now| now| please)?$/i.test(value)) {
+    primary = "time.current";
+    sourceNeed = "live";
+  }
+
+  if (!primary) return null;
+  return {
+    enabled: true,
+    fallback: false,
+    primary,
+    raw_primary: primary,
+    capabilities: [primary],
+    scores: { [primary]: 1 },
+    confidence: 1,
+    margin: 1,
+    source_need: sourceNeed,
+    abstain: false,
+    latency_ms: 0,
+    request_latency_ms: 0,
+    deterministic: true,
+    normalized_text: lower,
+  };
 }
 
 export function toolsForCapability(decision, availableTools = []) {
@@ -66,6 +101,15 @@ export function createCapabilityRouterClient({
 
   async function classify(text) {
     if (!enabled) return { enabled: false, fallback: true, reason: "disabled", latency_ms: null };
+    const local = localCapability(text);
+    if (local) {
+      logger?.info({ capability_primary: local.primary, capability_raw_primary: local.raw_primary,
+        capability_abstain: false, capability_confidence: 1, capability_margin: 1,
+        capability_source_need: local.source_need, capability_router_latency_ms: 0,
+        capability_router_request_ms: 0, capability_router_deterministic: true }, "Assistant capability routed");
+      last = { status: "ready", model: "deterministic+setfit-minilm-router-v2", at: Date.now(), error: null };
+      return local;
+    }
     const startedAt = performance.now();
     try {
       const result = await request("/v1/route", {
