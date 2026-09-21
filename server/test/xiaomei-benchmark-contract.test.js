@@ -7,6 +7,9 @@ const scriptUrl = new URL("../scripts/benchmark-xiaomei-controller.mjs", import.
 const shootoutUrl = new URL("../scripts/benchmark-xiaomei-shootout.mjs", import.meta.url);
 const candidateUrl = new URL("../benchmarks/xiaomei/candidate.json", import.meta.url);
 const candidatesUrl = new URL("../benchmarks/xiaomei/candidates.json", import.meta.url);
+const qualityFixtureUrl = new URL("../benchmarks/xiaomei/quality-v1.json", import.meta.url);
+const qualityCandidatesUrl = new URL("../benchmarks/xiaomei/quality-candidates.json", import.meta.url);
+const qualityScriptUrl = new URL("../scripts/benchmark-xiaomei-quality.mjs", import.meta.url);
 const packageUrl = new URL("../package.json", import.meta.url);
 
 const allowedRoutes = new Set([
@@ -88,10 +91,48 @@ test("shootout runs candidates sequentially and writes a combined report", async
   assert.match(source, /keep_alive: 0/);
 });
 
-test("package exposes one-command Xiaomei shootout and a single-model diagnostic", async () => {
+test("Xiaomei quality fixture targets Chinese correctness after routing is known", async () => {
+  const fixture = JSON.parse(await readFile(qualityFixtureUrl, "utf8"));
+  assert.equal(fixture.version, 1);
+  assert.ok(Array.isArray(fixture.cases));
+  assert.ok(fixture.cases.length >= 10);
+  const ids = new Set(fixture.cases.map((caseDef) => caseDef.id));
+  assert.equal(ids.size, fixture.cases.length);
+  for (const required of ["qingwen-pronunciation", "preserve-tomorrow-time", "cai-emphatic-denial", "code-switch-cleanup"]) {
+    assert.ok(ids.has(required), `quality fixture missing ${required}`);
+  }
+});
+
+test("Xiaomei quality shootout is limited to the three FAST finalists", async () => {
+  const config = JSON.parse(await readFile(qualityCandidatesUrl, "utf8"));
+  assert.equal(config.endpoint, "http://100.110.136.15:11435/api/chat");
+  assert.deepEqual(config.candidates.map((candidate) => candidate.model), [
+    "newo-minicpm5:latest",
+    "newo-gemma-e2b:latest",
+    "newo-qwen35-2b:latest",
+  ]);
+});
+
+test("Xiaomei quality benchmark measures direct responses with bounded THINK", async () => {
+  const source = await readFile(qualityScriptUrl, "utf8");
+  assert.match(source, /const CONTEXT_SIZE = 4096;/);
+  assert.match(source, /XIAOMEI_QUALITY_THINK/);
+  assert.match(source, /XIAOMEI_QUALITY_NUM_PREDICT/);
+  assert.match(source, /"768"/);
+  assert.match(source, /"15000"/);
+  assert.match(source, /do not classify it or output routing JSON/i);
+  assert.match(source, /QUALITY-SHOOTOUT-LATEST\.json/);
+  assert.match(source, /QUALITY-SHOOTOUT-LATEST\.md/);
+  assert.match(source, /thinking_chars/);
+  assert.match(source, /anchor_score_pct/);
+});
+
+test("package exposes Xiaomei controller and response-quality commands", async () => {
   const pkg = JSON.parse(await readFile(packageUrl, "utf8"));
   assert.equal(pkg.scripts["xiaomei:benchmark"], "node scripts/benchmark-xiaomei-shootout.mjs");
   assert.equal(pkg.scripts["xiaomei:benchmark:single"], "node scripts/benchmark-xiaomei-controller.mjs");
+  assert.equal(pkg.scripts["xiaomei:quality"], "node scripts/benchmark-xiaomei-quality.mjs");
   assert.match(pkg.scripts.check, /benchmark-xiaomei-controller\.mjs/);
   assert.match(pkg.scripts.check, /benchmark-xiaomei-shootout\.mjs/);
+  assert.match(pkg.scripts.check, /benchmark-xiaomei-quality\.mjs/);
 });
