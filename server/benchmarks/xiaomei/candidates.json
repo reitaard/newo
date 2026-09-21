@@ -1,21 +1,32 @@
 {
-  "version": 1,
+  "version": 2,
   "endpoint": "http://100.110.136.15:11435/api/chat",
   "candidates": [
     {
-      "label": "MiniCPM5-2B",
-      "model": "newo-minicpm5:latest",
-      "role": "baseline"
-    },
-    {
       "label": "Qwen3.5-2B",
       "model": "newo-qwen35-2b:latest",
-      "role": "challenger"
+      "role": "current-leader"
+    },
+    {
+      "label": "Qwen3.8-2B",
+      "model": "newo-qwen38-2b:latest",
+      "role": "challenger",
+      "notes": "Prior prompt-only controller run produced 0% because all 54 attempts ignored the JSON output contract; rerun under schema enforcement."
+    },
+    {
+      "label": "Gemma-4-E2B",
+      "model": "newo-gemma-e2b:latest",
+      "role": "reference"
+    },
+    {
+      "label": "MiniCPM5-2B",
+      "model": "newo-minicpm5:latest",
+      "role": "speed-reference"
     },
     {
       "label": "Spark-X2.5-1.7B",
       "model": "newo-spark17:latest",
-      "role": "challenger",
+      "role": "reference",
       "aliases": ["newo-spark-x2.5:latest"],
       "notes": "newo-spark17:latest and newo-spark-x2.5:latest currently have the same digest."
     }
