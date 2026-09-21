@@ -1,0 +1,180 @@
+{
+  "version": 1,
+  "name": "xiaomei-controller-v1",
+  "description": "Bilingual controller benchmark for Xiaomei/Ling Ling. Tests routing, code-switching, teaching, and interpreter-session intent without changing production model identity.",
+  "allowed_routes": [
+    "chat",
+    "teach",
+    "translate_once",
+    "interpreter_start",
+    "interpreter_translate",
+    "interpreter_meta",
+    "interpreter_stop"
+  ],
+  "cases": [
+    {
+      "id": "chat-en-casual",
+      "category": "chat",
+      "expected_route": "chat",
+      "messages": [
+        {"role": "user", "content": "What should I cook tonight if I want something quick and spicy?"}
+      ]
+    },
+    {
+      "id": "chat-zh-casual",
+      "category": "chat",
+      "expected_route": "chat",
+      "messages": [
+        {"role": "user", "content": "玲玲，你觉得今天晚上吃什么比较好？"}
+      ]
+    },
+    {
+      "id": "teach-natural-phrase",
+      "category": "teach",
+      "expected_route": "teach",
+      "messages": [
+        {"role": "user", "content": "Teach me how to say 'I'm tired' naturally in Chinese."}
+      ],
+      "reply_checks": {"includes_any": ["累", "我累"]}
+    },
+    {
+      "id": "teach-meaning",
+      "category": "teach",
+      "expected_route": "teach",
+      "messages": [
+        {"role": "user", "content": "“辛苦了”在日常对话里是什么意思？ Explain it to me in English."}
+      ]
+    },
+    {
+      "id": "teach-code-switch",
+      "category": "teach",
+      "expected_route": "teach",
+      "messages": [
+        {"role": "user", "content": "这个词 'actually' 在这里是什么意思? Teach me; don't translate the whole conversation."}
+      ]
+    },
+    {
+      "id": "teach-pronunciation",
+      "category": "teach",
+      "expected_route": "teach",
+      "messages": [
+        {"role": "user", "content": "How do I pronounce 请问, and when would I use it?"}
+      ]
+    },
+    {
+      "id": "translate-once-en-zh",
+      "category": "translate_once",
+      "expected_route": "translate_once",
+      "messages": [
+        {"role": "user", "content": "Translate this once into Chinese: I'll come back tomorrow morning."}
+      ]
+    },
+    {
+      "id": "translate-once-zh-en",
+      "category": "translate_once",
+      "expected_route": "translate_once",
+      "messages": [
+        {"role": "user", "content": "Translate this once into English: 我明天上午不在。"}
+      ]
+    },
+    {
+      "id": "interpreter-start",
+      "category": "interpreter",
+      "expected_route": "interpreter_start",
+      "messages": [
+        {"role": "user", "content": "I'm with a Chinese speaker now. Translate between us until I tell you to stop."}
+      ]
+    },
+    {
+      "id": "interpreter-direct-en",
+      "category": "interpreter",
+      "expected_route": "interpreter_translate",
+      "messages": [
+        {"role": "user", "content": "I'm with a Chinese speaker now. Translate between us until I tell you to stop."},
+        {"role": "assistant", "content": "Interpreter mode is active."},
+        {"role": "user", "content": "I don't really like it, but I'll think about it."}
+      ]
+    },
+    {
+      "id": "interpreter-command-en",
+      "category": "interpreter",
+      "expected_route": "interpreter_translate",
+      "messages": [
+        {"role": "user", "content": "I'm with a Chinese speaker now. Translate between us until I tell you to stop."},
+        {"role": "assistant", "content": "Interpreter mode is active."},
+        {"role": "user", "content": "Tell her I'll arrive at 8:30 tomorrow morning."}
+      ]
+    },
+    {
+      "id": "interpreter-direct-zh",
+      "category": "interpreter",
+      "expected_route": "interpreter_translate",
+      "messages": [
+        {"role": "user", "content": "I'm with a Chinese speaker now. Translate between us until I tell you to stop."},
+        {"role": "assistant", "content": "Interpreter mode is active."},
+        {"role": "user", "content": "我明天上午八点半不在家。"}
+      ]
+    },
+    {
+      "id": "interpreter-ask-other-person",
+      "category": "interpreter",
+      "expected_route": "interpreter_translate",
+      "messages": [
+        {"role": "user", "content": "I'm with a Chinese speaker now. Translate between us until I tell you to stop."},
+        {"role": "assistant", "content": "Interpreter mode is active."},
+        {"role": "user", "content": "Ask her whether paying cash is okay."}
+      ]
+    },
+    {
+      "id": "interpreter-meta-meaning",
+      "category": "interpreter",
+      "expected_route": "interpreter_meta",
+      "messages": [
+        {"role": "user", "content": "I'm with a Chinese speaker now. Translate between us until I tell you to stop."},
+        {"role": "assistant", "content": "Interpreter mode is active."},
+        {"role": "user", "content": "我明天上午不在。"},
+        {"role": "assistant", "content": "I won't be there tomorrow morning."},
+        {"role": "user", "content": "What did she mean by that? Explain it to me, don't translate this question to her."}
+      ]
+    },
+    {
+      "id": "interpreter-meta-language",
+      "category": "interpreter",
+      "expected_route": "interpreter_meta",
+      "messages": [
+        {"role": "user", "content": "I'm with a Chinese speaker now. Translate between us until I tell you to stop."},
+        {"role": "assistant", "content": "Interpreter mode is active."},
+        {"role": "user", "content": "Pause for a second. Why did she use 才 there? Explain it to me."}
+      ]
+    },
+    {
+      "id": "interpreter-stop",
+      "category": "interpreter",
+      "expected_route": "interpreter_stop",
+      "messages": [
+        {"role": "user", "content": "I'm with a Chinese speaker now. Translate between us until I tell you to stop."},
+        {"role": "assistant", "content": "Interpreter mode is active."},
+        {"role": "user", "content": "Stop translating now."}
+      ]
+    },
+    {
+      "id": "translate-reference-context",
+      "category": "translate_once",
+      "expected_route": "translate_once",
+      "messages": [
+        {"role": "assistant", "content": "You can take the metro; it should be faster."},
+        {"role": "user", "content": "Can you say that in Chinese?"}
+      ]
+    },
+    {
+      "id": "chat-after-interpreter-stop",
+      "category": "chat",
+      "expected_route": "chat",
+      "messages": [
+        {"role": "user", "content": "Stop translating now."},
+        {"role": "assistant", "content": "Interpreter mode stopped."},
+        {"role": "user", "content": "What should I do this afternoon?"}
+      ]
+    }
+  ]
+}
