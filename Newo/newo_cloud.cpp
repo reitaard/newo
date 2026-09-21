@@ -414,6 +414,25 @@ void NewoCloud::handleTextMessage(const uint8_t* payload, size_t length) {
     return;
   }
 
+  if (strcmp(type, "clock_command") == 0) {
+    const char* requestId = doc["request_id"] | "";
+    const char* action = doc["action"] | "";
+    if (!requestId[0] || !action[0] || clockCommandCount_ == kClockCommandQueueDepth) {
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::CLOUD, "CLOCK_COMMAND_REJECTED");
+      return;
+    }
+    NewoClockService::Command command;
+    strlcpy(command.requestId, requestId, sizeof(command.requestId));
+    strlcpy(command.action, action, sizeof(command.action));
+    strlcpy(command.target, doc["target"] | "", sizeof(command.target));
+    command.epochSeconds = doc["epoch_s"] | 0ULL;
+    command.durationSeconds = doc["duration_s"] | 0U;
+    clockCommands_[clockCommandTail_] = command;
+    clockCommandTail_ = (clockCommandTail_ + 1) % kClockCommandQueueDepth;
+    ++clockCommandCount_;
+    return;
+  }
+
   if (strcmp(type, "earcon_control") == 0) {
     const char* requestId = doc["request_id"] | "";
     const char* mode = doc["mode"] | "status";
@@ -871,6 +890,27 @@ void NewoCloud::sendClockAck(const char* requestId, bool enabled, bool applied) 
   doc["request_id"] = requestId;
   doc["enabled"] = enabled;
   doc["applied"] = applied;
+  String body; serializeJson(doc, body); webSocket_.sendTXT(body);
+}
+
+bool NewoCloud::consumeClockCommand(NewoClockService::Command& command) {
+  if (clockCommandCount_ == 0) return false;
+  command = clockCommands_[clockCommandHead_];
+  clockCommandHead_ = (clockCommandHead_ + 1) % kClockCommandQueueDepth;
+  --clockCommandCount_;
+  return true;
+}
+
+void NewoCloud::sendClockCommandAck(const char* requestId, const NewoClockService::Result& result) {
+  if (!connected_ || !requestId || !requestId[0]) return;
+  JsonDocument doc;
+  doc["type"] = "clock_command_ack";
+  doc["request_id"] = requestId;
+  doc["applied"] = result.applied;
+  doc["duplicate"] = result.duplicate;
+  if (result.error[0]) doc["error"] = result.error;
+  if (result.message[0]) doc["message"] = result.message;
+  if (result.summary[0]) doc["summary"] = result.summary;
   String body; serializeJson(doc, body); webSocket_.sendTXT(body);
 }
 

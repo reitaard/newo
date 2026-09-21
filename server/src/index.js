@@ -13,6 +13,7 @@ import { createStructuredCapabilityRuntime } from "./assistant-capabilities.js";
 import { createCapabilityRouterClient } from "./capability-router.js";
 import { createAssistantProfiles, normalizeProfileTuning, PROFILE_TUNING_PRESETS, QWEN_PROFILE_ID, resolveAssistantProfile } from "./assistant-profiles.js";
 import { createAssistantTurnRuntime } from "./assistant-turn.js";
+import { formatClockReply, parseClockRequest } from "./clock-request.js";
 import { createRuntimeStateStore } from "./runtime-state.js";
 import { createSpeakerRuntime, startTelegramAndSpeech } from "./tts.js";
 import { createTtsBackend } from "./tts-backend.js";
@@ -269,6 +270,34 @@ function sendAssistantState(deviceId, state, errorCode = null) {
   catch { return false; }
 }
 
+async function handleClockTranscript(turn) {
+  const request = parseClockRequest(turn.text, { timeZone: env.ASSISTANT_TIME_ZONE });
+  if (request.kind === "not_clock") return false;
+  sendAssistantState(turn.deviceId, "thinking");
+  let reply;
+  if (request.kind === "ambiguous") reply = request.message;
+  else if (request.kind === "local") reply = formatClockReply(request, { applied: true }, { timeZone: env.ASSISTANT_TIME_ZONE });
+  else {
+    const fields = { action: request.action };
+    if (request.epoch_s) fields.epoch_s = request.epoch_s;
+    if (request.duration_s) fields.duration_s = request.duration_s;
+    if (request.target) fields.target = request.target;
+    const sent = sendDeviceRequest("clock_command", "clock_command_ack", fields);
+    if (sent.kind !== "sent") reply = "The clock is unavailable right now.";
+    else {
+      const outcome = await sent.promise;
+      reply = outcome.kind === "response" ? formatClockReply(request, outcome.message, { timeZone: env.ASSISTANT_TIME_ZONE }) :
+        "The clock did not confirm that request.";
+    }
+  }
+  sendAssistantState(turn.deviceId, "responding");
+  const speech = speakerRuntime.speak(reply, { temporary: !automaticSpeakerEnabled,
+    metadata: { clock_turn: true, voice_stream_id: turn.streamId } });
+  try { if (speech.kind === "queued") await speech.completion; }
+  finally { sendAssistantState(turn.deviceId, "idle"); }
+  return true;
+}
+
 const assistantTurnRuntime = createAssistantTurnRuntime({
   assistant: assistantRuntime,
   speakerRuntime,
@@ -295,7 +324,11 @@ const voiceRuntime = createVoiceRuntime({
     onSpeechStart: ({ deviceId }) => assistantTurnRuntime.interruptDevice(deviceId, "vad_speech_start"),
     onSpeechEnd: ({ deviceId }) => env.ASSISTANT_ENABLED && sendAssistantState(deviceId, "processing"),
     onSpeechCancelled: ({ deviceId }) => env.ASSISTANT_ENABLED && sendAssistantState(deviceId, "idle"),
-    onFinalTranscript: (turn) => turn.enrollment ? sendAssistantState(turn.deviceId, "idle") : assistantTurnRuntime.handleFinalTranscript(turn),
+    onFinalTranscript: async (turn) => {
+      if (turn.enrollment) return sendAssistantState(turn.deviceId, "idle");
+      if (await handleClockTranscript(turn)) return;
+      return assistantTurnRuntime.handleFinalTranscript(turn);
+    },
     onSpeakerIdentity: (result) => {
       if (result.enrollmentStatus?.enrolled) {
         const rearm = sendDeviceRequest("voice_control", "voice_ack", { action: "on" });
@@ -320,6 +353,7 @@ const DeviceMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("display_ack"), request_id: z.string().optional(), mode: z.string().max(16) }).passthrough(),
   z.object({ type: z.literal("clock_ack"), request_id: z.string(), enabled: z.boolean(), applied: z.boolean() }).passthrough(),
+  z.object({ type: z.literal("clock_command_ack"), request_id: z.string(), applied: z.boolean(), duplicate: z.boolean().optional(), error: z.string().max(24).optional(), message: z.string().max(80).optional(), summary: z.string().max(128).optional() }).passthrough(),
   z.object({ type: z.literal("usb_ack"), request_id: z.string(), host: z.boolean(), audio: z.boolean(), storage: z.boolean(), vcp: z.boolean(), active: z.boolean(), applied: z.boolean(), reboot_required: z.boolean(), trial_pending: z.boolean() }).passthrough(),
   z.object({ type: z.literal("mic_ack"), request_id: z.string(), mode: z.enum(["raw", "ns"]), ns_level: z.number().int().min(0).max(2), applied: z.boolean(), raw_rms: z.number().nonnegative(), clean_rms: z.number().nonnegative(), raw_peak: z.number().nonnegative(), clean_peak: z.number().nonnegative(), raw_clipped: z.number().nonnegative(), clean_clipped: z.number().nonnegative(), noise_floor_rms: z.number().nonnegative() }).passthrough(),
   z.object({ type: z.literal("track_ack"), request_id: z.string(), command_epoch: z.string(), command_sequence: z.number().int().positive(), state: z.enum(["off", "active"]), applied: z.boolean(), duplicate: z.boolean().optional(), peer_state: z.enum(["active", "stopped", "uncertain", "unavailable", "unknown"]).optional(), collector_source: z.enum(["configured", "discovered", "override"]).optional(), error: z.string().optional() }).passthrough(),

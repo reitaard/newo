@@ -4,6 +4,7 @@
 #include <WebSocketsClient.h>
 
 #include "newo_display.h"
+#include "newo_clock_service.h"
 #include "newo_voice_state.h"
 #include "newo_wifi.h"
 
@@ -39,6 +40,8 @@ class NewoCloud {
                   bool active, bool applied, bool rebootRequired, bool trialPending);
   struct MicControlRequest { enum class Action : uint8_t { STATUS, SET }; Action action; uint8_t mode; uint8_t nsLevel; char requestId[40]; };
   bool consumeMicControlRequest(MicControlRequest& request);
+  bool consumeClockCommand(NewoClockService::Command& command);
+  void sendClockCommandAck(const char* requestId, const NewoClockService::Result& result);
   void sendMicAck(const char* requestId, const char* mode, uint8_t nsLevel, bool applied,
                   uint32_t rawRms, uint32_t cleanRms, uint32_t rawPeak, uint32_t cleanPeak,
                   uint32_t rawClipped, uint32_t cleanClipped, uint32_t noiseFloorRms);
@@ -113,6 +116,9 @@ class NewoCloud {
   static constexpr uint8_t kMicControlQueueDepth = 2;
   MicControlRequest micControlRequests_[kMicControlQueueDepth] = {};
   uint8_t micControlRequestHead_ = 0, micControlRequestTail_ = 0, micControlRequestCount_ = 0;
+  static constexpr uint8_t kClockCommandQueueDepth = 4;
+  NewoClockService::Command clockCommands_[kClockCommandQueueDepth] = {};
+  uint8_t clockCommandHead_ = 0, clockCommandTail_ = 0, clockCommandCount_ = 0;
   NewoVoiceState voiceState_ = NewoVoiceState::OFF;
   bool voiceConnected_ = false;
   uint32_t voiceWakes_ = 0, voiceSessions_ = 0, voiceFailures_ = 0, voiceTimeouts_ = 0;

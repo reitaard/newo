@@ -22,6 +22,7 @@ class NewoStorage {
   bool speakerMuted() const { return speakerMuted_; }
   bool speakerEnabled() const { return speakerEnabled_; }
   bool clockEnabled() const { return clockEnabled_; }
+  uint8_t alarmVolume() const { return alarmVolume_; }
   bool usbHostEnabled() const { return usbHostEnabled_; }
   bool usbAudioEnabled() const { return usbAudioEnabled_; }
   bool usbStorageEnabled() const { return usbStorageEnabled_; }
@@ -33,6 +34,7 @@ class NewoStorage {
   bool setSpeakerMuted(bool muted);
   bool setSpeakerEnabled(bool enabled);
   bool setClockEnabled(bool enabled);
+  bool setAlarmVolume(uint8_t volume);
   bool setUsbHostEnabled(bool enabled);
   bool setUsbAudioEnabled(bool enabled);
   bool setUsbStorageEnabled(bool enabled);
@@ -51,6 +53,7 @@ class NewoStorage {
   bool speakerMuted_ = false;
   bool speakerEnabled_ = true;
   bool clockEnabled_ = true;
+  uint8_t alarmVolume_ = 80;
   bool usbHostEnabled_ = false;
   bool usbAudioEnabled_ = true;
   bool usbStorageEnabled_ = false;

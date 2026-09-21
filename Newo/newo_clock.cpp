@@ -5,7 +5,6 @@
 #include <cstring>
 
 namespace {
-constexpr char kTimeZone[] = "ICT-7";  // UTC+7 (Cambodia); POSIX TZ sign is reversed.
 constexpr int16_t kClockY = 214;
 constexpr int16_t kClockClearX = 34;
 constexpr int16_t kClockClearY = 190;
@@ -14,16 +13,10 @@ constexpr int16_t kClockClearH = 38;
 }
 
 void NewoDisplay::updateClock() {
-  static bool timeConfigured = false;
   static time_t lastMinute = -1;
   static NewoDisplayMode lastMode = NewoDisplayMode::ECO;
   static NewoFaceStyle lastStyle = NewoFaceStyle::NEUTRAL;
   static bool clockDrawn = false;
-
-  if (!timeConfigured) {
-    configTzTime(kTimeZone, "pool.ntp.org", "time.nist.gov");
-    timeConfigured = true;
-  }
 
   // Keep text pages and ECO untouched. The clock belongs only to the face view,
   // and yields the lower screen whenever a face response is being shown.

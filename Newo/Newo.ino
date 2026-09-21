@@ -3,6 +3,7 @@
 #include "newo_audio.h"
 #include "newo_arduino_node.h"
 #include "newo_cloud.h"
+#include "newo_clock_service.h"
 #include "newo_config.h"
 #include "newo_display.h"
 #include "newo_log.h"
@@ -12,6 +13,7 @@
 #include "newo_portal.h"
 #include "newo_speaker.h"
 #include "newo_storage.h"
+#include "newo_time.h"
 #include "newo_usb_audio.h"
 #include "newo_usb_host.h"
 #include "newo_usb_storage.h"
@@ -28,6 +30,7 @@ NewoDisplay newoDisplay;
 NewoCloud newoCloud(newoWiFi, newoDisplay, newoStorage);
 NewoAudio newoAudio(newoWiFi, newoDisplay);
 NewoSpeaker newoSpeaker(newoWiFi, newoDisplay, newoAudio, newoStorage);
+NewoClockService newoClock;
 
 namespace {
 using NewoPhysicalVoice::LedState;
@@ -90,8 +93,10 @@ void setup() {
     snprintf(detail, sizeof(detail), "saved_networks=%u", static_cast<unsigned>(newoStorage.count()));
     NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::STORAGE, "STORAGE_READY", detail);
   }
+  if (!newoClock.begin()) NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::STORAGE, "CLOCK_STORAGE_FAILED");
 
   newoWiFi.begin();
+  NewoTime::begin();
   newoPortal.begin();
   newoCloud.begin();
   newoAudio.setMicProcessing(
@@ -149,6 +154,7 @@ void loop() {
   NewoCloud::SpeakerControlRequest speakerControlRequest;
   NewoCloud::UsbControlRequest usbControlRequest;
   NewoCloud::MicControlRequest micControlRequest;
+  NewoClockService::Command clockCommand;
   NewoSpeaker::PlaybackStarted speakerStarted;
   NewoSpeaker::Result speakerResult;
   newoWiFi.loop();
@@ -220,10 +226,30 @@ void loop() {
                          metrics.rawRms, metrics.cleanRms, metrics.rawPeak, metrics.cleanPeak,
                          metrics.rawClipped, metrics.cleanClipped, metrics.noiseFloorRms);
   }
+  while (newoCloud.consumeClockCommand(clockCommand)) {
+    const NewoClockService::Result result = newoClock.execute(clockCommand, time(nullptr), millis());
+    newoCloud.sendClockCommandAck(clockCommand.requestId, result);
+    if (!newoClock.ringing()) newoSpeaker.stopAlarm();
+  }
+  const bool clockWasRinging = newoClock.ringing();
+  newoClock.loop(time(nullptr), millis());
+  if (!clockWasRinging && newoClock.ringing()) {
+    newoDisplay.setMode(NewoDisplayMode::MESSAGE, newoClock.ringingLabel(), true);
+    newoLed.flashError();
+    Serial.printf("[clock] ALERT_STARTED type=%s\n", newoClock.ringingLabel());
+  }
+  if (newoClock.ringing()) newoSpeaker.startAlarm();
+  else newoSpeaker.stopAlarm();
   NewoArduinoNode::Event arduinoEvent;
   while (newoArduinoNode.receiveEvent(arduinoEvent)) {
     if (strcmp(arduinoEvent.name, "voice_trigger") != 0 || strcmp(arduinoEvent.payload, "reset") != 0) continue;
     Serial.println("[arduino] EVENT voice_trigger reset");
+    if (newoClock.ringing()) {
+      newoClock.dismiss();
+      newoSpeaker.stopAlarm();
+      Serial.println("[clock] ALERT_DISMISSED_LOCAL");
+      continue;
+    }
     const char* rejection = nullptr;
     const bool offline = !newoWiFi.connected();
     const bool cloudUnavailable = !offline && !newoCloud.ready();

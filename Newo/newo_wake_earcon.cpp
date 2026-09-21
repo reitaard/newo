@@ -260,3 +260,10 @@ bool newoPlayWakeEarcon() {
                "EARCON_END", endDetail);
   return true;
 }
+
+uint32_t newoWakeChimeFrames() { return kSampleRate * 120 / 1000; }
+
+int16_t newoWakeChimeSample(uint32_t frame, int32_t amplitude) {
+  const EarconShape shape = {kModeChime, newoWakeChimeFrames()};
+  return frame < shape.frames ? sampleFor(shape, frame, amplitude) : 0;
+}

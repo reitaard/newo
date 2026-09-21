@@ -36,10 +36,10 @@ class NewoSpeaker {
 
   bool playing() const { return task_ != nullptr || decoderTask_ != nullptr; }
   // True only from the prebuffer/physical playback boundary through final drain.
-  bool audiblePlaybackActive() const { return playbackStarted_; }
+  bool audiblePlaybackActive() const { return playbackStarted_ || alarmActive_; }
   bool enabled() const { return enabled_; }
   bool ready() const { return connected_; }
-  bool released() const { return !started_ && !connected_ && !buffer_ && !playing(); }
+  bool released() const { return !started_ && !connected_ && !buffer_ && !playing() && alarmTask_ == nullptr; }
   const char* connectionStatus() const;
   bool setEnabled(bool enabled);
   bool requestTemporaryConnection();
@@ -48,6 +48,12 @@ class NewoSpeaker {
   bool muted() const { return muted_; }
   bool setVolume(uint8_t volume);
   bool setMuted(bool muted);
+  bool startAlarm();
+  void stopAlarm();
+  bool alarmActive() const { return alarmActive_; }
+  bool alarmAssetReady() const { return alarmAssetReady_; }
+  uint8_t alarmVolume() const { return alarmVolume_; }
+  bool setAlarmVolume(uint8_t volume);
   const char* lastPlayback() const;
   uint32_t lastUnderruns() const { return underrunCount_; }
   uint32_t lastOverflows() const { return overflowCount_; }
@@ -76,9 +82,11 @@ class NewoSpeaker {
 
   static void taskEntry(void* context);
   static void decoderTaskEntry(void* context);
+  static void alarmTaskEntry(void* context);
   static bool IRAM_ATTR onI2sSent(i2s_chan_handle_t handle, i2s_event_data_t* event, void* userData);
   void playbackTask();
   void opusDecoderTask();
+  void alarmPlaybackTask();
   void handleEvent(WStype_t type, uint8_t* payload, size_t length);
   void handleText(const uint8_t* payload, size_t length);
   bool handleOpusPacket(const uint8_t* payload, size_t length);
@@ -109,6 +117,7 @@ class NewoSpeaker {
   uint8_t* bufferStorage_ = nullptr;
   TaskHandle_t task_ = nullptr;
   TaskHandle_t decoderTask_ = nullptr;
+  TaskHandle_t alarmTask_ = nullptr;
   struct OpusPacketRef { uint8_t slot; uint16_t length; uint16_t sequence; uint16_t validPcmBytes; };
   QueueHandle_t opusReadyQueue_ = nullptr;
   QueueHandle_t opusFreeQueue_ = nullptr;
@@ -140,6 +149,12 @@ class NewoSpeaker {
   volatile bool playbackStartedEventReady_ = false;
   bool playbackStartedDirectSent_ = false;
   volatile bool playbackStarted_ = false;
+  volatile bool alarmRequested_ = false;
+  volatile bool alarmStopRequested_ = false;
+  volatile bool alarmActive_ = false;
+  volatile bool alarmTaskFinished_ = false;
+  bool alarmAssetReady_ = false;
+  uint8_t alarmVolume_ = 80;
   PlaybackStarted playbackStartedEvent_ = {};
   bool playbackStateApplied_ = false;
   bool displaySpeakerActiveApplied_ = false;

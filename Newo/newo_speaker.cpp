@@ -1,6 +1,7 @@
 #include "newo_speaker.h"
 
 #include <ArduinoJson.h>
+#include <SPIFFS.h>
 #include <cstring>
 #include <driver/i2s_common.h>
 #include <esp_heap_caps.h>
@@ -9,6 +10,7 @@
 #include "newo_config.h"
 #include "newo_log.h"
 #include "newo_speaker_protocol.h"
+#include "newo_wake_earcon.h"
 
 #if __has_include("newo_secrets.h")
 #include "newo_secrets.h"
@@ -19,6 +21,10 @@
 
 namespace {
 constexpr uint8_t kOpusMagic[4] = {'N', 'W', 'O', 'P'};
+constexpr char kAlarmAssetPath[] = "/audio/newo_alarm.pcm";
+constexpr size_t kAlarmAssetBytes = 1'413'600;
+constexpr uint32_t kAlarmRepeatPauseMs = 500;
+constexpr int32_t kAlarmFallbackAmplitude = 12'000;
 
 uint16_t readLe16(const uint8_t* value) {
   return static_cast<uint16_t>(value[0]) |
@@ -33,6 +39,20 @@ void NewoSpeaker::begin() {
   volume_ = storage_.speakerVolume();
   muted_ = storage_.speakerMuted();
   enabled_ = storage_.speakerEnabled();
+  alarmVolume_ = storage_.alarmVolume();
+  const bool filesystemReady = SPIFFS.begin(false);
+  if (filesystemReady) {
+    File alarm = SPIFFS.open(kAlarmAssetPath, FILE_READ);
+    alarmAssetReady_ = alarm && alarm.size() == kAlarmAssetBytes;
+    if (alarm) alarm.close();
+  }
+  char alarmDetail[112];
+  snprintf(alarmDetail, sizeof(alarmDetail), "filesystem=%s path=%s bytes=%u volume=%u%% fallback=%s",
+           filesystemReady ? "mounted" : "failed", kAlarmAssetPath,
+           static_cast<unsigned>(kAlarmAssetBytes), static_cast<unsigned>(alarmVolume_),
+           alarmAssetReady_ ? "no" : "synth_chime");
+  NewoLog::log(alarmAssetReady_ ? NewoLog::Level::INFO : NewoLog::Level::WARN,
+               NewoLog::Subsystem::AUDIO, "ALARM_AUDIO_READY", alarmDetail);
   webSocket_.onEvent([this](WStype_t type, uint8_t* payload, size_t length) {
     handleEvent(type, payload, length);
   });
@@ -231,6 +251,24 @@ bool NewoSpeaker::setMuted(bool muted) {
   return true;
 }
 
+bool NewoSpeaker::setAlarmVolume(uint8_t volume) {
+  if (volume > 100 || !storage_.setAlarmVolume(volume)) return false;
+  alarmVolume_ = volume;
+  return true;
+}
+
+bool NewoSpeaker::startAlarm() {
+  alarmRequested_ = true;
+  alarmStopRequested_ = false;
+  if ((task_ || decoderTask_) && !taskFinished_) fail("alarm_priority");
+  return true;
+}
+
+void NewoSpeaker::stopAlarm() {
+  alarmRequested_ = false;
+  alarmStopRequested_ = true;
+}
+
 const char* NewoSpeaker::lastPlayback() const {
   if (playing()) return "Playing";
   if (lastPlayback_ == LastPlayback::COMPLETE) return "Complete";
@@ -239,7 +277,7 @@ const char* NewoSpeaker::lastPlayback() const {
 }
 
 bool NewoSpeaker::startPlayback(const Request& request) {
-  if (!connected_ || !buffer_ || task_ || decoderTask_ || taskFinished_ || resultReady_) return false;
+  if (alarmRequested_ || alarmActive_ || alarmTask_ || !connected_ || !buffer_ || task_ || decoderTask_ || taskFinished_ || resultReady_) return false;
   if (!newoValidSpeakerBegin(request.sampleRate, request.channels, request.bitsPerSample,
                              request.streaming, request.bytes, request.maxBytes,
                              NewoConfig::SPEAKER_SAMPLE_RATE,
@@ -356,6 +394,7 @@ bool NewoSpeaker::startPlayback(const Request& request) {
 
 void NewoSpeaker::taskEntry(void* context) { static_cast<NewoSpeaker*>(context)->playbackTask(); }
 void NewoSpeaker::decoderTaskEntry(void* context) { static_cast<NewoSpeaker*>(context)->opusDecoderTask(); }
+void NewoSpeaker::alarmTaskEntry(void* context) { static_cast<NewoSpeaker*>(context)->alarmPlaybackTask(); }
 
 void NewoSpeaker::opusDecoderTask() {
   minimumDecoderStackBytes_ = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
@@ -809,6 +848,113 @@ void NewoSpeaker::playbackTask() {
   vTaskDeleteWithCaps(nullptr);
 }
 
+void NewoSpeaker::alarmPlaybackTask() {
+  File asset;
+  bool useAsset = alarmAssetReady_;
+  if (useAsset) {
+    asset = SPIFFS.open(kAlarmAssetPath, FILE_READ);
+    if (!asset || asset.size() != kAlarmAssetBytes) {
+      if (asset) asset.close();
+      useAsset = false;
+      alarmAssetReady_ = false;
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO,
+                   "ALARM_AUDIO_FALLBACK", "reason=open_or_size");
+    }
+  }
+
+  i2sSentEventCount_ = 0;
+  i2s_.setPins(NewoConfig::SPEAKER_I2S_BCLK_PIN, NewoConfig::SPEAKER_I2S_WS_PIN,
+               NewoConfig::SPEAKER_I2S_DOUT_PIN);
+  bool outputReady = i2s_.begin(I2S_MODE_STD, NewoConfig::SPEAKER_SAMPLE_RATE,
+                                I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO,
+                                I2S_STD_SLOT_BOTH);
+  if (outputReady) {
+    i2s_chan_handle_t tx = i2s_.txChan();
+    i2s_event_callbacks_t callbacks = {};
+    callbacks.on_sent = &NewoSpeaker::onI2sSent;
+    outputReady = tx && i2s_channel_disable(tx) == ESP_OK &&
+        i2s_channel_register_event_callback(tx, &callbacks, this) == ESP_OK &&
+        i2s_channel_enable(tx) == ESP_OK;
+  }
+
+  alarmActive_ = outputReady;
+  NewoLog::log(outputReady ? NewoLog::Level::INFO : NewoLog::Level::ERROR,
+               NewoLog::Subsystem::AUDIO,
+               outputReady ? "ALARM_AUDIO_START" : "ALARM_AUDIO_FAILED",
+               outputReady ? (useAsset ? "source=spiffs_pcm" : "source=synth_chime") : "reason=i2s_begin");
+
+  while (outputReady && alarmRequested_ && !alarmStopRequested_) {
+    bool cycleOk = true;
+    if (useAsset) {
+      if (!asset.seek(0)) cycleOk = false;
+      size_t total = 0;
+      while (cycleOk && total < kAlarmAssetBytes && alarmRequested_ && !alarmStopRequested_) {
+        const size_t wanted = min(sizeof(monoWorking_), kAlarmAssetBytes - total);
+        const size_t count = asset.read(reinterpret_cast<uint8_t*>(monoWorking_), wanted);
+        if (count != wanted || (count & 1U)) { cycleOk = false; break; }
+        const size_t samples = count / sizeof(int16_t);
+        for (size_t i = 0; i < samples; ++i) {
+          const int16_t sample = static_cast<int16_t>(
+              static_cast<int32_t>(monoWorking_[i]) * alarmVolume_ /
+              (100 * NewoConfig::SPEAKER_DIGITAL_DIVISOR));
+          stereoWorking_[i * 2] = sample;
+          stereoWorking_[i * 2 + 1] = sample;
+        }
+        const size_t bytes = samples * 2 * sizeof(int16_t);
+        if (i2s_.write(reinterpret_cast<const uint8_t*>(stereoWorking_), bytes) != bytes) cycleOk = false;
+        total += count;
+      }
+    } else {
+      const uint32_t frames = newoWakeChimeFrames();
+      uint32_t frame = 0;
+      while (frame < frames && alarmRequested_ && !alarmStopRequested_) {
+        const size_t count = min(kWorkingSamples, static_cast<size_t>(frames - frame));
+        for (size_t i = 0; i < count; ++i) {
+          const int16_t sample = newoWakeChimeSample(
+              frame + static_cast<uint32_t>(i),
+              kAlarmFallbackAmplitude * static_cast<int32_t>(alarmVolume_) / 100);
+          stereoWorking_[i * 2] = sample;
+          stereoWorking_[i * 2 + 1] = sample;
+        }
+        const size_t bytes = count * 2 * sizeof(int16_t);
+        if (i2s_.write(reinterpret_cast<const uint8_t*>(stereoWorking_), bytes) != bytes) { cycleOk = false; break; }
+        frame += static_cast<uint32_t>(count);
+      }
+    }
+
+    if (!cycleOk && useAsset) {
+      useAsset = false;
+      alarmAssetReady_ = false;
+      asset.close();
+      NewoLog::log(NewoLog::Level::WARN, NewoLog::Subsystem::AUDIO,
+                   "ALARM_AUDIO_FALLBACK", "reason=read_or_write");
+      continue;
+    }
+    if (!cycleOk) break;
+
+    const uint32_t drainStartEvents = i2sSentEventCount_;
+    const uint32_t drainStartedMs = millis();
+    while (alarmRequested_ && !alarmStopRequested_ &&
+           static_cast<uint32_t>(i2sSentEventCount_ - drainStartEvents) <
+               NewoConfig::SPEAKER_I2S_DRAIN_DMA_EVENTS &&
+           millis() - drainStartedMs < NewoConfig::SPEAKER_I2S_DRAIN_TIMEOUT_MS) {
+      vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    const uint32_t pauseStartedMs = millis();
+    while (alarmRequested_ && !alarmStopRequested_ && millis() - pauseStartedMs < kAlarmRepeatPauseMs) {
+      vTaskDelay(pdMS_TO_TICKS(5));
+    }
+  }
+
+  if (asset) asset.close();
+  if (outputReady) i2s_.end();
+  alarmActive_ = false;
+  alarmTaskFinished_ = true;
+  NewoLog::log(NewoLog::Level::INFO, NewoLog::Subsystem::AUDIO,
+               "ALARM_AUDIO_STOP", alarmStopRequested_ ? "reason=requested" : "reason=output");
+  vTaskDeleteWithCaps(nullptr);
+}
+
 void NewoSpeaker::loop(bool cloudReady) {
   cloudReady_ = cloudReady;
   const bool connectionDesired = enabled_ || temporaryRequested_;
@@ -929,6 +1075,24 @@ void NewoSpeaker::loop(bool cloudReady) {
                  result_.success ? "" : result_.error);
     taskFinished_ = false;
     if (releaseRequested_ || (!enabled_ && !temporaryRequested_)) releaseResources();
+  }
+  if (alarmTaskFinished_) {
+    alarmTask_ = nullptr;
+    alarmTaskFinished_ = false;
+    alarmStopRequested_ = false;
+    audio_.setPlaybackActive(false);
+  }
+  if (alarmRequested_ && !alarmTask_ && !playing() && !taskFinished_ && !decoderTask_) {
+    if (audio_.setPlaybackActive(true)) {
+      alarmTaskFinished_ = false;
+      if (xTaskCreatePinnedToCoreWithCaps(alarmTaskEntry, "newo-alarm", 4096, this, 3,
+          &alarmTask_, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        alarmTask_ = nullptr;
+        audio_.setPlaybackActive(false);
+        NewoLog::log(NewoLog::Level::ERROR, NewoLog::Subsystem::AUDIO,
+                     "ALARM_AUDIO_FAILED", "reason=task_create");
+      }
+    }
   }
   if (releaseRequested_ && !playing()) {
     releaseResources();

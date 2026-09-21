@@ -14,6 +14,7 @@ constexpr char kSpeakerVolumeKey[] = "speaker-vol";
 constexpr char kSpeakerMutedKey[] = "speaker-mute";
 constexpr char kSpeakerEnabledKey[] = "speaker-on";
 constexpr char kClockEnabledKey[] = "clock-on";
+constexpr char kAlarmVolumeKey[] = "alarm-vol";
 constexpr char kUsbHostEnabledKey[] = "usb-host-on";
 constexpr char kUsbAudioEnabledKey[] = "usb-audio-on";
 constexpr char kUsbStorageEnabledKey[] = "usb-store-on";
@@ -39,6 +40,8 @@ bool NewoStorage::begin() {
   speakerMuted_ = preferences_.getBool(kSpeakerMutedKey, false);
   speakerEnabled_ = preferences_.getBool(kSpeakerEnabledKey, true);
   clockEnabled_ = preferences_.getBool(kClockEnabledKey, true);
+  alarmVolume_ = preferences_.getUChar(kAlarmVolumeKey, 80);
+  if (alarmVolume_ > 100) alarmVolume_ = 80;
   usbHostEnabled_ = preferences_.getBool(kUsbHostEnabledKey, NewoConfig::USB_HOST_DEFAULT_ENABLED);
   usbAudioEnabled_ = preferences_.getBool(kUsbAudioEnabledKey, true);
   usbStorageEnabled_ = preferences_.getBool(kUsbStorageEnabledKey, false);
@@ -158,6 +161,14 @@ bool NewoStorage::setClockEnabled(bool enabled) {
   if (!started_ || enabled == clockEnabled_) return started_;
   if (preferences_.putBool(kClockEnabledKey, enabled) != sizeof(enabled)) return false;
   clockEnabled_ = enabled;
+  return true;
+}
+
+bool NewoStorage::setAlarmVolume(uint8_t volume) {
+  if (!started_ || volume > 100) return false;
+  if (volume == alarmVolume_) return true;
+  if (preferences_.putUChar(kAlarmVolumeKey, volume) != sizeof(volume)) return false;
+  alarmVolume_ = volume;
   return true;
 }
 
