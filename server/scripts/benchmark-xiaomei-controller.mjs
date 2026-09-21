@@ -3,14 +3,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createAssistantProfiles, resolveAssistantProfile } from "../src/assistant-profiles.js";
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_DIR = path.resolve(__dirname, "..");
 const FIXTURE_PATH = path.join(SERVER_DIR, "benchmarks", "xiaomei", "controller-v1.json");
+const CANDIDATE_PATH = path.join(SERVER_DIR, "benchmarks", "xiaomei", "candidate.json");
 const RESULTS_DIR = path.join(SERVER_DIR, "benchmarks", "xiaomei", "results");
 const CONTEXT_SIZE = 4096;
-const PROFILE_INPUT = process.env.XIAOMEI_BENCH_PROFILE?.trim() || "main";
 const REPEATS = Math.max(1, Number.parseInt(process.env.XIAOMEI_BENCH_REPEATS || "1", 10) || 1);
 const REQUEST_TIMEOUT_MS = Math.max(5_000, Number.parseInt(process.env.XIAOMEI_BENCH_TIMEOUT_MS || "45000", 10) || 45_000);
 
@@ -50,6 +48,10 @@ function gitValue(args) {
   } catch {
     return null;
   }
+}
+
+async function readCandidate() {
+  return JSON.parse(await fs.readFile(CANDIDATE_PATH, "utf8"));
 }
 
 async function readFixture() {
@@ -260,7 +262,7 @@ function markdownReport(report) {
   lines.push(`- Generated: ${report.generated_at}`);
   lines.push(`- Branch: ${report.git.branch || "unknown"}`);
   lines.push(`- Commit: ${report.git.commit || "unknown"}`);
-  lines.push(`- Profile slot: ${report.target.profile}`);
+  lines.push(`- Candidate label: ${report.target.label || "unlabeled"}`);
   lines.push(`- Model: \`${report.target.model}\``);
   lines.push(`- Endpoint: \`${report.target.base_url}\``);
   lines.push(`- Context: ${report.config.context_size}`);
@@ -324,16 +326,13 @@ function markdownReport(report) {
 }
 
 async function main() {
-  const profiles = createAssistantProfiles();
-  const profileId = resolveAssistantProfile(PROFILE_INPUT, profiles);
-  if (!profileId) throw new Error(`Unknown assistant profile: ${PROFILE_INPUT}`);
-  const profile = profiles[profileId];
-  const baseUrl = (process.env.XIAOMEI_BENCH_BASE_URL?.trim() || profile.baseUrl).replace(/\/$/, "");
-  const model = process.env.XIAOMEI_BENCH_MODEL?.trim() || profile.model;
-  if (!baseUrl || !model) throw new Error("Benchmark target requires both base URL and model ID");
-  if (!process.env.XIAOMEI_BENCH_BASE_URL && !process.env.XIAOMEI_BENCH_MODEL && profile.provider !== "ollama_chat") {
-    throw new Error(`Profile ${profileId} is ${profile.provider}; Xiaomei benchmark currently requires an Ollama /api/chat target`);
+  const candidate = await readCandidate();
+  const baseUrlRaw = process.env.XIAOMEI_BENCH_BASE_URL?.trim() || candidate.base_url;
+  const model = process.env.XIAOMEI_BENCH_MODEL?.trim() || candidate.model;
+  if (!baseUrlRaw || !model) {
+    throw new Error("Xiaomei candidate is intentionally unset. Fill benchmarks/xiaomei/candidate.json in the candidate-swap commit, or use env overrides for diagnostics.");
   }
+  const baseUrl = String(baseUrlRaw).replace(/\/$/, "");
 
   const fixture = await readFixture();
   const generatedAt = new Date().toISOString();
@@ -378,7 +377,7 @@ async function main() {
       branch: gitValue(["rev-parse", "--abbrev-ref", "HEAD"]),
       commit: gitValue(["rev-parse", "HEAD"]),
     },
-    target: { profile: profileId, base_url: baseUrl, model },
+    target: { label: candidate.label || null, base_url: baseUrl, model },
     config: {
       context_size: CONTEXT_SIZE,
       repeats: REPEATS,

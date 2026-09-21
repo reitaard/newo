@@ -1,0 +1,6 @@
+{
+  "label": null,
+  "base_url": null,
+  "model": null,
+  "notes": "Intentionally unset. Fill label, base_url, and model together in the single candidate-swap commit before each official benchmark run."
+}

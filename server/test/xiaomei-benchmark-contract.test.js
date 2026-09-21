@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 
 const fixtureUrl = new URL("../benchmarks/xiaomei/controller-v1.json", import.meta.url);
 const scriptUrl = new URL("../scripts/benchmark-xiaomei-controller.mjs", import.meta.url);
+const candidateUrl = new URL("../benchmarks/xiaomei/candidate.json", import.meta.url);
 const packageUrl = new URL("../package.json", import.meta.url);
 
 const allowedRoutes = new Set([
@@ -44,6 +45,13 @@ test("Xiaomei benchmark is fixed to 4096 context and writes durable reports", as
   assert.match(source, /\/api\/ps/);
   assert.match(source, /first_content_ms/);
   assert.match(source, /decode_tps/);
+});
+
+test("candidate config is deliberately unset before the model-swap commit", async () => {
+  const candidate = JSON.parse(await readFile(candidateUrl, "utf8"));
+  assert.equal(candidate.label, null);
+  assert.equal(candidate.base_url, null);
+  assert.equal(candidate.model, null);
 });
 
 test("package exposes the Xiaomei benchmark command", async () => {

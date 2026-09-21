@@ -14,9 +14,9 @@ The suite focuses on the behavior Xiaomei actually needs:
 
 ## Important benchmark rule
 
-For official comparisons, change only the candidate model/endpoint in the existing `main` profile slot and commit that swap separately. Do not retune the fixture or context between candidates.
+For official comparisons, change only `benchmarks/xiaomei/candidate.json` in a dedicated candidate-swap commit. Do not retune the fixture, prompt, or context between candidates. Production assistant profiles stay untouched during the shootout.
 
-The benchmark reads the `main` assistant profile by default, but uses its own fixed Xiaomei system prompt and sampling settings. This avoids changing the production Alfred prompt while we compare candidate models.
+`candidate.json` is intentionally unset in the benchmark-prep commit. Fill `label`, `base_url`, and `model` only when the downloaded candidate and endpoint are ready.
 
 ## Run
 
@@ -30,7 +30,7 @@ npm run xiaomei:benchmark
 
 Defaults:
 
-- profile slot: `main`
+- candidate source: `benchmarks/xiaomei/candidate.json`
 - context: `4096`
 - repeats: `1`
 - thinking: off
@@ -43,7 +43,7 @@ XIAOMEI_BENCH_REPEATS=3 npm run xiaomei:benchmark
 XIAOMEI_BENCH_BASE_URL=http://HOST:11435 XIAOMEI_BENCH_MODEL=model-id npm run xiaomei:benchmark
 ```
 
-For the official shootout, prefer a committed profile swap over environment overrides so every report maps to an exact git commit.
+For the official shootout, prefer a committed `candidate.json` swap over environment overrides so every report maps to an exact git commit.
 
 ## Reports
 
