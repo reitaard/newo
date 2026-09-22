@@ -89,9 +89,9 @@ export class XiaomeiOllamaClient {
 
   async complete({ system, user, messages = null, temperature = 0.2, topP = 0.9, topK = 20,
     maxTokens = 240, contextSize = 4096, format = null, signal, keepAlive = this.keepAlive }) {
-    const inputMessages = Array.isArray(messages) ? messages : [
+    const inputMessages = [
       ...(system ? [{ role: "system", content: system }] : []),
-      { role: "user", content: String(user ?? "") },
+      ...(Array.isArray(messages) ? messages : [{ role: "user", content: String(user ?? "") }]),
     ];
     const body = {
       model: this.model,
